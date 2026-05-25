@@ -206,3 +206,81 @@ test("process recovers from concurrent cache creation before the import transact
   assert.equal(findUniqueCalls, 2);
   assert.equal(importTransactionStarted, true);
 });
+
+test("process keeps a committed import completed when stats recalculation fails", async () => {
+  const existingCache = {
+    id: "cache-1",
+    gcCode: "GC12345",
+    name: "Trusted Cache Name",
+    cacheType: "Traditional Cache",
+    difficulty: 2,
+    terrain: 1.5,
+    size: "Regular",
+    latitude: 56.1612,
+    longitude: 15.5869,
+    country: null,
+    region: null,
+    county: null,
+    hiddenDate: null,
+    ownerName: null,
+    raw: null,
+    createdAt: new Date(),
+    updatedAt: new Date()
+  };
+  const importRecord = {
+    id: "import-1",
+    userId: "user-1",
+    fileName: "my-hides.gpx",
+    fileType: ImportFileType.GPX,
+    source: ImportSource.MY_HIDES_GPX,
+    objectKey: "user-1/original.gpx"
+  };
+  const importStatuses: ImportStatus[] = [];
+  const originalError = console.error;
+  console.error = () => {};
+
+  const tx = {
+    hide: {
+      upsert: async () => ({})
+    },
+    find: {
+      upsert: async () => ({})
+    }
+  };
+  const prisma = {
+    import: {
+      findFirst: async () => importRecord,
+      update: async ({ data }: any) => {
+        importStatuses.push(data.status);
+        return {};
+      }
+    },
+    cache: {
+      findUnique: async () => existingCache,
+      create: async () => existingCache
+    },
+    $transaction: async (callback: (transaction: typeof tx) => Promise<unknown>) => callback(tx),
+    geocachingProfile: {
+      findUnique: async () => {
+        throw new Error("stats timeout");
+      }
+    }
+  };
+  const storage = {
+    getObject: async () => Buffer.from(gpx)
+  };
+
+  try {
+    const processor = new ImportProcessor(prisma as any, storage as any);
+    await processor.process({
+      importId: "import-1",
+      userId: "user-1",
+      objectKey: "user-1/original.gpx",
+      source: ImportSource.MY_HIDES_GPX
+    });
+  } finally {
+    console.error = originalError;
+  }
+
+  assert.deepEqual(importStatuses, [ImportStatus.PROCESSING, ImportStatus.COMPLETED]);
+});

@@ -4,6 +4,8 @@ import { AuthGuard } from "../auth/auth.guard";
 import { CurrentUser } from "../auth/current-user.decorator";
 import { PrismaService } from "../common/prisma.service";
 
+const MAP_CACHE_LIMIT = 5000;
+
 @Controller("map")
 @UseGuards(AuthGuard)
 export class MapController {
@@ -15,11 +17,15 @@ export class MapController {
       where: { userId: user.id },
       include: { cache: true },
       orderBy: { foundAt: "desc" },
-      take: 5000
+      take: MAP_CACHE_LIMIT + 1
     });
+    const truncated = finds.length > MAP_CACHE_LIMIT;
+    const visibleFinds = truncated ? finds.slice(0, MAP_CACHE_LIMIT) : finds;
 
     return {
-      points: finds.map((find) => ({
+      truncated,
+      limit: MAP_CACHE_LIMIT,
+      points: visibleFinds.map((find) => ({
         id: find.cache.id,
         gcCode: find.cache.gcCode,
         name: find.cache.name,

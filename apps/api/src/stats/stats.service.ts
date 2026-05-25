@@ -15,6 +15,8 @@ function elevationFromRaw(raw: unknown): number | null {
 
 @Injectable()
 export class StatsService {
+  private readonly recalculationsByUser = new Map<string, Promise<any>>();
+
   constructor(private readonly prisma: PrismaService) {}
 
   async snapshotForUser(userId: string) {
@@ -30,10 +32,26 @@ export class StatsService {
         return stats;
       }
 
-      return this.recalculateSnapshot(userId, profile);
+      return this.recalculateSnapshotForUser(userId, profile);
     }
 
-    return this.recalculateSnapshot(userId, profile);
+    return this.recalculateSnapshotForUser(userId, profile);
+  }
+
+  private async recalculateSnapshotForUser(
+    userId: string,
+    profile?: { homeLatitude: unknown; homeLongitude: unknown } | null
+  ) {
+    const inFlight = this.recalculationsByUser.get(userId);
+    if (inFlight) {
+      return inFlight;
+    }
+
+    const recalculation = this.recalculateSnapshot(userId, profile).finally(() => {
+      this.recalculationsByUser.delete(userId);
+    });
+    this.recalculationsByUser.set(userId, recalculation);
+    return recalculation;
   }
 
   private async recalculateSnapshot(

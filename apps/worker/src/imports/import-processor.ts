@@ -110,11 +110,15 @@ export class ImportProcessor {
         }
       });
 
-      await this.recalculateStats(payload.userId);
       await this.prisma.import.update({
         where: { id: payload.importId },
         data: { status: ImportStatus.COMPLETED, source: effectiveSource }
       });
+      try {
+        await this.recalculateStats(payload.userId);
+      } catch (error) {
+        console.error(`Stats recalculation failed after import ${payload.importId} completed`, error);
+      }
     } catch (error) {
       await this.prisma.import.update({
         where: { id: payload.importId },
@@ -165,12 +169,17 @@ export class ImportProcessor {
   }
 
   private async resolveCaches(caches: any[]): Promise<Map<string, Cache>> {
-    const byCode = new Map<string, Cache>();
+    const uniqueCaches = new Map<string, any>();
     for (const cache of caches) {
-      if (!byCode.has(cache.gcCode)) {
-        byCode.set(cache.gcCode, await this.findOrCreateCache(cache));
+      if (!uniqueCaches.has(cache.gcCode)) {
+        uniqueCaches.set(cache.gcCode, cache);
       }
     }
+
+    const resolvedCaches = await Promise.all(
+      Array.from(uniqueCaches.values()).map(async (cache) => [cache.gcCode, await this.findOrCreateCache(cache)] as const)
+    );
+    const byCode = new Map<string, Cache>(resolvedCaches);
     return byCode;
   }
 
