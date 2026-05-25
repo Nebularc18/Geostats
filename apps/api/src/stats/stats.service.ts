@@ -1,0 +1,127 @@
+import { Injectable } from "@nestjs/common";
+import { Prisma } from "@geostats/db";
+import { calculateHideStats, calculateStats } from "@geostats/stats";
+import { PrismaService } from "../common/prisma.service";
+
+function elevationFromRaw(raw: unknown): number | null {
+  if (!raw || typeof raw !== "object") {
+    return null;
+  }
+  const value = (raw as Record<string, unknown>).ele;
+  const text = value && typeof value === "object" && "text" in value ? (value as { text?: unknown }).text : value;
+  const elevation = Number(text);
+  return Number.isFinite(elevation) ? elevation : null;
+}
+
+@Injectable()
+export class StatsService {
+  constructor(private readonly prisma: PrismaService) {}
+
+  async snapshotForUser(userId: string) {
+    const profile = await this.prisma.geocachingProfile.findUnique({ where: { userId } });
+    const latest = await this.prisma.statSnapshot.findFirst({
+      where: { userId },
+      orderBy: { generatedAt: "desc" }
+    });
+    if (latest) {
+      const stats = latest.statsJson as any;
+      const needsHomeDistance = profile?.homeLatitude != null && profile.homeLongitude != null && !stats.distanceStats;
+      if (stats.statsVersion === 11 && !needsHomeDistance) {
+        return stats;
+      }
+
+      return this.recalculateSnapshot(userId, profile);
+    }
+
+    return this.recalculateSnapshot(userId, profile);
+  }
+
+  private async recalculateSnapshot(
+    userId: string,
+    profile?: { homeLatitude: unknown; homeLongitude: unknown } | null
+  ) {
+    const finds = await this.prisma.find.findMany({
+      where: { userId },
+      include: {
+        cache: {
+          include: {
+            corrections: {
+              where: { userId }
+            }
+          }
+        }
+      },
+      orderBy: { foundAt: "asc" }
+    });
+    const hides = await this.prisma.hide.findMany({
+      where: { userId },
+      include: {
+        cache: {
+          include: {
+            corrections: {
+              where: { userId }
+            }
+          }
+        }
+      },
+      orderBy: { placedAt: "asc" }
+    });
+    const stats = calculateStats(
+      finds.map((find) => ({
+        foundAt: find.foundAt,
+        cache: {
+          latitude: Number(find.cache.corrections[0]?.latitude ?? find.cache.latitude),
+          longitude: Number(find.cache.corrections[0]?.longitude ?? find.cache.longitude),
+          gcCode: find.cache.gcCode,
+          name: find.cache.name,
+          cacheType: find.cache.cacheType,
+          difficulty: find.cache.difficulty ? Number(find.cache.difficulty) : null,
+          terrain: find.cache.terrain ? Number(find.cache.terrain) : null,
+          size: find.cache.size,
+          country: find.cache.country,
+          region: find.cache.region,
+          county: find.cache.county,
+          hiddenDate: find.cache.hiddenDate,
+          ownerName: find.cache.ownerName,
+          elevationMeters: elevationFromRaw(find.cache.raw)
+        }
+      })),
+      {
+        homeLatitude: profile?.homeLatitude == null ? null : Number(profile.homeLatitude),
+        homeLongitude: profile?.homeLongitude == null ? null : Number(profile.homeLongitude)
+      }
+    );
+    stats.hideStats = calculateHideStats(
+      hides.map((hide) => ({
+        placedAt: hide.placedAt,
+        receivedLogCount: hide.receivedLogCount,
+        cache: {
+          latitude: Number(hide.cache.corrections[0]?.latitude ?? hide.cache.latitude),
+          longitude: Number(hide.cache.corrections[0]?.longitude ?? hide.cache.longitude),
+          gcCode: hide.cache.gcCode,
+          name: hide.cache.name,
+          cacheType: hide.cache.cacheType,
+          difficulty: hide.cache.difficulty ? Number(hide.cache.difficulty) : null,
+          terrain: hide.cache.terrain ? Number(hide.cache.terrain) : null,
+          size: hide.cache.size,
+          country: hide.cache.country,
+          region: hide.cache.region,
+          county: hide.cache.county,
+          hiddenDate: hide.cache.hiddenDate,
+          ownerName: hide.cache.ownerName,
+          elevationMeters: elevationFromRaw(hide.cache.raw),
+          raw: hide.cache.raw
+        }
+      }))
+    );
+
+    await this.prisma.statSnapshot.create({
+      data: {
+        userId,
+        statsJson: stats as unknown as Prisma.InputJsonValue
+      }
+    });
+
+    return stats;
+  }
+}

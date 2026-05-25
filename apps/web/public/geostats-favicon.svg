@@ -1,0 +1,22 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect x="40" y="40" width="432" height="432" rx="76" fill="url(#background)"/>
+  <path d="M34 399L147 302L202 255L257 175L336 143L403 101" stroke="#18C7A5" stroke-width="30" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="147" cy="302" r="30" fill="#F8FBF6"/>
+  <circle cx="147" cy="302" r="17" fill="#18C7A5"/>
+  <circle cx="257" cy="175" r="30" fill="#F8FBF6"/>
+  <circle cx="257" cy="175" r="17" fill="#18C7A5"/>
+  <circle cx="403" cy="101" r="30" fill="#F8FBF6"/>
+  <circle cx="403" cy="101" r="17" fill="#18C7A5"/>
+  <path d="M421 45C445 45 464 64 464 88C464 117 421 178 421 178C421 178 378 117 378 88C378 64 397 45 421 45Z" fill="url(#amber)"/>
+  <circle cx="421" cy="88" r="15" fill="#053E32"/>
+  <defs>
+    <linearGradient id="background" x1="40" y1="40" x2="472" y2="472" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#075F45"/>
+      <stop offset="1" stop-color="#032E27"/>
+    </linearGradient>
+    <linearGradient id="amber" x1="378" y1="45" x2="461" y2="176" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFC23B"/>
+      <stop offset="1" stop-color="#F1A01D"/>
+    </linearGradient>
+  </defs>
+</svg>
