@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { Prisma } from "@geostats/db";
 import { ImportFileType, ImportSource, ImportStatus } from "@geostats/shared";
 import { ImportProcessor } from "./import-processor";
 
@@ -51,16 +52,6 @@ test("process uses database object metadata and does not overwrite existing shar
   const cacheFinds: string[] = [];
 
   const tx = {
-    cache: {
-      findUnique: async ({ where }: any) => {
-        cacheFinds.push(where.gcCode);
-        return existingCache;
-      },
-      create: async (input: unknown) => {
-        cacheCreates.push(input);
-        return existingCache;
-      }
-    },
     hide: {
       upsert: async () => ({})
     },
@@ -76,6 +67,16 @@ test("process uses database object metadata and does not overwrite existing shar
     import: {
       findFirst: async () => importRecord,
       update: async () => ({})
+    },
+    cache: {
+      findUnique: async ({ where }: any) => {
+        cacheFinds.push(where.gcCode);
+        return existingCache;
+      },
+      create: async (input: unknown) => {
+        cacheCreates.push(input);
+        return existingCache;
+      }
     },
     $transaction: async (callback: (transaction: typeof tx) => Promise<unknown>) => callback(tx),
     geocachingProfile: {
@@ -110,4 +111,94 @@ test("process uses database object metadata and does not overwrite existing shar
   assert.deepEqual(seenObjectKeys, ["user-1/original.gpx"]);
   assert.deepEqual(cacheFinds, ["GC12345"]);
   assert.equal(cacheCreates.length, 0);
+});
+
+test("process recovers from concurrent cache creation before the import transaction", async () => {
+  const createdCache = {
+    id: "cache-1",
+    gcCode: "GC12345",
+    name: "Concurrent Cache",
+    cacheType: "Traditional Cache",
+    difficulty: 2,
+    terrain: 1.5,
+    size: "Regular",
+    latitude: 56.1612,
+    longitude: 15.5869,
+    country: null,
+    region: null,
+    county: null,
+    hiddenDate: null,
+    ownerName: null,
+    raw: null,
+    createdAt: new Date(),
+    updatedAt: new Date()
+  };
+  const importRecord = {
+    id: "import-1",
+    userId: "user-1",
+    fileName: "my-hides.gpx",
+    fileType: ImportFileType.GPX,
+    source: ImportSource.MY_HIDES_GPX,
+    objectKey: "user-1/original.gpx"
+  };
+  let findUniqueCalls = 0;
+  let importTransactionStarted = false;
+
+  const tx = {
+    hide: {
+      upsert: async () => ({})
+    },
+    find: {
+      upsert: async () => ({})
+    },
+    statSnapshot: {
+      deleteMany: async () => ({ count: 0 }),
+      create: async () => ({})
+    }
+  };
+  const prisma = {
+    import: {
+      findFirst: async () => importRecord,
+      update: async () => ({})
+    },
+    cache: {
+      findUnique: async () => {
+        findUniqueCalls += 1;
+        return findUniqueCalls === 1 ? null : createdCache;
+      },
+      create: async () => {
+        throw new Prisma.PrismaClientKnownRequestError("Unique constraint failed", {
+          code: "P2002",
+          clientVersion: "test"
+        });
+      }
+    },
+    $transaction: async (callback: (transaction: typeof tx) => Promise<unknown>) => {
+      importTransactionStarted = true;
+      return callback(tx);
+    },
+    geocachingProfile: {
+      findUnique: async () => null
+    },
+    find: {
+      findMany: async () => []
+    },
+    hide: {
+      findMany: async () => []
+    }
+  };
+  const storage = {
+    getObject: async () => Buffer.from(gpx)
+  };
+
+  const processor = new ImportProcessor(prisma as any, storage as any);
+  await processor.process({
+    importId: "import-1",
+    userId: "user-1",
+    objectKey: "user-1/original.gpx",
+    source: ImportSource.MY_HIDES_GPX
+  });
+
+  assert.equal(findUniqueCalls, 2);
+  assert.equal(importTransactionStarted, true);
 });

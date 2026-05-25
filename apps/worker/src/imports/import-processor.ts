@@ -1,4 +1,4 @@
-import { PrismaClient, Prisma } from "@geostats/db";
+import { Cache, PrismaClient, Prisma } from "@geostats/db";
 import { parseImportFile } from "@geostats/gpx-parser";
 import { ImportFileType, ImportJobPayload, ImportSource, ImportStatus } from "@geostats/shared";
 import { calculateHideStats, calculateStats } from "@geostats/stats";
@@ -48,10 +48,14 @@ export class ImportProcessor {
         importRecord.fileType === ImportFileType.ZIP && parsed.finds.length > 0
           ? ImportSource.MY_FINDS_GPX
           : importSource;
+      const cachesByCode = await this.resolveCaches([
+        ...parsed.caches,
+        ...parsed.finds.map((find) => find.cache)
+      ]);
 
       await this.prisma.$transaction(async (tx) => {
         for (const parsedCache of parsed.caches) {
-          const cache = await this.findOrCreateCache(tx, parsedCache);
+          const cache = this.cacheFor(cachesByCode, parsedCache.gcCode);
 
           if (importRecord.source === ImportSource.MY_HIDES_GPX) {
             await tx.hide.upsert({
@@ -79,7 +83,7 @@ export class ImportProcessor {
 
         const datedFinds = parsed.finds.filter(hasFoundDate);
         for (const parsedFind of datedFinds) {
-          const cache = await this.findOrCreateCache(tx, parsedFind.cache);
+          const cache = this.cacheFor(cachesByCode, parsedFind.cache.gcCode);
 
           await tx.find.upsert({
             where: {
@@ -160,22 +164,40 @@ export class ImportProcessor {
     };
   }
 
-  private async findOrCreateCache(tx: Prisma.TransactionClient, cache: any) {
-    const existing = await tx.cache.findUnique({ where: { gcCode: cache.gcCode } });
+  private async resolveCaches(caches: any[]): Promise<Map<string, Cache>> {
+    const byCode = new Map<string, Cache>();
+    for (const cache of caches) {
+      if (!byCode.has(cache.gcCode)) {
+        byCode.set(cache.gcCode, await this.findOrCreateCache(cache));
+      }
+    }
+    return byCode;
+  }
+
+  private async findOrCreateCache(cache: any): Promise<Cache> {
+    const existing = await this.prisma.cache.findUnique({ where: { gcCode: cache.gcCode } });
     if (existing) {
       return existing;
     }
     try {
-      return await tx.cache.create({ data: this.cacheCreateInput(cache) });
+      return await this.prisma.cache.create({ data: this.cacheCreateInput(cache) });
     } catch (error) {
       if (this.isUniqueConstraintError(error)) {
-        const createdByConcurrentImport = await tx.cache.findUnique({ where: { gcCode: cache.gcCode } });
+        const createdByConcurrentImport = await this.prisma.cache.findUnique({ where: { gcCode: cache.gcCode } });
         if (createdByConcurrentImport) {
           return createdByConcurrentImport;
         }
       }
       throw error;
     }
+  }
+
+  private cacheFor(cachesByCode: Map<string, Cache>, gcCode: string): Cache {
+    const cache = cachesByCode.get(gcCode);
+    if (!cache) {
+      throw new Error(`Cache ${gcCode} was not resolved`);
+    }
+    return cache;
   }
 
   private isUniqueConstraintError(error: unknown): boolean {

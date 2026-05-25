@@ -52,11 +52,11 @@ export class ImportsController {
       }
     });
 
+    await this.queue.enqueue({ importId: created.id, userId: user.id, objectKey, source });
     await this.prisma.import.update({
       where: { id: created.id },
       data: { status: ImportStatus.QUEUED }
     });
-    await this.queue.enqueue({ importId: created.id, userId: user.id, objectKey, source });
 
     return {
       import: {
