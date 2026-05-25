@@ -1,0 +1,9 @@
+node_modules
+.next
+.turbo
+dist
+.git
+*.log
+postgres-data
+redis-data
+minio-data

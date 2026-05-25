@@ -1,0 +1,24 @@
+{
+  "name": "geostats",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "packageManager": "pnpm@9.15.0",
+  "scripts": {
+    "build": "corepack pnpm -r build",
+    "dev": "corepack pnpm -r --parallel dev",
+    "lint": "corepack pnpm -r lint",
+    "test": "corepack pnpm -r test",
+    "typecheck": "corepack pnpm -r typecheck",
+    "format": "prettier --write .",
+    "db:generate": "corepack pnpm --filter @geostats/db db:generate",
+    "db:migrate": "corepack pnpm --filter @geostats/db db:migrate",
+    "db:seed": "corepack pnpm --filter @geostats/db db:seed"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "prettier": "^3.4.2",
+    "turbo": "^2.3.3",
+    "typescript": "^5.7.2"
+  }
+}

@@ -1,0 +1,42 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect x="96" y="96" width="832" height="832" rx="138" fill="url(#background)"/>
+  <path d="M92 790L293 608L398 519L507 362L663 302L804 214" stroke="#18C7A5" stroke-width="54" stroke-linecap="round" stroke-linejoin="round"/>
+  <g opacity="0.34" stroke="#5D9275" stroke-width="8" stroke-linecap="round">
+    <path d="M91 286C147 280 171 243 184 199C199 148 234 117 293 102"/>
+    <path d="M93 400C186 375 224 336 239 262C256 178 315 135 427 100"/>
+    <path d="M96 536C187 497 245 454 277 363C315 256 376 205 510 174"/>
+    <path d="M96 669C201 607 294 587 334 465C372 350 466 315 567 286"/>
+  </g>
+  <g filter="url(#softShadow)">
+    <circle cx="296" cy="606" r="54" fill="#F8FBF6"/>
+    <circle cx="296" cy="606" r="31" fill="#18C7A5"/>
+    <circle cx="507" cy="362" r="54" fill="#F8FBF6"/>
+    <circle cx="507" cy="362" r="31" fill="#18C7A5"/>
+    <circle cx="804" cy="214" r="54" fill="#F8FBF6"/>
+    <circle cx="804" cy="214" r="31" fill="#18C7A5"/>
+  </g>
+  <g filter="url(#softShadow)">
+    <rect x="476" y="710" width="84" height="116" rx="8" fill="url(#teal)"/>
+    <rect x="612" y="622" width="84" height="204" rx="8" fill="url(#teal)"/>
+    <rect x="748" y="500" width="84" height="326" rx="8" fill="url(#teal)"/>
+  </g>
+  <path d="M836 105C878 105 912 139 912 181C912 232 836 338 836 338C836 338 760 232 760 181C760 139 794 105 836 105Z" fill="url(#amber)" filter="url(#softShadow)"/>
+  <circle cx="836" cy="181" r="27" fill="#053E32"/>
+  <defs>
+    <linearGradient id="background" x1="96" y1="96" x2="928" y2="928" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#075F45"/>
+      <stop offset="1" stop-color="#032E27"/>
+    </linearGradient>
+    <linearGradient id="teal" x1="476" y1="500" x2="832" y2="826" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#28DABF"/>
+      <stop offset="1" stop-color="#06A987"/>
+    </linearGradient>
+    <linearGradient id="amber" x1="760" y1="105" x2="905" y2="334" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFC23B"/>
+      <stop offset="1" stop-color="#F1A01D"/>
+    </linearGradient>
+    <filter id="softShadow" x="-20%" y="-20%" width="140%" height="140%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#02140F" flood-opacity="0.18"/>
+    </filter>
+  </defs>
+</svg>

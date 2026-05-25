@@ -1,0 +1,176 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum ImportSource {
+  MY_FINDS_GPX
+  MY_HIDES_GPX
+  POCKET_QUERY
+  MANUAL_GPX
+  GEOCACHING_API
+}
+
+enum ImportStatus {
+  UPLOADED
+  QUEUED
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+enum ImportFileType {
+  GPX
+  ZIP
+}
+
+model User {
+  id           String              @id @default(cuid())
+  email        String              @unique
+  username     String              @unique
+  passwordHash String              @map("password_hash")
+  createdAt    DateTime            @default(now()) @map("created_at")
+  updatedAt    DateTime            @updatedAt @map("updated_at")
+
+  profile      GeocachingProfile?
+  imports      Import[]
+  finds        Find[]
+  hides        Hide[]
+  corrections  CorrectedCoordinate[]
+  snapshots    StatSnapshot[]
+
+  @@map("users")
+}
+
+model GeocachingProfile {
+  id            String   @id @default(cuid())
+  userId        String   @unique @map("user_id")
+  gcUsername    String   @map("gc_username")
+  homeLatitude  Decimal? @map("home_latitude") @db.Decimal(9, 6)
+  homeLongitude Decimal? @map("home_longitude") @db.Decimal(9, 6)
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("geocaching_profiles")
+}
+
+model Import {
+  id           String         @id @default(cuid())
+  userId       String         @map("user_id")
+  fileName     String         @map("file_name")
+  fileType     ImportFileType @map("file_type")
+  source       ImportSource
+  status       ImportStatus   @default(UPLOADED)
+  objectKey    String         @map("object_key")
+  errorMessage String?        @map("error_message")
+  createdAt    DateTime       @default(now()) @map("created_at")
+  updatedAt    DateTime       @updatedAt @map("updated_at")
+
+  user         User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  finds        Find[]
+  hides        Hide[]
+
+  @@index([userId, createdAt])
+  @@map("imports")
+}
+
+model Cache {
+  id          String   @id @default(cuid())
+  gcCode      String   @unique @map("gc_code")
+  name        String
+  cacheType   String?  @map("cache_type")
+  difficulty  Decimal? @db.Decimal(2, 1)
+  terrain     Decimal? @db.Decimal(2, 1)
+  size        String?
+  latitude    Decimal  @db.Decimal(9, 6)
+  longitude   Decimal  @db.Decimal(9, 6)
+  country     String?
+  region      String?
+  county      String?
+  hiddenDate  DateTime? @map("hidden_date") @db.Date
+  ownerName   String?   @map("owner_name")
+  raw         Json?
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  finds       Find[]
+  hides       Hide[]
+  corrections CorrectedCoordinate[]
+
+  @@index([country, region, county])
+  @@map("caches")
+}
+
+model Find {
+  id           String       @id @default(cuid())
+  userId       String       @map("user_id")
+  cacheId      String       @map("cache_id")
+  importId     String?      @map("import_id")
+  foundAt      DateTime     @map("found_at")
+  logText      String?      @map("log_text")
+  importedFrom ImportSource @map("imported_from")
+  createdAt    DateTime     @default(now()) @map("created_at")
+  updatedAt    DateTime     @updatedAt @map("updated_at")
+
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  cache        Cache        @relation(fields: [cacheId], references: [id], onDelete: Cascade)
+  import       Import?      @relation(fields: [importId], references: [id], onDelete: SetNull)
+
+  @@unique([userId, cacheId, foundAt])
+  @@index([userId, foundAt])
+  @@map("finds")
+}
+
+model Hide {
+  id               String   @id @default(cuid())
+  userId           String   @map("user_id")
+  cacheId          String   @map("cache_id")
+  importId         String?  @map("import_id")
+  placedAt         DateTime? @map("placed_at") @db.Date
+  receivedLogCount Int      @default(0) @map("received_log_count")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  cache            Cache    @relation(fields: [cacheId], references: [id], onDelete: Cascade)
+  import           Import?  @relation(fields: [importId], references: [id], onDelete: SetNull)
+
+  @@unique([userId, cacheId])
+  @@index([userId, placedAt])
+  @@map("hides")
+}
+
+model CorrectedCoordinate {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  cacheId   String   @map("cache_id")
+  latitude  Decimal  @db.Decimal(9, 6)
+  longitude Decimal  @db.Decimal(9, 6)
+  note      String?
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  cache     Cache    @relation(fields: [cacheId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, cacheId])
+  @@map("corrected_coordinates")
+}
+
+model StatSnapshot {
+  id          String   @id @default(cuid())
+  userId      String   @map("user_id")
+  statsJson   Json     @map("stats_json")
+  generatedAt DateTime @default(now()) @map("generated_at")
+
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, generatedAt])
+  @@map("stat_snapshots")
+}

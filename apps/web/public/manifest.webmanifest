@@ -1,0 +1,17 @@
+{
+  "name": "Geostats",
+  "short_name": "Geostats",
+  "description": "Local-first geocaching statistics",
+  "start_url": "/dashboard",
+  "display": "standalone",
+  "background_color": "#0d120f",
+  "theme_color": "#075f45",
+  "icons": [
+    {
+      "src": "/geostats-favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
