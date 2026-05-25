@@ -24,7 +24,11 @@ export class AuthGuard implements CanActivate {
       throw new UnauthorizedException("Authentication required");
     }
 
-    request.user = await this.auth.verify(token);
+    try {
+      request.user = await this.auth.verify(token);
+    } catch {
+      throw new UnauthorizedException("Invalid or expired token");
+    }
     return true;
   }
 }

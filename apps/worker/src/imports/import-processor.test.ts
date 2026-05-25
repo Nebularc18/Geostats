@@ -185,6 +185,10 @@ test("process recovers from concurrent cache creation before the import transact
     },
     hide: {
       findMany: async () => []
+    },
+    statSnapshot: {
+      deleteMany: async () => ({ count: 0 }),
+      create: async () => ({})
     }
   };
   const storage = {

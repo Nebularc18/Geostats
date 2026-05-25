@@ -208,20 +208,36 @@ export class ImportProcessor {
     const profile = await this.prisma.geocachingProfile.findUnique({ where: { userId } });
     const finds = await this.prisma.find.findMany({
       where: { userId },
-      include: { cache: true },
+      include: {
+        cache: {
+          include: {
+            corrections: {
+              where: { userId }
+            }
+          }
+        }
+      },
       orderBy: { foundAt: "asc" }
     });
     const hides = await this.prisma.hide.findMany({
       where: { userId },
-      include: { cache: true },
+      include: {
+        cache: {
+          include: {
+            corrections: {
+              where: { userId }
+            }
+          }
+        }
+      },
       orderBy: { placedAt: "asc" }
     });
     const stats = calculateStats(
       finds.map((find) => ({
         foundAt: find.foundAt,
         cache: {
-          latitude: Number(find.cache.latitude),
-          longitude: Number(find.cache.longitude),
+          latitude: Number(find.cache.corrections[0]?.latitude ?? find.cache.latitude),
+          longitude: Number(find.cache.corrections[0]?.longitude ?? find.cache.longitude),
           gcCode: find.cache.gcCode,
           name: find.cache.name,
           cacheType: find.cache.cacheType,
@@ -246,8 +262,8 @@ export class ImportProcessor {
         placedAt: hide.placedAt,
         receivedLogCount: hide.receivedLogCount,
         cache: {
-          latitude: Number(hide.cache.latitude),
-          longitude: Number(hide.cache.longitude),
+          latitude: Number(hide.cache.corrections[0]?.latitude ?? hide.cache.latitude),
+          longitude: Number(hide.cache.corrections[0]?.longitude ?? hide.cache.longitude),
           gcCode: hide.cache.gcCode,
           name: hide.cache.name,
           cacheType: hide.cache.cacheType,

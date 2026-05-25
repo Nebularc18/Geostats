@@ -1,12 +1,25 @@
 import { Body, Controller, Get, Put, UseGuards } from "@nestjs/common";
 import { AuthUser } from "@geostats/shared";
+import { IsNotEmpty, IsNumber, IsOptional, Max, MaxLength, Min } from "class-validator";
 import { AuthGuard } from "../auth/auth.guard";
 import { CurrentUser } from "../auth/current-user.decorator";
 import { PrismaService } from "../common/prisma.service";
 
-interface ProfileDto {
-  gcUsername: string;
+class ProfileDto {
+  @IsNotEmpty()
+  @MaxLength(60)
+  gcUsername!: string;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(-90)
+  @Max(90)
   homeLatitude?: number | null;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(-180)
+  @Max(180)
   homeLongitude?: number | null;
 }
 
