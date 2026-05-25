@@ -19,7 +19,7 @@ const gpx = `<?xml version="1.0" encoding="UTF-8"?>
   </wpt>
 </gpx>`;
 
-test("process uses database object metadata and does not overwrite existing shared cache rows", async () => {
+test("process uses database object metadata and updates existing shared cache rows", async () => {
   const existingCache = {
     id: "cache-1",
     gcCode: "GC12345",
@@ -39,6 +39,10 @@ test("process uses database object metadata and does not overwrite existing shar
     createdAt: new Date(),
     updatedAt: new Date()
   };
+  const updatedCache = {
+    ...existingCache,
+    name: "Attacker Cache Name"
+  };
   const importRecord = {
     id: "import-1",
     userId: "user-1",
@@ -50,6 +54,7 @@ test("process uses database object metadata and does not overwrite existing shar
   const seenObjectKeys: string[] = [];
   const cacheCreates: unknown[] = [];
   const cacheFinds: string[] = [];
+  const cacheUpdates: any[] = [];
 
   const tx = {
     hide: {
@@ -76,6 +81,10 @@ test("process uses database object metadata and does not overwrite existing shar
       create: async (input: unknown) => {
         cacheCreates.push(input);
         return existingCache;
+      },
+      update: async (input: any) => {
+        cacheUpdates.push(input);
+        return updatedCache;
       }
     },
     $transaction: async (callback: (transaction: typeof tx) => Promise<unknown>) => callback(tx),
@@ -111,6 +120,9 @@ test("process uses database object metadata and does not overwrite existing shar
   assert.deepEqual(seenObjectKeys, ["user-1/original.gpx"]);
   assert.deepEqual(cacheFinds, ["GC12345"]);
   assert.equal(cacheCreates.length, 0);
+  assert.equal(cacheUpdates.length, 1);
+  assert.deepEqual(cacheUpdates[0].where, { gcCode: "GC12345" });
+  assert.equal(cacheUpdates[0].data.name, "Attacker Cache Name");
 });
 
 test("process recovers from concurrent cache creation before the import transaction", async () => {
@@ -171,7 +183,8 @@ test("process recovers from concurrent cache creation before the import transact
           code: "P2002",
           clientVersion: "test"
         });
-      }
+      },
+      update: async () => createdCache
     },
     $transaction: async (callback: (transaction: typeof tx) => Promise<unknown>) => {
       importTransactionStarted = true;
@@ -204,6 +217,110 @@ test("process recovers from concurrent cache creation before the import transact
   });
 
   assert.equal(findUniqueCalls, 2);
+  assert.equal(importTransactionStarted, true);
+});
+
+test("process updates existing cache metadata before the import transaction", async () => {
+  const existingCache = {
+    id: "cache-1",
+    gcCode: "GC12345",
+    name: "Stale Cache Name",
+    cacheType: "Traditional Cache",
+    difficulty: 1,
+    terrain: 1,
+    size: "Regular",
+    latitude: 55,
+    longitude: 14,
+    country: null,
+    region: null,
+    county: null,
+    hiddenDate: null,
+    ownerName: null,
+    raw: null,
+    createdAt: new Date(),
+    updatedAt: new Date()
+  };
+  const updatedCache = {
+    ...existingCache,
+    name: "Attacker Cache Name",
+    difficulty: 2,
+    terrain: 1.5,
+    latitude: 56.1612,
+    longitude: 15.5869
+  };
+  const importRecord = {
+    id: "import-1",
+    userId: "user-1",
+    fileName: "my-hides.gpx",
+    fileType: ImportFileType.GPX,
+    source: ImportSource.MY_HIDES_GPX,
+    objectKey: "user-1/original.gpx"
+  };
+  let importTransactionStarted = false;
+  let cacheUpdateCompleted = false;
+
+  const tx = {
+    hide: {
+      upsert: async () => {
+        assert.equal(cacheUpdateCompleted, true);
+        return {};
+      }
+    },
+    find: {
+      upsert: async () => ({})
+    },
+    statSnapshot: {
+      deleteMany: async () => ({ count: 0 }),
+      create: async () => ({})
+    }
+  };
+  const prisma = {
+    import: {
+      findFirst: async () => importRecord,
+      update: async () => ({})
+    },
+    cache: {
+      findUnique: async () => existingCache,
+      create: async () => existingCache,
+      update: async ({ data }: any) => {
+        assert.equal(data.name, "Attacker Cache Name");
+        assert.equal(data.latitude, 56.1612);
+        assert.equal(data.longitude, 15.5869);
+        cacheUpdateCompleted = true;
+        return updatedCache;
+      }
+    },
+    $transaction: async (callback: (transaction: typeof tx) => Promise<unknown>) => {
+      importTransactionStarted = true;
+      return callback(tx);
+    },
+    geocachingProfile: {
+      findUnique: async () => null
+    },
+    find: {
+      findMany: async () => []
+    },
+    hide: {
+      findMany: async () => []
+    },
+    statSnapshot: {
+      deleteMany: async () => ({ count: 0 }),
+      create: async () => ({})
+    }
+  };
+  const storage = {
+    getObject: async () => Buffer.from(gpx)
+  };
+
+  const processor = new ImportProcessor(prisma as any, storage as any);
+  await processor.process({
+    importId: "import-1",
+    userId: "user-1",
+    objectKey: "user-1/original.gpx",
+    source: ImportSource.MY_HIDES_GPX
+  });
+
+  assert.equal(cacheUpdateCompleted, true);
   assert.equal(importTransactionStarted, true);
 });
 
@@ -257,7 +374,8 @@ test("process keeps a committed import completed when stats recalculation fails"
     },
     cache: {
       findUnique: async () => existingCache,
-      create: async () => existingCache
+      create: async () => existingCache,
+      update: async () => existingCache
     },
     $transaction: async (callback: (transaction: typeof tx) => Promise<unknown>) => callback(tx),
     geocachingProfile: {

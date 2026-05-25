@@ -186,7 +186,7 @@ export class ImportProcessor {
   private async findOrCreateCache(cache: any): Promise<Cache> {
     const existing = await this.prisma.cache.findUnique({ where: { gcCode: cache.gcCode } });
     if (existing) {
-      return existing;
+      return this.updateCache(cache);
     }
     try {
       return await this.prisma.cache.create({ data: this.cacheCreateInput(cache) });
@@ -194,11 +194,18 @@ export class ImportProcessor {
       if (this.isUniqueConstraintError(error)) {
         const createdByConcurrentImport = await this.prisma.cache.findUnique({ where: { gcCode: cache.gcCode } });
         if (createdByConcurrentImport) {
-          return createdByConcurrentImport;
+          return this.updateCache(cache);
         }
       }
       throw error;
     }
+  }
+
+  private async updateCache(cache: any): Promise<Cache> {
+    return this.prisma.cache.update({
+      where: { gcCode: cache.gcCode },
+      data: this.cacheUpdateInput(cache)
+    });
   }
 
   private cacheFor(cachesByCode: Map<string, Cache>, gcCode: string): Cache {
