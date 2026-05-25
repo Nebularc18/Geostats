@@ -43,7 +43,7 @@ export function AuthForm({ mode }: { mode: "login" | "register" }) {
           {mode === "register" ? (
             <label>
               Username
-              <input name="username" required minLength={2} />
+              <input name="username" required minLength={3} />
             </label>
           ) : null}
           <label>

@@ -17,6 +17,13 @@ import { PrismaService } from "../common/prisma.service";
 import { ImportQueueService } from "../queue/import-queue.service";
 import { StorageService } from "../storage/storage.service";
 
+const DEFAULT_UPLOAD_MAX_BYTES = 52_428_800;
+
+function uploadMaxBytes() {
+  const parsed = Number(process.env.UPLOAD_MAX_BYTES);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_UPLOAD_MAX_BYTES;
+}
+
 @Controller("imports")
 @UseGuards(AuthGuard)
 export class ImportsController {
@@ -29,7 +36,7 @@ export class ImportsController {
   @Post("upload")
   @UseInterceptors(
     FileInterceptor("file", {
-      limits: { fileSize: Number(process.env.UPLOAD_MAX_BYTES ?? 52_428_800) }
+      limits: { fileSize: uploadMaxBytes() }
     })
   )
   async upload(@CurrentUser() user: AuthUser, @UploadedFile() file?: Express.Multer.File) {

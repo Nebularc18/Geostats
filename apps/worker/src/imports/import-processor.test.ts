@@ -52,9 +52,7 @@ test("process uses database object metadata and updates existing shared cache ro
     objectKey: "user-1/original.gpx"
   };
   const seenObjectKeys: string[] = [];
-  const cacheCreates: unknown[] = [];
-  const cacheFinds: string[] = [];
-  const cacheUpdates: any[] = [];
+  const cacheUpserts: any[] = [];
 
   const tx = {
     hide: {
@@ -74,16 +72,8 @@ test("process uses database object metadata and updates existing shared cache ro
       update: async () => ({})
     },
     cache: {
-      findUnique: async ({ where }: any) => {
-        cacheFinds.push(where.gcCode);
-        return existingCache;
-      },
-      create: async (input: unknown) => {
-        cacheCreates.push(input);
-        return existingCache;
-      },
-      update: async (input: any) => {
-        cacheUpdates.push(input);
+      upsert: async (input: any) => {
+        cacheUpserts.push(input);
         return updatedCache;
       }
     },
@@ -118,14 +108,13 @@ test("process uses database object metadata and updates existing shared cache ro
   });
 
   assert.deepEqual(seenObjectKeys, ["user-1/original.gpx"]);
-  assert.deepEqual(cacheFinds, ["GC12345"]);
-  assert.equal(cacheCreates.length, 0);
-  assert.equal(cacheUpdates.length, 1);
-  assert.deepEqual(cacheUpdates[0].where, { gcCode: "GC12345" });
-  assert.equal(cacheUpdates[0].data.name, "Attacker Cache Name");
+  assert.equal(cacheUpserts.length, 1);
+  assert.deepEqual(cacheUpserts[0].where, { gcCode: "GC12345" });
+  assert.equal(cacheUpserts[0].create.name, "Attacker Cache Name");
+  assert.equal(cacheUpserts[0].update.name, "Attacker Cache Name");
 });
 
-test("process recovers from concurrent cache creation before the import transaction", async () => {
+test("process recovers from concurrent cache upsert conflict before the import transaction", async () => {
   const createdCache = {
     id: "cache-1",
     gcCode: "GC12345",
@@ -153,7 +142,8 @@ test("process recovers from concurrent cache creation before the import transact
     source: ImportSource.MY_HIDES_GPX,
     objectKey: "user-1/original.gpx"
   };
-  let findUniqueCalls = 0;
+  let cacheUpsertCalls = 0;
+  let cacheUpdateCalls = 0;
   let importTransactionStarted = false;
 
   const tx = {
@@ -174,17 +164,17 @@ test("process recovers from concurrent cache creation before the import transact
       update: async () => ({})
     },
     cache: {
-      findUnique: async () => {
-        findUniqueCalls += 1;
-        return findUniqueCalls === 1 ? null : createdCache;
-      },
-      create: async () => {
+      upsert: async () => {
+        cacheUpsertCalls += 1;
         throw new Prisma.PrismaClientKnownRequestError("Unique constraint failed", {
           code: "P2002",
           clientVersion: "test"
         });
       },
-      update: async () => createdCache
+      update: async () => {
+        cacheUpdateCalls += 1;
+        return createdCache;
+      }
     },
     $transaction: async (callback: (transaction: typeof tx) => Promise<unknown>) => {
       importTransactionStarted = true;
@@ -216,7 +206,8 @@ test("process recovers from concurrent cache creation before the import transact
     source: ImportSource.MY_HIDES_GPX
   });
 
-  assert.equal(findUniqueCalls, 2);
+  assert.equal(cacheUpsertCalls, 1);
+  assert.equal(cacheUpdateCalls, 1);
   assert.equal(importTransactionStarted, true);
 });
 
@@ -280,12 +271,10 @@ test("process updates existing cache metadata before the import transaction", as
       update: async () => ({})
     },
     cache: {
-      findUnique: async () => existingCache,
-      create: async () => existingCache,
-      update: async ({ data }: any) => {
-        assert.equal(data.name, "Attacker Cache Name");
-        assert.equal(data.latitude, 56.1612);
-        assert.equal(data.longitude, 15.5869);
+      upsert: async ({ update }: any) => {
+        assert.equal(update.name, "Attacker Cache Name");
+        assert.equal(update.latitude, 56.1612);
+        assert.equal(update.longitude, 15.5869);
         cacheUpdateCompleted = true;
         return updatedCache;
       }
@@ -373,9 +362,7 @@ test("process keeps a committed import completed when stats recalculation fails"
       }
     },
     cache: {
-      findUnique: async () => existingCache,
-      create: async () => existingCache,
-      update: async () => existingCache
+      upsert: async () => existingCache
     },
     $transaction: async (callback: (transaction: typeof tx) => Promise<unknown>) => callback(tx),
     geocachingProfile: {
