@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Controller,
   Get,
+  NotFoundException,
   Param,
   Post,
   UploadedFile,
@@ -41,22 +42,39 @@ export class ImportsController {
     const objectKey = `${user.id}/${Date.now()}-${file.originalname.replace(/[^a-zA-Z0-9_.-]/g, "_")}`;
 
     await this.storage.putObject(objectKey, file.buffer, file.mimetype || "application/octet-stream");
-    const created = await this.prisma.import.create({
-      data: {
-        userId: user.id,
-        fileName: file.originalname,
-        fileType,
-        source,
-        status: ImportStatus.UPLOADED,
-        objectKey
-      }
-    });
+    let created: { id: string } | null = null;
+    try {
+      created = await this.prisma.import.create({
+        data: {
+          userId: user.id,
+          fileName: file.originalname,
+          fileType,
+          source,
+          status: ImportStatus.UPLOADED,
+          objectKey
+        }
+      });
 
-    await this.queue.enqueue({ importId: created.id, userId: user.id, objectKey, source });
-    await this.prisma.import.update({
-      where: { id: created.id },
-      data: { status: ImportStatus.QUEUED }
-    });
+      await this.queue.enqueue({ importId: created.id, userId: user.id, objectKey, source });
+      await this.prisma.import.update({
+        where: { id: created.id },
+        data: { status: ImportStatus.QUEUED }
+      });
+    } catch (error) {
+      if (created) {
+        try {
+          await this.prisma.import.delete({ where: { id: created.id } });
+        } catch (cleanupError) {
+          console.error(`Failed to clean up import record ${created.id}`, cleanupError);
+        }
+      }
+      try {
+        await this.storage.deleteObject(objectKey);
+      } catch (cleanupError) {
+        console.error(`Failed to clean up uploaded import object ${objectKey}`, cleanupError);
+      }
+      throw error;
+    }
 
     return {
       import: {
@@ -83,7 +101,7 @@ export class ImportsController {
       include: { _count: { select: { finds: true } } }
     });
     if (!found) {
-      throw new BadRequestException("Import not found");
+      throw new NotFoundException("Import not found");
     }
     return { import: found };
   }
