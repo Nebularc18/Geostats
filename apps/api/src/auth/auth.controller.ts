@@ -1,17 +1,27 @@
 import { Body, Controller, Get, Post, Res, UseGuards } from "@nestjs/common";
 import { Response } from "express";
 import { AuthUser } from "@geostats/shared";
+import { IsEmail, IsNotEmpty, MaxLength, MinLength } from "class-validator";
 import { AuthService } from "./auth.service";
 import { AuthGuard } from "./auth.guard";
 import { CurrentUser } from "./current-user.decorator";
 
-interface CredentialsDto {
-  email: string;
-  password: string;
+class CredentialsDto {
+  @IsEmail()
+  @MaxLength(254)
+  email!: string;
+
+  @IsNotEmpty()
+  @MinLength(8)
+  @MaxLength(128)
+  password!: string;
 }
 
-interface RegisterDto extends CredentialsDto {
-  username: string;
+class RegisterDto extends CredentialsDto {
+  @IsNotEmpty()
+  @MinLength(3)
+  @MaxLength(40)
+  username!: string;
 }
 
 @Controller("auth")

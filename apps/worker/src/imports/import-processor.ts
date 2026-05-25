@@ -4,6 +4,9 @@ import { ImportFileType, ImportJobPayload, ImportSource, ImportStatus } from "@g
 import { calculateHideStats, calculateStats } from "@geostats/stats";
 import { ObjectStorage } from "../storage/object-storage";
 
+type ParsedImportResult = Awaited<ReturnType<typeof parseImportFile>>;
+type ParsedFindWithDate = ParsedImportResult["finds"][number] & { foundAt: Date };
+
 function elevationFromRaw(raw: unknown): number | null {
   if (!raw || typeof raw !== "object") {
     return null;
@@ -12,6 +15,10 @@ function elevationFromRaw(raw: unknown): number | null {
   const text = value && typeof value === "object" && "text" in value ? (value as { text?: unknown }).text : value;
   const elevation = Number(text);
   return Number.isFinite(elevation) ? elevation : null;
+}
+
+function hasFoundDate(find: ParsedImportResult["finds"][number]): find is ParsedFindWithDate {
+  return find.foundAt !== null;
 }
 
 export class ImportProcessor {
@@ -70,7 +77,8 @@ export class ImportProcessor {
           }
         }
 
-        for (const parsedFind of parsed.finds) {
+        const datedFinds = parsed.finds.filter(hasFoundDate);
+        for (const parsedFind of datedFinds) {
           const cache = await this.findOrCreateCache(tx, parsedFind.cache);
 
           await tx.find.upsert({
@@ -78,14 +86,14 @@ export class ImportProcessor {
               userId_cacheId_foundAt: {
                 userId: payload.userId,
                 cacheId: cache.id,
-                foundAt: parsedFind.foundAt!
+                foundAt: parsedFind.foundAt
               }
             },
             create: {
               userId: payload.userId,
               cacheId: cache.id,
               importId: payload.importId,
-              foundAt: parsedFind.foundAt!,
+              foundAt: parsedFind.foundAt,
               logText: parsedFind.logText,
               importedFrom: effectiveSource
             },
@@ -235,11 +243,14 @@ export class ImportProcessor {
       }))
     );
 
-    await this.prisma.statSnapshot.create({
-      data: {
-        userId,
-        statsJson: stats as unknown as Prisma.InputJsonValue
-      }
+    await this.prisma.$transaction(async (tx) => {
+      await tx.statSnapshot.deleteMany({ where: { userId } });
+      await tx.statSnapshot.create({
+        data: {
+          userId,
+          statsJson: stats as unknown as Prisma.InputJsonValue
+        }
+      });
     });
   }
 }

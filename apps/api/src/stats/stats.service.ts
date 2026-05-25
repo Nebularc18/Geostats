@@ -115,11 +115,14 @@ export class StatsService {
       }))
     );
 
-    await this.prisma.statSnapshot.create({
-      data: {
-        userId,
-        statsJson: stats as unknown as Prisma.InputJsonValue
-      }
+    await this.prisma.$transaction(async (tx) => {
+      await tx.statSnapshot.deleteMany({ where: { userId } });
+      await tx.statSnapshot.create({
+        data: {
+          userId,
+          statsJson: stats as unknown as Prisma.InputJsonValue
+        }
+      });
     });
 
     return stats;

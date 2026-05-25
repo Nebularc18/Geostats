@@ -66,6 +66,10 @@ test("process uses database object metadata and does not overwrite existing shar
     },
     find: {
       upsert: async () => ({})
+    },
+    statSnapshot: {
+      deleteMany: async () => ({ count: 0 }),
+      create: async () => ({})
     }
   };
   const prisma = {
@@ -84,6 +88,7 @@ test("process uses database object metadata and does not overwrite existing shar
       findMany: async () => []
     },
     statSnapshot: {
+      deleteMany: async () => ({ count: 0 }),
       create: async () => ({})
     }
   };

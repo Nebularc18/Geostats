@@ -1,5 +1,6 @@
 import { ConflictException, Injectable, UnauthorizedException } from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
+import { Prisma } from "@geostats/db";
 import { PrismaService } from "../common/prisma.service";
 import { AuthUser } from "@geostats/shared";
 import bcrypt from "bcryptjs";
@@ -28,13 +29,7 @@ export class AuthService {
     }
 
     const passwordHash = await bcrypt.hash(password, 12);
-    const user = await this.prisma.user.create({
-      data: {
-        email: normalizedEmail,
-        username: normalizedUsername,
-        passwordHash
-      }
-    });
+    const user = await this.createUser(normalizedEmail, normalizedUsername, passwordHash);
     return this.toAuthUser(user);
   }
 
@@ -69,5 +64,22 @@ export class AuthService {
       email: user.email,
       username: user.username
     };
+  }
+
+  private async createUser(email: string, username: string, passwordHash: string) {
+    try {
+      return await this.prisma.user.create({
+        data: {
+          email,
+          username,
+          passwordHash
+        }
+      });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+        throw new ConflictException("Email or username is already registered");
+      }
+      throw error;
+    }
   }
 }
