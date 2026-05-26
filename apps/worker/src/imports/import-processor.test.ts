@@ -537,7 +537,7 @@ test("process updates an existing find to the full GPX timestamp", async () => {
     source: ImportSource.MY_FINDS_GPX
   });
 
-  assert.equal((updatedFoundAt as Date).toISOString(), "2024-05-01T12:34:00.000Z");
+  assert.equal((updatedFoundAt as Date).toISOString(), "2024-05-01T10:34:00.000Z");
   assert.equal(recalculationFindsLoaded, true);
 });
 
@@ -566,12 +566,12 @@ test("process skips stats recalculation when an import has no new or changed fin
     userId: "user-1",
     cacheId: "cache-1",
     importId: "import-1",
-    foundAt: new Date("2024-05-01T12:34:00.000Z"),
+    foundAt: new Date("2024-05-01T10:34:00.000Z"),
     logText: "Nice find.",
     isFtf: false,
     importedFrom: ImportSource.MY_FINDS_GPX,
-    createdAt: new Date("2024-05-01T12:34:00.000Z"),
-    updatedAt: new Date("2024-05-01T12:34:00.000Z")
+    createdAt: new Date("2024-05-01T10:34:00.000Z"),
+    updatedAt: new Date("2024-05-01T10:34:00.000Z")
   };
   const importRecord = {
     id: "import-1",
@@ -737,7 +737,7 @@ test("process uses an explicit FTF time from log text when the GPX timestamp is 
     source: ImportSource.MY_FINDS_GPX
   });
 
-  assert.equal(createdFoundAt?.toISOString(), "2026-05-03T08:11:00.000Z");
+  assert.equal(createdFoundAt?.toISOString(), "2026-05-03T06:11:00.000Z");
 });
 
 test("process interprets GPX find timestamps in the profile time zone", async () => {
