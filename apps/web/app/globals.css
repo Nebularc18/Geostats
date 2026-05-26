@@ -47,7 +47,7 @@ select {
 
 .shell {
   display: grid;
-  grid-template-columns: 280px 1fr;
+  grid-template-columns: 280px minmax(0, 1fr);
   min-height: 100vh;
 }
 
@@ -121,7 +121,8 @@ nav a:hover {
 }
 
 .content {
-  width: min(1180px, 100%);
+  width: 100%;
+  min-width: 0;
   padding: 36px;
 }
 
@@ -291,6 +292,19 @@ h2 {
 .import-row span:first-child {
   display: grid;
   gap: 4px;
+}
+
+.import-row {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) minmax(160px, 0.35fr) minmax(120px, auto);
+}
+
+.import-row > :nth-child(2) {
+  justify-self: center;
+}
+
+.import-row > :last-child {
+  justify-self: end;
 }
 
 .form {
@@ -498,7 +512,7 @@ select:focus {
 }
 
 .mini-table {
-  overflow: hidden;
+  overflow-x: auto;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: rgba(237, 244, 232, 0.025);
@@ -818,41 +832,69 @@ select:focus {
 }
 
 .milestone-panel .stats-breakdown-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   align-items: start;
+}
+
+.milestone-panel {
+  container-type: inline-size;
 }
 
 .milestone-table {
   width: 100%;
   border-collapse: collapse;
-  table-layout: fixed;
+  table-layout: auto;
   font-size: 0.9rem;
   font-variant-numeric: tabular-nums;
+}
+
+.count-milestone-table {
+  min-width: 900px;
+}
+
+.first-milestone-table {
+  min-width: 560px;
 }
 
 .count-milestone-table th:nth-child(1),
 .count-milestone-table td:nth-child(1),
 .first-milestone-table th:nth-child(1),
 .first-milestone-table td:nth-child(1) {
-  width: 76px;
+  width: 92px;
 }
 
 .count-milestone-table th:nth-child(2),
 .count-milestone-table td:nth-child(2),
 .first-milestone-table th:nth-child(2),
 .first-milestone-table td:nth-child(2) {
-  width: 98px;
+  width: 104px;
 }
 
 .count-milestone-table th:nth-child(3),
 .count-milestone-table td:nth-child(3) {
-  width: 86px;
+  width: 96px;
 }
 
 .count-milestone-table th:nth-child(4),
 .count-milestone-table td:nth-child(4),
 .first-milestone-table th:nth-child(4),
 .first-milestone-table td:nth-child(4) {
-  width: 86px;
+  width: 88px;
+}
+
+.count-milestone-table th:nth-child(5),
+.count-milestone-table td:nth-child(5),
+.first-milestone-table th:nth-child(5),
+.first-milestone-table td:nth-child(5) {
+  width: 140px;
+}
+
+.milestone-table th,
+.milestone-table td:nth-child(1),
+.milestone-table td:nth-child(2),
+.milestone-table td:nth-child(4),
+.milestone-table td:nth-child(5) {
+  white-space: nowrap;
 }
 
 .milestone-table th,
@@ -861,7 +903,7 @@ select:focus {
   padding: 7px 8px;
   border-bottom: 1px solid rgba(237, 244, 232, 0.08);
   background: rgba(237, 244, 232, 0.03);
-  overflow-wrap: anywhere;
+  overflow-wrap: normal;
   vertical-align: top;
 }
 
@@ -878,6 +920,12 @@ select:focus {
 
 .milestone-table a:hover {
   text-decoration: underline;
+}
+
+@container (max-width: 1160px) {
+  .milestone-panel .stats-breakdown-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .calendar-grid,
