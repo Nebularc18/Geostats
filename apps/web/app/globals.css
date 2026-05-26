@@ -307,6 +307,169 @@ h2 {
   justify-self: end;
 }
 
+.ftf-search {
+  min-width: min(100%, 320px);
+}
+
+.ftf-find-list {
+  display: grid;
+  gap: 10px;
+}
+
+.ftf-find-row {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(237, 244, 232, 0.035);
+  cursor: pointer;
+}
+
+.ftf-find-row.active {
+  border-color: rgba(95, 191, 133, 0.58);
+  background: rgba(95, 191, 133, 0.14);
+}
+
+.ftf-find-row input {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  accent-color: var(--green);
+}
+
+.ftf-find-row span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.ftf-find-row strong,
+.ftf-stats-row strong {
+  overflow-wrap: anywhere;
+}
+
+.ftf-summary-table {
+  display: grid;
+  gap: 1px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(237, 244, 232, 0.08);
+}
+
+.ftf-summary-table div {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.42fr) minmax(0, 1fr);
+  gap: 12px;
+  padding: 9px 11px;
+  background: rgba(237, 244, 232, 0.035);
+}
+
+.ftf-summary-table span {
+  color: var(--muted);
+}
+
+.ftf-map-frame {
+  height: 520px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.ftf-map-frame .maplibre-panel {
+  height: 100%;
+  min-height: 100%;
+  border: 0;
+  border-radius: 0;
+}
+
+.ftf-stats-table {
+  display: grid;
+  grid-template-columns: minmax(96px, 0.16fr) minmax(90px, 0.16fr) minmax(86px, 0.14fr) minmax(180px, 1fr) minmax(130px, 0.35fr);
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.ftf-stats-table > span {
+  padding: 10px 12px;
+  color: var(--muted);
+  background: rgba(237, 244, 232, 0.055);
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.ftf-stats-row {
+  display: contents;
+}
+
+.ftf-stats-row > * {
+  padding: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.ftf-first-table {
+  display: grid;
+  grid-template-columns: 42px 104px minmax(180px, 1fr) 96px 132px minmax(180px, 1fr);
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 0.9rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.ftf-first-table > span,
+.ftf-first-row > * {
+  min-height: 32px;
+  padding: 7px 8px;
+  border-bottom: 1px solid rgba(237, 244, 232, 0.08);
+  background: rgba(237, 244, 232, 0.03);
+}
+
+.ftf-first-table > span {
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.ftf-first-row,
+.ftf-way-row {
+  display: contents;
+}
+
+.ftf-percent-grid {
+  display: grid;
+  grid-template-columns: minmax(92px, 1fr) minmax(70px, 0.45fr) minmax(82px, 0.55fr) minmax(120px, 1.1fr);
+  font-size: 0.9rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.ftf-percent-grid > * {
+  min-height: 30px;
+  padding: 7px 8px;
+  border-bottom: 1px solid rgba(237, 244, 232, 0.08);
+  background: rgba(237, 244, 232, 0.03);
+}
+
+.ftf-percent-grid > :nth-child(-n + 4) {
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.ftf-table-note {
+  margin: 12px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.ftf-calendar-grid {
+  overflow-x: auto;
+}
+
 .form {
   display: grid;
   gap: 14px;
@@ -318,13 +481,19 @@ label {
   font-weight: 700;
 }
 
-input {
+input,
+textarea {
   width: 100%;
   padding: 12px 13px;
   border: 1px solid var(--line);
   border-radius: 8px;
   color: var(--ink);
   background: rgba(8, 13, 10, 0.82);
+}
+
+textarea {
+  min-height: 130px;
+  resize: vertical;
 }
 
 select {
@@ -337,6 +506,7 @@ select {
 }
 
 input:focus,
+textarea:focus,
 select:focus {
   outline: 3px solid var(--focus);
   border-color: var(--green);
@@ -1197,5 +1367,23 @@ select:focus {
   .map-toolbar {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .ftf-stats-table {
+    grid-template-columns: minmax(82px, 0.25fr) minmax(76px, 0.2fr) minmax(76px, 0.2fr) minmax(160px, 1fr);
+    overflow-x: auto;
+  }
+
+  .ftf-stats-table > span:nth-child(5),
+  .ftf-stats-row > :nth-child(5) {
+    display: none;
+  }
+
+  .ftf-summary-table div {
+    grid-template-columns: 1fr;
+  }
+
+  .ftf-map-frame {
+    height: 430px;
   }
 }

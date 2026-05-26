@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import JSZip from "jszip";
 import { ImportSource } from "@geostats/shared";
-import { parseGpx, parseImportFile } from "./index";
+import { detectFtfLog, parseGpx, parseImportFile } from "./index";
 
 const gpx = `<?xml version="1.0" encoding="UTF-8"?>
 <gpx version="1.0">
@@ -37,6 +37,18 @@ test("parseGpx extracts caches and found logs", () => {
   assert.equal(parsed.caches[0]?.gcCode, "GC12345");
   assert.equal(parsed.caches[0]?.country, "Sweden");
   assert.equal(parsed.finds[0]?.foundAt?.toISOString(), "2024-05-01T12:00:00.000Z");
+  assert.equal(parsed.finds[0]?.isFtf, false);
+});
+
+test("parseGpx marks FTF logs from user log text", () => {
+  const parsed = parseGpx(gpx.replace("Nice find.", "FTF at 08:14, great cache."), ImportSource.MY_FINDS_GPX);
+
+  assert.equal(parsed.finds[0]?.isFtf, true);
+});
+
+test("detectFtfLog supports custom user search terms", () => {
+  assert.equal(detectFtfLog("Silver medal on this one.", ["silver medal"]), true);
+  assert.equal(detectFtfLog("TFTC on the way home.", ["FTF"]), false);
 });
 
 test("parseGpx accepts large My Finds files with many escaped entities", () => {

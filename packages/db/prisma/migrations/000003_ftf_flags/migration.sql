@@ -1,0 +1,1 @@
+ALTER TABLE "finds" ADD COLUMN "is_ftf" BOOLEAN NOT NULL DEFAULT false;

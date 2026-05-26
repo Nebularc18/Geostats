@@ -20,6 +20,7 @@ test("calculateStats returns core buckets, milestones, and streaks", () => {
     },
     {
       foundAt: "2024-01-02T10:00:00.000Z",
+      isFtf: true,
       cache: {
         gcCode: "GC2",
         name: "Second",
@@ -27,6 +28,8 @@ test("calculateStats returns core buckets, milestones, and streaks", () => {
         difficulty: 3,
         terrain: 2.5,
         size: "Micro",
+        latitude: 56.1612,
+        longitude: 15.5869,
         country: "Sweden",
         region: "Blekinge",
         county: "Ronneby"
@@ -41,6 +44,15 @@ test("calculateStats returns core buckets, milestones, and streaks", () => {
     { key: "2024-01-02", count: 1 }
   ]);
   assert.equal(stats.cacheTypes.length, 2);
+  assert.equal(stats.ftfStats.total, 1);
+  assert.equal(stats.ftfStats.first?.gcCode, "GC2");
+  assert.equal(stats.ftfStats.first?.dateTime, "2024-01-02T10:00:00.000Z");
+  assert.equal(stats.ftfStats.firstByLocation[0]?.dateTime, "2024-01-02T10:00:00.000Z");
+  assert.deepEqual(stats.ftfStats.byYear, [{ key: "2024", count: 1 }]);
+  assert.equal(stats.ftfStats.bestDay?.key, "2024-01-02");
+  assert.equal(stats.ftfStats.byDifficulty.find((row) => row.key === "3.0")?.count, 1);
+  assert.equal(stats.ftfStats.byDifficultyTerrain[0]?.terrain, 2.5);
+  assert.equal(stats.ftfStats.firstByLocation[0]?.label, "Sweden / Blekinge / Ronneby");
   assert.equal(stats.difficultyTerrain.length, 2);
   assert.deepEqual(stats.countries, [{ key: "Sweden", count: 2 }]);
   assert.equal(stats.milestones[0]?.count, 1);

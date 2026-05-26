@@ -52,6 +52,7 @@ model GeocachingProfile {
   gcUsername    String   @map("gc_username")
   homeLatitude  Decimal? @map("home_latitude") @db.Decimal(9, 6)
   homeLongitude Decimal? @map("home_longitude") @db.Decimal(9, 6)
+  ftfDetectionTerms String[] @default(["FTF", "first to find"]) @map("ftf_detection_terms")
   createdAt     DateTime @default(now()) @map("created_at")
   updatedAt     DateTime @updatedAt @map("updated_at")
 
@@ -114,6 +115,7 @@ model Find {
   importId     String?      @map("import_id")
   foundAt      DateTime     @map("found_at")
   logText      String?      @map("log_text")
+  isFtf        Boolean      @default(false) @map("is_ftf")
   importedFrom ImportSource @map("imported_from")
   createdAt    DateTime     @default(now()) @map("created_at")
   updatedAt    DateTime     @updatedAt @map("updated_at")

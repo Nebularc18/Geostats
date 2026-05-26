@@ -1,22 +1,36 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useState } from "react";
 import { UploadCloud } from "lucide-react";
 import { AppShell } from "../../components/app-shell";
 import { apiFetch } from "../../lib/api";
+import { hasActiveImports, type ImportListItem, type ImportsResponse } from "../../lib/imports";
 
 export default function UploadPage() {
   const [message, setMessage] = useState<string | null>(null);
-  const [imports, setImports] = useState<any[]>([]);
+  const [imports, setImports] = useState<ImportListItem[]>([]);
 
-  async function refresh() {
-    const data = await apiFetch<{ imports: any[] }>("/imports");
+  const refresh = useCallback(async () => {
+    const data = await apiFetch<ImportsResponse>("/imports");
     setImports(data.imports);
-  }
+    return data.imports;
+  }, []);
 
   useEffect(() => {
     void refresh();
-  }, []);
+  }, [refresh]);
+
+  useEffect(() => {
+    if (!hasActiveImports(imports)) {
+      return;
+    }
+
+    const interval = window.setInterval(() => {
+      void refresh();
+    }, 3000);
+
+    return () => window.clearInterval(interval);
+  }, [imports, refresh]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();

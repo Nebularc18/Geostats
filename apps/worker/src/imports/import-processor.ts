@@ -1,5 +1,5 @@
 import { Cache, PrismaClient, Prisma } from "@geostats/db";
-import { parseImportFile } from "@geostats/gpx-parser";
+import { DEFAULT_FTF_DETECTION_TERMS, detectFtfLog, parseImportFile } from "@geostats/gpx-parser";
 import { ImportFileType, ImportJobPayload, ImportSource, ImportStatus } from "@geostats/shared";
 import { calculateHideStats, calculateStats } from "@geostats/stats";
 import { ObjectStorage } from "../storage/object-storage";
@@ -19,6 +19,32 @@ function elevationFromRaw(raw: unknown): number | null {
 
 function hasFoundDate(find: ParsedImportResult["finds"][number]): find is ParsedFindWithDate {
   return find.foundAt !== null;
+}
+
+function timeFromFtfLog(text: string | null): { hour: number; minute: number } | null {
+  if (!text) {
+    return null;
+  }
+  const matches = text.matchAll(/\b(?:ftf|time)\b[^\d]{0,24}(\d{1,2})[:.](\d{2})\b/gi);
+  for (const match of matches) {
+    const hour = Number(match[1]);
+    const minute = Number(match[2]);
+    if (Number.isInteger(hour) && Number.isInteger(minute) && hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59) {
+      return { hour, minute };
+    }
+  }
+  return null;
+}
+
+function foundAtWithFtfLogTime(foundAt: Date, logText: string | null, isFtf: boolean): Date {
+  if (!isFtf) {
+    return foundAt;
+  }
+  const time = timeFromFtfLog(logText);
+  if (!time) {
+    return foundAt;
+  }
+  return new Date(Date.UTC(foundAt.getUTCFullYear(), foundAt.getUTCMonth(), foundAt.getUTCDate(), time.hour, time.minute));
 }
 
 export class ImportProcessor {
@@ -44,6 +70,14 @@ export class ImportProcessor {
       const importSource = importRecord.source as ImportSource;
       const content = await this.storage.getObject(importRecord.objectKey);
       const parsed = await parseImportFile(importRecord.fileName, content, importSource);
+      const profile =
+        parsed.finds.length > 0
+          ? await this.prisma.geocachingProfile.findUnique({
+              where: { userId: payload.userId },
+              select: { ftfDetectionTerms: true }
+            })
+          : null;
+      const ftfDetectionTerms = profile?.ftfDetectionTerms ?? DEFAULT_FTF_DETECTION_TERMS;
       const effectiveSource =
         importRecord.fileType === ImportFileType.ZIP && parsed.finds.length > 0
           ? ImportSource.MY_FINDS_GPX
@@ -52,6 +86,7 @@ export class ImportProcessor {
         ...parsed.caches,
         ...parsed.finds.map((find) => find.cache)
       ]);
+      let shouldRecalculateStats = importRecord.source === ImportSource.MY_HIDES_GPX && parsed.caches.length > 0;
 
       await this.prisma.$transaction(async (tx) => {
         for (const parsedCache of parsed.caches) {
@@ -82,31 +117,79 @@ export class ImportProcessor {
         }
 
         const datedFinds = parsed.finds.filter(hasFoundDate);
+        const findCacheIds = datedFinds.map((parsedFind) => this.cacheFor(cachesByCode, parsedFind.cache.gcCode).id);
+        const existingFinds =
+          findCacheIds.length === 0
+            ? []
+            : await tx.find.findMany({
+                where: {
+                  userId: payload.userId,
+                  cacheId: { in: findCacheIds }
+                },
+                orderBy: [{ foundAt: "asc" }, { createdAt: "asc" }]
+              });
+        const existingFindsByCacheId = new Map<string, (typeof existingFinds)[number]>();
+        for (const existingFind of existingFinds) {
+          if (!existingFindsByCacheId.has(existingFind.cacheId)) {
+            existingFindsByCacheId.set(existingFind.cacheId, existingFind);
+          }
+        }
+
         for (const parsedFind of datedFinds) {
           const cache = this.cacheFor(cachesByCode, parsedFind.cache.gcCode);
+          const isFtf = detectFtfLog(parsedFind.logText, ftfDetectionTerms);
+          const foundAt = foundAtWithFtfLogTime(parsedFind.foundAt, parsedFind.logText, isFtf);
+          const existingFind =
+            existingFinds.find((find) => find.cacheId === cache.id && find.foundAt.getTime() === foundAt.getTime()) ??
+            existingFindsByCacheId.get(cache.id);
 
-          await tx.find.upsert({
-            where: {
-              userId_cacheId_foundAt: {
-                userId: payload.userId,
-                cacheId: cache.id,
-                foundAt: parsedFind.foundAt
+          if (existingFind) {
+            const update: Prisma.FindUncheckedUpdateInput = {};
+            let statsRelevantChange = false;
+
+            if (existingFind.foundAt.getTime() !== foundAt.getTime()) {
+              update.foundAt = foundAt;
+              statsRelevantChange = true;
+            }
+            if (existingFind.logText !== parsedFind.logText) {
+              update.logText = parsedFind.logText;
+            }
+            if (isFtf && !existingFind.isFtf) {
+              update.isFtf = true;
+              statsRelevantChange = true;
+            }
+            if (existingFind.importedFrom !== effectiveSource) {
+              update.importedFrom = effectiveSource;
+            }
+
+            if (Object.keys(update).length > 0) {
+              await tx.find.update({
+                where: { id: existingFind.id },
+                data: {
+                  ...update,
+                  importId: payload.importId
+                }
+              });
+              if (statsRelevantChange) {
+                shouldRecalculateStats = true;
               }
-            },
-            create: {
+            }
+            continue;
+          }
+
+          const createdFind = await tx.find.create({
+            data: {
               userId: payload.userId,
               cacheId: cache.id,
               importId: payload.importId,
-              foundAt: parsedFind.foundAt,
+              foundAt,
               logText: parsedFind.logText,
-              importedFrom: effectiveSource
-            },
-            update: {
-              importId: payload.importId,
-              logText: parsedFind.logText,
+              isFtf,
               importedFrom: effectiveSource
             }
           });
+          shouldRecalculateStats = true;
+          existingFindsByCacheId.set(cache.id, createdFind);
         }
       });
 
@@ -114,10 +197,12 @@ export class ImportProcessor {
         where: { id: payload.importId },
         data: { status: ImportStatus.COMPLETED, source: effectiveSource }
       });
-      try {
-        await this.recalculateStats(payload.userId);
-      } catch (error) {
-        console.error(`Stats recalculation failed after import ${payload.importId} completed`, error);
+      if (shouldRecalculateStats) {
+        try {
+          await this.recalculateStats(payload.userId);
+        } catch (error) {
+          console.error(`Stats recalculation failed after import ${payload.importId} completed`, error);
+        }
       }
     } catch (error) {
       await this.prisma.import.update({
@@ -230,7 +315,7 @@ export class ImportProcessor {
           }
         }
       },
-      orderBy: { foundAt: "asc" }
+      orderBy: [{ foundAt: "asc" }, { createdAt: "asc" }]
     });
     const hides = await this.prisma.hide.findMany({
       where: { userId },
@@ -248,6 +333,7 @@ export class ImportProcessor {
     const stats = calculateStats(
       finds.map((find) => ({
         foundAt: find.foundAt,
+        isFtf: find.isFtf,
         cache: {
           latitude: Number(find.cache.corrections[0]?.latitude ?? find.cache.latitude),
           longitude: Number(find.cache.corrections[0]?.longitude ?? find.cache.longitude),
@@ -262,7 +348,8 @@ export class ImportProcessor {
           county: find.cache.county,
           hiddenDate: find.cache.hiddenDate,
           ownerName: find.cache.ownerName,
-          elevationMeters: elevationFromRaw(find.cache.raw)
+          elevationMeters: elevationFromRaw(find.cache.raw),
+          raw: find.cache.raw
         }
       })),
       {

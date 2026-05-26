@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { BarChart3, Database, Flag, Home, Map, Settings, Upload } from "lucide-react";
+import { BarChart3, Database, Flag, Home, Map, Settings, Trophy, Upload } from "lucide-react";
 import { apiFetch } from "../lib/api";
 
 const nav = [
@@ -10,6 +10,7 @@ const nav = [
   { href: "/upload", label: "Upload", icon: Upload },
   { href: "/imports", label: "Imports", icon: Database },
   { href: "/stats", label: "Stats", icon: BarChart3 },
+  { href: "/ftf", label: "FTF", icon: Trophy },
   { href: "/hides", label: "Hides", icon: Flag },
   { href: "/milestones", label: "Milestones", icon: Flag },
   { href: "/map", label: "Map", icon: Map },

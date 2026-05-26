@@ -24,6 +24,7 @@ export interface ParsedFind {
   cache: ParsedCache;
   foundAt: Date | null;
   logText: string | null;
+  isFtf: boolean;
   source: ImportSource;
 }
 
@@ -51,6 +52,7 @@ const DEFAULT_MAX_ZIP_ENTRIES = 25;
 const DEFAULT_MAX_ZIP_ENTRY_BYTES = 5 * 1024 * 1024;
 const DEFAULT_MAX_ZIP_TOTAL_BYTES = 25 * 1024 * 1024;
 const DEFAULT_MAX_WAYPOINTS = 25_000;
+export const DEFAULT_FTF_DETECTION_TERMS = ["FTF", "first to find"];
 
 function positiveLimit(envName: string, fallback: number): number {
   const parsed = Number(process.env[envName]);
@@ -128,6 +130,28 @@ function findFoundLog(cache: Record<string, any>): Record<string, any> | null {
   return foundLog ?? null;
 }
 
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function termRegex(term: string): RegExp | null {
+  const normalized = term.trim().replace(/\s+/g, " ");
+  if (!normalized) {
+    return null;
+  }
+  const pattern = escapeRegex(normalized).replace(/\\ /g, "[\\s-]+");
+  const prefix = /^[a-z0-9]/i.test(normalized) ? "(^|[^a-z0-9])" : "";
+  const suffix = /[a-z0-9]$/i.test(normalized) ? "([^a-z0-9]|$)" : "";
+  return new RegExp(`${prefix}${pattern}${suffix}`, "i");
+}
+
+export function detectFtfLog(text: string | null, terms: string[] = DEFAULT_FTF_DETECTION_TERMS): boolean {
+  if (!text) {
+    return false;
+  }
+  return terms.some((term) => termRegex(term)?.test(text) ?? false);
+}
+
 function countReceivedLogs(cache: Record<string, any>): number {
   const logs = cache["groundspeak:logs"]?.["groundspeak:log"] ?? cache.logs?.log;
   return asArray<Record<string, any>>(logs).filter((log) => {
@@ -171,6 +195,7 @@ function parseWaypoint(waypoint: Record<string, any>, source: ImportSource): Par
     cache,
     foundAt: toDate(foundLog?.["groundspeak:date"] ?? foundLog?.date),
     logText: firstText(foundLog?.["groundspeak:text"], foundLog?.text),
+    isFtf: detectFtfLog(firstText(foundLog?.["groundspeak:text"], foundLog?.text)),
     source
   };
 }

@@ -1,4 +1,4 @@
-import { Injectable } from "@nestjs/common";
+import { Injectable, NotFoundException } from "@nestjs/common";
 import { Prisma } from "@geostats/db";
 import { calculateHideStats, calculateStats } from "@geostats/stats";
 import { PrismaService } from "../common/prisma.service";
@@ -28,7 +28,7 @@ export class StatsService {
     if (latest) {
       const stats = latest.statsJson as any;
       const needsHomeDistance = profile?.homeLatitude != null && profile.homeLongitude != null && !stats.distanceStats;
-      if (stats.statsVersion === 11 && !needsHomeDistance) {
+      if (stats.statsVersion === 14 && !needsHomeDistance) {
         return stats;
       }
 
@@ -69,7 +69,7 @@ export class StatsService {
           }
         }
       },
-      orderBy: { foundAt: "asc" }
+      orderBy: [{ foundAt: "asc" }, { createdAt: "asc" }]
     });
     const hides = await this.prisma.hide.findMany({
       where: { userId },
@@ -87,6 +87,7 @@ export class StatsService {
     const stats = calculateStats(
       finds.map((find) => ({
         foundAt: find.foundAt,
+        isFtf: find.isFtf,
         cache: {
           latitude: Number(find.cache.corrections[0]?.latitude ?? find.cache.latitude),
           longitude: Number(find.cache.corrections[0]?.longitude ?? find.cache.longitude),
@@ -101,7 +102,8 @@ export class StatsService {
           county: find.cache.county,
           hiddenDate: find.cache.hiddenDate,
           ownerName: find.cache.ownerName,
-          elevationMeters: elevationFromRaw(find.cache.raw)
+          elevationMeters: elevationFromRaw(find.cache.raw),
+          raw: find.cache.raw
         }
       })),
       {
@@ -144,5 +146,40 @@ export class StatsService {
     });
 
     return stats;
+  }
+
+  async ftfFindsForUser(userId: string) {
+    const finds = await this.prisma.find.findMany({
+      where: { userId },
+      include: { cache: true },
+      orderBy: [{ foundAt: "desc" }, { createdAt: "desc" }]
+    });
+
+    return finds.map((find) => ({
+      id: find.id,
+      foundAt: find.foundAt.toISOString(),
+      isFtf: find.isFtf,
+      logText: find.logText,
+      cache: {
+        gcCode: find.cache.gcCode,
+        name: find.cache.name,
+        cacheType: find.cache.cacheType,
+        country: find.cache.country,
+        region: find.cache.region
+      }
+    }));
+  }
+
+  async updateFtfFlag(userId: string, findId: string, isFtf: boolean) {
+    const result = await this.prisma.find.updateMany({
+      where: { id: findId, userId },
+      data: { isFtf }
+    });
+    if (result.count === 0) {
+      throw new NotFoundException("Find not found");
+    }
+
+    await this.prisma.statSnapshot.deleteMany({ where: { userId } });
+    return { id: findId, isFtf };
   }
 }

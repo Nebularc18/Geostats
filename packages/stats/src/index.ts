@@ -18,6 +18,7 @@ export interface StatsCache {
 
 export interface StatsFind {
   foundAt: Date | string;
+  isFtf?: boolean;
   cache: StatsCache;
 }
 
@@ -154,6 +155,90 @@ export interface WayTo81Entry {
   terrain: number;
 }
 
+export interface FtfStats {
+  total: number;
+  percentOfFinds: number;
+  averageIntervalDays: number | null;
+  averageDistanceKm: number | null;
+  first: FtfRow | null;
+  latest: FtfRow | null;
+  slowest: FtfRow | null;
+  nearest: FtfRow | null;
+  furthest: FtfRow | null;
+  mostNorthern: FtfRow | null;
+  mostSouthern: FtfRow | null;
+  mostEastern: FtfRow | null;
+  mostWestern: FtfRow | null;
+  highest: FtfRow | null;
+  lowest: FtfRow | null;
+  centroid: { latitude: number; longitude: number; distanceFromHomeKm: number | null } | null;
+  archivedCount: number;
+  archivedPercent: number;
+  bestDay: CountBucket | null;
+  bestMonth: CountBucket | null;
+  consecutiveMonths: { count: number; start: string; end: string } | null;
+  byYear: CountBucket[];
+  byMonth: CountBucket[];
+  byCalendarMonth: PercentBucket[];
+  byWeekday: PercentBucket[];
+  byType: PercentBucket[];
+  bySize: PercentBucket[];
+  byDifficulty: PercentBucket[];
+  byTerrain: PercentBucket[];
+  averageDifficulty: number;
+  averageTerrain: number;
+  byCountry: CountBucket[];
+  byRegion: CountBucket[];
+  byDifficultyTerrain: DifficultyTerrainCell[];
+  foundDateMatrix: CountBucket[];
+  firstByLocation: FtfFirstRow[];
+  firstByType: FtfFirstRow[];
+  wayTo81: FtfWayTo81Entry[];
+  rows: FtfRow[];
+}
+
+export interface FtfRow {
+  date: string;
+  dateTime: string;
+  intervalDays: number | null;
+  distanceKm: number | null;
+  gcCode: string;
+  name: string;
+  cacheType: string | null;
+  size: string | null;
+  difficulty: number | null;
+  terrain: number | null;
+  country: string | null;
+  region: string | null;
+  county: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  elevationMeters: number | null;
+  archived: boolean;
+}
+
+export interface FtfFirstRow {
+  index: number;
+  date: string;
+  dateTime: string;
+  label: string;
+  gcCode: string;
+  name: string;
+  cacheType: string | null;
+}
+
+export interface FtfWayTo81Entry {
+  index: number;
+  date: string;
+  dateTime: string;
+  intervalDays: number | null;
+  gcCode: string;
+  name: string;
+  cacheType: string | null;
+  difficulty: number;
+  terrain: number;
+}
+
 export interface HideStats {
   totalHides: number;
   activeHides: number;
@@ -218,6 +303,7 @@ export interface StatsSnapshot {
   elevationBuckets: CountBucket[];
   ownerBuckets: PercentBucket[];
   wayTo81: WayTo81Entry[];
+  ftfStats: FtfStats;
   distanceStats: DistanceStats | null;
   hideStats: HideStats;
   summaryNumbers: SummaryNumbers;
@@ -259,6 +345,285 @@ function percentBuckets(map: Map<string, number>, total: number): PercentBucket[
   return [...map.entries()]
     .map(([key, count]) => ({ key, count, percent: total > 0 ? (count / total) * 100 : 0 }))
     .sort((a, b) => b.count - a.count || a.key.localeCompare(b.key));
+}
+
+function ftfRow(
+  find: StatsFind,
+  previousDate: Date | null,
+  options: StatsOptions
+): FtfRow {
+  const foundAt = toDate(find.foundAt);
+  const latitude = find.cache.latitude == null ? null : Number(find.cache.latitude);
+  const longitude = find.cache.longitude == null ? null : Number(find.cache.longitude);
+  const hasDistance =
+    options.homeLatitude != null &&
+    options.homeLongitude != null &&
+    latitude != null &&
+    longitude != null &&
+    Number.isFinite(latitude) &&
+    Number.isFinite(longitude);
+  return {
+    date: dateKey(foundAt),
+    dateTime: foundAt.toISOString(),
+    intervalDays: previousDate === null ? null : Math.max(0, daysBetweenInclusive(previousDate, foundAt) - 1),
+    distanceKm: hasDistance ? haversineKm(options.homeLatitude!, options.homeLongitude!, latitude, longitude) : null,
+    gcCode: find.cache.gcCode,
+    name: find.cache.name,
+    cacheType: find.cache.cacheType,
+    size: find.cache.size,
+    difficulty: find.cache.difficulty,
+    terrain: find.cache.terrain,
+    country: find.cache.country,
+    region: find.cache.region,
+    county: find.cache.county,
+    latitude,
+    longitude,
+    elevationMeters: find.cache.elevationMeters ?? null,
+    archived: isArchived(find.cache)
+  };
+}
+
+function monthIndex(key: string): number {
+  const [year, month] = key.split("-").map(Number);
+  return year * 12 + month - 1;
+}
+
+function longestConsecutiveMonths(months: CountBucket[]): { count: number; start: string; end: string } | null {
+  if (months.length === 0) {
+    return null;
+  }
+  const sortedMonths = [...months].sort((a, b) => a.key.localeCompare(b.key));
+  let bestStart = sortedMonths[0].key;
+  let bestEnd = sortedMonths[0].key;
+  let bestCount = 1;
+  let currentStart = sortedMonths[0].key;
+  let currentEnd = sortedMonths[0].key;
+  let currentCount = 1;
+
+  for (let index = 1; index < sortedMonths.length; index += 1) {
+    const previous = sortedMonths[index - 1].key;
+    const current = sortedMonths[index].key;
+    if (monthIndex(current) === monthIndex(previous) + 1) {
+      currentEnd = current;
+      currentCount += 1;
+    } else {
+      currentStart = current;
+      currentEnd = current;
+      currentCount = 1;
+    }
+
+    if (currentCount > bestCount) {
+      bestStart = currentStart;
+      bestEnd = currentEnd;
+      bestCount = currentCount;
+    }
+  }
+
+  return { count: bestCount, start: bestStart, end: bestEnd };
+}
+
+function firstFtfRows(
+  finds: StatsFind[],
+  labelForFind: (find: StatsFind) => string | null | undefined
+): FtfFirstRow[] {
+  const seen = new Set<string>();
+  const rows: FtfFirstRow[] = [];
+  for (const find of finds) {
+    const label = labelForFind(find)?.trim();
+    if (!label || seen.has(label)) {
+      continue;
+    }
+    seen.add(label);
+    const foundAt = toDate(find.foundAt);
+    rows.push({
+      index: rows.length + 1,
+      date: dateKey(foundAt),
+      dateTime: foundAt.toISOString(),
+      label,
+      gcCode: find.cache.gcCode,
+      name: find.cache.name,
+      cacheType: find.cache.cacheType
+    });
+  }
+  return rows;
+}
+
+function fixedPercentBuckets(values: string[], map: Map<string, number>, total: number): PercentBucket[] {
+  return values.map((key) => {
+    const count = map.get(key) ?? 0;
+    return { key, count, percent: total > 0 ? (count / total) * 100 : 0 };
+  });
+}
+
+function calculateFtfStats(finds: StatsFind[], options: StatsOptions = {}): FtfStats {
+  const ftfs = finds.filter((find) => find.isFtf);
+  const byYear = new Map<string, number>();
+  const byMonth = new Map<string, number>();
+  const byDay = new Map<string, number>();
+  const byCalendarMonth = new Map<string, number>();
+  const byWeekday = new Map<string, number>();
+  const byType = new Map<string, number>();
+  const bySize = new Map<string, number>();
+  const byDifficulty = new Map<string, number>();
+  const byTerrain = new Map<string, number>();
+  const byCountry = new Map<string, number>();
+  const byRegion = new Map<string, number>();
+  const byFoundDate = new Map<string, number>();
+  const dt = new Map<string, DifficultyTerrainCell>();
+  const wayTo81: FtfWayTo81Entry[] = [];
+  const seenDifficultyTerrain = new Set<string>();
+  let previousWayTo81Date: Date | null = null;
+  let totalDifficulty = 0;
+  let difficultyCount = 0;
+  let totalTerrain = 0;
+  let terrainCount = 0;
+
+  for (const find of ftfs) {
+    const foundAt = toDate(find.foundAt);
+    increment(byYear, String(foundAt.getUTCFullYear()));
+    increment(byMonth, foundAt.toISOString().slice(0, 7));
+    increment(byDay, dateKey(foundAt));
+    increment(byFoundDate, monthDayKey(foundAt));
+    increment(byCalendarMonth, String(foundAt.getUTCMonth()));
+    increment(byWeekday, String(foundAt.getUTCDay()));
+    increment(byType, find.cache.cacheType);
+    increment(bySize, find.cache.size);
+    increment(byCountry, find.cache.country);
+    increment(byRegion, find.cache.region);
+
+    if (find.cache.difficulty) {
+      increment(byDifficulty, find.cache.difficulty.toFixed(1));
+      totalDifficulty += find.cache.difficulty;
+      difficultyCount += 1;
+    }
+
+    if (find.cache.terrain) {
+      increment(byTerrain, find.cache.terrain.toFixed(1));
+      totalTerrain += find.cache.terrain;
+      terrainCount += 1;
+    }
+
+    if (find.cache.difficulty && find.cache.terrain) {
+      const key = `${find.cache.difficulty}/${find.cache.terrain}`;
+      const current = dt.get(key) ?? {
+        difficulty: find.cache.difficulty,
+        terrain: find.cache.terrain,
+        count: 0
+      };
+      current.count += 1;
+      dt.set(key, current);
+
+      if (!seenDifficultyTerrain.has(key)) {
+        const intervalDays =
+          previousWayTo81Date === null ? null : Math.max(0, daysBetweenInclusive(previousWayTo81Date, foundAt) - 1);
+        wayTo81.push({
+          index: wayTo81.length + 1,
+          date: dateKey(foundAt),
+          dateTime: foundAt.toISOString(),
+          intervalDays,
+          gcCode: find.cache.gcCode,
+          name: find.cache.name,
+          cacheType: find.cache.cacheType,
+          difficulty: find.cache.difficulty,
+          terrain: find.cache.terrain
+        });
+        seenDifficultyTerrain.add(key);
+        previousWayTo81Date = foundAt;
+      }
+    }
+  }
+
+  let previousDate: Date | null = null;
+  const rows = ftfs.map((find) => {
+    const row = ftfRow(find, previousDate, options);
+    previousDate = toDate(find.foundAt);
+    return row;
+  });
+  const rowsWithDistance = rows.filter((row) => row.distanceKm != null);
+  const rowsWithCoordinates = rows.filter((row) => row.latitude != null && row.longitude != null);
+  const rowsWithElevation = rows.filter((row) => row.elevationMeters != null);
+  const intervals = rows.map((row) => row.intervalDays).filter((value): value is number => value != null);
+  const averageIntervalDays = intervals.length ? intervals.reduce((sum, value) => sum + value, 0) / intervals.length : null;
+  const averageDistanceKm = rowsWithDistance.length
+    ? rowsWithDistance.reduce((sum, row) => sum + row.distanceKm!, 0) / rowsWithDistance.length
+    : null;
+  const latitudeAverage = rowsWithCoordinates.length
+    ? rowsWithCoordinates.reduce((sum, row) => sum + row.latitude!, 0) / rowsWithCoordinates.length
+    : null;
+  const longitudeAverage = rowsWithCoordinates.length
+    ? rowsWithCoordinates.reduce((sum, row) => sum + row.longitude!, 0) / rowsWithCoordinates.length
+    : null;
+  const centroid =
+    latitudeAverage == null || longitudeAverage == null
+      ? null
+      : {
+          latitude: latitudeAverage,
+          longitude: longitudeAverage,
+          distanceFromHomeKm:
+            options.homeLatitude != null && options.homeLongitude != null
+              ? haversineKm(options.homeLatitude, options.homeLongitude, latitudeAverage, longitudeAverage)
+              : null
+        };
+  const sortedMonths = buckets(byMonth).sort((a, b) => a.key.localeCompare(b.key));
+  const bestMonth = sortedMonths.reduce<CountBucket | null>(
+    (best, bucket) => (!best || bucket.count > best.count ? bucket : best),
+    null
+  );
+  const ratingValues = ["1.0", "1.5", "2.0", "2.5", "3.0", "3.5", "4.0", "4.5", "5.0"];
+  const archivedCount = rows.filter((row) => row.archived).length;
+  const mostNorthern = [...rowsWithCoordinates].sort((a, b) => b.latitude! - a.latitude!)[0] ?? null;
+  const mostSouthern = [...rowsWithCoordinates].sort((a, b) => a.latitude! - b.latitude!)[0] ?? null;
+  const mostEastern = [...rowsWithCoordinates].sort((a, b) => b.longitude! - a.longitude!)[0] ?? null;
+  const mostWestern = [...rowsWithCoordinates].sort((a, b) => a.longitude! - b.longitude!)[0] ?? null;
+
+  return {
+    total: ftfs.length,
+    percentOfFinds: finds.length > 0 ? (ftfs.length / finds.length) * 100 : 0,
+    averageIntervalDays,
+    averageDistanceKm,
+    first: rows[0] ?? null,
+    latest: rows.at(-1) ?? null,
+    slowest: rows.reduce<FtfRow | null>((best, row) => (row.intervalDays != null && (!best || row.intervalDays > (best.intervalDays ?? -1)) ? row : best), null),
+    nearest: [...rowsWithDistance].sort((a, b) => a.distanceKm! - b.distanceKm!)[0] ?? null,
+    furthest: [...rowsWithDistance].sort((a, b) => b.distanceKm! - a.distanceKm!)[0] ?? null,
+    mostNorthern,
+    mostSouthern,
+    mostEastern,
+    mostWestern,
+    highest: [...rowsWithElevation].sort((a, b) => b.elevationMeters! - a.elevationMeters!)[0] ?? null,
+    lowest: [...rowsWithElevation].sort((a, b) => a.elevationMeters! - b.elevationMeters!)[0] ?? null,
+    centroid,
+    archivedCount,
+    archivedPercent: ftfs.length > 0 ? (archivedCount / ftfs.length) * 100 : 0,
+    bestDay: buckets(byDay)[0] ?? null,
+    bestMonth,
+    consecutiveMonths: longestConsecutiveMonths(sortedMonths),
+    byYear: buckets(byYear).sort((a, b) => a.key.localeCompare(b.key)),
+    byMonth: sortedMonths,
+    byCalendarMonth: percentBuckets(byCalendarMonth, ftfs.length)
+      .map((bucket) => ({ ...bucket, key: monthName(Number(bucket.key)) }))
+      .sort((a, b) => monthLabels.indexOf(a.key) - monthLabels.indexOf(b.key)),
+    byWeekday: percentBuckets(byWeekday, ftfs.length)
+      .map((bucket) => ({ ...bucket, key: weekdayName(Number(bucket.key)) }))
+      .sort((a, b) => weekdayLabels.indexOf(a.key) - weekdayLabels.indexOf(b.key)),
+    byType: percentBuckets(byType, ftfs.length),
+    bySize: percentBuckets(bySize, ftfs.length),
+    byDifficulty: fixedPercentBuckets(ratingValues, byDifficulty, ftfs.length),
+    byTerrain: fixedPercentBuckets(ratingValues, byTerrain, ftfs.length),
+    byCountry: buckets(byCountry),
+    byRegion: buckets(byRegion),
+    byDifficultyTerrain: [...dt.values()].sort((a, b) => a.difficulty - b.difficulty || a.terrain - b.terrain),
+    foundDateMatrix: buckets(byFoundDate).sort((a, b) => a.key.localeCompare(b.key)),
+    firstByLocation: firstFtfRows(
+      ftfs,
+      (find) => [find.cache.country, find.cache.region, find.cache.county].filter(Boolean).join(" / ")
+    ),
+    firstByType: firstFtfRows(ftfs, (find) => find.cache.cacheType),
+    wayTo81,
+    averageDifficulty: difficultyCount > 0 ? totalDifficulty / difficultyCount : 0,
+    averageTerrain: terrainCount > 0 ? totalTerrain / terrainCount : 0,
+    rows
+  };
 }
 
 function averageBuckets(map: Map<string, { total: number; count: number }>): AverageByYear[] {
@@ -847,7 +1212,7 @@ export function calculateStats(finds: StatsFind[], options: StatsOptions = {}): 
   const milestoneStats = calculateMilestoneStats(sorted);
 
   return {
-    statsVersion: 11,
+    statsVersion: 14,
     totalFinds,
     findsByYear: buckets(byYear).sort((a, b) => a.key.localeCompare(b.key)),
     findsByMonth: sortedMonths,
@@ -872,6 +1237,7 @@ export function calculateStats(finds: StatsFind[], options: StatsOptions = {}): 
     }),
     ownerBuckets: percentBuckets(byOwner, totalFinds),
     wayTo81,
+    ftfStats: calculateFtfStats(sorted, options),
     distanceStats: calculateDistanceStats(sorted, options),
     hideStats: calculateHideStats([]),
     summaryNumbers: {
