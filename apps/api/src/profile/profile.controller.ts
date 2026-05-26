@@ -68,7 +68,7 @@ export class ProfileController {
     const profile = await this.prisma.$transaction(async (tx) => {
       const ftfDetectionTerms = cleanFtfDetectionTerms(body.ftfDetectionTerms);
       const ftfDetectionData = body.ftfDetectionTerms === undefined ? {} : { ftfDetectionTerms };
-      const timeZone = cleanTimeZone(body.timeZone);
+      const timeZoneData = body.timeZone === undefined ? {} : { timeZone: cleanTimeZone(body.timeZone) };
       const updated = await tx.geocachingProfile.upsert({
         where: { userId: user.id },
         create: {
@@ -76,14 +76,14 @@ export class ProfileController {
           gcUsername: body.gcUsername,
           homeLatitude: body.homeLatitude ?? null,
           homeLongitude: body.homeLongitude ?? null,
-          timeZone,
+          ...timeZoneData,
           ...ftfDetectionData
         },
         update: {
           gcUsername: body.gcUsername,
           homeLatitude: body.homeLatitude ?? null,
           homeLongitude: body.homeLongitude ?? null,
-          timeZone,
+          ...timeZoneData,
           ...ftfDetectionData
         }
       });

@@ -109,7 +109,7 @@ export class ImportProcessor {
             })
           : null;
       const ftfDetectionTerms = profile?.ftfDetectionTerms ?? DEFAULT_FTF_DETECTION_TERMS;
-      const timeZone = profile?.timeZone ?? "UTC";
+      const timeZone = profile?.timeZone ?? "Europe/Stockholm";
       const effectiveSource =
         importRecord.fileType === ImportFileType.ZIP && parsed.finds.length > 0
           ? ImportSource.MY_FINDS_GPX
