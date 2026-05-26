@@ -25,12 +25,19 @@ function timeFromFtfLog(text: string | null): { hour: number; minute: number } |
   if (!text) {
     return null;
   }
-  const matches = text.matchAll(/\b(?:ftf|time)\b[^\d]{0,24}(\d{1,2})[:.](\d{2})\b/gi);
-  for (const match of matches) {
-    const hour = Number(match[1]);
-    const minute = Number(match[2]);
-    if (Number.isInteger(hour) && Number.isInteger(minute) && hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59) {
-      return { hour, minute };
+  const lines = text.split(/\r?\n/);
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const sameLineMatch = line.match(/\bftf\b\s*(?:at|time)?\s*(\d{1,2})[:.](\d{2})\b/i);
+    const nextLineMatch =
+      /\bftf\b/i.test(line) ? lines[index + 1]?.match(/^\s*(?:time\s*)?(\d{1,2})[:.](\d{2})\b/i) : null;
+    const match = sameLineMatch ?? nextLineMatch;
+    if (match) {
+      const hour = Number(match[1]);
+      const minute = Number(match[2]);
+      if (Number.isInteger(hour) && Number.isInteger(minute) && hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59) {
+        return { hour, minute };
+      }
     }
   }
   return null;

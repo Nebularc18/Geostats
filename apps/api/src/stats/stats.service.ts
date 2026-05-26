@@ -196,15 +196,22 @@ export class StatsService {
   }
 
   async updateFtfFlag(userId: string, findId: string, isFtf: boolean) {
-    const result = await this.prisma.find.updateMany({
-      where: { id: findId, userId },
-      data: { isFtf }
+    const result = await this.prisma.$transaction(async (tx) => {
+      const updateResult = await tx.find.updateMany({
+        where: { id: findId, userId },
+        data: { isFtf }
+      });
+      if (updateResult.count === 0) {
+        return updateResult;
+      }
+
+      await tx.statSnapshot.deleteMany({ where: { userId } });
+      return updateResult;
     });
     if (result.count === 0) {
       throw new NotFoundException("Find not found");
     }
 
-    await this.prisma.statSnapshot.deleteMany({ where: { userId } });
     return { id: findId, isFtf };
   }
 }
