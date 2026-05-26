@@ -47,6 +47,37 @@ function foundAtWithFtfLogTime(foundAt: Date, logText: string | null, isFtf: boo
   return new Date(Date.UTC(foundAt.getUTCFullYear(), foundAt.getUTCMonth(), foundAt.getUTCDate(), time.hour, time.minute));
 }
 
+function timeZoneOffsetMs(timeZone: string, date: Date): number {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23"
+  }).formatToParts(date);
+  const value = (type: string) => Number(parts.find((part) => part.type === type)?.value);
+  const asUtc = Date.UTC(value("year"), value("month") - 1, value("day"), value("hour"), value("minute"), value("second"));
+  return asUtc - date.getTime();
+}
+
+function wallClockInTimeZoneToUtc(date: Date, timeZone: string): Date {
+  const localAsUtc = Date.UTC(
+    date.getUTCFullYear(),
+    date.getUTCMonth(),
+    date.getUTCDate(),
+    date.getUTCHours(),
+    date.getUTCMinutes(),
+    date.getUTCSeconds(),
+    date.getUTCMilliseconds()
+  );
+  let utc = new Date(localAsUtc - timeZoneOffsetMs(timeZone, new Date(localAsUtc)));
+  utc = new Date(localAsUtc - timeZoneOffsetMs(timeZone, utc));
+  return utc;
+}
+
 export class ImportProcessor {
   constructor(
     private readonly prisma: PrismaClient,
@@ -74,10 +105,11 @@ export class ImportProcessor {
         parsed.finds.length > 0
           ? await this.prisma.geocachingProfile.findUnique({
               where: { userId: payload.userId },
-              select: { ftfDetectionTerms: true }
+              select: { ftfDetectionTerms: true, timeZone: true }
             })
           : null;
       const ftfDetectionTerms = profile?.ftfDetectionTerms ?? DEFAULT_FTF_DETECTION_TERMS;
+      const timeZone = profile?.timeZone ?? "UTC";
       const effectiveSource =
         importRecord.fileType === ImportFileType.ZIP && parsed.finds.length > 0
           ? ImportSource.MY_FINDS_GPX
@@ -138,7 +170,10 @@ export class ImportProcessor {
         for (const parsedFind of datedFinds) {
           const cache = this.cacheFor(cachesByCode, parsedFind.cache.gcCode);
           const isFtf = detectFtfLog(parsedFind.logText, ftfDetectionTerms);
-          const foundAt = foundAtWithFtfLogTime(parsedFind.foundAt, parsedFind.logText, isFtf);
+          const foundAt = wallClockInTimeZoneToUtc(
+            foundAtWithFtfLogTime(parsedFind.foundAt, parsedFind.logText, isFtf),
+            timeZone
+          );
           const existingFind =
             existingFinds.find((find) => find.cacheId === cache.id && find.foundAt.getTime() === foundAt.getTime()) ??
             existingFindsByCacheId.get(cache.id);

@@ -37,13 +37,12 @@ test("parseGpx extracts caches and found logs", () => {
   assert.equal(parsed.caches[0]?.gcCode, "GC12345");
   assert.equal(parsed.caches[0]?.country, "Sweden");
   assert.equal(parsed.finds[0]?.foundAt?.toISOString(), "2024-05-01T12:00:00.000Z");
-  assert.equal(parsed.finds[0]?.isFtf, false);
 });
 
-test("parseGpx marks FTF logs from user log text", () => {
+test("detectFtfLog marks FTF logs from user log text", () => {
   const parsed = parseGpx(gpx.replace("Nice find.", "FTF at 08:14, great cache."), ImportSource.MY_FINDS_GPX);
 
-  assert.equal(parsed.finds[0]?.isFtf, true);
+  assert.equal(detectFtfLog(parsed.finds[0]?.logText ?? null), true);
 });
 
 test("detectFtfLog supports custom user search terms", () => {

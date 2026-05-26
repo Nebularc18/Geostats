@@ -24,7 +24,6 @@ export interface ParsedFind {
   cache: ParsedCache;
   foundAt: Date | null;
   logText: string | null;
-  isFtf: boolean;
   source: ImportSource;
 }
 
@@ -195,7 +194,6 @@ function parseWaypoint(waypoint: Record<string, any>, source: ImportSource): Par
     cache,
     foundAt: toDate(foundLog?.["groundspeak:date"] ?? foundLog?.date),
     logText: firstText(foundLog?.["groundspeak:text"], foundLog?.text),
-    isFtf: detectFtfLog(firstText(foundLog?.["groundspeak:text"], foundLog?.text)),
     source
   };
 }

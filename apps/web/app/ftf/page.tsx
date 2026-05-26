@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AppShell } from "../../components/app-shell";
 import { CacheMap, CacheMapPoint } from "../../components/cache-map";
 import { CountBarChart } from "../../components/charts";
@@ -103,6 +103,10 @@ type FindRow = {
     country: string | null;
     region: string | null;
   };
+};
+type FtfFindsResponse = {
+  finds: FindRow[];
+  nextCursor: string | null;
 };
 
 const monthLabels = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -388,6 +392,14 @@ function ratingData(data: PercentBucket[]) {
   return ratingValues.map((key) => byKey.get(key) ?? { key, count: 0, percent: 0 });
 }
 
+function mergeFindRows(current: FindRow[], incoming: FindRow[]) {
+  const byId = new Map(current.map((find) => [find.id, find]));
+  for (const find of incoming) {
+    byId.set(find.id, find);
+  }
+  return Array.from(byId.values());
+}
+
 function WayTo81Table({ entries }: { entries: FtfWayTo81Entry[] }) {
   return (
     <section className="panel">
@@ -502,21 +514,65 @@ function FindPicker({
 
 export default function FtfPage() {
   const [finds, setFinds] = useState<FindRow[]>([]);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [stats, setStats] = useState<FtfStats | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const loadSequenceRef = useRef(0);
+  const reloadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  async function loadFtfData() {
+  async function loadFtfData({ cursor, append = false }: { cursor?: string; append?: boolean } = {}) {
+    const sequence = ++loadSequenceRef.current;
+    const params = new URLSearchParams({ limit: "100" });
+    if (cursor) {
+      params.set("cursor", cursor);
+    }
     const [findData, statData] = await Promise.all([
-      apiFetch<{ finds: FindRow[] }>("/stats/ftf/finds"),
-      apiFetch<{ stats: { ftfStats?: FtfStats } }>("/stats/summary")
+      apiFetch<FtfFindsResponse>(`/stats/ftf/finds?${params.toString()}`),
+      append ? Promise.resolve(null) : apiFetch<{ stats: { ftfStats?: FtfStats } }>("/stats/summary")
     ]);
-    setFinds(findData.finds);
-    setStats(statData.stats.ftfStats ?? null);
+    if (sequence !== loadSequenceRef.current) {
+      return;
+    }
+    setFinds((current) => (append ? mergeFindRows(current, findData.finds) : findData.finds));
+    setNextCursor(findData.nextCursor);
+    if (statData) {
+      setStats(statData.stats.ftfStats ?? null);
+    }
+  }
+
+  function scheduleFtfReload() {
+    if (reloadTimerRef.current) {
+      clearTimeout(reloadTimerRef.current);
+    }
+    reloadTimerRef.current = setTimeout(() => {
+      void loadFtfData().catch(() => setError("Could not load FTF data."));
+    }, 250);
   }
 
   useEffect(() => {
     void loadFtfData().catch(() => setError("Could not load FTF data."));
+    return () => {
+      if (reloadTimerRef.current) {
+        clearTimeout(reloadTimerRef.current);
+      }
+    };
   }, []);
+
+  async function loadMoreFinds() {
+    if (!nextCursor || loadingMore) {
+      return;
+    }
+    setError(null);
+    setLoadingMore(true);
+    try {
+      await loadFtfData({ cursor: nextCursor, append: true });
+    } catch {
+      setError("Could not load more finds.");
+    } finally {
+      setLoadingMore(false);
+    }
+  }
 
   async function toggleFtf(find: FindRow, isFtf: boolean) {
     setError(null);
@@ -527,7 +583,7 @@ export default function FtfPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ isFtf })
       });
-      await loadFtfData();
+      scheduleFtfReload();
     } catch {
       setFinds((current) => current.map((row) => (row.id === find.id ? { ...row, isFtf: find.isFtf } : row)));
       setError("Could not update that FTF mark.");
@@ -595,6 +651,11 @@ export default function FtfPage() {
       </section>
       <FtfList rows={stats?.rows ?? []} />
       <FindPicker finds={finds} onToggle={toggleFtf} />
+      {nextCursor ? (
+        <button className="ghost-button" type="button" onClick={loadMoreFinds} disabled={loadingMore}>
+          {loadingMore ? "Loading..." : "Load more finds"}
+        </button>
+      ) : null}
     </AppShell>
   );
 }

@@ -3,6 +3,10 @@ import { Prisma } from "@geostats/db";
 import { calculateHideStats, calculateStats } from "@geostats/stats";
 import { PrismaService } from "../common/prisma.service";
 
+const DEFAULT_FTF_FIND_LIMIT = 100;
+const MAX_FTF_FIND_LIMIT = 200;
+const MAX_FTF_LOG_TEXT_LENGTH = 1_000;
+
 function elevationFromRaw(raw: unknown): number | null {
   if (!raw || typeof raw !== "object") {
     return null;
@@ -148,26 +152,47 @@ export class StatsService {
     return stats;
   }
 
-  async ftfFindsForUser(userId: string) {
+  async ftfFindsForUser(userId: string, options: { cursor?: string; limit?: number } = {}) {
+    const limit = Math.min(Math.max(options.limit ?? DEFAULT_FTF_FIND_LIMIT, 1), MAX_FTF_FIND_LIMIT);
     const finds = await this.prisma.find.findMany({
       where: { userId },
-      include: { cache: true },
-      orderBy: [{ foundAt: "desc" }, { createdAt: "desc" }]
+      select: {
+        id: true,
+        foundAt: true,
+        isFtf: true,
+        logText: true,
+        cache: {
+          select: {
+            gcCode: true,
+            name: true,
+            cacheType: true,
+            country: true,
+            region: true
+          }
+        }
+      },
+      orderBy: [{ foundAt: "desc" }, { createdAt: "desc" }, { id: "desc" }],
+      take: limit + 1,
+      ...(options.cursor ? { cursor: { id: options.cursor }, skip: 1 } : {})
     });
+    const page = finds.slice(0, limit);
 
-    return finds.map((find) => ({
-      id: find.id,
-      foundAt: find.foundAt.toISOString(),
-      isFtf: find.isFtf,
-      logText: find.logText,
-      cache: {
-        gcCode: find.cache.gcCode,
-        name: find.cache.name,
-        cacheType: find.cache.cacheType,
-        country: find.cache.country,
-        region: find.cache.region
-      }
-    }));
+    return {
+      finds: page.map((find) => ({
+        id: find.id,
+        foundAt: find.foundAt.toISOString(),
+        isFtf: find.isFtf,
+        logText: find.logText?.slice(0, MAX_FTF_LOG_TEXT_LENGTH) ?? null,
+        cache: {
+          gcCode: find.cache.gcCode,
+          name: find.cache.name,
+          cacheType: find.cache.cacheType,
+          country: find.cache.country,
+          region: find.cache.region
+        }
+      })),
+      nextCursor: finds.length > limit ? page.at(-1)?.id ?? null : null
+    };
   }
 
   async updateFtfFlag(userId: string, findId: string, isFtf: boolean) {

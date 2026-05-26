@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Get, Param, Patch, UseGuards } from "@nestjs/common";
+import { BadRequestException, Body, Controller, Get, Param, Patch, Query, UseGuards } from "@nestjs/common";
 import { AuthUser } from "@geostats/shared";
 import { AuthGuard } from "../auth/auth.guard";
 import { CurrentUser } from "../auth/current-user.decorator";
@@ -62,8 +62,16 @@ export class StatsController {
   }
 
   @Get("ftf/finds")
-  async ftfFinds(@CurrentUser() user: AuthUser) {
-    return { finds: await this.stats.ftfFindsForUser(user.id) };
+  async ftfFinds(
+    @CurrentUser() user: AuthUser,
+    @Query("cursor") cursor?: string,
+    @Query("limit") limit?: string
+  ) {
+    const parsedLimit = limit === undefined ? undefined : Number(limit);
+    if (parsedLimit !== undefined && (!Number.isInteger(parsedLimit) || parsedLimit < 1)) {
+      throw new BadRequestException("limit must be a positive integer");
+    }
+    return this.stats.ftfFindsForUser(user.id, { cursor, limit: parsedLimit });
   }
 
   @Patch("ftf/finds/:id")

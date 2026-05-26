@@ -33,6 +33,7 @@ export default function ProfilePage() {
       gcUsername: form.get("gcUsername"),
       homeLatitude: form.get("homeLatitude") ? Number(form.get("homeLatitude")) : null,
       homeLongitude: form.get("homeLongitude") ? Number(form.get("homeLongitude")) : null,
+      timeZone: form.get("timeZone") || "Europe/Stockholm",
       ftfDetectionTerms: parseTerms(form.get("ftfDetectionTerms"))
     };
     const data = await apiFetch<{ profile: any }>("/profile", {
@@ -62,6 +63,18 @@ export default function ProfilePage() {
           <label>
             Home longitude
             <input name="homeLongitude" type="number" step="0.000001" defaultValue={profile?.homeLongitude ?? ""} />
+          </label>
+          <label>
+            Time zone
+            <select name="timeZone" defaultValue={profile?.timeZone ?? "Europe/Stockholm"}>
+              <option value="Europe/Stockholm">Europe/Stockholm</option>
+              <option value="UTC">UTC</option>
+              <option value="Europe/Copenhagen">Europe/Copenhagen</option>
+              <option value="Europe/Oslo">Europe/Oslo</option>
+              <option value="Europe/Helsinki">Europe/Helsinki</option>
+              <option value="Europe/London">Europe/London</option>
+              <option value="Europe/Berlin">Europe/Berlin</option>
+            </select>
           </label>
           <label>
             FTF auto-detect phrases

@@ -52,6 +52,7 @@ model GeocachingProfile {
   gcUsername    String   @map("gc_username")
   homeLatitude  Decimal? @map("home_latitude") @db.Decimal(9, 6)
   homeLongitude Decimal? @map("home_longitude") @db.Decimal(9, 6)
+  timeZone      String   @default("Europe/Stockholm") @map("time_zone")
   ftfDetectionTerms String[] @default(["FTF", "first to find"]) @map("ftf_detection_terms")
   createdAt     DateTime @default(now()) @map("created_at")
   updatedAt     DateTime @updatedAt @map("updated_at")
