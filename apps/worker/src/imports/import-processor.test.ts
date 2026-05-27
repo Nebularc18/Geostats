@@ -667,6 +667,215 @@ test("process matches same-cache re-imports to each existing find once", async (
   );
 });
 
+test("process clears an auto-detected FTF mark when re-imported log text no longer matches", async () => {
+  const existingCache = {
+    id: "cache-1",
+    gcCode: "GC12345",
+    name: "Found Cache",
+    cacheType: "Traditional Cache",
+    difficulty: 2,
+    terrain: 1.5,
+    size: "Regular",
+    latitude: 56.1612,
+    longitude: 15.5869,
+    country: null,
+    region: null,
+    county: null,
+    hiddenDate: null,
+    ownerName: null,
+    raw: null,
+    createdAt: new Date(),
+    updatedAt: new Date()
+  };
+  const existingFind = {
+    id: "find-1",
+    userId: "user-1",
+    cacheId: "cache-1",
+    importId: "old-import",
+    foundAt: new Date("2024-05-01T10:34:00.000Z"),
+    logText: "FTF",
+    isFtf: true,
+    isFtfManual: false,
+    importedFrom: ImportSource.MY_FINDS_GPX,
+    createdAt: new Date("2024-05-01T10:34:00.000Z"),
+    updatedAt: new Date("2024-05-01T10:34:00.000Z")
+  };
+  const importRecord = {
+    id: "import-1",
+    userId: "user-1",
+    fileName: "my-finds.gpx",
+    fileType: ImportFileType.GPX,
+    source: ImportSource.MY_FINDS_GPX,
+    objectKey: "user-1/original.gpx"
+  };
+  let updatedData: any;
+  let recalculationFindsLoaded = false;
+
+  const tx = {
+    hide: {
+      upsert: async () => ({})
+    },
+    find: {
+      findMany: async () => [existingFind],
+      update: async ({ data }: any) => {
+        updatedData = data;
+        return { ...existingFind, ...data };
+      },
+      create: async () => {
+        throw new Error("existing find should be updated, not created");
+      }
+    },
+    statSnapshot: {
+      deleteMany: async () => ({ count: 0 }),
+      create: async () => ({})
+    }
+  };
+  const prisma = {
+    import: {
+      findFirst: async () => importRecord,
+      update: async () => ({})
+    },
+    cache: {
+      upsert: async () => existingCache
+    },
+    $transaction: async (callback: (transaction: typeof tx) => Promise<unknown>) => callback(tx),
+    geocachingProfile: {
+      findUnique: async () => ({ ftfDetectionTerms: ["FTF"], timeZone: "Europe/Stockholm" })
+    },
+    find: {
+      findMany: async () => {
+        recalculationFindsLoaded = true;
+        return [];
+      }
+    },
+    hide: {
+      findMany: async () => []
+    },
+    statSnapshot: {
+      deleteMany: async () => ({ count: 0 }),
+      create: async () => ({})
+    }
+  };
+  const storage = {
+    getObject: async () => Buffer.from(myFindsGpx)
+  };
+
+  const processor = new ImportProcessor(prisma as any, storage as any);
+  await processor.process({
+    importId: "import-1",
+    userId: "user-1",
+    objectKey: "user-1/original.gpx",
+    source: ImportSource.MY_FINDS_GPX
+  });
+
+  assert.equal(updatedData?.isFtf, false);
+  assert.equal(recalculationFindsLoaded, true);
+});
+
+test("process creates multiple same-cache finds when no existing row matches the second timestamp", async () => {
+  const existingCache = {
+    id: "cache-1",
+    gcCode: "GC12345",
+    name: "Found Cache",
+    cacheType: "Traditional Cache",
+    difficulty: 2,
+    terrain: 1.5,
+    size: "Regular",
+    latitude: 56.1612,
+    longitude: 15.5869,
+    country: null,
+    region: null,
+    county: null,
+    hiddenDate: null,
+    ownerName: null,
+    raw: null,
+    createdAt: new Date(),
+    updatedAt: new Date()
+  };
+  const importRecord = {
+    id: "import-1",
+    userId: "user-1",
+    fileName: "my-finds.gpx",
+    fileType: ImportFileType.GPX,
+    source: ImportSource.MY_FINDS_GPX,
+    objectKey: "user-1/original.gpx"
+  };
+  const createdFinds: any[] = [];
+  const firstWaypoint = myFindsGpx.match(/  <wpt[\s\S]*?  <\/wpt>/)?.[0] ?? "";
+  const twoFindsGpx = myFindsGpx.replace(
+    "</gpx>",
+    `${firstWaypoint.replace("2024-05-01T12:34:00Z", "2024-05-02T12:34:00Z").replace("Nice find.", "Second find.")}\n</gpx>`
+  );
+
+  const tx = {
+    hide: {
+      upsert: async () => ({})
+    },
+    find: {
+      findMany: async () => [],
+      update: async () => {
+        throw new Error("new same-cache finds should not update a row created earlier in the import");
+      },
+      create: async ({ data }: any) => {
+        const created = {
+          id: `find-${createdFinds.length + 1}`,
+          ...data,
+          createdAt: new Date(),
+          updatedAt: new Date()
+        };
+        createdFinds.push(created);
+        return created;
+      }
+    },
+    statSnapshot: {
+      deleteMany: async () => ({ count: 0 }),
+      create: async () => ({})
+    }
+  };
+  const prisma = {
+    import: {
+      findFirst: async () => importRecord,
+      update: async () => ({})
+    },
+    cache: {
+      upsert: async () => existingCache
+    },
+    $transaction: async (callback: (transaction: typeof tx) => Promise<unknown>) => callback(tx),
+    geocachingProfile: {
+      findUnique: async () => ({ ftfDetectionTerms: ["FTF"], timeZone: "Europe/Stockholm" })
+    },
+    find: {
+      findMany: async () => []
+    },
+    hide: {
+      findMany: async () => []
+    },
+    statSnapshot: {
+      deleteMany: async () => ({ count: 0 }),
+      create: async () => ({})
+    }
+  };
+  const storage = {
+    getObject: async () => Buffer.from(twoFindsGpx)
+  };
+
+  const processor = new ImportProcessor(prisma as any, storage as any);
+  await processor.process({
+    importId: "import-1",
+    userId: "user-1",
+    objectKey: "user-1/original.gpx",
+    source: ImportSource.MY_FINDS_GPX
+  });
+
+  assert.deepEqual(
+    createdFinds.map((find) => [find.id, find.foundAt.toISOString(), find.logText]),
+    [
+      ["find-1", "2024-05-01T10:34:00.000Z", "Nice find."],
+      ["find-2", "2024-05-02T10:34:00.000Z", "Second find."]
+    ]
+  );
+});
+
 test("process skips stats recalculation when an import has no new or changed finds", async () => {
   const existingCache = {
     id: "cache-1",

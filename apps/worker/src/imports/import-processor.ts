@@ -213,9 +213,14 @@ export class ImportProcessor {
             if (existingFind.logText !== parsedFind.logText) {
               update.logText = parsedFind.logText;
             }
-            if (isFtf && !existingFind.isFtf && !existingFind.isFtfManual) {
-              update.isFtf = true;
-              statsRelevantChange = true;
+            if (!existingFind.isFtfManual) {
+              if (isFtf && !existingFind.isFtf) {
+                update.isFtf = true;
+                statsRelevantChange = true;
+              } else if (!isFtf && existingFind.isFtf) {
+                update.isFtf = false;
+                statsRelevantChange = true;
+              }
             }
             if (existingFind.importedFrom !== effectiveSource) {
               update.importedFrom = effectiveSource;
@@ -236,7 +241,7 @@ export class ImportProcessor {
             continue;
           }
 
-          const createdFind = await tx.find.create({
+          await tx.find.create({
             data: {
               userId: payload.userId,
               cacheId: cache.id,
@@ -249,7 +254,6 @@ export class ImportProcessor {
             }
           });
           shouldRecalculateStats = true;
-          existingFindsByCacheId.set(cache.id, [...(existingFindsByCacheId.get(cache.id) ?? []), createdFind]);
         }
       });
 

@@ -1,10 +1,32 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import { AppShell } from "../../../components/app-shell";
 import { apiFetch } from "../../../lib/api";
 
 const defaultFtfTerms = ["FTF", "first to find"];
+const defaultTimeZone = "Europe/Stockholm";
+const fallbackTimeZones = [
+  "UTC",
+  defaultTimeZone,
+  "America/New_York",
+  "America/Chicago",
+  "America/Denver",
+  "America/Los_Angeles",
+  "America/Sao_Paulo",
+  "Europe/London",
+  "Europe/Berlin",
+  "Europe/Copenhagen",
+  "Europe/Oslo",
+  "Europe/Helsinki",
+  "Africa/Johannesburg",
+  "Asia/Dubai",
+  "Asia/Kolkata",
+  "Asia/Singapore",
+  "Asia/Tokyo",
+  "Australia/Sydney",
+  "Pacific/Auckland"
+];
 
 function termsText(profile: any) {
   const terms = Array.isArray(profile?.ftfDetectionTerms) ? profile.ftfDetectionTerms : defaultFtfTerms;
@@ -18,9 +40,17 @@ function parseTerms(value: FormDataEntryValue | null) {
     .filter(Boolean);
 }
 
+function supportedTimeZones(selectedTimeZone: string) {
+  const intl = Intl as typeof Intl & { supportedValuesOf?: (key: "timeZone") => string[] };
+  const zones = typeof intl.supportedValuesOf === "function" ? intl.supportedValuesOf("timeZone") : fallbackTimeZones;
+  return Array.from(new Set(["UTC", defaultTimeZone, selectedTimeZone, ...zones])).sort((a, b) => a.localeCompare(b));
+}
+
 export default function ProfilePage() {
   const [profile, setProfile] = useState<any>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const selectedTimeZone = profile?.timeZone || defaultTimeZone;
+  const timeZoneOptions = useMemo(() => supportedTimeZones(selectedTimeZone), [selectedTimeZone]);
 
   useEffect(() => {
     void apiFetch<{ profile: any }>("/profile").then((data) => setProfile(data.profile));
@@ -33,7 +63,7 @@ export default function ProfilePage() {
       gcUsername: form.get("gcUsername"),
       homeLatitude: form.get("homeLatitude") ? Number(form.get("homeLatitude")) : null,
       homeLongitude: form.get("homeLongitude") ? Number(form.get("homeLongitude")) : null,
-      timeZone: form.get("timeZone") || "Europe/Stockholm",
+      timeZone: form.get("timeZone") || defaultTimeZone,
       ftfDetectionTerms: parseTerms(form.get("ftfDetectionTerms"))
     };
     const data = await apiFetch<{ profile: any }>("/profile", {
@@ -66,14 +96,12 @@ export default function ProfilePage() {
           </label>
           <label>
             Time zone
-            <select name="timeZone" defaultValue={profile?.timeZone ?? "Europe/Stockholm"}>
-              <option value="Europe/Stockholm">Europe/Stockholm</option>
-              <option value="UTC">UTC</option>
-              <option value="Europe/Copenhagen">Europe/Copenhagen</option>
-              <option value="Europe/Oslo">Europe/Oslo</option>
-              <option value="Europe/Helsinki">Europe/Helsinki</option>
-              <option value="Europe/London">Europe/London</option>
-              <option value="Europe/Berlin">Europe/Berlin</option>
+            <select key={selectedTimeZone} name="timeZone" defaultValue={selectedTimeZone}>
+              {timeZoneOptions.map((timeZone) => (
+                <option key={timeZone} value={timeZone}>
+                  {timeZone}
+                </option>
+              ))}
             </select>
           </label>
           <label>
