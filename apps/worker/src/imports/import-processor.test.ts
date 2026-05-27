@@ -1107,7 +1107,7 @@ test("process skips stats recalculation when an import has no new or changed fin
   assert.equal(recalculationFindsLoaded, false);
 });
 
-test("process uses an explicit FTF time from log text when the GPX timestamp is generic", async () => {
+test("process uses an explicit FTF time near the FTF term when the GPX timestamp is generic", async () => {
   const existingCache = {
     id: "cache-1",
     gcCode: "GC12345",
@@ -1185,7 +1185,7 @@ test("process uses an explicit FTF time from log text when the GPX timestamp is 
     }
   };
   const storage = {
-    getObject: async () => Buffer.from(ftfLogTimeGpx)
+    getObject: async () => Buffer.from(ftfLogTimeGpx.replace("FTF\nTime 08:11", "FTF\n\nJoint find with friends\nTime 08:11"))
   };
 
   const processor = new ImportProcessor(prisma as any, storage as any);

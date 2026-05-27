@@ -6,6 +6,7 @@ import { ObjectStorage } from "../storage/object-storage";
 
 type ParsedImportResult = Awaited<ReturnType<typeof parseImportFile>>;
 type ParsedFindWithDate = ParsedImportResult["finds"][number] & { foundAt: Date };
+const FTF_TIME_LOOKAHEAD_LINES = 3;
 
 function elevationFromRaw(raw: unknown): number | null {
   if (!raw || typeof raw !== "object") {
@@ -42,8 +43,23 @@ function timeFromFtfLog(text: string | null, ftfDetectionTerms: string[]): { hou
     const sameLineMatch = termMatch
       ? line.slice(termMatch.index + termMatch[0].length).match(/^\s*(?:at|time)?\s*(\d{1,2})[:.](\d{2})\b/i)
       : null;
-    const nextLineMatch =
-      termMatch ? lines[index + 1]?.match(/^\s*(?:time\s*)?(\d{1,2})[:.](\d{2})\b/i) : null;
+    let nextLineMatch: RegExpMatchArray | null = null;
+    if (termMatch) {
+      // Keep nearby-line extraction anchored to an explicit FTF term to avoid incidental prose times.
+      for (let offset = 1; offset <= FTF_TIME_LOOKAHEAD_LINES; offset += 1) {
+        const candidate = lines[index + offset];
+        if (!candidate) {
+          continue;
+        }
+        nextLineMatch =
+          offset === 1
+            ? candidate.match(/^\s*(?:time\s*)?(\d{1,2})[:.](\d{2})\b/i)
+            : candidate.match(/^\s*time\s*(\d{1,2})[:.](\d{2})\b/i);
+        if (nextLineMatch) {
+          break;
+        }
+      }
+    }
     const match = sameLineMatch ?? nextLineMatch;
     if (match) {
       const hour = Number(match[1]);

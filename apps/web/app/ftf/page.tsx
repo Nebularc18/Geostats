@@ -524,6 +524,8 @@ export default function FtfPage() {
   const [stats, setStats] = useState<FtfStats | null>(null);
   const [error, setError] = useState<string | null>(null);
   const loadSequenceRef = useRef(0);
+  const findsLengthRef = useRef(0);
+  const loadingMoreRef = useRef(false);
   const reloadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   async function loadFtfData({
@@ -531,7 +533,7 @@ export default function FtfPage() {
     append = false,
     minimumFinds = 0
   }: { cursor?: string; append?: boolean; minimumFinds?: number } = {}) {
-    const sequence = ++loadSequenceRef.current;
+    const sequence = append ? loadSequenceRef.current : ++loadSequenceRef.current;
     const params = new URLSearchParams({ limit: "100" });
     if (cursor) {
       params.set("cursor", cursor);
@@ -540,7 +542,7 @@ export default function FtfPage() {
       apiFetch<FtfFindsResponse>(`/stats/ftf/finds?${params.toString()}`),
       append ? Promise.resolve(null) : apiFetch<{ stats: { ftfStats?: FtfStats } }>("/stats/summary")
     ]);
-    if (sequence !== loadSequenceRef.current) {
+    if (!append && sequence !== loadSequenceRef.current) {
       return;
     }
     let loadedFinds = findData.finds;
@@ -548,7 +550,7 @@ export default function FtfPage() {
     while (!append && loadedFinds.length < minimumFinds && loadedNextCursor) {
       const nextParams = new URLSearchParams({ limit: "100", cursor: loadedNextCursor });
       const nextPage = await apiFetch<FtfFindsResponse>(`/stats/ftf/finds?${nextParams.toString()}`);
-      if (sequence !== loadSequenceRef.current) {
+      if (!append && sequence !== loadSequenceRef.current) {
         return;
       }
       loadedFinds = mergeFindRows(loadedFinds, nextPage.finds);
@@ -565,11 +567,22 @@ export default function FtfPage() {
     if (reloadTimerRef.current) {
       clearTimeout(reloadTimerRef.current);
     }
-    const visibleFindCount = finds.length;
     reloadTimerRef.current = setTimeout(() => {
-      void loadFtfData({ minimumFinds: visibleFindCount }).catch(() => setError("Could not load FTF data."));
+      if (loadingMoreRef.current) {
+        scheduleFtfReload();
+        return;
+      }
+      void loadFtfData({ minimumFinds: findsLengthRef.current }).catch(() => setError("Could not load FTF data."));
     }, 250);
   }
+
+  useEffect(() => {
+    findsLengthRef.current = finds.length;
+  }, [finds.length]);
+
+  useEffect(() => {
+    loadingMoreRef.current = loadingMore;
+  }, [loadingMore]);
 
   useEffect(() => {
     void loadFtfData().catch(() => setError("Could not load FTF data."));
