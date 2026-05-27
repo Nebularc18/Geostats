@@ -190,13 +190,19 @@ export class ImportProcessor {
           existingFindsByCacheId.set(existingFind.cacheId, [...(existingFindsByCacheId.get(existingFind.cacheId) ?? []), existingFind]);
         }
 
-        for (const parsedFind of datedFinds) {
-          const cache = this.cacheFor(cachesByCode, parsedFind.cache.gcCode);
-          const isFtf = detectFtfLog(parsedFind.logText, ftfDetectionTerms);
-          const foundAt = wallClockInTimeZoneToUtc(
-            foundAtWithFtfLogTime(parsedFind.foundAt, parsedFind.logText, isFtf, ftfDetectionTerms),
-            timeZone
-          );
+        const importFinds = datedFinds
+          .map((parsedFind) => {
+            const cache = this.cacheFor(cachesByCode, parsedFind.cache.gcCode);
+            const isFtf = detectFtfLog(parsedFind.logText, ftfDetectionTerms);
+            const foundAt = wallClockInTimeZoneToUtc(
+              foundAtWithFtfLogTime(parsedFind.foundAt, parsedFind.logText, isFtf, ftfDetectionTerms),
+              timeZone
+            );
+            return { parsedFind, cache, isFtf, foundAt };
+          })
+          .sort((a, b) => a.foundAt.getTime() - b.foundAt.getTime());
+
+        for (const { parsedFind, cache, isFtf, foundAt } of importFinds) {
           const existingCacheFinds = existingFindsByCacheId.get(cache.id) ?? [];
           const exactMatchIndex = existingCacheFinds.findIndex((find) => find.foundAt.getTime() === foundAt.getTime());
           const existingFind =

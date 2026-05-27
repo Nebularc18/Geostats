@@ -667,6 +667,130 @@ test("process matches same-cache re-imports to each existing find once", async (
   );
 });
 
+test("process pairs same-cache re-import fallbacks in chronological order when GPX entries are reversed", async () => {
+  const existingCache = {
+    id: "cache-1",
+    gcCode: "GC12345",
+    name: "Found Cache",
+    cacheType: "Traditional Cache",
+    difficulty: 2,
+    terrain: 1.5,
+    size: "Regular",
+    latitude: 56.1612,
+    longitude: 15.5869,
+    country: null,
+    region: null,
+    county: null,
+    hiddenDate: null,
+    ownerName: null,
+    raw: null,
+    createdAt: new Date(),
+    updatedAt: new Date()
+  };
+  const existingFinds = [
+    {
+      id: "find-1",
+      userId: "user-1",
+      cacheId: "cache-1",
+      importId: "old-import",
+      foundAt: new Date("2024-05-01T12:34:00.000Z"),
+      logText: "First old log.",
+      isFtf: false,
+      isFtfManual: false,
+      importedFrom: ImportSource.MY_FINDS_GPX,
+      createdAt: new Date("2024-05-01T12:34:00.000Z"),
+      updatedAt: new Date("2024-05-01T12:34:00.000Z")
+    },
+    {
+      id: "find-2",
+      userId: "user-1",
+      cacheId: "cache-1",
+      importId: "old-import",
+      foundAt: new Date("2024-05-02T12:34:00.000Z"),
+      logText: "Second old log.",
+      isFtf: false,
+      isFtfManual: false,
+      importedFrom: ImportSource.MY_FINDS_GPX,
+      createdAt: new Date("2024-05-02T12:34:00.000Z"),
+      updatedAt: new Date("2024-05-02T12:34:00.000Z")
+    }
+  ];
+  const importRecord = {
+    id: "import-1",
+    userId: "user-1",
+    fileName: "my-finds.gpx",
+    fileType: ImportFileType.GPX,
+    source: ImportSource.MY_FINDS_GPX,
+    objectKey: "user-1/original.gpx"
+  };
+  const updates: Array<{ id: string; foundAt: Date; logText: string | null | undefined }> = [];
+  const firstWaypoint = myFindsGpx.match(/  <wpt[\s\S]*?  <\/wpt>/)?.[0] ?? "";
+  const secondWaypoint = firstWaypoint.replace("2024-05-01T12:34:00Z", "2024-05-02T12:34:00Z").replace("Nice find.", "Second find.");
+  const reversedFindsGpx = myFindsGpx.replace(firstWaypoint, `${secondWaypoint}\n${firstWaypoint}`);
+
+  const tx = {
+    hide: {
+      upsert: async () => ({})
+    },
+    find: {
+      findMany: async () => existingFinds,
+      update: async ({ where, data }: any) => {
+        updates.push({ id: where.id, foundAt: data.foundAt, logText: data.logText });
+        return { ...existingFinds.find((find) => find.id === where.id), ...data };
+      },
+      create: async () => {
+        throw new Error("existing finds should be updated, not created");
+      }
+    },
+    statSnapshot: {
+      deleteMany: async () => ({ count: 0 }),
+      create: async () => ({})
+    }
+  };
+  const prisma = {
+    import: {
+      findFirst: async () => importRecord,
+      update: async () => ({})
+    },
+    cache: {
+      upsert: async () => existingCache
+    },
+    $transaction: async (callback: (transaction: typeof tx) => Promise<unknown>) => callback(tx),
+    geocachingProfile: {
+      findUnique: async () => ({ ftfDetectionTerms: ["FTF"], timeZone: "Europe/Stockholm" })
+    },
+    find: {
+      findMany: async () => []
+    },
+    hide: {
+      findMany: async () => []
+    },
+    statSnapshot: {
+      deleteMany: async () => ({ count: 0 }),
+      create: async () => ({})
+    }
+  };
+  const storage = {
+    getObject: async () => Buffer.from(reversedFindsGpx)
+  };
+
+  const processor = new ImportProcessor(prisma as any, storage as any);
+  await processor.process({
+    importId: "import-1",
+    userId: "user-1",
+    objectKey: "user-1/original.gpx",
+    source: ImportSource.MY_FINDS_GPX
+  });
+
+  assert.deepEqual(
+    updates.map((update) => [update.id, update.foundAt.toISOString(), update.logText]),
+    [
+      ["find-1", "2024-05-01T10:34:00.000Z", "Nice find."],
+      ["find-2", "2024-05-02T10:34:00.000Z", "Second find."]
+    ]
+  );
+});
+
 test("process clears an auto-detected FTF mark when re-imported log text no longer matches", async () => {
   const existingCache = {
     id: "cache-1",
