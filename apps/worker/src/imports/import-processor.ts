@@ -43,7 +43,18 @@ function timeFromFtfLog(text: string | null): { hour: number; minute: number } |
   return null;
 }
 
-function foundAtWithFtfLogTime(foundAt: Date, logText: string | null, isFtf: boolean): Date {
+function datePartsInTimeZone(date: Date, timeZone: string): { year: number; month: number; day: number } {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(date);
+  const value = (type: string) => Number(parts.find((part) => part.type === type)?.value);
+  return { year: value("year"), month: value("month"), day: value("day") };
+}
+
+function foundAtWithFtfLogTime(foundAt: Date, logText: string | null, isFtf: boolean, timeZone: string): Date {
   if (!isFtf) {
     return foundAt;
   }
@@ -51,7 +62,8 @@ function foundAtWithFtfLogTime(foundAt: Date, logText: string | null, isFtf: boo
   if (!time) {
     return foundAt;
   }
-  return new Date(Date.UTC(foundAt.getUTCFullYear(), foundAt.getUTCMonth(), foundAt.getUTCDate(), time.hour, time.minute));
+  const localDate = datePartsInTimeZone(foundAt, timeZone);
+  return new Date(Date.UTC(localDate.year, localDate.month - 1, localDate.day, time.hour, time.minute));
 }
 
 function timeZoneOffsetMs(timeZone: string, date: Date): number {
@@ -178,7 +190,7 @@ export class ImportProcessor {
           const cache = this.cacheFor(cachesByCode, parsedFind.cache.gcCode);
           const isFtf = detectFtfLog(parsedFind.logText, ftfDetectionTerms);
           const foundAt = wallClockInTimeZoneToUtc(
-            foundAtWithFtfLogTime(parsedFind.foundAt, parsedFind.logText, isFtf),
+            foundAtWithFtfLogTime(parsedFind.foundAt, parsedFind.logText, isFtf, timeZone),
             timeZone
           );
           const existingFind =
@@ -196,7 +208,7 @@ export class ImportProcessor {
             if (existingFind.logText !== parsedFind.logText) {
               update.logText = parsedFind.logText;
             }
-            if (isFtf && !existingFind.isFtf) {
+            if (isFtf && !existingFind.isFtf && !existingFind.isFtfManual) {
               update.isFtf = true;
               statsRelevantChange = true;
             }
@@ -227,6 +239,7 @@ export class ImportProcessor {
               foundAt,
               logText: parsedFind.logText,
               isFtf,
+              isFtfManual: false,
               importedFrom: effectiveSource
             }
           });

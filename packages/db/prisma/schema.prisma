@@ -117,6 +117,7 @@ model Find {
   foundAt      DateTime     @map("found_at")
   logText      String?      @map("log_text")
   isFtf        Boolean      @default(false) @map("is_ftf")
+  isFtfManual  Boolean      @default(false) @map("is_ftf_manual")
   importedFrom ImportSource @map("imported_from")
   createdAt    DateTime     @default(now()) @map("created_at")
   updatedAt    DateTime     @updatedAt @map("updated_at")

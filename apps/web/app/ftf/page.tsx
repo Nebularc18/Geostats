@@ -521,7 +521,11 @@ export default function FtfPage() {
   const loadSequenceRef = useRef(0);
   const reloadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  async function loadFtfData({ cursor, append = false }: { cursor?: string; append?: boolean } = {}) {
+  async function loadFtfData({
+    cursor,
+    append = false,
+    minimumFinds = 0
+  }: { cursor?: string; append?: boolean; minimumFinds?: number } = {}) {
     const sequence = ++loadSequenceRef.current;
     const params = new URLSearchParams({ limit: "100" });
     if (cursor) {
@@ -534,8 +538,19 @@ export default function FtfPage() {
     if (sequence !== loadSequenceRef.current) {
       return;
     }
-    setFinds((current) => (append ? mergeFindRows(current, findData.finds) : findData.finds));
-    setNextCursor(findData.nextCursor);
+    let loadedFinds = findData.finds;
+    let loadedNextCursor = findData.nextCursor;
+    while (!append && loadedFinds.length < minimumFinds && loadedNextCursor) {
+      const nextParams = new URLSearchParams({ limit: "100", cursor: loadedNextCursor });
+      const nextPage = await apiFetch<FtfFindsResponse>(`/stats/ftf/finds?${nextParams.toString()}`);
+      if (sequence !== loadSequenceRef.current) {
+        return;
+      }
+      loadedFinds = mergeFindRows(loadedFinds, nextPage.finds);
+      loadedNextCursor = nextPage.nextCursor;
+    }
+    setFinds((current) => (append ? mergeFindRows(current, loadedFinds) : loadedFinds));
+    setNextCursor(loadedNextCursor);
     if (statData) {
       setStats(statData.stats.ftfStats ?? null);
     }
@@ -545,8 +560,9 @@ export default function FtfPage() {
     if (reloadTimerRef.current) {
       clearTimeout(reloadTimerRef.current);
     }
+    const visibleFindCount = finds.length;
     reloadTimerRef.current = setTimeout(() => {
-      void loadFtfData().catch(() => setError("Could not load FTF data."));
+      void loadFtfData({ minimumFinds: visibleFindCount }).catch(() => setError("Could not load FTF data."));
     }, 250);
   }
 

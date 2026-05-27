@@ -199,7 +199,7 @@ export class StatsService {
     const result = await this.prisma.$transaction(async (tx) => {
       const updateResult = await tx.find.updateMany({
         where: { id: findId, userId },
-        data: { isFtf }
+        data: { isFtf, isFtfManual: true }
       });
       if (updateResult.count === 0) {
         return updateResult;
