@@ -462,12 +462,15 @@ function FtfList({ rows }: { rows: FtfRow[] }) {
 
 function FindPicker({
   finds,
+  hasMoreFinds,
   onToggle
 }: {
   finds: FindRow[];
+  hasMoreFinds: boolean;
   onToggle: (find: FindRow, isFtf: boolean) => void;
 }) {
   const [query, setQuery] = useState("");
+  const hasQuery = query.trim().length > 0;
   const visibleFinds = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     if (!normalized) {
@@ -507,7 +510,9 @@ function FindPicker({
           </label>
         ))}
       </div>
-      {visibleFinds.length === 0 ? <p className="muted">No matching finds.</p> : null}
+      {visibleFinds.length === 0 ? (
+        <p className="muted">{hasQuery && hasMoreFinds ? "No matching loaded finds. Load more to search all finds." : "No matching finds."}</p>
+      ) : null}
     </section>
   );
 }
@@ -666,7 +671,7 @@ export default function FtfPage() {
         </div>
       </section>
       <FtfList rows={stats?.rows ?? []} />
-      <FindPicker finds={finds} onToggle={toggleFtf} />
+      <FindPicker finds={finds} hasMoreFinds={nextCursor !== null} onToggle={toggleFtf} />
       {nextCursor ? (
         <button className="ghost-button" type="button" onClick={loadMoreFinds} disabled={loadingMore}>
           {loadingMore ? "Loading..." : "Load more finds"}

@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
 import { Prisma } from "@geostats/db";
 import { calculateHideStats, calculateStats } from "@geostats/stats";
 import { PrismaService } from "../common/prisma.service";
@@ -6,6 +6,23 @@ import { PrismaService } from "../common/prisma.service";
 const DEFAULT_FTF_FIND_LIMIT = 100;
 const MAX_FTF_FIND_LIMIT = 200;
 const MAX_FTF_LOG_TEXT_LENGTH = 1_000;
+type FtfFindRow = {
+  id: string;
+  foundAt: Date;
+  isFtf: boolean;
+  logText: string | null;
+  cache: {
+    gcCode: string;
+    name: string;
+    cacheType: string | null;
+    country: string | null;
+    region: string | null;
+  };
+};
+
+function isPrismaError(error: unknown, code: string): boolean {
+  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === code;
+}
 
 function elevationFromRaw(raw: unknown): number | null {
   if (!raw || typeof raw !== "object") {
@@ -154,27 +171,35 @@ export class StatsService {
 
   async ftfFindsForUser(userId: string, options: { cursor?: string; limit?: number } = {}) {
     const limit = Math.min(Math.max(options.limit ?? DEFAULT_FTF_FIND_LIMIT, 1), MAX_FTF_FIND_LIMIT);
-    const finds = await this.prisma.find.findMany({
-      where: { userId },
-      select: {
-        id: true,
-        foundAt: true,
-        isFtf: true,
-        logText: true,
-        cache: {
-          select: {
-            gcCode: true,
-            name: true,
-            cacheType: true,
-            country: true,
-            region: true
+    let finds: FtfFindRow[];
+    try {
+      finds = await this.prisma.find.findMany({
+        where: { userId },
+        select: {
+          id: true,
+          foundAt: true,
+          isFtf: true,
+          logText: true,
+          cache: {
+            select: {
+              gcCode: true,
+              name: true,
+              cacheType: true,
+              country: true,
+              region: true
+            }
           }
-        }
-      },
-      orderBy: [{ foundAt: "desc" }, { createdAt: "desc" }, { id: "desc" }],
-      take: limit + 1,
-      ...(options.cursor ? { cursor: { id: options.cursor }, skip: 1 } : {})
-    });
+        },
+        orderBy: [{ foundAt: "desc" }, { createdAt: "desc" }, { id: "desc" }],
+        take: limit + 1,
+        ...(options.cursor ? { cursor: { id: options.cursor }, skip: 1 } : {})
+      });
+    } catch (error) {
+      if (isPrismaError(error, "P2025")) {
+        throw new BadRequestException("invalid cursor");
+      }
+      throw error;
+    }
     const page = finds.slice(0, limit);
 
     return {
