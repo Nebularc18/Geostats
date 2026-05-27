@@ -21,16 +21,44 @@ function hasFoundDate(find: ParsedImportResult["finds"][number]): find is Parsed
   return find.foundAt !== null;
 }
 
-function timeFromFtfLog(text: string | null): { hour: number; minute: number } | null {
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function ftfTermRegex(term: string): RegExp | null {
+  const normalized = term.trim().replace(/\s+/g, " ");
+  if (!normalized) {
+    return null;
+  }
+  const pattern = escapeRegex(normalized).replace(/\\ /g, "[\\s-]+");
+  const prefix = /^[a-z0-9]/i.test(normalized) ? "(^|[^a-z0-9])" : "";
+  const suffix = /[a-z0-9]$/i.test(normalized) ? "([^a-z0-9]|$)" : "";
+  return new RegExp(`${prefix}${pattern}${suffix}`, "i");
+}
+
+function ftfTermMatch(line: string, terms: string[]): RegExpExecArray | null {
+  for (const term of terms) {
+    const match = ftfTermRegex(term)?.exec(line);
+    if (match) {
+      return match;
+    }
+  }
+  return null;
+}
+
+function timeFromFtfLog(text: string | null, ftfDetectionTerms: string[]): { hour: number; minute: number } | null {
   if (!text) {
     return null;
   }
   const lines = text.split(/\r?\n/);
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index];
-    const sameLineMatch = line.match(/\bftf\b\s*(?:at|time)?\s*(\d{1,2})[:.](\d{2})\b/i);
+    const termMatch = ftfTermMatch(line, ftfDetectionTerms);
+    const sameLineMatch = termMatch
+      ? line.slice(termMatch.index + termMatch[0].length).match(/^\s*(?:at|time)?\s*(\d{1,2})[:.](\d{2})\b/i)
+      : null;
     const nextLineMatch =
-      /\bftf\b/i.test(line) ? lines[index + 1]?.match(/^\s*(?:time\s*)?(\d{1,2})[:.](\d{2})\b/i) : null;
+      termMatch ? lines[index + 1]?.match(/^\s*(?:time\s*)?(\d{1,2})[:.](\d{2})\b/i) : null;
     const match = sameLineMatch ?? nextLineMatch;
     if (match) {
       const hour = Number(match[1]);
@@ -54,11 +82,17 @@ function datePartsInTimeZone(date: Date, timeZone: string): { year: number; mont
   return { year: value("year"), month: value("month"), day: value("day") };
 }
 
-function foundAtWithFtfLogTime(foundAt: Date, logText: string | null, isFtf: boolean, timeZone: string): Date {
+function foundAtWithFtfLogTime(
+  foundAt: Date,
+  logText: string | null,
+  isFtf: boolean,
+  timeZone: string,
+  ftfDetectionTerms: string[]
+): Date {
   if (!isFtf) {
     return foundAt;
   }
-  const time = timeFromFtfLog(logText);
+  const time = timeFromFtfLog(logText, ftfDetectionTerms);
   if (!time) {
     return foundAt;
   }
@@ -190,7 +224,7 @@ export class ImportProcessor {
           const cache = this.cacheFor(cachesByCode, parsedFind.cache.gcCode);
           const isFtf = detectFtfLog(parsedFind.logText, ftfDetectionTerms);
           const foundAt = wallClockInTimeZoneToUtc(
-            foundAtWithFtfLogTime(parsedFind.foundAt, parsedFind.logText, isFtf, timeZone),
+            foundAtWithFtfLogTime(parsedFind.foundAt, parsedFind.logText, isFtf, timeZone, ftfDetectionTerms),
             timeZone
           );
           const existingFind =
