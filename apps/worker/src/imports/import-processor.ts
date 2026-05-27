@@ -1,5 +1,5 @@
 import { Cache, PrismaClient, Prisma } from "@geostats/db";
-import { DEFAULT_FTF_DETECTION_TERMS, detectFtfLog, parseImportFile } from "@geostats/gpx-parser";
+import { DEFAULT_FTF_DETECTION_TERMS, detectFtfLog, parseImportFile, termRegex as ftfTermRegex } from "@geostats/gpx-parser";
 import { ImportFileType, ImportJobPayload, ImportSource, ImportStatus } from "@geostats/shared";
 import { calculateHideStats, calculateStats } from "@geostats/stats";
 import { ObjectStorage } from "../storage/object-storage";
@@ -19,21 +19,6 @@ function elevationFromRaw(raw: unknown): number | null {
 
 function hasFoundDate(find: ParsedImportResult["finds"][number]): find is ParsedFindWithDate {
   return find.foundAt !== null;
-}
-
-function escapeRegex(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function ftfTermRegex(term: string): RegExp | null {
-  const normalized = term.trim().replace(/\s+/g, " ");
-  if (!normalized) {
-    return null;
-  }
-  const pattern = escapeRegex(normalized).replace(/\\ /g, "[\\s-]+");
-  const prefix = /^[a-z0-9]/i.test(normalized) ? "(^|[^a-z0-9])" : "";
-  const suffix = /[a-z0-9]$/i.test(normalized) ? "([^a-z0-9]|$)" : "";
-  return new RegExp(`${prefix}${pattern}${suffix}`, "i");
 }
 
 function ftfTermMatch(line: string, terms: string[]): RegExpExecArray | null {
@@ -213,11 +198,9 @@ export class ImportProcessor {
                 },
                 orderBy: [{ foundAt: "asc" }, { createdAt: "asc" }]
               });
-        const existingFindsByCacheId = new Map<string, (typeof existingFinds)[number]>();
+        const existingFindsByCacheId = new Map<string, (typeof existingFinds)[number][]>();
         for (const existingFind of existingFinds) {
-          if (!existingFindsByCacheId.has(existingFind.cacheId)) {
-            existingFindsByCacheId.set(existingFind.cacheId, existingFind);
-          }
+          existingFindsByCacheId.set(existingFind.cacheId, [...(existingFindsByCacheId.get(existingFind.cacheId) ?? []), existingFind]);
         }
 
         for (const parsedFind of datedFinds) {
@@ -227,9 +210,10 @@ export class ImportProcessor {
             foundAtWithFtfLogTime(parsedFind.foundAt, parsedFind.logText, isFtf, timeZone, ftfDetectionTerms),
             timeZone
           );
+          const existingCacheFinds = existingFindsByCacheId.get(cache.id) ?? [];
+          const exactMatchIndex = existingCacheFinds.findIndex((find) => find.foundAt.getTime() === foundAt.getTime());
           const existingFind =
-            existingFinds.find((find) => find.cacheId === cache.id && find.foundAt.getTime() === foundAt.getTime()) ??
-            existingFindsByCacheId.get(cache.id);
+            exactMatchIndex >= 0 ? existingCacheFinds.splice(exactMatchIndex, 1)[0] : existingCacheFinds.shift();
 
           if (existingFind) {
             const update: Prisma.FindUncheckedUpdateInput = {};
@@ -278,7 +262,7 @@ export class ImportProcessor {
             }
           });
           shouldRecalculateStats = true;
-          existingFindsByCacheId.set(cache.id, createdFind);
+          existingFindsByCacheId.set(cache.id, [...(existingFindsByCacheId.get(cache.id) ?? []), createdFind]);
         }
       });
 

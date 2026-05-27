@@ -133,7 +133,7 @@ function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function termRegex(term: string): RegExp | null {
+export function termRegex(term: string): RegExp | null {
   const normalized = term.trim().replace(/\s+/g, " ");
   if (!normalized) {
     return null;
