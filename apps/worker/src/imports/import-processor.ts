@@ -56,22 +56,10 @@ function timeFromFtfLog(text: string | null, ftfDetectionTerms: string[]): { hou
   return null;
 }
 
-function datePartsInTimeZone(date: Date, timeZone: string): { year: number; month: number; day: number } {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit"
-  }).formatToParts(date);
-  const value = (type: string) => Number(parts.find((part) => part.type === type)?.value);
-  return { year: value("year"), month: value("month"), day: value("day") };
-}
-
 function foundAtWithFtfLogTime(
   foundAt: Date,
   logText: string | null,
   isFtf: boolean,
-  timeZone: string,
   ftfDetectionTerms: string[]
 ): Date {
   if (!isFtf) {
@@ -81,8 +69,7 @@ function foundAtWithFtfLogTime(
   if (!time) {
     return foundAt;
   }
-  const localDate = datePartsInTimeZone(foundAt, timeZone);
-  return new Date(Date.UTC(localDate.year, localDate.month - 1, localDate.day, time.hour, time.minute));
+  return new Date(Date.UTC(foundAt.getUTCFullYear(), foundAt.getUTCMonth(), foundAt.getUTCDate(), time.hour, time.minute));
 }
 
 function timeZoneOffsetMs(timeZone: string, date: Date): number {
@@ -207,7 +194,7 @@ export class ImportProcessor {
           const cache = this.cacheFor(cachesByCode, parsedFind.cache.gcCode);
           const isFtf = detectFtfLog(parsedFind.logText, ftfDetectionTerms);
           const foundAt = wallClockInTimeZoneToUtc(
-            foundAtWithFtfLogTime(parsedFind.foundAt, parsedFind.logText, isFtf, timeZone, ftfDetectionTerms),
+            foundAtWithFtfLogTime(parsedFind.foundAt, parsedFind.logText, isFtf, ftfDetectionTerms),
             timeZone
           );
           const existingCacheFinds = existingFindsByCacheId.get(cache.id) ?? [];

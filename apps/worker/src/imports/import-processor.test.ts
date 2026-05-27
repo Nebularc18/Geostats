@@ -959,7 +959,7 @@ test("process uses an explicit FTF time next to a custom detection term", async 
   assert.equal(createdFind?.foundAt.toISOString(), "2026-05-03T06:11:00.000Z");
 });
 
-test("process uses the local find date when applying an explicit FTF log time", async () => {
+test("process keeps the GPX wall-clock date when applying a late-evening FTF log time", async () => {
   const existingCache = {
     id: "cache-1",
     gcCode: "GC12345",
@@ -1038,7 +1038,7 @@ test("process uses the local find date when applying an explicit FTF log time", 
   };
   const storage = {
     getObject: async () =>
-      Buffer.from(ftfLogTimeGpx.replace("2026-05-03T19:00:00Z", "2024-01-01T23:00:00Z").replace("Time 08:11", "Time 00:05"))
+      Buffer.from(ftfLogTimeGpx.replace("2026-05-03T19:00:00Z", "2024-06-01T22:30:00Z").replace("Time 08:11", "Time 22:30"))
   };
 
   const processor = new ImportProcessor(prisma as any, storage as any);
@@ -1049,7 +1049,7 @@ test("process uses the local find date when applying an explicit FTF log time", 
     source: ImportSource.MY_FINDS_GPX
   });
 
-  assert.equal(createdFoundAt?.toISOString(), "2024-01-01T23:05:00.000Z");
+  assert.equal(createdFoundAt?.toISOString(), "2024-06-01T20:30:00.000Z");
 });
 
 test("process ignores incidental time mentions in FTF log text", async () => {
