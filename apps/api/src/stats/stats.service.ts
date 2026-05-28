@@ -1,7 +1,28 @@
-import { Injectable } from "@nestjs/common";
+import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
 import { Prisma } from "@geostats/db";
 import { calculateHideStats, calculateStats } from "@geostats/stats";
 import { PrismaService } from "../common/prisma.service";
+
+const DEFAULT_FTF_FIND_LIMIT = 100;
+const MAX_FTF_FIND_LIMIT = 200;
+const MAX_FTF_LOG_TEXT_LENGTH = 1_000;
+type FtfFindRow = {
+  id: string;
+  foundAt: Date;
+  isFtf: boolean;
+  logText: string | null;
+  cache: {
+    gcCode: string;
+    name: string;
+    cacheType: string | null;
+    country: string | null;
+    region: string | null;
+  };
+};
+
+function isPrismaError(error: unknown, code: string): boolean {
+  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === code;
+}
 
 function elevationFromRaw(raw: unknown): number | null {
   if (!raw || typeof raw !== "object") {
@@ -28,7 +49,7 @@ export class StatsService {
     if (latest) {
       const stats = latest.statsJson as any;
       const needsHomeDistance = profile?.homeLatitude != null && profile.homeLongitude != null && !stats.distanceStats;
-      if (stats.statsVersion === 11 && !needsHomeDistance) {
+      if (stats.statsVersion === 14 && !needsHomeDistance) {
         return stats;
       }
 
@@ -69,7 +90,7 @@ export class StatsService {
           }
         }
       },
-      orderBy: { foundAt: "asc" }
+      orderBy: [{ foundAt: "asc" }, { createdAt: "asc" }]
     });
     const hides = await this.prisma.hide.findMany({
       where: { userId },
@@ -87,6 +108,7 @@ export class StatsService {
     const stats = calculateStats(
       finds.map((find) => ({
         foundAt: find.foundAt,
+        isFtf: find.isFtf,
         cache: {
           latitude: Number(find.cache.corrections[0]?.latitude ?? find.cache.latitude),
           longitude: Number(find.cache.corrections[0]?.longitude ?? find.cache.longitude),
@@ -101,7 +123,8 @@ export class StatsService {
           county: find.cache.county,
           hiddenDate: find.cache.hiddenDate,
           ownerName: find.cache.ownerName,
-          elevationMeters: elevationFromRaw(find.cache.raw)
+          elevationMeters: elevationFromRaw(find.cache.raw),
+          raw: find.cache.raw
         }
       })),
       {
@@ -144,5 +167,80 @@ export class StatsService {
     });
 
     return stats;
+  }
+
+  async ftfFindsForUser(userId: string, options: { cursor?: string; limit?: number } = {}) {
+    const limit = Math.min(Math.max(options.limit ?? DEFAULT_FTF_FIND_LIMIT, 1), MAX_FTF_FIND_LIMIT);
+    let finds: FtfFindRow[];
+    try {
+      finds = await this.prisma.find.findMany({
+        where: { userId },
+        select: {
+          id: true,
+          foundAt: true,
+          isFtf: true,
+          logText: true,
+          cache: {
+            select: {
+              gcCode: true,
+              name: true,
+              cacheType: true,
+              country: true,
+              region: true
+            }
+          }
+        },
+        orderBy: [{ foundAt: "desc" }, { createdAt: "desc" }, { id: "desc" }],
+        take: limit + 1,
+        ...(options.cursor ? { cursor: { id: options.cursor }, skip: 1 } : {})
+      });
+    } catch (error) {
+      if (isPrismaError(error, "P2025")) {
+        throw new BadRequestException("invalid cursor");
+      }
+      throw error;
+    }
+    const page = finds.slice(0, limit);
+
+    return {
+      finds: page.map((find) => ({
+        id: find.id,
+        foundAt: find.foundAt.toISOString(),
+        isFtf: find.isFtf,
+        logText: find.logText?.slice(0, MAX_FTF_LOG_TEXT_LENGTH) ?? null,
+        cache: {
+          gcCode: find.cache.gcCode,
+          name: find.cache.name,
+          cacheType: find.cache.cacheType,
+          country: find.cache.country,
+          region: find.cache.region
+        }
+      })),
+      nextCursor: finds.length > limit ? page.at(-1)?.id ?? null : null
+    };
+  }
+
+  async updateFtfFlag(userId: string, findId: string, isFtf: boolean) {
+    const result = await this.prisma.$transaction(async (tx) => {
+      const updateResult = await tx.find.updateMany({
+        where: { id: findId, userId, isFtf: !isFtf },
+        data: { isFtf, isFtfManual: true }
+      });
+      if (updateResult.count > 0) {
+        await tx.statSnapshot.deleteMany({ where: { userId } });
+        return { found: true };
+      }
+
+      const existingFind = await tx.find.findFirst({
+        where: { id: findId, userId },
+        select: { id: true }
+      });
+      return { found: existingFind !== null };
+    });
+    if (!result.found) {
+      throw new NotFoundException("Find not found");
+    }
+
+    return { id: findId, isFtf };
   }
 }

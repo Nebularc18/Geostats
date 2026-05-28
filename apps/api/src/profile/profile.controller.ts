@@ -1,6 +1,6 @@
 import { Body, Controller, Get, Put, UseGuards } from "@nestjs/common";
 import { AuthUser } from "@geostats/shared";
-import { IsNotEmpty, IsNumber, IsOptional, Max, MaxLength, Min } from "class-validator";
+import { ArrayMaxSize, IsArray, IsNotEmpty, IsNumber, IsOptional, IsString, Max, MaxLength, Min } from "class-validator";
 import { AuthGuard } from "../auth/auth.guard";
 import { CurrentUser } from "../auth/current-user.decorator";
 import { PrismaService } from "../common/prisma.service";
@@ -21,6 +21,35 @@ class ProfileDto {
   @Min(-180)
   @Max(180)
   homeLongitude?: number | null;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  timeZone?: string;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(20)
+  @IsString({ each: true })
+  @MaxLength(80, { each: true })
+  ftfDetectionTerms?: string[];
+}
+
+function cleanFtfDetectionTerms(terms: string[] | undefined): string[] {
+  const cleaned = (terms ?? [])
+    .map((term) => term.trim())
+    .filter((term) => term.length > 0);
+  return [...new Set(cleaned)].slice(0, 20);
+}
+
+function cleanTimeZone(timeZone: string | undefined): string {
+  const value = timeZone?.trim() || "Europe/Stockholm";
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: value }).format(new Date());
+    return value;
+  } catch {
+    return "Europe/Stockholm";
+  }
 }
 
 @Controller("profile")
@@ -37,18 +66,25 @@ export class ProfileController {
   @Put()
   async updateProfile(@CurrentUser() user: AuthUser, @Body() body: ProfileDto) {
     const profile = await this.prisma.$transaction(async (tx) => {
+      const ftfDetectionTerms = cleanFtfDetectionTerms(body.ftfDetectionTerms);
+      const ftfDetectionData = body.ftfDetectionTerms === undefined ? {} : { ftfDetectionTerms };
+      const timeZoneData = body.timeZone === undefined ? {} : { timeZone: cleanTimeZone(body.timeZone) };
       const updated = await tx.geocachingProfile.upsert({
         where: { userId: user.id },
         create: {
           userId: user.id,
           gcUsername: body.gcUsername,
           homeLatitude: body.homeLatitude ?? null,
-          homeLongitude: body.homeLongitude ?? null
+          homeLongitude: body.homeLongitude ?? null,
+          ...timeZoneData,
+          ...ftfDetectionData
         },
         update: {
           gcUsername: body.gcUsername,
           homeLatitude: body.homeLatitude ?? null,
-          homeLongitude: body.homeLongitude ?? null
+          homeLongitude: body.homeLongitude ?? null,
+          ...timeZoneData,
+          ...ftfDetectionData
         }
       });
       await tx.statSnapshot.deleteMany({ where: { userId: user.id } });

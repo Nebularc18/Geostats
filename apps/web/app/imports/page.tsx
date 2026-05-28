@@ -1,15 +1,34 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { AppShell } from "../../components/app-shell";
 import { apiFetch } from "../../lib/api";
+import { hasActiveImports, type ImportListItem, type ImportsResponse } from "../../lib/imports";
 
 export default function ImportsPage() {
-  const [imports, setImports] = useState<any[]>([]);
+  const [imports, setImports] = useState<ImportListItem[]>([]);
+
+  const refresh = useCallback(async () => {
+    const data = await apiFetch<ImportsResponse>("/imports");
+    setImports(data.imports);
+    return data.imports;
+  }, []);
 
   useEffect(() => {
-    void apiFetch<{ imports: any[] }>("/imports").then((data) => setImports(data.imports));
-  }, []);
+    void refresh();
+  }, [refresh]);
+
+  useEffect(() => {
+    if (!hasActiveImports(imports)) {
+      return;
+    }
+
+    const interval = window.setInterval(() => {
+      void refresh();
+    }, 3000);
+
+    return () => window.clearInterval(interval);
+  }, [imports, refresh]);
 
   return (
     <AppShell>

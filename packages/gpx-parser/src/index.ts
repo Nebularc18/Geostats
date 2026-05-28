@@ -51,6 +51,7 @@ const DEFAULT_MAX_ZIP_ENTRIES = 25;
 const DEFAULT_MAX_ZIP_ENTRY_BYTES = 5 * 1024 * 1024;
 const DEFAULT_MAX_ZIP_TOTAL_BYTES = 25 * 1024 * 1024;
 const DEFAULT_MAX_WAYPOINTS = 25_000;
+export const DEFAULT_FTF_DETECTION_TERMS = ["FTF", "first to find"];
 
 function positiveLimit(envName: string, fallback: number): number {
   const parsed = Number(process.env[envName]);
@@ -126,6 +127,28 @@ function findFoundLog(cache: Record<string, any>): Record<string, any> | null {
     return type === "found it" || type === "attended" || type === "webcam photo taken";
   });
   return foundLog ?? null;
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+export function termRegex(term: string): RegExp | null {
+  const normalized = term.trim().replace(/\s+/g, " ");
+  if (!normalized) {
+    return null;
+  }
+  const pattern = escapeRegex(normalized).replace(/\\ /g, "[\\s-]+");
+  const prefix = /^[a-z0-9]/i.test(normalized) ? "(^|[^a-z0-9])" : "";
+  const suffix = /[a-z0-9]$/i.test(normalized) ? "([^a-z0-9]|$)" : "";
+  return new RegExp(`${prefix}${pattern}${suffix}`, "i");
+}
+
+export function detectFtfLog(text: string | null, terms: string[] = DEFAULT_FTF_DETECTION_TERMS): boolean {
+  if (!text) {
+    return false;
+  }
+  return terms.some((term) => termRegex(term)?.test(text) ?? false);
 }
 
 function countReceivedLogs(cache: Record<string, any>): number {

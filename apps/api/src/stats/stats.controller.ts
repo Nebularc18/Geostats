@@ -1,4 +1,4 @@
-import { Controller, Get, UseGuards } from "@nestjs/common";
+import { BadRequestException, Body, Controller, Get, Param, Patch, Query, UseGuards } from "@nestjs/common";
 import { AuthUser } from "@geostats/shared";
 import { AuthGuard } from "../auth/auth.guard";
 import { CurrentUser } from "../auth/current-user.decorator";
@@ -59,5 +59,31 @@ export class StatsController {
   async streaks(@CurrentUser() user: AuthUser) {
     const stats = (await this.stats.snapshotForUser(user.id)) as any;
     return { streaks: stats.streaks ?? { longest: 0, current: 0 } };
+  }
+
+  @Get("ftf/finds")
+  async ftfFinds(
+    @CurrentUser() user: AuthUser,
+    @Query("cursor") cursor?: string,
+    @Query("limit") limit?: string
+  ) {
+    const parsedLimit = limit === undefined ? undefined : Number(limit);
+    if (parsedLimit !== undefined && (!Number.isInteger(parsedLimit) || parsedLimit < 1)) {
+      throw new BadRequestException("limit must be a positive integer");
+    }
+    return this.stats.ftfFindsForUser(user.id, { cursor, limit: parsedLimit });
+  }
+
+  @Patch("ftf/finds/:id")
+  async updateFtfFind(
+    @CurrentUser() user: AuthUser,
+    @Param("id") id: string,
+    @Body() body: { isFtf?: unknown }
+  ) {
+    if (typeof body.isFtf !== "boolean") {
+      throw new BadRequestException("isFtf must be a boolean");
+    }
+
+    return { find: await this.stats.updateFtfFlag(user.id, id, body.isFtf) };
   }
 }
