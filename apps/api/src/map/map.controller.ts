@@ -53,7 +53,8 @@ const COUNTRY_CONTINENTS = new Map(
     ["Greece", "Europe"],
     ["Malta", "Europe"],
     ["Portugal", "Europe"],
-    ["Spain", "Europe"]
+    ["Spain", "Europe"],
+    ["Russia", "Europe"]
   ].map(([country, continent]) => [country.toLowerCase(), continent])
 );
 
