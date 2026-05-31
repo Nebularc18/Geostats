@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { BarChart3, Database, Flag, Globe2, Home, Map, Settings, Trophy, Upload } from "lucide-react";
@@ -21,6 +22,32 @@ const nav = [
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
+  const [profileChecked, setProfileChecked] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+
+    void apiFetch<{ profile: any }>("/profile")
+      .then((data) => {
+        if (!active) {
+          return;
+        }
+        if (!data.profile && pathname !== "/onboarding") {
+          router.replace("/onboarding");
+          return;
+        }
+        setProfileChecked(true);
+      })
+      .catch(() => {
+        if (active) {
+          router.replace("/login");
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [pathname, router]);
 
   async function logout() {
     await apiFetch("/auth/logout", { method: "POST" });
@@ -52,7 +79,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           Sign out
         </button>
       </aside>
-      <main className="content">{children}</main>
+      <main className="content">{profileChecked ? children : null}</main>
     </div>
   );
 }
