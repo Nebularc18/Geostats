@@ -1253,6 +1253,185 @@ select:focus {
   color: var(--muted);
 }
 
+.scratch-stage {
+  min-height: 680px;
+  background:
+    linear-gradient(180deg, rgba(237, 244, 232, 0.04), transparent 36%),
+    var(--panel);
+}
+
+.scratch-map-panel {
+  height: 680px;
+  filter: saturate(0.96);
+}
+
+.scratch-toolbar {
+  flex-wrap: wrap;
+}
+
+.scratch-view-controls {
+  position: absolute;
+  z-index: 1;
+  top: 72px;
+  left: 14px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-width: min(720px, calc(100% - 92px));
+}
+
+.scratch-view-controls button {
+  min-height: 32px;
+  padding: 6px 10px;
+  border: 1px solid rgba(237, 244, 232, 0.14);
+  border-radius: 8px;
+  color: var(--ink);
+  background: rgba(15, 22, 18, 0.84);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.22);
+  cursor: pointer;
+}
+
+.scratch-view-controls button:hover,
+.scratch-view-controls button.active {
+  border-color: color-mix(in srgb, var(--green) 58%, #fff7de);
+  background: rgba(36, 79, 56, 0.94);
+}
+
+.scratch-panel h3,
+.scratch-panel h4 {
+  margin: 0;
+}
+
+.scratch-controls {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.scratch-controls label {
+  min-width: 150px;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.scratch-controls select {
+  min-height: 38px;
+  padding-top: 7px;
+  padding-bottom: 7px;
+}
+
+.scratch-map-note {
+  margin: -4px 0 16px;
+  color: var(--muted);
+}
+
+.scratch-layout {
+  display: grid;
+  grid-template-columns: minmax(220px, 300px) minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.scratch-country-list {
+  display: grid;
+  gap: 8px;
+  max-height: 640px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.scratch-country-list button {
+  position: relative;
+  display: grid;
+  gap: 4px;
+  min-height: 56px;
+  padding: 10px 12px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--ink);
+  background: rgba(237, 244, 232, 0.035);
+  cursor: pointer;
+  text-align: left;
+}
+
+.scratch-country-list button::before {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 7px;
+  background: var(--scratch-color);
+  content: "";
+}
+
+.scratch-country-list button.active,
+.scratch-country-list button:hover {
+  border-color: color-mix(in srgb, var(--scratch-color) 72%, #fff7de);
+  background: color-mix(in srgb, var(--scratch-color) 22%, rgba(237, 244, 232, 0.035));
+}
+
+.scratch-country-list span,
+.scratch-drilldown small {
+  color: var(--muted);
+}
+
+.scratch-drilldown {
+  display: grid;
+  gap: 18px;
+  min-width: 0;
+}
+
+.scratch-drilldown-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 56px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(237, 244, 232, 0.035);
+}
+
+.scratch-grid-wrap {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.scratch-grid-wrap.single {
+  grid-template-columns: 1fr;
+}
+
+.scratch-grid-wrap > div {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.scratch-tile-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 8px;
+}
+
+.scratch-tile {
+  display: grid;
+  gap: 5px;
+  min-height: 72px;
+  padding: 11px;
+  border: 1px solid color-mix(in srgb, var(--scratch-color) 48%, var(--line));
+  border-radius: 8px;
+  color: #07110b;
+  background: var(--scratch-color);
+  box-shadow: inset 0 -18px 32px rgba(7, 17, 11, 0.12);
+}
+
+.scratch-tile span {
+  color: rgba(7, 17, 11, 0.72);
+  font-variant-numeric: tabular-nums;
+}
+
 .maplibregl-popup-content {
   border-radius: 8px;
   color: var(--ink);
@@ -1367,6 +1546,27 @@ select:focus {
   .map-toolbar {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .scratch-view-controls {
+    top: 100px;
+    right: 14px;
+    max-width: calc(100% - 28px);
+  }
+
+  .scratch-stage,
+  .scratch-map-panel {
+    min-height: 520px;
+    height: 520px;
+  }
+
+  .scratch-layout,
+  .scratch-grid-wrap {
+    grid-template-columns: 1fr;
+  }
+
+  .scratch-country-list {
+    max-height: 300px;
   }
 
   .ftf-stats-table {
