@@ -300,12 +300,17 @@ function loadGeoJson(url: string) {
     return existing;
   }
 
-  const request = fetch(url).then(async (response) => {
-    if (!response.ok) {
-      throw new Error(`Could not load map boundary data from ${url}`);
-    }
-    return (await response.json()) as GeoJsonFeatureCollection;
-  });
+  const request = fetch(url)
+    .then(async (response) => {
+      if (!response.ok) {
+        throw new Error(`Could not load map boundary data from ${url}`);
+      }
+      return (await response.json()) as GeoJsonFeatureCollection;
+    })
+    .catch((error: unknown) => {
+      geoJsonCache.delete(url);
+      throw error;
+    });
   geoJsonCache.set(url, request);
   return request;
 }
