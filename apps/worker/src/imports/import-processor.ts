@@ -1,4 +1,4 @@
-import { Cache, PrismaClient, Prisma } from "@geostats/db";
+import { Cache, countableFindWhere, PrismaClient, Prisma } from "@geostats/db";
 import { DEFAULT_FTF_DETECTION_TERMS, detectFtfLog, parseImportFile, termRegex as ftfTermRegex } from "@geostats/gpx-parser";
 import { ImportFileType, ImportJobPayload, ImportSource, ImportStatus } from "@geostats/shared";
 import { calculateHideStats, calculateStats, normalizedGcUsername } from "@geostats/stats";
@@ -16,31 +16,6 @@ function elevationFromRaw(raw: unknown): number | null {
   const text = value && typeof value === "object" && "text" in value ? (value as { text?: unknown }).text : value;
   const elevation = Number(text);
   return Number.isFinite(elevation) ? elevation : null;
-}
-
-function countableFindWhere(userId: string, gcUsername: string | null): Prisma.FindWhereInput {
-  const filters: Prisma.FindWhereInput[] = [
-    {
-      cache: {
-        hides: {
-          none: { userId }
-        }
-      }
-    }
-  ];
-  if (gcUsername) {
-    filters.push({
-      NOT: {
-        cache: {
-          ownerName: {
-            equals: gcUsername,
-            mode: "insensitive"
-          }
-        }
-      }
-    });
-  }
-  return { userId, AND: filters };
 }
 
 function hasFoundDate(find: ParsedImportResult["finds"][number]): find is ParsedFindWithDate {

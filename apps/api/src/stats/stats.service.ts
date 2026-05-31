@@ -1,5 +1,5 @@
 import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
-import { Prisma } from "@geostats/db";
+import { countableFindWhere, Prisma } from "@geostats/db";
 import { calculateHideStats, calculateStats, normalizedGcUsername } from "@geostats/stats";
 import { PrismaService } from "../common/prisma.service";
 
@@ -33,31 +33,6 @@ function elevationFromRaw(raw: unknown): number | null {
   const text = value && typeof value === "object" && "text" in value ? (value as { text?: unknown }).text : value;
   const elevation = Number(text);
   return Number.isFinite(elevation) ? elevation : null;
-}
-
-function countableFindWhere(userId: string, gcUsername: string | null): Prisma.FindWhereInput {
-  const filters: Prisma.FindWhereInput[] = [
-    {
-      cache: {
-        hides: {
-          none: { userId }
-        }
-      }
-    }
-  ];
-  if (gcUsername) {
-    filters.push({
-      NOT: {
-        cache: {
-          ownerName: {
-            equals: gcUsername,
-            mode: "insensitive"
-          }
-        }
-      }
-    });
-  }
-  return { userId, AND: filters };
 }
 
 @Injectable()
