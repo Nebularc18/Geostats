@@ -203,7 +203,7 @@ export default function ScratchPage() {
       return null;
     }
 
-    const country = scratch.countries.find((candidate) => candidate.name === selectedCountry) ?? visibleCountries[0] ?? null;
+    const country = visibleCountries.find((candidate) => candidate.name === selectedCountry) ?? visibleCountries[0] ?? null;
     if (country?.name === "Sweden") {
       return {
         ...country,
