@@ -47,7 +47,8 @@ const COUNTRY_CONTINENTS = new Map(
     ["Turkey", "Asia"],
     ["United Arab Emirates", "Asia"],
     ["UAE", "Asia"],
-    ["Yemen", "Asia"]
+    ["Yemen", "Asia"],
+    ["Russia", "Europe"]
   ].map(([country, continent]) => [country.toLowerCase(), continent])
 );
 
