@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
 import { Prisma } from "@geostats/db";
-import { calculateHideStats, calculateStats } from "@geostats/stats";
+import { calculateHideStats, calculateStats, normalizedGcUsername } from "@geostats/stats";
 import { PrismaService } from "../common/prisma.service";
 
 const STATS_VERSION = 15;
@@ -35,9 +35,29 @@ function elevationFromRaw(raw: unknown): number | null {
   return Number.isFinite(elevation) ? elevation : null;
 }
 
-function normalizedGcUsername(profile?: { gcUsername?: string | null } | null): string | null {
-  const username = profile?.gcUsername?.trim().toLowerCase();
-  return username ? username : null;
+function countableFindWhere(userId: string, gcUsername: string | null): Prisma.FindWhereInput {
+  const filters: Prisma.FindWhereInput[] = [
+    {
+      cache: {
+        hides: {
+          none: { userId }
+        }
+      }
+    }
+  ];
+  if (gcUsername) {
+    filters.push({
+      NOT: {
+        cache: {
+          ownerName: {
+            equals: gcUsername,
+            mode: "insensitive"
+          }
+        }
+      }
+    });
+  }
+  return { userId, AND: filters };
 }
 
 @Injectable()
@@ -98,23 +118,20 @@ export class StatsService {
       },
       orderBy: { placedAt: "asc" }
     });
-    const ownHideCacheIds = new Set(hides.map((hide) => hide.cacheId));
     const gcUsername = normalizedGcUsername(profile);
-    const finds = (
-      await this.prisma.find.findMany({
-        where: { userId },
-        include: {
-          cache: {
-            include: {
-              corrections: {
-                where: { userId }
-              }
+    const finds = await this.prisma.find.findMany({
+      where: countableFindWhere(userId, gcUsername),
+      include: {
+        cache: {
+          include: {
+            corrections: {
+              where: { userId }
             }
           }
-        },
-        orderBy: [{ foundAt: "asc" }, { createdAt: "asc" }]
-      })
-    ).filter((find) => !ownHideCacheIds.has(find.cacheId) && find.cache.ownerName?.trim().toLowerCase() !== gcUsername);
+        }
+      },
+      orderBy: [{ foundAt: "asc" }, { createdAt: "asc" }]
+    });
     const stats = calculateStats(
       finds.map((find) => ({
         foundAt: find.foundAt,
@@ -181,30 +198,12 @@ export class StatsService {
 
   async ftfFindsForUser(userId: string, options: { cursor?: string; limit?: number } = {}) {
     const limit = Math.min(Math.max(options.limit ?? DEFAULT_FTF_FIND_LIMIT, 1), MAX_FTF_FIND_LIMIT);
-    const [profile, hides] = await Promise.all([
-      this.prisma.geocachingProfile.findUnique({ where: { userId }, select: { gcUsername: true } }),
-      this.prisma.hide.findMany({ where: { userId }, select: { cacheId: true } })
-    ]);
-    const gcUsername = profile?.gcUsername?.trim();
-    const excludeOwnHides: Prisma.FindWhereInput = {
-      cacheId: { notIn: hides.map((hide) => hide.cacheId) },
-      ...(gcUsername
-        ? {
-            NOT: {
-              cache: {
-                ownerName: {
-                  equals: gcUsername,
-                  mode: "insensitive"
-                }
-              }
-            }
-          }
-        : {})
-    };
+    const profile = await this.prisma.geocachingProfile.findUnique({ where: { userId }, select: { gcUsername: true } });
+    const gcUsername = normalizedGcUsername(profile);
     let finds: FtfFindRow[];
     try {
       finds = await this.prisma.find.findMany({
-        where: { userId, ...excludeOwnHides },
+        where: countableFindWhere(userId, gcUsername),
         select: {
           id: true,
           foundAt: true,

@@ -1,17 +1,12 @@
 import { Cache, PrismaClient, Prisma } from "@geostats/db";
 import { DEFAULT_FTF_DETECTION_TERMS, detectFtfLog, parseImportFile, termRegex as ftfTermRegex } from "@geostats/gpx-parser";
 import { ImportFileType, ImportJobPayload, ImportSource, ImportStatus } from "@geostats/shared";
-import { calculateHideStats, calculateStats } from "@geostats/stats";
+import { calculateHideStats, calculateStats, normalizedGcUsername } from "@geostats/stats";
 import { ObjectStorage } from "../storage/object-storage";
 
 type ParsedImportResult = Awaited<ReturnType<typeof parseImportFile>>;
 type ParsedFindWithDate = ParsedImportResult["finds"][number] & { foundAt: Date };
 const FTF_TIME_LOOKAHEAD_LINES = 3;
-
-function normalizedGcUsername(profile?: { gcUsername?: string | null } | null): string | null {
-  const username = profile?.gcUsername?.trim().toLowerCase();
-  return username ? username : null;
-}
 
 function elevationFromRaw(raw: unknown): number | null {
   if (!raw || typeof raw !== "object") {
@@ -21,6 +16,31 @@ function elevationFromRaw(raw: unknown): number | null {
   const text = value && typeof value === "object" && "text" in value ? (value as { text?: unknown }).text : value;
   const elevation = Number(text);
   return Number.isFinite(elevation) ? elevation : null;
+}
+
+function countableFindWhere(userId: string, gcUsername: string | null): Prisma.FindWhereInput {
+  const filters: Prisma.FindWhereInput[] = [
+    {
+      cache: {
+        hides: {
+          none: { userId }
+        }
+      }
+    }
+  ];
+  if (gcUsername) {
+    filters.push({
+      NOT: {
+        cache: {
+          ownerName: {
+            equals: gcUsername,
+            mode: "insensitive"
+          }
+        }
+      }
+    });
+  }
+  return { userId, AND: filters };
 }
 
 function hasFoundDate(find: ParsedImportResult["finds"][number]): find is ParsedFindWithDate {
@@ -408,23 +428,20 @@ export class ImportProcessor {
       },
       orderBy: { placedAt: "asc" }
     });
-    const ownHideCacheIds = new Set(hides.map((hide) => hide.cacheId));
     const gcUsername = normalizedGcUsername(profile);
-    const finds = (
-      await this.prisma.find.findMany({
-        where: { userId },
-        include: {
-          cache: {
-            include: {
-              corrections: {
-                where: { userId }
-              }
+    const finds = await this.prisma.find.findMany({
+      where: countableFindWhere(userId, gcUsername),
+      include: {
+        cache: {
+          include: {
+            corrections: {
+              where: { userId }
             }
           }
-        },
-        orderBy: [{ foundAt: "asc" }, { createdAt: "asc" }]
-      })
-    ).filter((find) => !ownHideCacheIds.has(find.cacheId) && find.cache.ownerName?.trim().toLowerCase() !== gcUsername);
+        }
+      },
+      orderBy: [{ foundAt: "asc" }, { createdAt: "asc" }]
+    });
     const stats = calculateStats(
       finds.map((find) => ({
         foundAt: find.foundAt,

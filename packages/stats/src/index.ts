@@ -47,6 +47,12 @@ export interface CountBucket {
   count: number;
 }
 
+export function normalizedGcUsername(profile?: { gcUsername?: string | null } | string | null): string | null {
+  const value = typeof profile === "string" ? profile : profile?.gcUsername;
+  const username = value?.trim().toLowerCase();
+  return username ? username : null;
+}
+
 const monthLabels = [
   "January",
   "February",
