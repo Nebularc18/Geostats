@@ -87,12 +87,12 @@ function continentFor(latitude: number, longitude: number, country?: string | nu
     return "Antarctica";
   }
 
-  if (latitude >= 12 && latitude <= 72 && longitude >= -25 && longitude <= 45) {
-    return "Europe";
-  }
-
   if (latitude >= -35 && latitude <= 38 && longitude >= -20 && longitude <= 55) {
     return "Africa";
+  }
+
+  if (latitude >= 12 && latitude <= 72 && longitude >= -25 && longitude <= 45) {
+    return "Europe";
   }
 
   if (latitude >= -12 && latitude <= 82 && longitude >= 26 && longitude <= 180) {

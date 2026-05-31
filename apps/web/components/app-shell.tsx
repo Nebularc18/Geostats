@@ -19,12 +19,18 @@ const nav = [
   { href: "/settings/profile", label: "Profile", icon: Settings }
 ];
 
+let hasCompletedProfileCheck = false;
+
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
-  const [profileChecked, setProfileChecked] = useState(false);
+  const [profileChecked, setProfileChecked] = useState(hasCompletedProfileCheck);
 
   useEffect(() => {
+    if (hasCompletedProfileCheck) {
+      return;
+    }
+
     let active = true;
 
     void apiFetch<{ profile: any }>("/profile")
@@ -32,10 +38,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         if (!active) {
           return;
         }
-        if (!data.profile && pathname !== "/onboarding") {
+        if (!data.profile) {
           router.replace("/onboarding");
           return;
         }
+        hasCompletedProfileCheck = true;
         setProfileChecked(true);
       })
       .catch(() => {
@@ -47,10 +54,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return () => {
       active = false;
     };
-  }, [pathname, router]);
+  }, [router]);
 
   async function logout() {
     await apiFetch("/auth/logout", { method: "POST" });
+    hasCompletedProfileCheck = false;
     router.push("/login");
   }
 

@@ -7,7 +7,12 @@ function apiUrl() {
     return CONFIGURED_API_URL;
   }
 
-  const configured = new URL(CONFIGURED_API_URL);
+  let configured: URL;
+  try {
+    configured = new URL(CONFIGURED_API_URL);
+  } catch {
+    return CONFIGURED_API_URL;
+  }
   if (configured.hostname === "localhost" && window.location.hostname === "127.0.0.1") {
     configured.hostname = "127.0.0.1";
   }
