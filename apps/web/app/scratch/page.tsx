@@ -134,13 +134,18 @@ export default function ScratchPage() {
   const [mapView, setMapView] = useState<ScratchMapView | null>(WORLD_VIEW);
   const [mapViewFocusVersion, setMapViewFocusVersion] = useState(0);
   const [countryFocusVersion, setCountryFocusVersion] = useState(0);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    void apiFetch<ScratchMapData>("/map/scratch").then((data) => {
-      setScratch(data);
-      setSelectedCountry(data.countries[0]?.name ?? null);
-    });
-    void apiFetch<{ points: CacheMapPoint[] }>("/map/caches").then((data) => setPoints(data.points));
+    void apiFetch<ScratchMapData>("/map/scratch")
+      .then((data) => {
+        setScratch(data);
+        setSelectedCountry(data.countries[0]?.name ?? null);
+      })
+      .catch(() => setError("Could not load scratch map coverage."));
+    void apiFetch<{ points: CacheMapPoint[] }>("/map/caches")
+      .then((data) => setPoints(data.points))
+      .catch(() => setError("Could not load scratch map points."));
   }, []);
 
   useEffect(() => {
@@ -198,7 +203,7 @@ export default function ScratchPage() {
       return null;
     }
 
-    const country = scratch.countries.find((candidate) => candidate.name === selectedCountry) ?? visibleCountries[0] ?? null;
+    const country = visibleCountries.find((candidate) => candidate.name === selectedCountry) ?? visibleCountries[0] ?? null;
     if (country?.name === "Sweden") {
       return {
         ...country,
@@ -253,6 +258,7 @@ export default function ScratchPage() {
         </span>
       </header>
       <section className="map-stage scratch-stage">
+        {error ? <p className="error">{error}</p> : null}
         <div className="map-toolbar scratch-toolbar">
           <strong>{findCountLabel}</strong>
           <span>

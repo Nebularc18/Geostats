@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { BarChart3, Database, Flag, Globe2, Home, Map, Settings, Trophy, Upload } from "lucide-react";
@@ -18,12 +19,46 @@ const nav = [
   { href: "/settings/profile", label: "Profile", icon: Settings }
 ];
 
+let hasCompletedProfileCheck = false;
+
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
+  const [profileChecked, setProfileChecked] = useState(hasCompletedProfileCheck);
+
+  useEffect(() => {
+    if (hasCompletedProfileCheck) {
+      return;
+    }
+
+    let active = true;
+
+    void apiFetch<{ profile: any }>("/profile")
+      .then((data) => {
+        if (!active) {
+          return;
+        }
+        if (!data.profile) {
+          router.replace("/onboarding");
+          return;
+        }
+        hasCompletedProfileCheck = true;
+        setProfileChecked(true);
+      })
+      .catch(() => {
+        if (active) {
+          router.replace("/login");
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [router]);
 
   async function logout() {
     await apiFetch("/auth/logout", { method: "POST" });
+    hasCompletedProfileCheck = false;
     router.push("/login");
   }
 
@@ -52,7 +87,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           Sign out
         </button>
       </aside>
-      <main className="content">{children}</main>
+      <main className="content">{profileChecked ? children : null}</main>
     </div>
   );
 }

@@ -3,30 +3,7 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { AppShell } from "../../../components/app-shell";
 import { apiFetch } from "../../../lib/api";
-
-const defaultFtfTerms = ["FTF", "first to find"];
-const defaultTimeZone = "Europe/Stockholm";
-const fallbackTimeZones = [
-  "UTC",
-  defaultTimeZone,
-  "America/New_York",
-  "America/Chicago",
-  "America/Denver",
-  "America/Los_Angeles",
-  "America/Sao_Paulo",
-  "Europe/London",
-  "Europe/Berlin",
-  "Europe/Copenhagen",
-  "Europe/Oslo",
-  "Europe/Helsinki",
-  "Africa/Johannesburg",
-  "Asia/Dubai",
-  "Asia/Kolkata",
-  "Asia/Singapore",
-  "Asia/Tokyo",
-  "Australia/Sydney",
-  "Pacific/Auckland"
-];
+import { defaultFtfTerms, defaultTimeZone, parseOptionalNumber, supportedTimeZones } from "../../../lib/profile";
 
 function termsText(profile: any) {
   const terms = Array.isArray(profile?.ftfDetectionTerms) ? profile.ftfDetectionTerms : defaultFtfTerms;
@@ -38,12 +15,6 @@ function parseTerms(value: FormDataEntryValue | null) {
     .split(/\r?\n|,/)
     .map((term) => term.trim())
     .filter(Boolean);
-}
-
-function supportedTimeZones(selectedTimeZone: string) {
-  const intl = Intl as typeof Intl & { supportedValuesOf?: (key: "timeZone") => string[] };
-  const zones = typeof intl.supportedValuesOf === "function" ? intl.supportedValuesOf("timeZone") : fallbackTimeZones;
-  return Array.from(new Set(["UTC", defaultTimeZone, selectedTimeZone, ...zones])).sort((a, b) => a.localeCompare(b));
 }
 
 export default function ProfilePage() {
@@ -61,8 +32,8 @@ export default function ProfilePage() {
     const form = new FormData(event.currentTarget);
     const payload = {
       gcUsername: form.get("gcUsername"),
-      homeLatitude: form.get("homeLatitude") ? Number(form.get("homeLatitude")) : null,
-      homeLongitude: form.get("homeLongitude") ? Number(form.get("homeLongitude")) : null,
+      homeLatitude: parseOptionalNumber(form.get("homeLatitude")),
+      homeLongitude: parseOptionalNumber(form.get("homeLongitude")),
       timeZone: form.get("timeZone") || defaultTimeZone,
       ftfDetectionTerms: parseTerms(form.get("ftfDetectionTerms"))
     };
@@ -96,7 +67,7 @@ export default function ProfilePage() {
           </label>
           <label>
             Time zone
-            <select key={selectedTimeZone} name="timeZone" defaultValue={selectedTimeZone}>
+            <select key={selectedTimeZone} name="timeZone" required defaultValue={selectedTimeZone}>
               {timeZoneOptions.map((timeZone) => (
                 <option key={timeZone} value={timeZone}>
                   {timeZone}

@@ -22,10 +22,10 @@ class ProfileDto {
   @Max(180)
   homeLongitude?: number | null;
 
-  @IsOptional()
   @IsString()
+  @IsNotEmpty()
   @MaxLength(80)
-  timeZone?: string;
+  timeZone!: string;
 
   @IsOptional()
   @IsArray()
@@ -42,8 +42,8 @@ function cleanFtfDetectionTerms(terms: string[] | undefined): string[] {
   return [...new Set(cleaned)].slice(0, 20);
 }
 
-function cleanTimeZone(timeZone: string | undefined): string {
-  const value = timeZone?.trim() || "Europe/Stockholm";
+function cleanTimeZone(timeZone: string): string {
+  const value = timeZone.trim() || "Europe/Stockholm";
   try {
     new Intl.DateTimeFormat("en-US", { timeZone: value }).format(new Date());
     return value;
@@ -68,7 +68,7 @@ export class ProfileController {
     const profile = await this.prisma.$transaction(async (tx) => {
       const ftfDetectionTerms = cleanFtfDetectionTerms(body.ftfDetectionTerms);
       const ftfDetectionData = body.ftfDetectionTerms === undefined ? {} : { ftfDetectionTerms };
-      const timeZoneData = body.timeZone === undefined ? {} : { timeZone: cleanTimeZone(body.timeZone) };
+      const timeZone = cleanTimeZone(body.timeZone);
       const updated = await tx.geocachingProfile.upsert({
         where: { userId: user.id },
         create: {
@@ -76,14 +76,14 @@ export class ProfileController {
           gcUsername: body.gcUsername,
           homeLatitude: body.homeLatitude ?? null,
           homeLongitude: body.homeLongitude ?? null,
-          ...timeZoneData,
+          timeZone,
           ...ftfDetectionData
         },
         update: {
           gcUsername: body.gcUsername,
           homeLatitude: body.homeLatitude ?? null,
           homeLongitude: body.homeLongitude ?? null,
-          ...timeZoneData,
+          timeZone,
           ...ftfDetectionData
         }
       });
