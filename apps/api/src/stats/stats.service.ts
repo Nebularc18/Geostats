@@ -1,8 +1,9 @@
 import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
-import { Prisma } from "@geostats/db";
-import { calculateHideStats, calculateStats } from "@geostats/stats";
+import { countableFindWhere, Prisma } from "@geostats/db";
+import { calculateHideStats, calculateStats, normalizedGcUsername } from "@geostats/stats";
 import { PrismaService } from "../common/prisma.service";
 
+const STATS_VERSION = 15;
 const DEFAULT_FTF_FIND_LIMIT = 100;
 const MAX_FTF_FIND_LIMIT = 200;
 const MAX_FTF_LOG_TEXT_LENGTH = 1_000;
@@ -49,7 +50,7 @@ export class StatsService {
     if (latest) {
       const stats = latest.statsJson as any;
       const needsHomeDistance = profile?.homeLatitude != null && profile.homeLongitude != null && !stats.distanceStats;
-      if (stats.statsVersion === 14 && !needsHomeDistance) {
+      if (stats.statsVersion === STATS_VERSION && !needsHomeDistance) {
         return stats;
       }
 
@@ -61,7 +62,7 @@ export class StatsService {
 
   private async recalculateSnapshotForUser(
     userId: string,
-    profile?: { homeLatitude: unknown; homeLongitude: unknown } | null
+    profile?: { gcUsername?: string | null; homeLatitude: unknown; homeLongitude: unknown } | null
   ) {
     const inFlight = this.recalculationsByUser.get(userId);
     if (inFlight) {
@@ -77,21 +78,8 @@ export class StatsService {
 
   private async recalculateSnapshot(
     userId: string,
-    profile?: { homeLatitude: unknown; homeLongitude: unknown } | null
+    profile?: { gcUsername?: string | null; homeLatitude: unknown; homeLongitude: unknown } | null
   ) {
-    const finds = await this.prisma.find.findMany({
-      where: { userId },
-      include: {
-        cache: {
-          include: {
-            corrections: {
-              where: { userId }
-            }
-          }
-        }
-      },
-      orderBy: [{ foundAt: "asc" }, { createdAt: "asc" }]
-    });
     const hides = await this.prisma.hide.findMany({
       where: { userId },
       include: {
@@ -104,6 +92,20 @@ export class StatsService {
         }
       },
       orderBy: { placedAt: "asc" }
+    });
+    const gcUsername = normalizedGcUsername(profile);
+    const finds = await this.prisma.find.findMany({
+      where: countableFindWhere(userId, gcUsername),
+      include: {
+        cache: {
+          include: {
+            corrections: {
+              where: { userId }
+            }
+          }
+        }
+      },
+      orderBy: [{ foundAt: "asc" }, { createdAt: "asc" }]
     });
     const stats = calculateStats(
       finds.map((find) => ({
@@ -171,10 +173,12 @@ export class StatsService {
 
   async ftfFindsForUser(userId: string, options: { cursor?: string; limit?: number } = {}) {
     const limit = Math.min(Math.max(options.limit ?? DEFAULT_FTF_FIND_LIMIT, 1), MAX_FTF_FIND_LIMIT);
+    const profile = await this.prisma.geocachingProfile.findUnique({ where: { userId }, select: { gcUsername: true } });
+    const gcUsername = normalizedGcUsername(profile);
     let finds: FtfFindRow[];
     try {
       finds = await this.prisma.find.findMany({
-        where: { userId },
+        where: countableFindWhere(userId, gcUsername),
         select: {
           id: true,
           foundAt: true,

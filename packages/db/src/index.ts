@@ -1,4 +1,6 @@
-export { PrismaClient, Prisma } from "@prisma/client";
+import { PrismaClient, Prisma } from "@prisma/client";
+
+export { PrismaClient, Prisma };
 export type {
   Cache,
   CorrectedCoordinate,
@@ -8,3 +10,28 @@ export type {
   StatSnapshot,
   User
 } from "@prisma/client";
+
+export function countableFindWhere(userId: string, gcUsername: string | null): Prisma.FindWhereInput {
+  const filters: Prisma.FindWhereInput[] = [
+    {
+      cache: {
+        hides: {
+          none: { userId }
+        }
+      }
+    }
+  ];
+  if (gcUsername) {
+    filters.push({
+      NOT: {
+        cache: {
+          ownerName: {
+            equals: gcUsername,
+            mode: "insensitive"
+          }
+        }
+      }
+    });
+  }
+  return { userId, AND: filters };
+}

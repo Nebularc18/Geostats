@@ -1,7 +1,7 @@
-import { Cache, PrismaClient, Prisma } from "@geostats/db";
+import { Cache, countableFindWhere, PrismaClient, Prisma } from "@geostats/db";
 import { DEFAULT_FTF_DETECTION_TERMS, detectFtfLog, parseImportFile, termRegex as ftfTermRegex } from "@geostats/gpx-parser";
 import { ImportFileType, ImportJobPayload, ImportSource, ImportStatus } from "@geostats/shared";
-import { calculateHideStats, calculateStats } from "@geostats/stats";
+import { calculateHideStats, calculateStats, normalizedGcUsername } from "@geostats/stats";
 import { ObjectStorage } from "../storage/object-storage";
 
 type ParsedImportResult = Awaited<ReturnType<typeof parseImportFile>>;
@@ -390,19 +390,6 @@ export class ImportProcessor {
 
   private async recalculateStats(userId: string) {
     const profile = await this.prisma.geocachingProfile.findUnique({ where: { userId } });
-    const finds = await this.prisma.find.findMany({
-      where: { userId },
-      include: {
-        cache: {
-          include: {
-            corrections: {
-              where: { userId }
-            }
-          }
-        }
-      },
-      orderBy: [{ foundAt: "asc" }, { createdAt: "asc" }]
-    });
     const hides = await this.prisma.hide.findMany({
       where: { userId },
       include: {
@@ -415,6 +402,20 @@ export class ImportProcessor {
         }
       },
       orderBy: { placedAt: "asc" }
+    });
+    const gcUsername = normalizedGcUsername(profile);
+    const finds = await this.prisma.find.findMany({
+      where: countableFindWhere(userId, gcUsername),
+      include: {
+        cache: {
+          include: {
+            corrections: {
+              where: { userId }
+            }
+          }
+        }
+      },
+      orderBy: [{ foundAt: "asc" }, { createdAt: "asc" }]
     });
     const stats = calculateStats(
       finds.map((find) => ({
