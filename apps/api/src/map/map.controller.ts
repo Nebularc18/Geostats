@@ -6,6 +6,40 @@ import { PrismaService } from "../common/prisma.service";
 
 const MAP_CACHE_LIMIT = 5000;
 const UNKNOWN_LOCATION = "Unknown";
+const COUNTRY_CONTINENTS = new Map(
+  [
+    ["Algeria", "Africa"],
+    ["Chad", "Africa"],
+    ["Djibouti", "Africa"],
+    ["Egypt", "Africa"],
+    ["Eritrea", "Africa"],
+    ["Ethiopia", "Africa"],
+    ["Libya", "Africa"],
+    ["Mali", "Africa"],
+    ["Mauritania", "Africa"],
+    ["Morocco", "Africa"],
+    ["Niger", "Africa"],
+    ["Somalia", "Africa"],
+    ["Sudan", "Africa"],
+    ["Tunisia", "Africa"],
+    ["Western Sahara", "Africa"],
+    ["Bahrain", "Asia"],
+    ["Iran", "Asia"],
+    ["Iraq", "Asia"],
+    ["Israel", "Asia"],
+    ["Jordan", "Asia"],
+    ["Kuwait", "Asia"],
+    ["Lebanon", "Asia"],
+    ["Saudi Arabia", "Asia"],
+    ["Palestine", "Asia"],
+    ["Qatar", "Asia"],
+    ["Oman", "Asia"],
+    ["Syria", "Asia"],
+    ["United Arab Emirates", "Asia"],
+    ["UAE", "Asia"],
+    ["Yemen", "Asia"]
+  ].map(([country, continent]) => [country.toLowerCase(), continent])
+);
 
 type LocationBucket = {
   name: string;
@@ -33,7 +67,12 @@ function sortedBuckets(map: Map<string, number>): LocationBucket[] {
     .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
 }
 
-function continentFor(latitude: number, longitude: number) {
+function continentFor(latitude: number, longitude: number, country?: string | null) {
+  const countryContinent = country ? COUNTRY_CONTINENTS.get(country.trim().toLowerCase()) : null;
+  if (countryContinent) {
+    return countryContinent;
+  }
+
   if (latitude < -60) {
     return "Antarctica";
   }
@@ -122,19 +161,23 @@ export class MapController {
             longitude: true
           }
         }
-      }
+      },
+      orderBy: { foundAt: "desc" },
+      take: MAP_CACHE_LIMIT + 1
     });
+    const truncated = finds.length > MAP_CACHE_LIMIT;
+    const visibleFinds = truncated ? finds.slice(0, MAP_CACHE_LIMIT) : finds;
 
     const continents = new Map<string, number>();
     const countries = new Map<string, CountryBucket & { regionMap: Map<string, number>; countyMap: Map<string, number> }>();
 
-    for (const find of finds) {
+    for (const find of visibleFinds) {
       const latitude = Number(find.cache.latitude);
       const longitude = Number(find.cache.longitude);
       const country = locationName(find.cache.country);
       const region = locationName(find.cache.region);
       const county = locationName(find.cache.county);
-      const continent = continentFor(latitude, longitude);
+      const continent = continentFor(latitude, longitude, find.cache.country);
 
       increment(continents, continent);
 
@@ -167,7 +210,9 @@ export class MapController {
       .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
 
     return {
-      totalFinds: finds.length,
+      totalFinds: visibleFinds.length,
+      truncated,
+      limit: MAP_CACHE_LIMIT,
       continents: sortedBuckets(continents),
       countries: countryBuckets,
       maxCountryCount: Math.max(0, ...countryBuckets.map((country) => country.count))

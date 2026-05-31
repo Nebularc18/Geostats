@@ -16,6 +16,8 @@ export interface ScratchCountryBucket extends ScratchLocationBucket {
 
 export interface ScratchMapData {
   totalFinds: number;
+  truncated: boolean;
+  limit: number;
   continents: ScratchLocationBucket[];
   countries: ScratchCountryBucket[];
   maxCountryCount: number;

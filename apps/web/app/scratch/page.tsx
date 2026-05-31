@@ -242,6 +242,7 @@ export default function ScratchPage() {
   const maxCountyCount = Math.max(0, ...(activeCountry?.counties.map((county) => county.count) ?? []));
   const hasSupportedDetailMap = activeCountry?.name === "Sweden" || activeCountry?.name === "Iceland";
   const mapLevelLabel = MAP_LEVELS.find((level) => level.value === mapLevel)?.label ?? "Countries";
+  const findCountLabel = scratch?.truncated ? `${scratch.limit}+ logged finds` : `${scratch?.totalFinds ?? 0} logged finds`;
 
   return (
     <AppShell>
@@ -253,7 +254,7 @@ export default function ScratchPage() {
       </header>
       <section className="map-stage scratch-stage">
         <div className="map-toolbar scratch-toolbar">
-          <strong>{scratch?.totalFinds ?? 0} logged finds</strong>
+          <strong>{findCountLabel}</strong>
           <span>
             {mapLevel === "countries" || hasSupportedDetailMap
               ? `${mapLevelLabel.toLowerCase()} in view`

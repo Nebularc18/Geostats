@@ -12,8 +12,7 @@ async function bootstrap() {
     ...webOrigin
       .split(",")
       .map((origin) => origin.trim())
-      .filter(Boolean),
-    "http://127.0.0.1:3000"
+      .filter(Boolean)
   ]);
 
   app.enableCors({
