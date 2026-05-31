@@ -1212,7 +1212,7 @@ export function calculateStats(finds: StatsFind[], options: StatsOptions = {}): 
   const milestoneStats = calculateMilestoneStats(sorted);
 
   return {
-    statsVersion: 14,
+    statsVersion: 15,
     totalFinds,
     findsByYear: buckets(byYear).sort((a, b) => a.key.localeCompare(b.key)),
     findsByMonth: sortedMonths,

@@ -8,6 +8,11 @@ type ParsedImportResult = Awaited<ReturnType<typeof parseImportFile>>;
 type ParsedFindWithDate = ParsedImportResult["finds"][number] & { foundAt: Date };
 const FTF_TIME_LOOKAHEAD_LINES = 3;
 
+function normalizedGcUsername(profile?: { gcUsername?: string | null } | null): string | null {
+  const username = profile?.gcUsername?.trim().toLowerCase();
+  return username ? username : null;
+}
+
 function elevationFromRaw(raw: unknown): number | null {
   if (!raw || typeof raw !== "object") {
     return null;
@@ -390,19 +395,6 @@ export class ImportProcessor {
 
   private async recalculateStats(userId: string) {
     const profile = await this.prisma.geocachingProfile.findUnique({ where: { userId } });
-    const finds = await this.prisma.find.findMany({
-      where: { userId },
-      include: {
-        cache: {
-          include: {
-            corrections: {
-              where: { userId }
-            }
-          }
-        }
-      },
-      orderBy: [{ foundAt: "asc" }, { createdAt: "asc" }]
-    });
     const hides = await this.prisma.hide.findMany({
       where: { userId },
       include: {
@@ -416,6 +408,23 @@ export class ImportProcessor {
       },
       orderBy: { placedAt: "asc" }
     });
+    const ownHideCacheIds = new Set(hides.map((hide) => hide.cacheId));
+    const gcUsername = normalizedGcUsername(profile);
+    const finds = (
+      await this.prisma.find.findMany({
+        where: { userId },
+        include: {
+          cache: {
+            include: {
+              corrections: {
+                where: { userId }
+              }
+            }
+          }
+        },
+        orderBy: [{ foundAt: "asc" }, { createdAt: "asc" }]
+      })
+    ).filter((find) => !ownHideCacheIds.has(find.cacheId) && find.cache.ownerName?.trim().toLowerCase() !== gcUsername);
     const stats = calculateStats(
       finds.map((find) => ({
         foundAt: find.foundAt,
