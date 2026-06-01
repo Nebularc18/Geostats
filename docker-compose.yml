@@ -75,9 +75,14 @@ services:
       - path: .env
         required: false
     environment:
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env}
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+      WEB_ORIGIN: ${WEB_ORIGIN:?Set WEB_ORIGIN in .env}
       API_PORT: ${API_PORT:-3001}
       REDIS_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}@redis:6379
       S3_ENDPOINT: http://minio:9000
+      S3_REGION: ${S3_REGION:?Set S3_REGION in .env}
+      S3_BUCKET: ${S3_BUCKET:?Set S3_BUCKET in .env}
       S3_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER in .env}
       S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD in .env}
       S3_FORCE_PATH_STYLE: "true"
@@ -105,8 +110,11 @@ services:
       - path: .env
         required: false
     environment:
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env}
       REDIS_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}@redis:6379
       S3_ENDPOINT: http://minio:9000
+      S3_REGION: ${S3_REGION:?Set S3_REGION in .env}
+      S3_BUCKET: ${S3_BUCKET:?Set S3_BUCKET in .env}
       S3_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER in .env}
       S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD in .env}
       S3_FORCE_PATH_STYLE: "true"
@@ -117,6 +125,12 @@ services:
         condition: service_healthy
       minio-create-bucket:
         condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "node", "apps/worker/dist/healthcheck.js"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
 
   web:
     build:

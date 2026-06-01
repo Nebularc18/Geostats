@@ -3,9 +3,10 @@ import { ValidationPipe } from "@nestjs/common";
 import cookieParser from "cookie-parser";
 import { NestFactory } from "@nestjs/core";
 import { AppModule } from "./app.module";
-import { envOrDefault } from "./common/env";
+import { envOrDefault, portEnvOrDefault, validateRuntimeEnv } from "./common/env";
 
 async function bootstrap() {
+  validateRuntimeEnv();
   const app = await NestFactory.create(AppModule);
   const webOrigin = envOrDefault("WEB_ORIGIN", "http://localhost:3000");
   const allowedOrigins = new Set([
@@ -33,7 +34,7 @@ async function bootstrap() {
   );
   app.use(cookieParser());
 
-  const port = Number(process.env.API_PORT ?? 3001);
+  const port = portEnvOrDefault("API_PORT", 3001);
   await app.listen(port);
 }
 

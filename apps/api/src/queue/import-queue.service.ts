@@ -4,6 +4,16 @@ import IORedis from "ioredis";
 import { IMPORT_QUEUE_NAME, ImportJobPayload } from "@geostats/shared";
 import { requiredEnv } from "../common/env";
 
+const HEALTH_PING_TIMEOUT_MS = 1_000;
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timeout: NodeJS.Timeout;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeout = setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+  return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timeout));
+}
+
 @Injectable()
 export class ImportQueueService implements OnModuleDestroy {
   private readonly connection = new IORedis(requiredEnv("REDIS_URL"), {
@@ -18,6 +28,17 @@ export class ImportQueueService implements OnModuleDestroy {
       removeOnComplete: 100,
       removeOnFail: 100
     });
+  }
+
+  async ping() {
+    const result = await withTimeout(
+      this.connection.ping(),
+      HEALTH_PING_TIMEOUT_MS,
+      `Redis ping timed out after ${HEALTH_PING_TIMEOUT_MS}ms`
+    );
+    if (result !== "PONG") {
+      throw new Error(`Redis ping returned ${result}`);
+    }
   }
 
   async onModuleDestroy() {
