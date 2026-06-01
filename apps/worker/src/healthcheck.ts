@@ -22,19 +22,31 @@ async function main() {
   });
 
   try {
-    await prisma.user.count({ take: 1 });
     await redis.connect();
-    const pong = await redis.ping();
-    if (pong !== "PONG") {
-      throw new Error(`Redis ping returned ${pong}`);
+    const results = await Promise.allSettled([
+      prisma.user.count({ take: 1 }),
+      redis.ping().then((pong) => {
+        if (pong !== "PONG") {
+          throw new Error(`Redis ping returned ${pong}`);
+        }
+      }),
+      s3.send(new HeadBucketCommand({ Bucket: requiredEnv("S3_BUCKET") }))
+    ]);
+    const failed = results.filter((result): result is PromiseRejectedResult => result.status === "rejected");
+    if (failed.length > 0) {
+      throw new AggregateError(
+        failed.map((result) => result.reason),
+        "Health checks failed"
+      );
     }
-    await s3.send(new HeadBucketCommand({ Bucket: requiredEnv("S3_BUCKET") }));
   } finally {
     await Promise.allSettled([redis.quit(), prisma.$disconnect()]);
   }
 }
 
-main().catch((error: unknown) => {
-  console.error(error);
-  process.exit(1);
-});
+main()
+  .then(() => process.exit(0))
+  .catch((error: unknown) => {
+    console.error(error);
+    process.exit(1);
+  });

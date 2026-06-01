@@ -3,7 +3,7 @@ import { ValidationPipe } from "@nestjs/common";
 import cookieParser from "cookie-parser";
 import { NestFactory } from "@nestjs/core";
 import { AppModule } from "./app.module";
-import { envOrDefault, integerEnvOrDefault, validateRuntimeEnv } from "./common/env";
+import { envOrDefault, portEnvOrDefault, validateRuntimeEnv } from "./common/env";
 
 async function bootstrap() {
   validateRuntimeEnv();
@@ -34,7 +34,7 @@ async function bootstrap() {
   );
   app.use(cookieParser());
 
-  const port = integerEnvOrDefault("API_PORT", 3001);
+  const port = portEnvOrDefault("API_PORT", 3001);
   await app.listen(port);
 }
 
