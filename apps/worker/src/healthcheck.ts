@@ -7,7 +7,7 @@ async function main() {
   validateRuntimeEnv();
 
   const redis = new IORedis(requiredEnv("REDIS_URL"), {
-    maxRetriesPerRequest: null,
+    maxRetriesPerRequest: 0,
     lazyConnect: true
   });
   const prisma = new PrismaClient();

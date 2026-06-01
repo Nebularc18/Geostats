@@ -18,17 +18,15 @@ export class HealthController {
       this.queue.ping(),
       this.storage.ping()
     ]);
-    const failed = checks
-      .map((result, index) => ({ result, name: ["database", "redis", "s3"][index] }))
-      .filter((check): check is { result: PromiseRejectedResult; name: string } => check.result.status === "rejected");
+    const names = ["database", "redis", "s3"];
+    const checkStatuses = Object.fromEntries(
+      checks.map((result, index) => [names[index], result.status === "fulfilled" ? "ok" : "unhealthy"])
+    );
 
-    if (failed.length > 0) {
-      throw new ServiceUnavailableException({
-        status: "error",
-        checks: Object.fromEntries(failed.map((check) => [check.name, "unhealthy"]))
-      });
+    if (checks.some((result) => result.status === "rejected")) {
+      throw new ServiceUnavailableException({ status: "error", checks: checkStatuses });
     }
 
-    return { status: "ok", checks: { database: "ok", redis: "ok", s3: "ok" } };
+    return { status: "ok", checks: checkStatuses };
   }
 }
