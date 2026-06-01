@@ -1,5 +1,5 @@
 import { Injectable } from "@nestjs/common";
-import { DeleteObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { DeleteObjectCommand, HeadBucketCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { envOrDefault, requiredEnv } from "../common/env";
 
 @Injectable()
@@ -33,5 +33,9 @@ export class StorageService {
         Key: key
       })
     );
+  }
+
+  async ping() {
+    await this.client.send(new HeadBucketCommand({ Bucket: this.bucket }));
   }
 }

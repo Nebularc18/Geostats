@@ -25,4 +25,5 @@ COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/apps/api/node_modules ./apps/api/node_modules
 COPY --from=build /app/packages ./packages
 COPY --from=build /app/apps/api/dist ./apps/api/dist
+RUN node -e "require('./packages/db/node_modules/@prisma/client')"
 CMD ["node", "apps/api/dist/main.js"]

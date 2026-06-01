@@ -2,10 +2,11 @@ import { Worker } from "bullmq";
 import IORedis from "ioredis";
 import { IMPORT_QUEUE_NAME, ImportJobPayload } from "@geostats/shared";
 import { PrismaClient } from "@geostats/db";
-import { requiredEnv } from "./config/env";
+import { optionalPositiveIntegerEnv, requiredEnv, validateRuntimeEnv } from "./config/env";
 import { ImportProcessor } from "./imports/import-processor";
 import { ObjectStorage } from "./storage/object-storage";
 
+validateRuntimeEnv();
 const connection = new IORedis(requiredEnv("REDIS_URL"), {
   maxRetriesPerRequest: null
 });
@@ -18,7 +19,7 @@ const worker = new Worker<ImportJobPayload>(
   async (job) => {
     await processor.process(job.data);
   },
-  { connection, concurrency: Number(process.env.IMPORT_WORKER_CONCURRENCY ?? 2) }
+  { connection, concurrency: optionalPositiveIntegerEnv("IMPORT_WORKER_CONCURRENCY", 2) }
 );
 
 worker.on("completed", (job) => {

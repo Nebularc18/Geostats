@@ -20,6 +20,13 @@ export class ImportQueueService implements OnModuleDestroy {
     });
   }
 
+  async ping() {
+    const result = await this.connection.ping();
+    if (result !== "PONG") {
+      throw new Error(`Redis ping returned ${result}`);
+    }
+  }
+
   async onModuleDestroy() {
     await this.queue.close();
     await this.connection.quit();
