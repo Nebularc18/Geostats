@@ -531,7 +531,9 @@ function sortByMode<T extends { current: number | null; thresholds: number[]; lo
       return direction * levelDiff;
     }
 
-    const currentDiff = (b.current ?? -Infinity) - (a.current ?? -Infinity);
+    const aVal = a.current ?? -Infinity;
+    const bVal = b.current ?? -Infinity;
+    const currentDiff = a.lowerIsBetter ? aVal - bVal : bVal - aVal;
     if (currentDiff !== 0) {
       return direction * currentDiff;
     }
@@ -600,30 +602,40 @@ export function AchievementBadges({
         if (active) {
           setScratchCountries(data.countries);
         }
+        const detailCountries = [
+          { name: "Sweden", url: SWEDEN_REGION_GEOJSON_URL, propertyName: "name" },
+          { name: "Iceland", url: ICELAND_REGION_GEOJSON_URL, propertyName: "shapeName" }
+        ].filter((detailCountry) => data.countries.some((country) => country.name === detailCountry.name));
+
+        if (detailCountries.length === 0) {
+          if (active) {
+            setCountryRegionTotals(new Map());
+          }
+          return;
+        }
+
         try {
           const pointsData = await apiFetch<{ points: CacheMapPoint[] }>("/map/caches");
-          const [swedenRegions, icelandRegions, swedenRegionNames, icelandRegionNames] = await Promise.all([
-            deriveBucketsFromBoundaries(pointsData.points, SWEDEN_REGION_GEOJSON_URL, "name"),
-            deriveBucketsFromBoundaries(pointsData.points, ICELAND_REGION_GEOJSON_URL, "shapeName"),
-            boundaryNames(SWEDEN_REGION_GEOJSON_URL, "name"),
-            boundaryNames(ICELAND_REGION_GEOJSON_URL, "shapeName")
-          ]);
+          const derivedRegions = await Promise.all(
+            detailCountries.map(async (country) => [
+              country.name,
+              await deriveBucketsFromBoundaries(pointsData.points, country.url, country.propertyName)
+            ] as const)
+          );
+          const regionTotals = await Promise.all(
+            detailCountries.map(async (country) => [
+              country.name,
+              (await boundaryNames(country.url, country.propertyName)).length
+            ] as const)
+          );
           if (active) {
             setScratchCountries(
               withDerivedRegions(
                 data.countries,
-                new Map([
-                  ["Sweden", swedenRegions],
-                  ["Iceland", icelandRegions]
-                ])
+                new Map(derivedRegions)
               )
             );
-            setCountryRegionTotals(
-              new Map([
-                ["Sweden", swedenRegionNames.length],
-                ["Iceland", icelandRegionNames.length]
-              ])
-            );
+            setCountryRegionTotals(new Map(regionTotals));
           }
         } catch {
           if (active) {
