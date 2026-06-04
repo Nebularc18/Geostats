@@ -5,18 +5,39 @@ import { AppShell } from "../../components/app-shell";
 import { CacheMap, CacheMapPoint, getCacheTypeColor } from "../../components/cache-map";
 import { apiFetch } from "../../lib/api";
 
+function mapPointDate(point: CacheMapPoint) {
+  return point.isOwnHide ? point.placedAt : point.foundAt;
+}
+
+function mapPointTime(point: CacheMapPoint) {
+  const timestamp = Date.parse(mapPointDate(point) ?? "");
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
 export default function MapPage() {
   const [points, setPoints] = useState<CacheMapPoint[]>([]);
 
   useEffect(() => {
-    void Promise.all([
+    let active = true;
+    void Promise.allSettled([
       apiFetch<{ points: CacheMapPoint[] }>("/map/caches"),
       apiFetch<{ points: CacheMapPoint[] }>("/map/hides")
-    ]).then(([findData, hideData]) => setPoints([...findData.points, ...hideData.points]));
+    ]).then(([findResult, hideResult]) => {
+      if (!active) {
+        return;
+      }
+      const findPoints = findResult.status === "fulfilled" ? findResult.value.points : [];
+      const hidePoints = hideResult.status === "fulfilled" ? hideResult.value.points : [];
+      setPoints([...findPoints, ...hidePoints]);
+    });
+    return () => {
+      active = false;
+    };
   }, []);
 
   const findCount = points.filter((point) => !point.isOwnHide).length;
   const ownHideCount = points.length - findCount;
+  const visiblePoints = [...points].sort((a, b) => mapPointTime(b) - mapPointTime(a)).slice(0, 20);
 
   return (
     <AppShell>
@@ -34,8 +55,8 @@ export default function MapPage() {
       <section className="panel">
         <h2>Recent map points</h2>
         <div className="table-list">
-          {points.slice(0, 20).map((point) => (
-            <div key={`${point.gcCode}-${point.foundAt}`} className="table-row">
+          {visiblePoints.map((point) => (
+            <div key={`${point.isOwnHide ? "hide" : "find"}-${point.gcCode}-${mapPointDate(point) || point.id}`} className="table-row">
               <a
                 className="cache-link"
                 href={`https://coord.info/${point.gcCode}`}

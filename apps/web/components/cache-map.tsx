@@ -10,7 +10,8 @@ export interface CacheMapPoint {
   cacheType: string | null;
   latitude: number;
   longitude: number;
-  foundAt: string;
+  foundAt?: string;
+  placedAt?: string;
   isOwnHide?: boolean;
 }
 

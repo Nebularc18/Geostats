@@ -204,7 +204,7 @@ export class MapController {
         cacheType: hide.cache.cacheType,
         latitude: Number(hide.cache.latitude),
         longitude: Number(hide.cache.longitude),
-        foundAt: hide.placedAt?.toISOString() ?? "",
+        placedAt: hide.placedAt?.toISOString() ?? "",
         isOwnHide: true
       }))
     };
