@@ -1156,6 +1156,7 @@ export function calculateStats(finds: StatsFind[], options: StatsOptions = {}): 
   const byCountry = new Map<string, number>();
   const byRegion = new Map<string, number>();
   const byCounty = new Map<string, number>();
+  const cacheTypesByDay = new Map<string, Set<string>>();
   const dt = new Map<string, DifficultyTerrainCell>();
   const wayTo81: WayTo81Entry[] = [];
   const seenDifficultyTerrain = new Set<string>();
@@ -1168,7 +1169,7 @@ export function calculateStats(finds: StatsFind[], options: StatsOptions = {}): 
     const day = dateKey(foundAt);
     increment(byYear, year);
     increment(byMonth, foundAt.toISOString().slice(0, 7));
-    increment(byDay, dateKey(foundAt));
+    increment(byDay, day);
     increment(byFoundDate, monthDayKey(foundAt));
     increment(byCalendarMonth, String(foundAt.getUTCMonth()));
     increment(byWeekday, String(foundAt.getUTCDay()));
@@ -1178,6 +1179,12 @@ export function calculateStats(finds: StatsFind[], options: StatsOptions = {}): 
     increment(byRegion, find.cache.region);
     increment(byCounty, find.cache.county);
     increment(byOwner, find.cache.ownerName);
+    const cacheType = find.cache.cacheType?.trim();
+    if (cacheType) {
+      const dayTypes = cacheTypesByDay.get(day) ?? new Set<string>();
+      dayTypes.add(cacheType);
+      cacheTypesByDay.set(day, dayTypes);
+    }
     for (const attribute of cacheAttributes(find.cache)) {
       const id = attributeId(attribute);
       if (id && isPositiveAttribute(attribute)) {
@@ -1263,15 +1270,7 @@ export function calculateStats(finds: StatsFind[], options: StatsOptions = {}): 
   const distanceStats = calculateDistanceStats(sorted, options);
   const maxCacheTypesInDay = Math.max(
     0,
-    ...[...new Set(sorted.map((find) => dateKey(toDate(find.foundAt))))].map((day) => {
-      const types = new Set(
-        sorted
-          .filter((find) => dateKey(toDate(find.foundAt)) === day)
-          .map((find) => find.cache.cacheType?.trim())
-          .filter((type): type is string => Boolean(type))
-      );
-      return types.size;
-    })
+    ...[...cacheTypesByDay.values()].map((types) => types.size)
   );
   const longLogsWritten = sorted.filter((find) => wordCount(find.logText) >= 100).length;
 

@@ -313,7 +313,7 @@ function buildBadges(stats: StatsSummary | null): BadgeDefinition[] {
       name: "The Giga Social Cacher",
       metric: "Giga Event caches",
       current: countForBucket(typeBuckets, cacheTypeAliases.giga),
-      thresholds: [1, 1, 2, 3, 4, 5, 5, 6],
+      thresholds: [1, 2, 3, 4, 5, 6, 7, 8],
       icon: PartyPopper
     },
     {
@@ -321,7 +321,7 @@ function buildBadges(stats: StatsSummary | null): BadgeDefinition[] {
       name: "The GPS Maze Cacher",
       metric: "GPS Maze caches",
       current: countForBucket(typeBuckets, cacheTypeAliases.gpsMaze),
-      thresholds: [1, 1, 1, 2, 3, 4, 4, 5],
+      thresholds: [1, 2, 3, 4, 5, 6, 7, 8],
       icon: Compass
     },
     {
@@ -449,7 +449,7 @@ function buildBadges(stats: StatsSummary | null): BadgeDefinition[] {
       name: "The Event Host",
       metric: "Hosted event caches",
       current: achievementStats?.hostedEventCaches ?? hideStats?.hostedEventCaches ?? null,
-      thresholds: [1, 2, 3, 5, 8, 12, 18, 300],
+      thresholds: [1, 2, 3, 5, 8, 12, 18, 30],
       icon: PartyPopper
     }
   ];
