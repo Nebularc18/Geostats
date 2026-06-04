@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { AchievementBadges } from "../../components/achievement-badges";
 import { AppShell } from "../../components/app-shell";
 import { CountBarChart } from "../../components/charts";
 import { StatCard } from "../../components/stat-card";
@@ -114,6 +115,7 @@ export default function DashboardPage() {
           </div>
         </div>
       </section>
+      <AchievementBadges stats={stats} variant="dashboard" />
     </AppShell>
   );
 }

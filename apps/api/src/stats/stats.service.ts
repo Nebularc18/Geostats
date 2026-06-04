@@ -3,7 +3,7 @@ import { countableFindWhere, Prisma } from "@geostats/db";
 import { calculateHideStats, calculateStats, normalizedGcUsername } from "@geostats/stats";
 import { PrismaService } from "../common/prisma.service";
 
-const STATS_VERSION = 15;
+const STATS_VERSION = 16;
 const DEFAULT_FTF_FIND_LIMIT = 100;
 const MAX_FTF_FIND_LIMIT = 200;
 const MAX_FTF_LOG_TEXT_LENGTH = 1_000;
@@ -111,6 +111,7 @@ export class StatsService {
       finds.map((find) => ({
         foundAt: find.foundAt,
         isFtf: find.isFtf,
+        logText: find.logText,
         cache: {
           latitude: Number(find.cache.corrections[0]?.latitude ?? find.cache.latitude),
           longitude: Number(find.cache.corrections[0]?.longitude ?? find.cache.longitude),
@@ -157,6 +158,7 @@ export class StatsService {
         }
       }))
     );
+    stats.achievementStats.hostedEventCaches = stats.hideStats.hostedEventCaches;
 
     await this.prisma.$transaction(async (tx) => {
       await tx.statSnapshot.deleteMany({ where: { userId } });

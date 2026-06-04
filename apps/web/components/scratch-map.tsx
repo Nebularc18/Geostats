@@ -34,7 +34,7 @@ const COUNTRY_SELECTED_LINE_LAYER_ID = "scratch-selected-country";
 const COUNTRY_NAME_PROPERTY = "name";
 const COUNTRY_GEOJSON_URL =
   "https://raw.githubusercontent.com/datasets/geo-countries/master/data/countries.geojson";
-const SWEDEN_REGION_GEOJSON_URL =
+export const SWEDEN_REGION_GEOJSON_URL =
   "https://raw.githubusercontent.com/okfse/sweden-geojson/master/swedish_regions.geojson";
 export const SWEDEN_COUNTY_GEOJSON_URL =
   "https://raw.githubusercontent.com/okfse/sweden-geojson/master/swedish_municipalities.geojson";

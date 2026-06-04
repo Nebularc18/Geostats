@@ -54,8 +54,11 @@ select {
 .sidebar {
   position: sticky;
   top: 0;
+  display: flex;
+  flex-direction: column;
   height: 100vh;
   padding: 24px;
+  overflow-y: auto;
   border-right: 1px solid var(--line);
   background: rgba(15, 22, 18, 0.88);
   backdrop-filter: blur(14px);
@@ -118,6 +121,301 @@ nav a:hover {
 .ghost-button:hover {
   border-color: rgba(95, 191, 133, 0.5);
   background: rgba(95, 191, 133, 0.12);
+}
+
+.sidebar-attribution {
+  margin: auto 0 0;
+  padding-top: 24px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
+.sidebar-badges {
+  display: grid;
+  gap: 10px;
+}
+
+.dashboard-badges {
+  gap: 16px;
+}
+
+.sidebar-badges-heading,
+.country-badges-heading,
+.achievement-badges-heading,
+.badge-summary-strip,
+.badge-row-main,
+.badge-row-numbers {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.sidebar-badges-heading {
+  color: var(--ink);
+}
+
+.country-badges-heading {
+  color: var(--ink);
+}
+
+.achievement-badges-heading {
+  margin-top: 12px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(237, 244, 232, 0.1);
+  color: var(--ink);
+}
+
+.sidebar-badges-heading span,
+.achievement-badges-heading span {
+  display: grid;
+  gap: 2px;
+}
+
+.country-badges-heading span {
+  display: grid;
+  gap: 2px;
+}
+
+.sidebar-badges-heading strong,
+.country-badges-heading strong,
+.achievement-badges-heading strong {
+  font-size: 1.1rem;
+}
+
+.badge-sort-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.badge-sort-controls button {
+  min-height: 32px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--ink);
+  background: rgba(237, 244, 232, 0.035);
+  cursor: pointer;
+}
+
+.badge-sort-controls button.active,
+.badge-sort-controls button:hover {
+  border-color: rgba(95, 191, 133, 0.5);
+  background: rgba(95, 191, 133, 0.16);
+}
+
+.badge-summary-strip {
+  flex-wrap: wrap;
+  padding: 6px 8px;
+  border: 1px solid rgba(217, 145, 69, 0.24);
+  border-radius: 6px;
+  color: color-mix(in srgb, var(--ochre) 82%, var(--ink));
+  background: rgba(217, 145, 69, 0.08);
+  font-size: 0.72rem;
+}
+
+.badge-summary-strip span {
+  white-space: nowrap;
+}
+
+.badge-list {
+  display: grid;
+  gap: 8px;
+}
+
+.dashboard-badges .badge-list {
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
+}
+
+.country-badge-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 12px;
+}
+
+.badge-row {
+  display: grid;
+  gap: 8px;
+  padding: 9px;
+  border: 1px solid rgba(237, 244, 232, 0.1);
+  border-radius: 8px;
+  background:
+    linear-gradient(90deg, rgba(95, 191, 133, 0.18) calc(var(--badge-progress) * 100%), transparent 0),
+    rgba(237, 244, 232, 0.035);
+}
+
+.country-badge-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 68px;
+  padding: 12px;
+  border: 1px solid rgba(237, 244, 232, 0.1);
+  border-radius: 8px;
+  background:
+    linear-gradient(90deg, rgba(95, 191, 133, 0.18) calc(var(--badge-progress) * 100%), transparent 0),
+    rgba(237, 244, 232, 0.035);
+}
+
+.badge-row-main {
+  align-items: flex-start;
+  justify-content: flex-start;
+}
+
+.badge-row-main > span:last-child {
+  min-width: 0;
+}
+
+.badge-row-main strong {
+  display: block;
+  overflow: hidden;
+  font-size: 0.82rem;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.badge-row-main small {
+  display: block;
+  overflow: hidden;
+  margin-top: 2px;
+  font-size: 0.68rem;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.country-badge-row > span:last-child {
+  min-width: 0;
+}
+
+.country-badge-row strong,
+.country-badge-row small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.country-badge-row small {
+  margin-top: 2px;
+  font-size: 0.72rem;
+}
+
+.badge-icon {
+  --badge-tier: color-mix(in srgb, var(--ochre) 78%, var(--green));
+  --badge-tier-ink: #07110b;
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid rgba(237, 244, 232, 0.14);
+  border-radius: 999px;
+  color: var(--badge-tier-ink);
+  background: var(--badge-tier);
+  box-shadow: inset 0 0 0 2px rgba(7, 17, 11, 0.22);
+}
+
+.badge-icon.locked {
+  --badge-tier: rgba(237, 244, 232, 0.12);
+  --badge-tier-ink: var(--muted);
+}
+
+.badge-icon.bronze {
+  --badge-tier: #b97545;
+}
+
+.badge-icon.silver {
+  --badge-tier: #c6ced0;
+}
+
+.badge-icon.gold {
+  --badge-tier: #e5b946;
+}
+
+.badge-icon.platinum {
+  --badge-tier: #e1e7dd;
+}
+
+.badge-icon.ruby {
+  --badge-tier: #c94b62;
+  --badge-tier-ink: #fff7f8;
+}
+
+.badge-icon.sapphire {
+  --badge-tier: #4d8dc7;
+  --badge-tier-ink: #f3f9ff;
+}
+
+.badge-icon.emerald {
+  --badge-tier: #44b884;
+}
+
+.badge-icon.diamond {
+  --badge-tier: #ccecff;
+}
+
+.badge-cell-grid {
+  display: grid;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  gap: 2px;
+}
+
+.badge-cell-grid span {
+  min-height: 10px;
+  border: 1px solid rgba(237, 244, 232, 0.09);
+  border-radius: 2px;
+  background: rgba(237, 244, 232, 0.06);
+}
+
+.badge-cell-grid span.earned {
+  border-color: rgba(95, 191, 133, 0.28);
+  background: rgba(95, 191, 133, 0.58);
+}
+
+.badge-cell-grid span.current {
+  background: var(--green);
+  box-shadow: 0 0 0 1px rgba(237, 244, 232, 0.18), 0 0 14px rgba(95, 191, 133, 0.26);
+}
+
+.badge-row-numbers {
+  font-variant-numeric: tabular-nums;
+}
+
+.badge-row-numbers span {
+  display: grid;
+  gap: 1px;
+}
+
+.badge-row-numbers span:last-child {
+  text-align: right;
+}
+
+.badge-row-numbers small {
+  font-size: 0.62rem;
+  text-transform: uppercase;
+}
+
+.badge-row-numbers strong {
+  font-size: 0.78rem;
+}
+
+.dashboard-badges .badge-row {
+  min-height: 132px;
+  padding: 12px;
+}
+
+.dashboard-badges .badge-row-main strong {
+  font-size: 0.95rem;
+}
+
+.dashboard-badges .badge-cell-grid span {
+  min-height: 14px;
 }
 
 .content {
@@ -1499,6 +1797,10 @@ select:focus {
   .sidebar {
     position: static;
     height: auto;
+  }
+
+  .sidebar-attribution {
+    margin-top: 18px;
   }
 
   .content {

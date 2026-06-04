@@ -86,6 +86,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <button className="ghost-button" type="button" onClick={logout}>
           Sign out
         </button>
+        <p className="sidebar-attribution">Inspired by Project-GC</p>
       </aside>
       <main className="content">{profileChecked ? children : null}</main>
     </div>

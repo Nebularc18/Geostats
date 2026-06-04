@@ -19,6 +19,7 @@ export interface StatsCache {
 export interface StatsFind {
   foundAt: Date | string;
   isFtf?: boolean;
+  logText?: string | null;
   cache: StatsCache;
 }
 
@@ -130,6 +131,7 @@ export interface DistanceStats {
   distanceBuckets: PercentBucket[];
   bearingBuckets: PercentBucket[];
   averageDistanceKm: number | null;
+  maxDistanceKm: number | null;
 }
 
 export interface SummaryNumbers {
@@ -148,6 +150,14 @@ export interface SummaryNumbers {
   last365FindsPerMonth: number;
   bestDay: CountBucket | null;
   bestMonth: CountBucket | null;
+}
+
+export interface AchievementStats {
+  distinctAttributes: number;
+  maxCacheTypesInDay: number;
+  maxDistanceKm: number | null;
+  longLogsWritten: number;
+  hostedEventCaches: number;
 }
 
 export interface WayTo81Entry {
@@ -247,6 +257,7 @@ export interface FtfWayTo81Entry {
 
 export interface HideStats {
   totalHides: number;
+  hostedEventCaches: number;
   activeHides: number;
   archivedHides: number;
   totalReceivedLogs: number;
@@ -312,6 +323,7 @@ export interface StatsSnapshot {
   ftfStats: FtfStats;
   distanceStats: DistanceStats | null;
   hideStats: HideStats;
+  achievementStats: AchievementStats;
   summaryNumbers: SummaryNumbers;
   cacheTypes: CountBucket[];
   difficultyTerrain: DifficultyTerrainCell[];
@@ -785,6 +797,29 @@ function favoritePoints(cache: StatsCache): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function cacheAttributes(cache: StatsCache): Array<Record<string, any>> {
+  const extension = rawCacheExtension(cache);
+  const attributes = extension["groundspeak:attributes"]?.["groundspeak:attribute"] ?? extension.attributes?.attribute;
+  return asRawArray<Record<string, any>>(attributes);
+}
+
+function attributeId(attribute: Record<string, any>): string | null {
+  return firstRawText(attribute.id, attribute["@_id"], attribute.text);
+}
+
+function isPositiveAttribute(attribute: Record<string, any>): boolean {
+  const inc = firstRawText(attribute.inc, attribute["@_inc"]);
+  return inc !== "0" && inc?.toLowerCase() !== "false";
+}
+
+function wordCount(text: string | null | undefined): number {
+  return text?.trim().split(/\s+/).filter(Boolean).length ?? 0;
+}
+
+function countHostedEventCaches(hides: StatsHide[]): number {
+  return hides.filter((hide) => /event/i.test(hide.cache.cacheType ?? "")).length;
+}
+
 function coordLabel(cache: StatsCache): string {
   const lat = cache.latitude == null ? null : Number(cache.latitude);
   const lon = cache.longitude == null ? null : Number(cache.longitude);
@@ -941,6 +976,7 @@ export function calculateHideStats(hides: StatsHide[]): HideStats {
 
   return {
     totalHides,
+    hostedEventCaches: countHostedEventCaches(hides),
     activeHides: totalHides - archivedHides,
     archivedHides,
     totalReceivedLogs,
@@ -1060,6 +1096,7 @@ function calculateDistanceStats(finds: StatsFind[], options: StatsOptions): Dist
   const bearingMap = new Map<string, number>();
   let totalDistance = 0;
   let distanceCount = 0;
+  let maxDistanceKm: number | null = null;
 
   for (const find of finds) {
     const latitude = find.cache.latitude;
@@ -1076,6 +1113,7 @@ function calculateDistanceStats(finds: StatsFind[], options: StatsOptions): Dist
     increment(bearingMap, bearingKey);
     totalDistance += distance;
     distanceCount += 1;
+    maxDistanceKm = maxDistanceKm == null ? distance : Math.max(maxDistanceKm, distance);
   }
 
   return {
@@ -1092,7 +1130,8 @@ function calculateDistanceStats(finds: StatsFind[], options: StatsOptions): Dist
         percent: distanceCount > 0 ? (count / distanceCount) * 100 : 0
       };
     }),
-    averageDistanceKm: distanceCount > 0 ? totalDistance / distanceCount : null
+    averageDistanceKm: distanceCount > 0 ? totalDistance / distanceCount : null,
+    maxDistanceKm
   };
 }
 
@@ -1117,9 +1156,11 @@ export function calculateStats(finds: StatsFind[], options: StatsOptions = {}): 
   const byCountry = new Map<string, number>();
   const byRegion = new Map<string, number>();
   const byCounty = new Map<string, number>();
+  const cacheTypesByDay = new Map<string, Set<string>>();
   const dt = new Map<string, DifficultyTerrainCell>();
   const wayTo81: WayTo81Entry[] = [];
   const seenDifficultyTerrain = new Set<string>();
+  const attributeIds = new Set<string>();
   let previousWayTo81Date: Date | null = null;
 
   for (const find of sorted) {
@@ -1128,7 +1169,7 @@ export function calculateStats(finds: StatsFind[], options: StatsOptions = {}): 
     const day = dateKey(foundAt);
     increment(byYear, year);
     increment(byMonth, foundAt.toISOString().slice(0, 7));
-    increment(byDay, dateKey(foundAt));
+    increment(byDay, day);
     increment(byFoundDate, monthDayKey(foundAt));
     increment(byCalendarMonth, String(foundAt.getUTCMonth()));
     increment(byWeekday, String(foundAt.getUTCDay()));
@@ -1138,6 +1179,18 @@ export function calculateStats(finds: StatsFind[], options: StatsOptions = {}): 
     increment(byRegion, find.cache.region);
     increment(byCounty, find.cache.county);
     increment(byOwner, find.cache.ownerName);
+    const cacheType = find.cache.cacheType?.trim();
+    if (cacheType) {
+      const dayTypes = cacheTypesByDay.get(day) ?? new Set<string>();
+      dayTypes.add(cacheType);
+      cacheTypesByDay.set(day, dayTypes);
+    }
+    for (const attribute of cacheAttributes(find.cache)) {
+      const id = attributeId(attribute);
+      if (id && isPositiveAttribute(attribute)) {
+        attributeIds.add(id);
+      }
+    }
 
     if (find.cache.elevationMeters != null && Number.isFinite(find.cache.elevationMeters)) {
       increment(byElevation, elevationBucket(find.cache.elevationMeters));
@@ -1214,11 +1267,17 @@ export function calculateStats(finds: StatsFind[], options: StatsOptions = {}): 
     null
   );
   const totalFinds = sorted.length;
+  const distanceStats = calculateDistanceStats(sorted, options);
+  const maxCacheTypesInDay = Math.max(
+    0,
+    ...[...cacheTypesByDay.values()].map((types) => types.size)
+  );
+  const longLogsWritten = sorted.filter((find) => wordCount(find.logText) >= 100).length;
 
   const milestoneStats = calculateMilestoneStats(sorted);
 
   return {
-    statsVersion: 15,
+    statsVersion: 16,
     totalFinds,
     findsByYear: buckets(byYear).sort((a, b) => a.key.localeCompare(b.key)),
     findsByMonth: sortedMonths,
@@ -1244,8 +1303,15 @@ export function calculateStats(finds: StatsFind[], options: StatsOptions = {}): 
     ownerBuckets: percentBuckets(byOwner, totalFinds),
     wayTo81,
     ftfStats: calculateFtfStats(sorted, options),
-    distanceStats: calculateDistanceStats(sorted, options),
+    distanceStats,
     hideStats: calculateHideStats([]),
+    achievementStats: {
+      distinctAttributes: attributeIds.size,
+      maxCacheTypesInDay,
+      maxDistanceKm: distanceStats?.maxDistanceKm ?? null,
+      longLogsWritten,
+      hostedEventCaches: 0
+    },
     summaryNumbers: {
       totalFinds,
       cachingDays,
