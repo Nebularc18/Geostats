@@ -66,7 +66,7 @@ TFTC</groundspeak:text>
   </wpt>
 </gpx>`;
 
-test("process uses database object metadata and updates existing shared cache rows", async () => {
+test("process uses database object metadata without overwriting existing shared cache rows", async () => {
   const existingCache = {
     id: "cache-1",
     gcCode: "GC12345",
@@ -85,10 +85,6 @@ test("process uses database object metadata and updates existing shared cache ro
     raw: null,
     createdAt: new Date(),
     updatedAt: new Date()
-  };
-  const updatedCache = {
-    ...existingCache,
-    name: "Attacker Cache Name"
   };
   const importRecord = {
     id: "import-1",
@@ -121,7 +117,7 @@ test("process uses database object metadata and updates existing shared cache ro
     cache: {
       upsert: async (input: any) => {
         cacheUpserts.push(input);
-        return updatedCache;
+        return existingCache;
       }
     },
     $transaction: async (callback: (transaction: typeof tx) => Promise<unknown>) => callback(tx),
@@ -158,10 +154,10 @@ test("process uses database object metadata and updates existing shared cache ro
   assert.equal(cacheUpserts.length, 1);
   assert.deepEqual(cacheUpserts[0].where, { gcCode: "GC12345" });
   assert.equal(cacheUpserts[0].create.name, "Attacker Cache Name");
-  assert.equal(cacheUpserts[0].update.name, "Attacker Cache Name");
+  assert.deepEqual(cacheUpserts[0].update, {});
 });
 
-test("process recovers from concurrent cache upsert conflict before the import transaction", async () => {
+test("process recovers from concurrent cache upsert conflict by reading the existing cache", async () => {
   const createdCache = {
     id: "cache-1",
     gcCode: "GC12345",
@@ -190,7 +186,7 @@ test("process recovers from concurrent cache upsert conflict before the import t
     objectKey: "user-1/original.gpx"
   };
   let cacheUpsertCalls = 0;
-  let cacheUpdateCalls = 0;
+  let cacheFindCalls = 0;
   let importTransactionStarted = false;
 
   const tx = {
@@ -218,8 +214,9 @@ test("process recovers from concurrent cache upsert conflict before the import t
           clientVersion: "test"
         });
       },
-      update: async () => {
-        cacheUpdateCalls += 1;
+      findUnique: async (input: any) => {
+        assert.deepEqual(input.where, { gcCode: "GC12345" });
+        cacheFindCalls += 1;
         return createdCache;
       }
     },
@@ -254,11 +251,11 @@ test("process recovers from concurrent cache upsert conflict before the import t
   });
 
   assert.equal(cacheUpsertCalls, 1);
-  assert.equal(cacheUpdateCalls, 1);
+  assert.equal(cacheFindCalls, 1);
   assert.equal(importTransactionStarted, true);
 });
 
-test("process updates existing cache metadata before the import transaction", async () => {
+test("process creates missing cache metadata before the import transaction", async () => {
   const existingCache = {
     id: "cache-1",
     gcCode: "GC12345",
@@ -278,7 +275,7 @@ test("process updates existing cache metadata before the import transaction", as
     createdAt: new Date(),
     updatedAt: new Date()
   };
-  const updatedCache = {
+  const createdCache = {
     ...existingCache,
     name: "Attacker Cache Name",
     difficulty: 2,
@@ -295,12 +292,12 @@ test("process updates existing cache metadata before the import transaction", as
     objectKey: "user-1/original.gpx"
   };
   let importTransactionStarted = false;
-  let cacheUpdateCompleted = false;
+  let cacheCreateCompleted = false;
 
   const tx = {
     hide: {
       upsert: async () => {
-        assert.equal(cacheUpdateCompleted, true);
+        assert.equal(cacheCreateCompleted, true);
         return {};
       }
     },
@@ -318,12 +315,13 @@ test("process updates existing cache metadata before the import transaction", as
       update: async () => ({})
     },
     cache: {
-      upsert: async ({ update }: any) => {
-        assert.equal(update.name, "Attacker Cache Name");
-        assert.equal(update.latitude, 56.1612);
-        assert.equal(update.longitude, 15.5869);
-        cacheUpdateCompleted = true;
-        return updatedCache;
+      upsert: async ({ create, update }: any) => {
+        assert.equal(create.name, "Attacker Cache Name");
+        assert.equal(create.latitude, 56.1612);
+        assert.equal(create.longitude, 15.5869);
+        assert.deepEqual(update, {});
+        cacheCreateCompleted = true;
+        return createdCache;
       }
     },
     $transaction: async (callback: (transaction: typeof tx) => Promise<unknown>) => {
@@ -356,7 +354,7 @@ test("process updates existing cache metadata before the import transaction", as
     source: ImportSource.MY_HIDES_GPX
   });
 
-  assert.equal(cacheUpdateCompleted, true);
+  assert.equal(cacheCreateCompleted, true);
   assert.equal(importTransactionStarted, true);
 });
 
