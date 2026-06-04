@@ -1,5 +1,7 @@
 import { Controller, Get, UseGuards } from "@nestjs/common";
 import { AuthUser } from "@geostats/shared";
+import { countableFindWhere } from "@geostats/db";
+import { normalizedGcUsername } from "@geostats/stats";
 import { AuthGuard } from "../auth/auth.guard";
 import { CurrentUser } from "../auth/current-user.decorator";
 import { PrismaService } from "../common/prisma.service";
@@ -126,10 +128,15 @@ function continentFor(latitude: number, longitude: number, country?: string | nu
 export class MapController {
   constructor(private readonly prisma: PrismaService) {}
 
+  private async countableFindWhereForUser(userId: string) {
+    const profile = await this.prisma.geocachingProfile.findUnique({ where: { userId }, select: { gcUsername: true } });
+    return countableFindWhere(userId, normalizedGcUsername(profile));
+  }
+
   @Get("caches")
   async caches(@CurrentUser() user: AuthUser) {
     const finds = await this.prisma.find.findMany({
-      where: { userId: user.id },
+      where: await this.countableFindWhereForUser(user.id),
       select: {
         foundAt: true,
         cache: {
@@ -164,10 +171,49 @@ export class MapController {
     };
   }
 
+  @Get("hides")
+  async hides(@CurrentUser() user: AuthUser) {
+    const hides = await this.prisma.hide.findMany({
+      where: { userId: user.id },
+      select: {
+        placedAt: true,
+        cache: {
+          select: {
+            id: true,
+            gcCode: true,
+            name: true,
+            cacheType: true,
+            latitude: true,
+            longitude: true
+          }
+        }
+      },
+      orderBy: { placedAt: "desc" },
+      take: MAP_CACHE_LIMIT + 1
+    });
+    const truncated = hides.length > MAP_CACHE_LIMIT;
+    const visibleHides = truncated ? hides.slice(0, MAP_CACHE_LIMIT) : hides;
+
+    return {
+      truncated,
+      limit: MAP_CACHE_LIMIT,
+      points: visibleHides.map((hide) => ({
+        id: hide.cache.id,
+        gcCode: hide.cache.gcCode,
+        name: hide.cache.name,
+        cacheType: hide.cache.cacheType,
+        latitude: Number(hide.cache.latitude),
+        longitude: Number(hide.cache.longitude),
+        foundAt: hide.placedAt?.toISOString() ?? "",
+        isOwnHide: true
+      }))
+    };
+  }
+
   @Get("scratch")
   async scratch(@CurrentUser() user: AuthUser) {
     const finds = await this.prisma.find.findMany({
-      where: { userId: user.id },
+      where: await this.countableFindWhereForUser(user.id),
       select: {
         cache: {
           select: {

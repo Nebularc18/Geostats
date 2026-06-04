@@ -9,8 +9,14 @@ export default function MapPage() {
   const [points, setPoints] = useState<CacheMapPoint[]>([]);
 
   useEffect(() => {
-    void apiFetch<{ points: CacheMapPoint[] }>("/map/caches").then((data) => setPoints(data.points));
+    void Promise.all([
+      apiFetch<{ points: CacheMapPoint[] }>("/map/caches"),
+      apiFetch<{ points: CacheMapPoint[] }>("/map/hides")
+    ]).then(([findData, hideData]) => setPoints([...findData.points, ...hideData.points]));
   }, []);
+
+  const findCount = points.filter((point) => !point.isOwnHide).length;
+  const ownHideCount = points.length - findCount;
 
   return (
     <AppShell>
@@ -20,8 +26,8 @@ export default function MapPage() {
       </header>
       <section className="map-stage">
         <div className="map-toolbar">
-          <strong>{points.length} plotted finds</strong>
-          <span>MapLibre point view</span>
+          <strong>{findCount} plotted finds</strong>
+          <span>{ownHideCount} own hides</span>
         </div>
         <CacheMap points={points} />
       </section>
@@ -35,11 +41,12 @@ export default function MapPage() {
                 href={`https://coord.info/${point.gcCode}`}
                 rel="noreferrer"
                 target="_blank"
-                style={{ color: getCacheTypeColor(point.cacheType) }}
+                style={{ color: getCacheTypeColor(point.cacheType, point.isOwnHide) }}
               >
                 <strong>{point.gcCode}</strong> {point.name}
               </a>
-              <small style={{ color: getCacheTypeColor(point.cacheType) }}>
+              <small style={{ color: getCacheTypeColor(point.cacheType, point.isOwnHide) }}>
+                {point.isOwnHide ? "Own hide - " : ""}
                 {point.latitude}, {point.longitude}
               </small>
             </div>

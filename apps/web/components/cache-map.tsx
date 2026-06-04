@@ -11,6 +11,7 @@ export interface CacheMapPoint {
   latitude: number;
   longitude: number;
   foundAt: string;
+  isOwnHide?: boolean;
 }
 
 const osmRasterStyle: StyleSpecification = {
@@ -63,11 +64,18 @@ const CACHE_TYPE_COLOR_PAIRS = [
   ["Project A.P.E. Cache", "#5b8f2a"]
 ] as const;
 const FALLBACK_CACHE_TYPE_COLOR = "#6f7f73";
+const OWN_HIDE_COLOR = "#d9468f";
 const CACHE_TYPE_COLORS = [
   "match",
   ["get", "cacheType"],
   ...CACHE_TYPE_COLOR_PAIRS.flat(),
   FALLBACK_CACHE_TYPE_COLOR
+] as unknown as ExpressionSpecification;
+const POINT_COLORS = [
+  "case",
+  ["==", ["get", "isOwnHide"], true],
+  OWN_HIDE_COLOR,
+  CACHE_TYPE_COLORS
 ] as unknown as ExpressionSpecification;
 
 type CachePointProperties = {
@@ -75,6 +83,7 @@ type CachePointProperties = {
   gcCode: string;
   name: string;
   cacheType: string;
+  isOwnHide: boolean;
 };
 
 type CachePointFeatureCollection = {
@@ -89,7 +98,10 @@ type CachePointFeatureCollection = {
   }[];
 };
 
-export function getCacheTypeColor(cacheType: string | null) {
+export function getCacheTypeColor(cacheType: string | null, isOwnHide = false) {
+  if (isOwnHide) {
+    return OWN_HIDE_COLOR;
+  }
   return CACHE_TYPE_COLOR_PAIRS.find(([type]) => type === cacheType)?.[1] ?? FALLBACK_CACHE_TYPE_COLOR;
 }
 
@@ -117,7 +129,8 @@ function pointsToGeoJson(points: CacheMapPoint[]): CachePointFeatureCollection {
         id: point.id,
         gcCode: point.gcCode,
         name: point.name,
-        cacheType: point.cacheType ?? "Unknown"
+        cacheType: point.cacheType ?? "Unknown",
+        isOwnHide: point.isOwnHide === true
       }
     }))
   };
@@ -182,7 +195,10 @@ export function CacheMap({ points }: { points: CacheMapPoint[] }) {
       const name = document.createElement("div");
       name.textContent = String(feature.properties.name ?? "");
       const type = document.createElement("small");
-      type.textContent = String(feature.properties.cacheType ?? "Unknown");
+      type.textContent =
+        feature.properties.isOwnHide === true
+          ? `Own hide - ${String(feature.properties.cacheType ?? "Unknown")}`
+          : String(feature.properties.cacheType ?? "Unknown");
       popupContent.append(code, name, type);
 
       popupRef.current?.remove();
@@ -259,7 +275,7 @@ export function CacheMap({ points }: { points: CacheMapPoint[] }) {
               12,
               9
             ],
-            "circle-color": CACHE_TYPE_COLORS,
+            "circle-color": POINT_COLORS,
             "circle-stroke-color": "#fff7de",
             "circle-stroke-width": 2,
             "circle-opacity": 0.94
