@@ -66,10 +66,10 @@ test("envOrDefault rejects placeholders embedded in production URLs", async () =
   await withEnv(
     {
       NODE_ENV: "production",
-      DATABASE_URL: "postgresql://geostats:replace-with-a-strong-postgres-password@postgres:5432/geostats"
+      DATABASE_URL: "https://service.example.test/api?key=replace-with-an-api-key"
     },
     () => {
-      assert.throws(() => envOrDefault("DATABASE_URL", "postgresql://fallback"), /development value/);
+      assert.throws(() => envOrDefault("DATABASE_URL", "https://fallback.example.test"), /development value/);
     }
   );
 });
