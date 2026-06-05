@@ -50,6 +50,30 @@ test("envOrDefault rejects placeholders used as query parameter keys", async () 
   );
 });
 
+test("envOrDefault rejects placeholders before later query parameters", async () => {
+  await withEnv(
+    {
+      NODE_ENV: "production",
+      S3_ENDPOINT: "https://storage.example.test/bucket?key=replace-with-an-api-key&region=us-east-1"
+    },
+    () => {
+      assert.throws(() => envOrDefault("S3_ENDPOINT", "https://fallback.example.test"), /development value/);
+    }
+  );
+});
+
+test("envOrDefault rejects placeholders after query parameter separators", async () => {
+  await withEnv(
+    {
+      NODE_ENV: "production",
+      S3_ENDPOINT: "https://storage.example.test/bucket?region=us-east-1&replace-with-an-api-key=value"
+    },
+    () => {
+      assert.throws(() => envOrDefault("S3_ENDPOINT", "https://fallback.example.test"), /development value/);
+    }
+  );
+});
+
 test("requiredEnv applies length guard to S3 secret access keys", async () => {
   await withEnv(
     {
