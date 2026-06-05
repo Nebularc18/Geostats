@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { envOrDefault } from "./env";
+import { envOrDefault, requiredEnv } from "./env";
 
 async function withEnv(values: Record<string, string | undefined>, run: () => void | Promise<void>) {
   const previous = new Map<string, string | undefined>();
@@ -46,6 +46,18 @@ test("envOrDefault rejects placeholders used as query parameter keys", async () 
     },
     () => {
       assert.throws(() => envOrDefault("S3_ENDPOINT", "https://fallback.example.test"), /development value/);
+    }
+  );
+});
+
+test("requiredEnv applies length guard to S3 secret access keys", async () => {
+  await withEnv(
+    {
+      NODE_ENV: "production",
+      S3_SECRET_ACCESS_KEY: "short-access-key"
+    },
+    () => {
+      assert.throws(() => requiredEnv("S3_SECRET_ACCESS_KEY"), /must be at least 32 characters/);
     }
   );
 });

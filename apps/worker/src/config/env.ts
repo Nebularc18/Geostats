@@ -63,5 +63,5 @@ function validateProductionValue(name: string, value: string) {
 }
 
 function isSecretEnv(name: string): boolean {
-  return /(?:SECRET|PASSWORD|TOKEN|PRIVATE_KEY)$/i.test(name);
+  return /(?:SECRET|PASSWORD|TOKEN|PRIVATE_KEY|ACCESS_KEY)$/i.test(name);
 }
