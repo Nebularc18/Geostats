@@ -1,5 +1,5 @@
 const WEAK_VALUES = new Set(["", "change-me-in-production", "geostats", "geostats-secret"]);
-const PLACEHOLDER_PATTERN = /(?:^|[/:@?=])replace-with-[a-z0-9-]+(?:$|[/?@:])/i;
+const PLACEHOLDER_PATTERN = /(?:^|[/:@?=])replace-with-[a-z0-9-]+(?:$|[/?@:=])/i;
 const MIN_PRODUCTION_SECRET_LENGTH = 32;
 const REQUIRED_RUNTIME_ENV = [
   "DATABASE_URL",

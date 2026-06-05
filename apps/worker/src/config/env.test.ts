@@ -37,3 +37,15 @@ test("envOrDefault rejects query-string placeholders in production URLs", async 
     }
   );
 });
+
+test("envOrDefault rejects placeholders used as query parameter keys", async () => {
+  await withEnv(
+    {
+      NODE_ENV: "production",
+      S3_ENDPOINT: "https://storage.example.test/bucket?replace-with-an-api-key=value"
+    },
+    () => {
+      assert.throws(() => envOrDefault("S3_ENDPOINT", "https://fallback.example.test"), /development value/);
+    }
+  );
+});

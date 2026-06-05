@@ -50,6 +50,18 @@ test("requiredEnv rejects short production secrets", async () => {
   );
 });
 
+test("requiredEnv applies length guard to S3 secret access keys", async () => {
+  await withEnv(
+    {
+      NODE_ENV: "production",
+      S3_SECRET_ACCESS_KEY: "short-access-key"
+    },
+    () => {
+      assert.throws(() => requiredEnv("S3_SECRET_ACCESS_KEY"), /at least 32 characters/);
+    }
+  );
+});
+
 test("requiredEnv accepts strong production secrets", async () => {
   await withEnv(
     {
@@ -67,6 +79,18 @@ test("envOrDefault rejects placeholders embedded in production URLs", async () =
     {
       NODE_ENV: "production",
       DATABASE_URL: "https://service.example.test/api?key=replace-with-an-api-key"
+    },
+    () => {
+      assert.throws(() => envOrDefault("DATABASE_URL", "https://fallback.example.test"), /development value/);
+    }
+  );
+});
+
+test("envOrDefault rejects placeholders used as query parameter keys", async () => {
+  await withEnv(
+    {
+      NODE_ENV: "production",
+      DATABASE_URL: "https://service.example.test/api?replace-with-an-api-key=value"
     },
     () => {
       assert.throws(() => envOrDefault("DATABASE_URL", "https://fallback.example.test"), /development value/);
