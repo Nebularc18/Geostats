@@ -321,24 +321,6 @@ export class ImportProcessor {
     };
   }
 
-  private cacheUpdateInput(cache: any): Prisma.CacheUpdateInput {
-    return {
-      name: cache.name,
-      cacheType: cache.cacheType,
-      difficulty: cache.difficulty,
-      terrain: cache.terrain,
-      size: cache.size,
-      latitude: cache.latitude,
-      longitude: cache.longitude,
-      country: cache.country,
-      region: cache.region,
-      county: cache.county,
-      hiddenDate: cache.hiddenDate,
-      ownerName: cache.ownerName,
-      raw: cache.raw as Prisma.InputJsonValue
-    };
-  }
-
   private async resolveCaches(caches: any[]): Promise<Map<string, Cache>> {
     const uniqueCaches = new Map<string, any>();
     for (const cache of caches) {
@@ -359,21 +341,24 @@ export class ImportProcessor {
       return await this.prisma.cache.upsert({
         where: { gcCode: cache.gcCode },
         create: this.cacheCreateInput(cache),
-        update: this.cacheUpdateInput(cache)
+        update: {}
       });
     } catch (error) {
       if (this.isUniqueConstraintError(error)) {
-        return this.updateCache(cache);
+        return this.findExistingCache(cache.gcCode);
       }
       throw error;
     }
   }
 
-  private async updateCache(cache: any): Promise<Cache> {
-    return this.prisma.cache.update({
-      where: { gcCode: cache.gcCode },
-      data: this.cacheUpdateInput(cache)
+  private async findExistingCache(gcCode: string): Promise<Cache> {
+    const existing = await this.prisma.cache.findUnique({
+      where: { gcCode }
     });
+    if (!existing) {
+      throw new Error(`Cache ${gcCode} was not resolved after a unique constraint conflict`);
+    }
+    return existing;
   }
 
   private cacheFor(cachesByCode: Map<string, Cache>, gcCode: string): Cache {
