@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Delete, Get, Header, Headers, NotFoundException, Param, Post, Req, UnauthorizedException, UseGuards } from "@nestjs/common";
+import { BadRequestException, Body, ConflictException, Controller, Delete, Get, Header, Headers, NotFoundException, Param, Post, Req, UnauthorizedException, UseGuards } from "@nestjs/common";
 import { randomBytes, createCipheriv, createDecipheriv, createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -442,19 +442,33 @@ export class CollectorController {
         if (!hide) {
           continue;
         }
-        const merged = mergedRaw(hide.cache.raw, cacheLogsToAdd);
-        if (merged.added === 0 && hide.receivedLogCount === merged.receivedLogCount) {
+        const current = await tx.hide.findFirst({
+          where: { id: hide.id, userId },
+          include: { cache: true }
+        });
+        if (!current) {
+          throw new BadRequestException(`Unknown owned caches: ${gcCode}`);
+        }
+        const merged = mergedRaw(current.cache.raw, cacheLogsToAdd);
+        if (merged.added === 0 && current.receivedLogCount === merged.receivedLogCount) {
           continue;
         }
-        await tx.cache.update({ where: { id: hide.cacheId }, data: { raw: merged.raw as Prisma.InputJsonValue } });
-        await tx.hide.update({ where: { id: hide.id }, data: { receivedLogCount: merged.receivedLogCount } });
+        const updated = await tx.cache.updateMany({
+          where: { id: current.cacheId, updatedAt: current.cache.updatedAt },
+          data: { raw: merged.raw as Prisma.InputJsonValue }
+        });
+        if (updated.count !== 1) {
+          throw new ConflictException(`Cache changed while receiving logs: ${gcCode}`);
+        }
+        await tx.hide.update({ where: { id: current.id }, data: { receivedLogCount: merged.receivedLogCount } });
         added += merged.added;
         changedCaches += 1;
       }
-      if (added > 0) {
-        await this.stats.refreshSnapshotForUser(userId, tx);
-      }
     });
+    if (added > 0) {
+      const stats = await this.stats.buildSnapshotForUser(userId);
+      await this.prisma.$transaction((tx) => this.stats.replaceSnapshotForUser(userId, stats, tx));
+    }
     return { added, changedCaches };
   }
 }

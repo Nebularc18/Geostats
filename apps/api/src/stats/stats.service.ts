@@ -61,9 +61,19 @@ export class StatsService {
     return this.recalculateSnapshotForUser(userId, profile);
   }
 
-  async refreshSnapshotForUser(userId: string, prisma: PrismaClientLike = this.prisma) {
-    const profile = await prisma.geocachingProfile.findUnique({ where: { userId } });
-    return this.recalculateSnapshot(userId, profile, prisma, false);
+  async buildSnapshotForUser(userId: string) {
+    const profile = await this.prisma.geocachingProfile.findUnique({ where: { userId } });
+    return this.calculateSnapshot(userId, profile, this.prisma);
+  }
+
+  async replaceSnapshotForUser(userId: string, stats: unknown, prisma: PrismaClientLike = this.prisma) {
+    await prisma.statSnapshot.deleteMany({ where: { userId } });
+    await prisma.statSnapshot.create({
+      data: {
+        userId,
+        statsJson: stats as Prisma.InputJsonValue
+      }
+    });
   }
 
   private async recalculateSnapshotForUser(
@@ -75,18 +85,22 @@ export class StatsService {
       return inFlight;
     }
 
-    const recalculation = this.recalculateSnapshot(userId, profile, this.prisma, true).finally(() => {
-      this.recalculationsByUser.delete(userId);
-    });
+    const recalculation = this.calculateSnapshot(userId, profile, this.prisma)
+      .then(async (stats) => {
+        await this.prisma.$transaction((tx) => this.replaceSnapshotForUser(userId, stats, tx));
+        return stats;
+      })
+      .finally(() => {
+        this.recalculationsByUser.delete(userId);
+      });
     this.recalculationsByUser.set(userId, recalculation);
     return recalculation;
   }
 
-  private async recalculateSnapshot(
+  private async calculateSnapshot(
     userId: string,
     profile?: { gcUsername?: string | null; homeLatitude: unknown; homeLongitude: unknown } | null,
-    prisma: PrismaClientLike = this.prisma,
-    wrapSnapshotWrite = true
+    prisma: PrismaClientLike = this.prisma
   ) {
     const hides = await prisma.hide.findMany({
       where: { userId },
@@ -167,21 +181,6 @@ export class StatsService {
       }))
     );
     stats.achievementStats.hostedEventCaches = stats.hideStats.hostedEventCaches;
-
-    const writeSnapshot = async (client: PrismaClientLike) => {
-      await client.statSnapshot.deleteMany({ where: { userId } });
-      await client.statSnapshot.create({
-        data: {
-          userId,
-          statsJson: stats as unknown as Prisma.InputJsonValue
-        }
-      });
-    };
-    if (wrapSnapshotWrite) {
-      await this.prisma.$transaction(writeSnapshot);
-    } else {
-      await writeSnapshot(prisma);
-    }
 
     return stats;
   }

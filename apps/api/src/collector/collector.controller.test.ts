@@ -212,3 +212,97 @@ test("receivedLogs rejects unknown owned caches with BadRequestException", async
     BadRequestException
   );
 });
+
+test("receivedLogs rereads raw in the transaction and builds stats after commit", async () => {
+  const updatedAt = new Date("2026-01-01T00:00:00.000Z");
+  const preloadedRaw = {
+    "groundspeak:cache": {
+      "groundspeak:logs": {
+        "groundspeak:log": []
+      }
+    }
+  };
+  const transactionRaw = {
+    "groundspeak:cache": {
+      "groundspeak:logs": {
+        "groundspeak:log": [
+          {
+            "groundspeak:date": "2024-01-14T00:00:00",
+            "groundspeak:type": "Found it",
+            "groundspeak:finder": "Existing",
+            "groundspeak:text": "Already committed"
+          }
+        ]
+      }
+    }
+  };
+  let inTransaction = false;
+  let transactionCount = 0;
+  let writtenRaw: unknown;
+  const tx = {
+    hide: {
+      findFirst: async () => ({
+        id: "hide-1",
+        cacheId: "cache-1",
+        receivedLogCount: 1,
+        cache: {
+          id: "cache-1",
+          updatedAt,
+          raw: transactionRaw
+        }
+      }),
+      update: async () => ({})
+    },
+    cache: {
+      updateMany: async ({ where, data }: any) => {
+        assert.equal(where.id, "cache-1");
+        assert.equal(where.updatedAt, updatedAt);
+        writtenRaw = data.raw;
+        return { count: 1 };
+      }
+    }
+  };
+  const prisma = {
+    collectorToken: {
+      findUnique: async () => ({ id: "token-1", userId: "user-1" }),
+      update: async () => ({})
+    },
+    hide: {
+      findMany: async () => [
+        {
+          id: "hide-1",
+          cacheId: "cache-1",
+          receivedLogCount: 0,
+          cache: { gcCode: "GC123", raw: preloadedRaw }
+        }
+      ]
+    },
+    $transaction: async (run: (client: unknown) => Promise<unknown>) => {
+      transactionCount += 1;
+      inTransaction = true;
+      try {
+        return await run(tx);
+      } finally {
+        inTransaction = false;
+      }
+    }
+  };
+  const stats = {
+    buildSnapshotForUser: async () => {
+      assert.equal(inTransaction, false);
+      return { statsVersion: 16 };
+    },
+    replaceSnapshotForUser: async () => {
+      assert.equal(inTransaction, true);
+    }
+  };
+  const controller = new CollectorController(prisma as any, stats as any);
+
+  const result = await controller.receivedLogs("Bearer token", {
+    logs: [{ gcCode: "GC123", date: "2024-01-15", finder: "New", text: "Fresh" }]
+  });
+
+  assert.deepEqual(result, { added: 1, changedCaches: 1 });
+  assert.equal(transactionCount, 2);
+  assert.equal(cacheLogs(writtenRaw).length, 2);
+});
