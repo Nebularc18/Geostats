@@ -21,6 +21,8 @@ tmp
 postgres-data
 redis-data
 minio-data
+received-logs.csv
+.codex/geocaching-browser/
 
 .DS_Store
 Thumbs.db

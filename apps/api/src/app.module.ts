@@ -1,6 +1,7 @@
 import { Module } from "@nestjs/common";
 import { AuthModule } from "./auth/auth.module";
 import { HealthController } from "./health/health.controller";
+import { CollectorModule } from "./collector/collector.module";
 import { ImportsModule } from "./imports/imports.module";
 import { MapModule } from "./map/map.module";
 import { PrismaService } from "./common/prisma.service";
@@ -10,7 +11,7 @@ import { StatsModule } from "./stats/stats.module";
 import { StorageModule } from "./storage/storage.module";
 
 @Module({
-  imports: [AuthModule, ProfileModule, StorageModule, QueueModule, ImportsModule, StatsModule, MapModule],
+  imports: [AuthModule, ProfileModule, StorageModule, QueueModule, ImportsModule, StatsModule, MapModule, CollectorModule],
   controllers: [HealthController],
   providers: [PrismaService],
   exports: [PrismaService]

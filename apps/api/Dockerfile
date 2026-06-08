@@ -10,6 +10,7 @@ RUN pnpm install --frozen-lockfile=false
 
 FROM deps AS build
 COPY apps/api/src apps/api/src
+COPY apps/tools/src apps/tools/src
 COPY apps/api/nest-cli.json apps/api/nest-cli.json
 COPY apps/api/tsconfig.json apps/api/tsconfig.json
 RUN pnpm --filter @geostats/shared build
@@ -25,5 +26,6 @@ COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/apps/api/node_modules ./apps/api/node_modules
 COPY --from=build /app/packages ./packages
 COPY --from=build /app/apps/api/dist ./apps/api/dist
+COPY --from=build /app/apps/tools/src ./apps/tools/src
 RUN node -e "require('./packages/db/node_modules/@prisma/client')"
 CMD ["node", "apps/api/dist/main.js"]
