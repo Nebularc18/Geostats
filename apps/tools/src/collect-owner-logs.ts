@@ -211,7 +211,7 @@ function isoDate(value: string | undefined): string {
 
 function collectorLogKey(log: CollectorLog): string {
   return [
-    new Date(`${log.date}T00:00:00Z`).toISOString(),
+    log.date.trim(),
     log.type,
     log.finder,
     log.text

@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Header, Headers, NotFoundException, Param, Post, Req, UnauthorizedException, UseGuards } from "@nestjs/common";
+import { BadRequestException, Body, Controller, Delete, Get, Header, Headers, NotFoundException, Param, Post, Req, UnauthorizedException, UseGuards } from "@nestjs/common";
 import { randomBytes, createCipheriv, createDecipheriv, createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -30,9 +30,9 @@ function newToken() {
 }
 
 function tokenCipherKey() {
-  const secret = process.env.JWT_SECRET;
+  const secret = process.env.COLLECTOR_TOKEN_ENCRYPTION_KEY;
   if (!secret) {
-    throw new Error("JWT_SECRET is required to encrypt collector tokens");
+    throw new Error("COLLECTOR_TOKEN_ENCRYPTION_KEY is required to encrypt collector tokens");
   }
   return createHash("sha256").update(secret, "utf8").digest();
 }
@@ -231,9 +231,19 @@ function logId(log: Record<string, any>): string | null {
   return rawText(log["geostats:log_id"], log.logId, log.LogID, log.id);
 }
 
-function logKey(log: Record<string, any>): string {
+function logDateKey(value: unknown): string {
+  const text = rawText(value) ?? "";
+  const day = text.match(/^(\d{4}-\d{2}-\d{2})/)?.[1];
+  if (day) {
+    return day;
+  }
+  const date = new Date(text);
+  return Number.isNaN(date.getTime()) ? text : date.toISOString().slice(0, 10);
+}
+
+export function logKey(log: Record<string, any>): string {
   return [
-    rawText(log["groundspeak:date"], log.date) ?? "",
+    logDateKey(rawText(log["groundspeak:date"], log.date)),
     rawText(log["groundspeak:type"], log.type) ?? "",
     rawText(log["groundspeak:finder"], log.finder) ?? "",
     rawText(log["groundspeak:text"], log.text) ?? ""
@@ -245,23 +255,23 @@ function logKey(log: Record<string, any>): string {
 function normalizeDate(value: string | undefined) {
   const text = value?.trim();
   if (!text) {
-    throw new Error("date is required");
+    throw new BadRequestException("date is required");
   }
   const date = /^\d{4}-\d{2}-\d{2}$/.test(text) ? new Date(`${text}T00:00:00Z`) : new Date(text);
   if (Number.isNaN(date.getTime())) {
-    throw new Error(`invalid date: ${text}`);
+    throw new BadRequestException(`invalid date: ${text}`);
   }
   return date;
 }
 
-function rawFromInput(log: ReceivedLogInput) {
+export function rawFromInput(log: ReceivedLogInput) {
   const gcCode = log.gcCode?.trim().toUpperCase();
   const finder = log.finder?.trim();
   if (!gcCode) {
-    throw new Error("gcCode is required");
+    throw new BadRequestException("gcCode is required");
   }
   if (!finder) {
-    throw new Error("finder is required");
+    throw new BadRequestException("finder is required");
   }
   const raw: Record<string, string> = {
     "groundspeak:date": normalizeDate(log.date).toISOString(),

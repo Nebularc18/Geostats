@@ -62,6 +62,18 @@ test("requiredEnv applies length guard to S3 secret access keys", async () => {
   );
 });
 
+test("requiredEnv applies length guard to collector token encryption keys", async () => {
+  await withEnv(
+    {
+      NODE_ENV: "production",
+      COLLECTOR_TOKEN_ENCRYPTION_KEY: "short-key"
+    },
+    () => {
+      assert.throws(() => requiredEnv("COLLECTOR_TOKEN_ENCRYPTION_KEY"), /at least 32 characters/);
+    }
+  );
+});
+
 test("requiredEnv accepts strong production secrets", async () => {
   await withEnv(
     {

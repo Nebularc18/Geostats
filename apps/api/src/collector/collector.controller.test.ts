@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { cacheLogs, mergedRaw, trustedBaseUrl } from "./collector.controller";
+import { BadRequestException } from "@nestjs/common";
+import { cacheLogs, logKey, mergedRaw, rawFromInput, trustedBaseUrl } from "./collector.controller";
 
 function withEnv(values: Record<string, string | undefined>, fn: () => void) {
   const previous = new Map<string, string | undefined>();
@@ -79,4 +80,57 @@ test("mergedRaw preserves root cache key variant", () => {
   assert.equal(result.added, 1);
   assert.equal("groundspeak:cache" in result.raw, false);
   assert.equal(cacheLogs(result.raw).length, 2);
+});
+
+test("logKey normalizes GPX and collector date formats to the same day", () => {
+  const stored = logKey({
+    "groundspeak:date": "2024-01-15T00:00:00",
+    "groundspeak:type": "Found it",
+    "groundspeak:finder": "Finder",
+    "groundspeak:text": "Same log"
+  });
+  const incoming = logKey({
+    "groundspeak:date": "2024-01-15T00:00:00.000Z",
+    "groundspeak:type": "Found it",
+    "groundspeak:finder": "Finder",
+    "groundspeak:text": "Same log"
+  });
+
+  assert.equal(incoming, stored);
+});
+
+test("mergedRaw deduplicates no-id logs across GPX and collector date formats", () => {
+  const result = mergedRaw(
+    {
+      "groundspeak:cache": {
+        "groundspeak:logs": {
+          "groundspeak:log": [
+            {
+              "groundspeak:date": "2024-01-15T00:00:00",
+              "groundspeak:type": "Found it",
+              "groundspeak:finder": "Finder",
+              "groundspeak:text": "Same log"
+            }
+          ]
+        }
+      }
+    },
+    [
+      {
+        "groundspeak:date": "2024-01-15T00:00:00.000Z",
+        "groundspeak:type": "Found it",
+        "groundspeak:finder": "Finder",
+        "groundspeak:text": "Same log"
+      }
+    ]
+  );
+
+  assert.equal(result.added, 0);
+  assert.equal(cacheLogs(result.raw).length, 1);
+});
+
+test("rawFromInput rejects malformed collector entries with BadRequestException", () => {
+  assert.throws(() => rawFromInput({ date: "2024-01-15", finder: "Finder" }), BadRequestException);
+  assert.throws(() => rawFromInput({ gcCode: "GC123", date: "not a date", finder: "Finder" }), BadRequestException);
+  assert.throws(() => rawFromInput({ gcCode: "GC123", date: "2024-01-15" }), BadRequestException);
 });
