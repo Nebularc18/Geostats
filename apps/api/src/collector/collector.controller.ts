@@ -66,7 +66,18 @@ function firstHeader(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
 }
 
-function requestBaseUrl(request: any) {
+export function trustedBaseUrl(request: any) {
+  const configured = process.env.API_ORIGIN?.trim();
+  if (configured) {
+    const url = new URL(configured);
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      throw new Error("API_ORIGIN must be an http or https URL");
+    }
+    return url.toString().replace(/\/$/, "");
+  }
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("API_ORIGIN must be set in production");
+  }
   const proto = firstHeader(request.headers?.["x-forwarded-proto"]) ?? request.protocol ?? "http";
   const host = firstHeader(request.headers?.["x-forwarded-host"]) ?? firstHeader(request.headers?.host) ?? `localhost:${process.env.API_PORT ?? "3001"}`;
   return `${proto}://${host}`.replace(/\/$/, "");
@@ -210,7 +221,7 @@ function rawText(...values: unknown[]): string | null {
   return null;
 }
 
-function cacheLogs(raw: unknown): Array<Record<string, any>> {
+export function cacheLogs(raw: unknown): Array<Record<string, any>> {
   const root = rawObject(raw);
   const extension = rawObject(root["groundspeak:cache"] ?? root.cache);
   return rawArray<Record<string, any>>(extension["groundspeak:logs"]?.["groundspeak:log"] ?? extension.logs?.log);
@@ -268,9 +279,12 @@ function countReceivedLogs(logs: Array<Record<string, any>>) {
   return logs.filter((log) => rawText(log["groundspeak:type"], log.type)?.toLowerCase() !== "publish listing").length;
 }
 
-function mergedRaw(raw: unknown, newLogs: Array<Record<string, any>>) {
+export function mergedRaw(raw: unknown, newLogs: Array<Record<string, any>>) {
   const root = rawObject(raw);
-  const extension = rawObject(root["groundspeak:cache"] ?? root.cache);
+  const cacheKey = root["groundspeak:cache"] !== undefined || root.cache === undefined ? "groundspeak:cache" : "cache";
+  const extension = rawObject(root[cacheKey]);
+  const logsKey = extension["groundspeak:logs"] !== undefined || extension.logs === undefined ? "groundspeak:logs" : "logs";
+  const logKeyName = logsKey === "groundspeak:logs" ? "groundspeak:log" : "log";
   const existingLogs = cacheLogs(raw);
   const mergedLogs = [...existingLogs];
   const seenIds = new Set(existingLogs.map(logId).filter((value): value is string => Boolean(value)));
@@ -296,11 +310,11 @@ function mergedRaw(raw: unknown, newLogs: Array<Record<string, any>>) {
     receivedLogCount: countReceivedLogs(mergedLogs),
     raw: {
       ...root,
-      "groundspeak:cache": {
+      [cacheKey]: {
         ...extension,
-        "groundspeak:logs": {
-          ...rawObject(extension["groundspeak:logs"]),
-          "groundspeak:log": mergedLogs
+        [logsKey]: {
+          ...rawObject(extension[logsKey]),
+          [logKeyName]: mergedLogs
         }
       }
     }
@@ -318,7 +332,7 @@ export class CollectorController {
   @Header("Content-Type", "text/plain; charset=utf-8")
   @Header("Cache-Control", "no-store")
   hidesPowerShell(@Req() request: any) {
-    return hidesRunnerScript(requestBaseUrl(request));
+    return hidesRunnerScript(trustedBaseUrl(request));
   }
 
   @Get("hides.ts")
@@ -410,12 +424,9 @@ export class CollectorController {
         changedCaches += 1;
       }
       if (added > 0) {
-        await tx.statSnapshot.deleteMany({ where: { userId } });
+        await this.stats.refreshSnapshotForUser(userId, tx);
       }
     });
-    if (added > 0) {
-      await this.stats.snapshotForUser(userId);
-    }
     return { added, changedCaches };
   }
 }

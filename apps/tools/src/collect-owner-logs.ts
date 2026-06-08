@@ -42,7 +42,7 @@ type CollectorLog = {
 const DEFAULT_PROFILE_DIR = ".codex/geocaching-browser";
 const DEFAULT_OUTPUT = "received-logs.csv";
 const DEFAULT_SERVER = "http://127.0.0.1:3001";
-const DEFAULT_HELIUM_PATH = "C:\\Users\\hampu\\AppData\\Local\\imput\\Helium\\Application\\chrome.exe";
+const DEFAULT_HELIUM_PATH = "";
 const CSV_HEADER = ["gcCode", "date", "type", "finder", "text"];
 
 function workspaceRoot(): string {

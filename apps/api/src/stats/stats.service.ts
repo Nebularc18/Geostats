@@ -7,6 +7,7 @@ const STATS_VERSION = 16;
 const DEFAULT_FTF_FIND_LIMIT = 100;
 const MAX_FTF_FIND_LIMIT = 200;
 const MAX_FTF_LOG_TEXT_LENGTH = 1_000;
+type PrismaClientLike = PrismaService | Prisma.TransactionClient;
 type FtfFindRow = {
   id: string;
   foundAt: Date;
@@ -60,6 +61,11 @@ export class StatsService {
     return this.recalculateSnapshotForUser(userId, profile);
   }
 
+  async refreshSnapshotForUser(userId: string, prisma: PrismaClientLike = this.prisma) {
+    const profile = await prisma.geocachingProfile.findUnique({ where: { userId } });
+    return this.recalculateSnapshot(userId, profile, prisma, false);
+  }
+
   private async recalculateSnapshotForUser(
     userId: string,
     profile?: { gcUsername?: string | null; homeLatitude: unknown; homeLongitude: unknown } | null
@@ -69,7 +75,7 @@ export class StatsService {
       return inFlight;
     }
 
-    const recalculation = this.recalculateSnapshot(userId, profile).finally(() => {
+    const recalculation = this.recalculateSnapshot(userId, profile, this.prisma, true).finally(() => {
       this.recalculationsByUser.delete(userId);
     });
     this.recalculationsByUser.set(userId, recalculation);
@@ -78,9 +84,11 @@ export class StatsService {
 
   private async recalculateSnapshot(
     userId: string,
-    profile?: { gcUsername?: string | null; homeLatitude: unknown; homeLongitude: unknown } | null
+    profile?: { gcUsername?: string | null; homeLatitude: unknown; homeLongitude: unknown } | null,
+    prisma: PrismaClientLike = this.prisma,
+    wrapSnapshotWrite = true
   ) {
-    const hides = await this.prisma.hide.findMany({
+    const hides = await prisma.hide.findMany({
       where: { userId },
       include: {
         cache: {
@@ -94,7 +102,7 @@ export class StatsService {
       orderBy: { placedAt: "asc" }
     });
     const gcUsername = normalizedGcUsername(profile);
-    const finds = await this.prisma.find.findMany({
+    const finds = await prisma.find.findMany({
       where: countableFindWhere(userId, gcUsername),
       include: {
         cache: {
@@ -160,15 +168,20 @@ export class StatsService {
     );
     stats.achievementStats.hostedEventCaches = stats.hideStats.hostedEventCaches;
 
-    await this.prisma.$transaction(async (tx) => {
-      await tx.statSnapshot.deleteMany({ where: { userId } });
-      await tx.statSnapshot.create({
+    const writeSnapshot = async (client: PrismaClientLike) => {
+      await client.statSnapshot.deleteMany({ where: { userId } });
+      await client.statSnapshot.create({
         data: {
           userId,
           statsJson: stats as unknown as Prisma.InputJsonValue
         }
       });
-    });
+    };
+    if (wrapSnapshotWrite) {
+      await this.prisma.$transaction(writeSnapshot);
+    } else {
+      await writeSnapshot(prisma);
+    }
 
     return stats;
   }
