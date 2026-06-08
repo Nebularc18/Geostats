@@ -99,6 +99,23 @@ test("logKey normalizes GPX and collector date formats to the same day", () => {
   assert.equal(incoming, stored);
 });
 
+test("logKey normalizes GPX HTML text and collector plain text", () => {
+  const stored = logKey({
+    "groundspeak:date": "2024-01-15T00:00:00",
+    "groundspeak:type": "Found it",
+    "groundspeak:finder": "Finder",
+    "groundspeak:text": "Nice &amp; easy cache"
+  });
+  const incoming = logKey({
+    "groundspeak:date": "2024-01-15T00:00:00.000Z",
+    "groundspeak:type": "Found it",
+    "groundspeak:finder": "Finder",
+    "groundspeak:text": "Nice & easy cache"
+  });
+
+  assert.equal(incoming, stored);
+});
+
 test("mergedRaw deduplicates no-id logs across GPX and collector date formats", () => {
   const result = mergedRaw(
     {
@@ -121,6 +138,36 @@ test("mergedRaw deduplicates no-id logs across GPX and collector date formats", 
         "groundspeak:type": "Found it",
         "groundspeak:finder": "Finder",
         "groundspeak:text": "Same log"
+      }
+    ]
+  );
+
+  assert.equal(result.added, 0);
+  assert.equal(cacheLogs(result.raw).length, 1);
+});
+
+test("mergedRaw deduplicates no-id logs across GPX HTML text and collector plain text", () => {
+  const result = mergedRaw(
+    {
+      "groundspeak:cache": {
+        "groundspeak:logs": {
+          "groundspeak:log": [
+            {
+              "groundspeak:date": "2024-01-15T00:00:00",
+              "groundspeak:type": "Found it",
+              "groundspeak:finder": "Finder",
+              "groundspeak:text": "Nice &amp; easy cache"
+            }
+          ]
+        }
+      }
+    },
+    [
+      {
+        "groundspeak:date": "2024-01-15T00:00:00.000Z",
+        "groundspeak:type": "Found it",
+        "groundspeak:finder": "Finder",
+        "groundspeak:text": "Nice & easy cache"
       }
     ]
   );

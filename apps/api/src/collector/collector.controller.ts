@@ -241,12 +241,30 @@ function logDateKey(value: unknown): string {
   return Number.isNaN(date.getTime()) ? text : date.toISOString().slice(0, 10);
 }
 
+function logTextKey(value: unknown): string {
+  const text = rawText(value) ?? "";
+  return text
+    .replace(/<\s*br\s*\/?>/gi, "\n")
+    .replace(/<\s*\/p\s*>/gi, "\n")
+    .replace(/<[^>]*>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&#39;/g, "'")
+    .replace(/\r/g, "")
+    .replace(/[ \t]+\n/g, "\n")
+    .trim();
+}
+
 export function logKey(log: Record<string, any>): string {
   return [
     logDateKey(rawText(log["groundspeak:date"], log.date)),
     rawText(log["groundspeak:type"], log.type) ?? "",
     rawText(log["groundspeak:finder"], log.finder) ?? "",
-    rawText(log["groundspeak:text"], log.text) ?? ""
+    logTextKey(rawText(log["groundspeak:text"], log.text))
   ]
     .map((value) => value.trim().toLowerCase())
     .join("\u001f");
