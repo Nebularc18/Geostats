@@ -398,7 +398,7 @@ export class CollectorController {
     const userId = await this.tokenUser(authorization);
     const logs = body.logs ?? [];
     if (!Array.isArray(logs)) {
-      throw new Error("logs must be an array");
+      throw new BadRequestException("logs must be an array");
     }
     const byCode = new Map<string, Array<Record<string, any>>>();
     for (const log of logs) {
@@ -413,7 +413,7 @@ export class CollectorController {
     const hidesByCode = new Map(hides.map((hide) => [hide.cache.gcCode, hide]));
     const missing = codes.filter((code) => !hidesByCode.has(code));
     if (missing.length > 0) {
-      throw new Error(`Unknown owned caches: ${missing.join(", ")}`);
+      throw new BadRequestException(`Unknown owned caches: ${missing.join(", ")}`);
     }
 
     let added = 0;

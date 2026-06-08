@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { BadRequestException } from "@nestjs/common";
-import { cacheLogs, logKey, mergedRaw, rawFromInput, trustedBaseUrl } from "./collector.controller";
+import { cacheLogs, CollectorController, logKey, mergedRaw, rawFromInput, trustedBaseUrl } from "./collector.controller";
 
 function withEnv(values: Record<string, string | undefined>, fn: () => void) {
   const previous = new Map<string, string | undefined>();
@@ -133,4 +133,35 @@ test("rawFromInput rejects malformed collector entries with BadRequestException"
   assert.throws(() => rawFromInput({ date: "2024-01-15", finder: "Finder" }), BadRequestException);
   assert.throws(() => rawFromInput({ gcCode: "GC123", date: "not a date", finder: "Finder" }), BadRequestException);
   assert.throws(() => rawFromInput({ gcCode: "GC123", date: "2024-01-15" }), BadRequestException);
+});
+
+function collectorControllerWithHides(hides: unknown[]) {
+  const prisma = {
+    collectorToken: {
+      findUnique: async () => ({ id: "token-1", userId: "user-1" }),
+      update: async () => ({})
+    },
+    hide: {
+      findMany: async () => hides
+    }
+  };
+  return new CollectorController(prisma as any, {} as any);
+}
+
+test("receivedLogs rejects non-array logs with BadRequestException", async () => {
+  const controller = collectorControllerWithHides([]);
+
+  await assert.rejects(() => controller.receivedLogs("Bearer token", { logs: "bad" } as any), BadRequestException);
+});
+
+test("receivedLogs rejects unknown owned caches with BadRequestException", async () => {
+  const controller = collectorControllerWithHides([]);
+
+  await assert.rejects(
+    () =>
+      controller.receivedLogs("Bearer token", {
+        logs: [{ gcCode: "GC123", date: "2024-01-15", finder: "Finder" }]
+      }),
+    BadRequestException
+  );
 });
