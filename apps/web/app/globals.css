@@ -579,6 +579,28 @@ h2 {
   background: rgba(237, 244, 232, 0.035);
 }
 
+.collector-token-row {
+  align-items: flex-start;
+}
+
+.collector-token-command {
+  display: grid;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+}
+
+.collector-token-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.collector-token-command textarea {
+  min-height: 92px;
+}
+
 .cache-link {
   text-decoration: none;
 }
@@ -1607,6 +1629,13 @@ select:focus {
   gap: 10px;
 }
 
+.scratch-control-stack {
+  display: grid;
+  justify-items: end;
+  gap: 10px;
+  min-width: min(100%, 340px);
+}
+
 .scratch-controls label {
   min-width: 150px;
   color: var(--muted);
@@ -1617,6 +1646,29 @@ select:focus {
   min-height: 38px;
   padding-top: 7px;
   padding-bottom: 7px;
+}
+
+.scratch-detail-progress {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 44px;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(237, 244, 232, 0.035);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.scratch-detail-progress strong {
+  color: var(--ink);
+}
+
+.scratch-detail-progress small {
+  color: var(--green);
 }
 
 .scratch-map-note {

@@ -7,6 +7,7 @@ import { StatsService } from "./stats.service";
 @Module({
   imports: [AuthModule],
   controllers: [StatsController],
-  providers: [StatsService, PrismaService]
+  providers: [StatsService, PrismaService],
+  exports: [StatsService]
 })
 export class StatsModule {}

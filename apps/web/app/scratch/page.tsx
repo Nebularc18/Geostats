@@ -12,11 +12,12 @@ import {
   ScratchMapView,
   ICELAND_COUNTY_GEOJSON_URL,
   ICELAND_REGION_GEOJSON_URL,
+  SWEDEN_REGION_GEOJSON_URL,
   SWEDEN_COUNTY_GEOJSON_URL,
   scratchColor
 } from "../../components/scratch-map";
 import { apiFetch } from "../../lib/api";
-import { deriveBucketsFromBoundaries } from "../../lib/scratch-boundaries";
+import { boundaryNames, deriveBucketsFromBoundaries } from "../../lib/scratch-boundaries";
 
 const ALL_CONTINENTS = "All continents";
 const WORLD_VIEW = "world";
@@ -25,9 +26,22 @@ const MAP_LEVELS: { value: ScratchMapLevel; label: string }[] = [
   { value: "regions", label: "Regions" },
   { value: "counties", label: "Counties" }
 ];
+const DETAIL_BOUNDARIES = [
+  { country: "Sweden", level: "regions", url: SWEDEN_REGION_GEOJSON_URL, propertyName: "name" },
+  { country: "Sweden", level: "counties", url: SWEDEN_COUNTY_GEOJSON_URL, propertyName: "kom_namn" },
+  { country: "Iceland", level: "regions", url: ICELAND_REGION_GEOJSON_URL, propertyName: "shapeName" },
+  { country: "Iceland", level: "counties", url: ICELAND_COUNTY_GEOJSON_URL, propertyName: "shapeName" }
+] as const;
+
+type DetailLevel = Extract<ScratchMapLevel, "regions" | "counties">;
+type DetailTotals = Record<string, Partial<Record<DetailLevel, number>>>;
 
 function findPercent(count: number, total: number) {
   return total > 0 ? Math.round((count / total) * 100) : 0;
+}
+
+function completedLocationCount(buckets: ScratchLocationBucket[]) {
+  return buckets.filter((bucket) => bucket.name !== "Unknown" && bucket.count > 0).length;
 }
 
 function LocationTile({
@@ -55,6 +69,7 @@ export default function ScratchPage() {
   const [swedenCountyBuckets, setSwedenCountyBuckets] = useState<ScratchLocationBucket[]>([]);
   const [icelandRegionBuckets, setIcelandRegionBuckets] = useState<ScratchLocationBucket[]>([]);
   const [icelandCountyBuckets, setIcelandCountyBuckets] = useState<ScratchLocationBucket[]>([]);
+  const [detailTotals, setDetailTotals] = useState<DetailTotals>({});
   const [activeContinent, setActiveContinent] = useState(ALL_CONTINENTS);
   const [selectedCountry, setSelectedCountry] = useState<string | null>(null);
   const [mapLevel, setMapLevel] = useState<ScratchMapLevel>("countries");
@@ -73,6 +88,42 @@ export default function ScratchPage() {
     void apiFetch<{ points: CacheMapPoint[] }>("/map/caches")
       .then((data) => setPoints(data.points))
       .catch(() => setError("Could not load scratch map points."));
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void Promise.all(
+      DETAIL_BOUNDARIES.map(async (boundary) => [
+        boundary.country,
+        boundary.level,
+        (await boundaryNames(boundary.url, boundary.propertyName)).length
+      ] as const)
+    )
+      .then((totals) => {
+        if (cancelled) {
+          return;
+        }
+
+        setDetailTotals(
+          totals.reduce<DetailTotals>((nextTotals, [country, level, total]) => {
+            nextTotals[country] = {
+              ...nextTotals[country],
+              [level]: total
+            };
+            return nextTotals;
+          }, {})
+        );
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setDetailTotals({});
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -175,6 +226,14 @@ export default function ScratchPage() {
   const hasSupportedDetailMap = activeCountry?.name === "Sweden" || activeCountry?.name === "Iceland";
   const mapLevelLabel = MAP_LEVELS.find((level) => level.value === mapLevel)?.label ?? "Countries";
   const findCountLabel = scratch?.truncated ? `${scratch.limit}+ logged finds` : `${scratch?.totalFinds ?? 0} logged finds`;
+  const activeDetailBuckets =
+    mapLevel === "regions" ? (activeCountry?.regions ?? []) : mapLevel === "counties" ? (activeCountry?.counties ?? []) : [];
+  const activeDetailTotal =
+    activeCountry && (mapLevel === "regions" || mapLevel === "counties")
+      ? (detailTotals[activeCountry.name]?.[mapLevel] ?? null)
+      : null;
+  const activeDetailCompleted = completedLocationCount(activeDetailBuckets);
+  const activeDetailPercent = activeDetailTotal ? findPercent(activeDetailCompleted, activeDetailTotal) : null;
 
   return (
     <AppShell>
@@ -225,27 +284,39 @@ export default function ScratchPage() {
             <h2>Coverage</h2>
             <small>Countries darken as find counts grow, then drill into regions and counties.</small>
           </span>
-          <div className="scratch-controls">
-            <label>
-              Map level
-              <select value={mapLevel} onChange={(event) => setMapLevel(event.target.value as ScratchMapLevel)}>
-                {MAP_LEVELS.map((level) => (
-                  <option key={level.value} value={level.value}>
-                    {level.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>
-              Continent
-              <select value={activeContinent} onChange={(event) => selectContinent(event.target.value)}>
-                {continents.map((continent) => (
-                  <option key={continent} value={continent}>
-                    {continent}
-                  </option>
-                ))}
-              </select>
-            </label>
+          <div className="scratch-control-stack">
+            <div className="scratch-controls">
+              <label>
+                Map level
+                <select value={mapLevel} onChange={(event) => setMapLevel(event.target.value as ScratchMapLevel)}>
+                  {MAP_LEVELS.map((level) => (
+                    <option key={level.value} value={level.value}>
+                      {level.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Continent
+                <select value={activeContinent} onChange={(event) => selectContinent(event.target.value)}>
+                  {continents.map((continent) => (
+                    <option key={continent} value={continent}>
+                      {continent}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            {mapLevel === "regions" || mapLevel === "counties" ? (
+              <div className="scratch-detail-progress">
+                <span>{mapLevelLabel} completed</span>
+                <strong>
+                  {activeDetailCompleted.toLocaleString()}
+                  {activeDetailTotal ? ` / ${activeDetailTotal.toLocaleString()}` : ""}
+                </strong>
+                {activeDetailPercent === null ? <small>Total loading</small> : <small>{activeDetailPercent}%</small>}
+              </div>
+            ) : null}
           </div>
         </div>
         {mapLevel !== "countries" && !hasSupportedDetailMap ? (

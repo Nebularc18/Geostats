@@ -101,7 +101,11 @@ function toDate(value: unknown): Date | null {
   if (!text) {
     return null;
   }
-  const normalized = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/.test(text) ? `${text}Z` : text;
+  const normalized = /^\d{4}-\d{2}-\d{2}$/.test(text)
+    ? `${text}T00:00:00Z`
+    : /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/.test(text)
+      ? `${text}Z`
+      : text;
   const date = new Date(normalized);
   return Number.isNaN(date.getTime()) ? null : date;
 }

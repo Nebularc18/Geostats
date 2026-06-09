@@ -11,6 +11,7 @@
     "test": "corepack pnpm -r test",
     "typecheck": "corepack pnpm -r typecheck",
     "format": "prettier --write .",
+    "collect-owner-logs": "corepack pnpm --filter @geostats/tools collect-owner-logs",
     "db:generate": "corepack pnpm --filter @geostats/db db:generate",
     "db:migrate": "corepack pnpm --filter @geostats/db db:migrate",
     "db:seed": "corepack pnpm --filter @geostats/db db:seed"

@@ -5,6 +5,8 @@ const REQUIRED_RUNTIME_ENV = [
   "DATABASE_URL",
   "REDIS_URL",
   "JWT_SECRET",
+  "COLLECTOR_TOKEN_ENCRYPTION_KEY",
+  "API_ORIGIN",
   "WEB_ORIGIN",
   "S3_ENDPOINT",
   "S3_REGION",
@@ -65,5 +67,5 @@ function validateProductionValue(name: string, value: string) {
 }
 
 function isSecretEnv(name: string): boolean {
-  return /(?:SECRET|PASSWORD|TOKEN|PRIVATE_KEY|ACCESS_KEY)$/i.test(name);
+  return /(?:SECRET|PASSWORD|TOKEN|PRIVATE_KEY|ACCESS_KEY|ENCRYPTION_KEY)$/i.test(name);
 }
