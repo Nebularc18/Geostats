@@ -74,8 +74,8 @@ export class AuthService {
     if (!normalizedUsername || normalizedUsername.length < 3 || normalizedUsername.length > 40) {
       throw new BadRequestException("Username must be between 3 and 40 characters");
     }
-    if (password.length < 8) {
-      throw new BadRequestException("Password must be at least 8 characters");
+    if (password.length < 8 || password.length > 128) {
+      throw new BadRequestException("Password must be between 8 and 128 characters");
     }
     const existing = await this.prisma.user.findFirst({
       where: { OR: [{ email: normalizedEmail }, { username: normalizedUsername }] }

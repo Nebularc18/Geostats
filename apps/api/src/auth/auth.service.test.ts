@@ -102,7 +102,10 @@ test("register rejects invalid emails and usernames", async () => {
       message: "Username must be between 3 and 40 characters"
     });
     await assert.rejects(() => service.register("user@example.com", "user", "short"), {
-      message: "Password must be at least 8 characters"
+      message: "Password must be between 8 and 128 characters"
+    });
+    await assert.rejects(() => service.register("user@example.com", "user", "a".repeat(129)), {
+      message: "Password must be between 8 and 128 characters"
     });
   });
 });
