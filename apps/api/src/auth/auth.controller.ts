@@ -62,7 +62,7 @@ export class AuthController {
     response.clearCookie("geostats_oauth_state");
     response.clearCookie("geostats_oauth_code_verifier");
     if (!code || !state || !expectedState || state !== expectedState || !codeVerifier) {
-      response.redirect(`${envOrDefault("WEB_ORIGIN", "http://localhost:3000")}/login`);
+      response.redirect(this.loginUrl("external"));
       return;
     }
 

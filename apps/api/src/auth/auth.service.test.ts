@@ -123,6 +123,37 @@ test("login verifies legacy bcrypt password hashes", async () => {
   });
 });
 
+test("external auth requires email_verified to be true when configured", async () => {
+  await withEnv(
+    {
+      AUTH_MODE: "external",
+      EXTERNAL_AUTH_REQUIRE_VERIFIED_EMAIL: "true",
+      EXTERNAL_AUTH_PROVIDER_ID: "external",
+      EXTERNAL_AUTH_CLIENT_ID: "client",
+      EXTERNAL_AUTH_TOKEN_URL: "https://auth.example/token",
+      EXTERNAL_AUTH_USERINFO_URL: "https://auth.example/userinfo"
+    },
+    async () => {
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = (async (url: string) => {
+        if (url === "https://auth.example/token") {
+          return new Response(JSON.stringify({ access_token: "token" }), { status: 200 });
+        }
+        return new Response(JSON.stringify({ sub: "external-user-1", email: "user@example.com" }), { status: 200 });
+      }) as typeof fetch;
+      try {
+        const { service } = authServiceWithUsers();
+
+        await assert.rejects(() => service.loginWithExternalProvider("code", "verifier"), {
+          message: "External auth account must have an email address"
+        });
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    }
+  );
+});
+
 test("external auth mode disables password registration", async () => {
   await withEnv({ AUTH_MODE: "external" }, async () => {
     const { service } = authServiceWithUsers();

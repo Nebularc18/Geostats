@@ -69,3 +69,31 @@ test("external callback redirects to login when provider login fails", async () 
     assert.deepEqual(redirects, ["http://localhost:3000/login?authError=external"]);
   });
 });
+
+test("external callback redirects to login with auth error when code or state is invalid", async () => {
+  await withEnv({ WEB_ORIGIN: "http://localhost:3000" }, async () => {
+    const auth = {
+      loginWithExternalProvider: async () => {
+        throw new Error("login should not be attempted");
+      }
+    };
+    const redirects: string[] = [];
+    const response = {
+      req: {
+        cookies: {
+          geostats_oauth_state: "state",
+          geostats_oauth_code_verifier: "verifier"
+        }
+      },
+      clearCookie: () => {},
+      redirect: (url: string) => {
+        redirects.push(url);
+      }
+    };
+    const controller = new AuthController(auth as any);
+
+    await controller.externalCallback(undefined, "state", response as any);
+
+    assert.deepEqual(redirects, ["http://localhost:3000/login?authError=external"]);
+  });
+});
