@@ -48,6 +48,34 @@ Local-first, cloud-ready geocaching statistics for GPX and Pocket Query imports.
 
 The web app runs on `http://localhost:3000`, and the API runs on `http://localhost:3001`.
 
+## Authentication
+
+Fresh installs use local email and password login by default:
+
+```env
+AUTH_MODE=password
+NEXT_PUBLIC_AUTH_MODE=password
+```
+
+This makes the app usable without any external identity provider. For an internet-facing deployment, prefer putting Better Auth or another OIDC-compatible provider in front of login so you can centralize account security, MFA, password policies, and session controls outside the app.
+
+To use Better Auth or another OIDC provider, set:
+
+```env
+AUTH_MODE=external
+NEXT_PUBLIC_AUTH_MODE=external
+NEXT_PUBLIC_AUTH_PROVIDER_NAME=Home Auth
+EXTERNAL_AUTH_PROVIDER_ID=home-auth
+EXTERNAL_AUTH_CLIENT_ID=your-client-id
+EXTERNAL_AUTH_CLIENT_SECRET=your-client-secret-if-required
+EXTERNAL_AUTH_AUTHORIZE_URL=https://auth.example.com/oauth2/authorize
+EXTERNAL_AUTH_TOKEN_URL=https://auth.example.com/oauth2/token
+EXTERNAL_AUTH_USERINFO_URL=https://auth.example.com/oauth2/userinfo
+EXTERNAL_AUTH_CALLBACK_URL=https://api.example.com/auth/external/callback
+```
+
+When external auth is enabled, the login page shows a single provider button instead of the password form.
+
 ## Docker Compose
 
 For a full local deployment:

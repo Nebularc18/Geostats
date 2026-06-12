@@ -71,19 +71,31 @@ export default function OnboardingPage() {
         {ready ? (
           <form onSubmit={submit} className="form">
             <label>
-              Geocaching username
+              <span className="field-label">
+                Geocaching username
+                <strong>Required</strong>
+              </span>
               <input name="gcUsername" required maxLength={60} autoComplete="nickname" />
             </label>
             <label>
-              Home latitude
+              <span className="field-label">
+                Home latitude
+                <em>Optional</em>
+              </span>
               <input name="homeLatitude" type="number" step="0.000001" min="-90" max="90" />
             </label>
             <label>
-              Home longitude
+              <span className="field-label">
+                Home longitude
+                <em>Optional</em>
+              </span>
               <input name="homeLongitude" type="number" step="0.000001" min="-180" max="180" />
             </label>
             <label>
-              Time zone
+              <span className="field-label">
+                Time zone
+                <strong>Required</strong>
+              </span>
               <select name="timeZone" required defaultValue={defaultTimeZone}>
                 {timeZoneOptions.map((timeZone) => (
                   <option key={timeZone} value={timeZone}>

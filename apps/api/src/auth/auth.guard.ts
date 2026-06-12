@@ -21,12 +21,20 @@ export class AuthGuard implements CanActivate {
       : null;
     const token = request.cookies?.geostats_session ?? bearer;
     if (!token) {
+      if (this.auth.authMode() === "dev") {
+        request.user = await this.auth.devUser();
+        return true;
+      }
       throw new UnauthorizedException("Authentication required");
     }
 
     try {
       request.user = await this.auth.verify(token);
     } catch {
+      if (this.auth.authMode() === "dev") {
+        request.user = await this.auth.devUser();
+        return true;
+      }
       throw new UnauthorizedException("Invalid or expired token");
     }
     return true;
