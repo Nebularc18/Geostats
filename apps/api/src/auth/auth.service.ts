@@ -7,6 +7,7 @@ import {
 } from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
 import { Prisma } from "@geostats/db";
+import bcrypt from "bcryptjs";
 import { PrismaService } from "../common/prisma.service";
 import { AuthUser } from "@geostats/shared";
 import { envOrDefault } from "../common/env";
@@ -30,6 +31,7 @@ const scryptAsync = promisify(scrypt) as (
 const PASSWORD_HASH_PREFIX = "scrypt";
 const PASSWORD_HASH_KEYLEN = 64;
 const PASSWORD_HASH_OPTIONS = { N: 16_384, r: 8, p: 1, maxmem: 32 * 1024 * 1024 };
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 interface OAuthTokenResponse {
   access_token?: string;
@@ -66,8 +68,14 @@ export class AuthService {
     this.assertPasswordAuthMode();
     const normalizedEmail = email.trim().toLowerCase();
     const normalizedUsername = username.trim();
-    if (!normalizedEmail || !normalizedUsername || password.length < 8) {
-      throw new BadRequestException("Email, username, and an 8 character password are required");
+    if (!normalizedEmail || !EMAIL_PATTERN.test(normalizedEmail) || normalizedEmail.length > 254) {
+      throw new BadRequestException("A valid email address (max 254 characters) is required");
+    }
+    if (!normalizedUsername || normalizedUsername.length < 3 || normalizedUsername.length > 40) {
+      throw new BadRequestException("Username must be between 3 and 40 characters");
+    }
+    if (password.length < 8) {
+      throw new BadRequestException("Password must be at least 8 characters");
     }
     const existing = await this.prisma.user.findFirst({
       where: { OR: [{ email: normalizedEmail }, { username: normalizedUsername }] }
@@ -237,15 +245,7 @@ export class AuthService {
     email: string;
     username: string;
   }) {
-    const existingAccount = await this.prisma.oAuthAccount.findUnique({
-      where: {
-        provider_providerAccountId: {
-          provider: input.provider,
-          providerAccountId: input.providerAccountId
-        }
-      },
-      include: { user: true }
-    });
+    const existingAccount = await this.findOAuthAccount(input.provider, input.providerAccountId);
     if (existingAccount) {
       await this.prisma.oAuthAccount.update({
         where: { id: existingAccount.id },
@@ -256,14 +256,24 @@ export class AuthService {
 
     const existingUser = await this.prisma.user.findUnique({ where: { email: input.email } });
     if (existingUser) {
-      await this.prisma.oAuthAccount.create({
-        data: {
-          userId: existingUser.id,
-          provider: input.provider,
-          providerAccountId: input.providerAccountId,
-          providerUsername: input.providerUsername
+      try {
+        await this.prisma.oAuthAccount.create({
+          data: {
+            userId: existingUser.id,
+            provider: input.provider,
+            providerAccountId: input.providerAccountId,
+            providerUsername: input.providerUsername
+          }
+        });
+      } catch (error) {
+        if (this.isUniqueConstraintError(error)) {
+          const linkedAccount = await this.findOAuthAccount(input.provider, input.providerAccountId);
+          if (linkedAccount) {
+            return linkedAccount.user;
+          }
         }
-      });
+        throw error;
+      }
       return existingUser;
     }
 
@@ -283,11 +293,27 @@ export class AuthService {
         }
       });
     } catch (error) {
-      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+      if (this.isUniqueConstraintError(error)) {
+        const linkedAccount = await this.findOAuthAccount(input.provider, input.providerAccountId);
+        if (linkedAccount) {
+          return linkedAccount.user;
+        }
         throw new ConflictException("Email or username is already registered");
       }
       throw error;
     }
+  }
+
+  private async findOAuthAccount(provider: string, providerAccountId: string) {
+    return this.prisma.oAuthAccount.findUnique({
+      where: {
+        provider_providerAccountId: {
+          provider,
+          providerAccountId
+        }
+      },
+      include: { user: true }
+    });
   }
 
   private async createPasswordUser(email: string, username: string, passwordHash: string) {
@@ -300,11 +326,15 @@ export class AuthService {
         }
       });
     } catch (error) {
-      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+      if (this.isUniqueConstraintError(error)) {
         throw new ConflictException("Email or username is already registered");
       }
       throw error;
     }
+  }
+
+  private isUniqueConstraintError(error: unknown): error is Prisma.PrismaClientKnownRequestError {
+    return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002";
   }
 
   private async hashPassword(password: string): Promise<string> {
@@ -314,6 +344,10 @@ export class AuthService {
   }
 
   private async verifyPassword(password: string, storedHash: string): Promise<boolean> {
+    if (storedHash.startsWith("$2a$") || storedHash.startsWith("$2b$") || storedHash.startsWith("$2y$")) {
+      return bcrypt.compare(password, storedHash);
+    }
+
     const [prefix, n, r, p, salt, encodedKey] = storedHash.split("$");
     if (prefix !== PASSWORD_HASH_PREFIX || !n || !r || !p || !salt || !encodedKey) {
       return false;

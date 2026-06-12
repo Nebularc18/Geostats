@@ -66,9 +66,13 @@ export class AuthController {
       return;
     }
 
-    const user = await this.auth.loginWithExternalProvider(code, codeVerifier);
-    this.setCookie(response, user);
-    response.redirect(`${envOrDefault("WEB_ORIGIN", "http://localhost:3000")}/dashboard`);
+    try {
+      const user = await this.auth.loginWithExternalProvider(code, codeVerifier);
+      this.setCookie(response, user);
+      response.redirect(`${envOrDefault("WEB_ORIGIN", "http://localhost:3000")}/dashboard`);
+    } catch {
+      response.redirect(this.loginUrl("external"));
+    }
   }
 
   @Get("dev")
@@ -101,5 +105,13 @@ export class AuthController {
 
   private base64Url(value: Buffer): string {
     return value.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+  }
+
+  private loginUrl(authError?: string): string {
+    const url = new URL("/login", envOrDefault("WEB_ORIGIN", "http://localhost:3000"));
+    if (authError) {
+      url.searchParams.set("authError", authError);
+    }
+    return url.toString();
   }
 }

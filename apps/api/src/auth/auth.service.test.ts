@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { ServiceUnavailableException, UnauthorizedException } from "@nestjs/common";
+import { Prisma } from "@geostats/db";
+import bcrypt from "bcryptjs";
 import { AuthService } from "./auth.service";
 
 function withEnv<T>(values: Record<string, string | undefined>, fn: () => T | Promise<T>): Promise<T> | T {
@@ -86,9 +88,79 @@ test("register stores a password hash and login verifies it", async () => {
   });
 });
 
+test("register rejects invalid emails and usernames", async () => {
+  await withEnv({ AUTH_MODE: undefined }, async () => {
+    const { service } = authServiceWithUsers();
+
+    await assert.rejects(() => service.register("notanemail", "user", "correct-password"), {
+      message: "A valid email address (max 254 characters) is required"
+    });
+    await assert.rejects(() => service.register("user@example.com", "ab", "correct-password"), {
+      message: "Username must be between 3 and 40 characters"
+    });
+    await assert.rejects(() => service.register("user@example.com", "a".repeat(41), "correct-password"), {
+      message: "Username must be between 3 and 40 characters"
+    });
+    await assert.rejects(() => service.register("user@example.com", "user", "short"), {
+      message: "Password must be at least 8 characters"
+    });
+  });
+});
+
+test("login verifies legacy bcrypt password hashes", async () => {
+  await withEnv({ AUTH_MODE: undefined }, async () => {
+    const { service, users } = authServiceWithUsers();
+    users.push({
+      id: "user-1",
+      email: "user@example.com",
+      username: "user",
+      passwordHash: await bcrypt.hash("correct-password", 10)
+    });
+
+    await assert.rejects(() => service.login("user@example.com", "wrong-password"), UnauthorizedException);
+    const loggedIn = await service.login("user@example.com", "correct-password");
+    assert.deepEqual(loggedIn, { id: "user-1", email: "user@example.com", username: "user" });
+  });
+});
+
 test("external auth mode disables password registration", async () => {
   await withEnv({ AUTH_MODE: "external" }, async () => {
     const { service } = authServiceWithUsers();
     await assert.rejects(() => service.register("user@example.com", "user", "correct-password"), ServiceUnavailableException);
   });
+});
+
+test("upsertOAuthUser recovers when concurrent account linking wins the race", async () => {
+  const user = { id: "user-1", email: "user@example.com", username: "user", passwordHash: null };
+  let accountLookupCount = 0;
+  const uniqueConstraintError = new Prisma.PrismaClientKnownRequestError("Unique constraint failed", {
+    code: "P2002",
+    clientVersion: "test"
+  });
+  const prisma = {
+    user: {
+      findUnique: async ({ where }: any) => (where.email === user.email ? user : null)
+    },
+    oAuthAccount: {
+      findUnique: async () => {
+        accountLookupCount += 1;
+        return accountLookupCount === 1 ? null : { id: "oauth-1", user };
+      },
+      create: async () => {
+        throw uniqueConstraintError;
+      }
+    }
+  };
+  const service = new AuthService(prisma as any, {} as any);
+
+  const result = await (service as any).upsertOAuthUser({
+    provider: "external",
+    providerAccountId: "provider-user-1",
+    providerUsername: "provider-user",
+    email: user.email,
+    username: user.username
+  });
+
+  assert.equal(result, user);
+  assert.equal(accountLookupCount, 2);
 });

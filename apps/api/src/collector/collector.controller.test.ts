@@ -395,10 +395,28 @@ test("receivedLogsCsv imports uploaded owner log CSV for the authenticated user"
     { id: "user-1", email: "user@example.com", username: "user" },
     {
       originalname: "geostats-received-logs.csv",
+      mimetype: "text/csv",
       buffer: Buffer.from("gcCode,logId,date,type,finder,text\nGC123,1,2024-01-15,Found it,Finder,Fresh\n")
     } as Express.Multer.File
   );
 
   assert.deepEqual(result, { added: 1, changedCaches: 1 });
   assert.equal(cacheLogs(writtenRaw).length, 1);
+});
+
+test("receivedLogsCsv rejects renamed non-CSV uploads by MIME type", async () => {
+  const controller = new CollectorController({} as any, {} as any);
+
+  await assert.rejects(
+    () =>
+      controller.receivedLogsCsv(
+        { id: "user-1", email: "user@example.com", username: "user" },
+        {
+          originalname: "archive.csv",
+          mimetype: "application/zip",
+          buffer: Buffer.from("not a csv")
+        } as Express.Multer.File
+      ),
+    BadRequestException
+  );
 });

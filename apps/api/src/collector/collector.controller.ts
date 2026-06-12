@@ -39,6 +39,7 @@ type ReceivedLogInput = {
 const TOKEN_PREFIX = "gst";
 const COLLECTOR_SOURCE_PATH = resolve(process.cwd(), "apps/tools/src/collect-owner-logs.ts");
 const COLLECTOR_CSV_MAX_BYTES = 10_485_760;
+const COLLECTOR_CSV_MIME_TYPES = new Set(["text/csv", "application/csv", "text/plain"]);
 
 function tokenHash(token: string) {
   return createHash("sha256").update(token, "utf8").digest("hex");
@@ -538,7 +539,7 @@ export class CollectorController {
     if (!file) {
       throw new BadRequestException("Upload a CSV file using the file field");
     }
-    if (!file.originalname.toLowerCase().endsWith(".csv")) {
+    if (!file.originalname.toLowerCase().endsWith(".csv") || !COLLECTOR_CSV_MIME_TYPES.has(file.mimetype)) {
       throw new BadRequestException("Only CSV files are supported for owner log imports");
     }
     const logs = parseReceivedLogsCsv(file.buffer.toString("utf8"));
