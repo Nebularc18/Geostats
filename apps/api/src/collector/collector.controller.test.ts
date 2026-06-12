@@ -339,6 +339,75 @@ test("receivedLogs rereads raw in the transaction and builds stats after commit"
   assert.equal(cacheLogs(writtenRaw).length, 2);
 });
 
+test("receivedLogs returns committed import result when stats rebuild fails", async () => {
+  const updatedAt = new Date("2026-01-01T00:00:00.000Z");
+  const raw = {
+    "groundspeak:cache": {
+      "groundspeak:logs": {
+        "groundspeak:log": []
+      }
+    }
+  };
+  let transactionCount = 0;
+  let loggedError = false;
+  const tx = {
+    hide: {
+      findFirst: async () => ({
+        id: "hide-1",
+        cacheId: "cache-1",
+        receivedLogCount: 0,
+        cache: { id: "cache-1", updatedAt, raw }
+      }),
+      update: async () => ({})
+    },
+    cache: {
+      updateMany: async () => ({ count: 1 })
+    }
+  };
+  const prisma = {
+    collectorToken: {
+      findUnique: async () => ({ id: "token-1", userId: "user-1" }),
+      update: async () => ({})
+    },
+    hide: {
+      findMany: async () => [
+        {
+          id: "hide-1",
+          cacheId: "cache-1",
+          receivedLogCount: 0,
+          cache: { gcCode: "GC123", raw }
+        }
+      ]
+    },
+    $transaction: async (run: (client: unknown) => Promise<unknown>) => {
+      transactionCount += 1;
+      return run(tx);
+    }
+  };
+  const stats = {
+    buildSnapshotForUser: async () => {
+      throw new Error("stats unavailable");
+    },
+    replaceSnapshotForUser: async () => {
+      throw new Error("stats replacement should not run");
+    }
+  };
+  const controller = new CollectorController(prisma as any, stats as any);
+  (controller as any).logger = {
+    error: () => {
+      loggedError = true;
+    }
+  };
+
+  const result = await controller.receivedLogs("Bearer token", {
+    logs: [{ gcCode: "GC123", date: "2024-01-15", finder: "New", text: "Fresh" }]
+  });
+
+  assert.deepEqual(result, { added: 1, changedCaches: 1 });
+  assert.equal(transactionCount, 1);
+  assert.equal(loggedError, true);
+});
+
 test("receivedLogsCsv imports uploaded owner log CSV for the authenticated user", async () => {
   const updatedAt = new Date("2026-01-01T00:00:00.000Z");
   const raw = {

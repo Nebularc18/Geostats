@@ -7,6 +7,7 @@ import {
   Get,
   Header,
   Headers,
+  Logger,
   NotFoundException,
   Param,
   Post,
@@ -466,6 +467,8 @@ export function mergedRaw(raw: unknown, newLogs: Array<Record<string, any>>) {
 
 @Controller("collector")
 export class CollectorController {
+  private readonly logger = new Logger(CollectorController.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly stats: StatsService
@@ -599,8 +602,12 @@ export class CollectorController {
       }
     });
     if (added > 0) {
-      const stats = await this.stats.buildSnapshotForUser(userId);
-      await this.prisma.$transaction((tx) => this.stats.replaceSnapshotForUser(userId, stats, tx));
+      try {
+        const stats = await this.stats.buildSnapshotForUser(userId);
+        await this.prisma.$transaction((tx) => this.stats.replaceSnapshotForUser(userId, stats, tx));
+      } catch (error) {
+        this.logger.error(`Stats rebuild failed after received-log import for user ${userId}`, error);
+      }
     }
     return { added, changedCaches };
   }
