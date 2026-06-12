@@ -580,25 +580,66 @@ h2 {
 }
 
 .collector-token-row {
-  align-items: flex-start;
+  display: grid;
+  align-items: stretch;
+  gap: 14px;
+}
+
+.collector-token-header,
+.collector-command-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.collector-token-header span,
+.collector-command-title span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-weight: 700;
 }
 
 .collector-token-command {
   display: grid;
-  gap: 10px;
-  flex: 1;
+  gap: 12px;
   min-width: 0;
 }
 
-.collector-token-actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
+.collector-token-commands {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.collector-token-command-card {
+  display: grid;
   gap: 8px;
+  min-width: 0;
+}
+
+.collector-command-action,
+.collector-token-delete {
+  width: auto;
+  min-height: 34px;
+  margin-top: 0;
+  padding: 7px 10px;
+  white-space: nowrap;
+}
+
+.collector-token-delete {
+  flex: 0 0 auto;
+  padding-inline: 9px;
 }
 
 .collector-token-command textarea {
   min-height: 92px;
+  font-family: "Cascadia Mono", "Consolas", monospace;
+  font-size: 0.78rem;
+  line-height: 1.35;
+  white-space: pre;
+  overflow: auto;
+  resize: vertical;
 }
 
 .cache-link {
@@ -801,6 +842,35 @@ label {
   font-weight: 700;
 }
 
+.field-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.field-label strong,
+.field-label em {
+  flex: 0 0 auto;
+  padding: 3px 7px;
+  border: 1px solid rgba(237, 244, 232, 0.14);
+  border-radius: 6px;
+  font-size: 0.68rem;
+  font-style: normal;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.field-label strong {
+  color: #07110b;
+  background: var(--green);
+}
+
+.field-label em {
+  color: var(--muted);
+  background: rgba(237, 244, 232, 0.045);
+}
+
 input,
 textarea {
   width: 100%;
@@ -850,6 +920,16 @@ select:focus {
   min-height: 44px;
   padding: 0 16px;
   border-radius: 8px;
+}
+
+.oauth-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
+  margin-top: 6px;
+  text-decoration: none;
 }
 
 .auth-page {
@@ -1868,7 +1948,8 @@ select:focus {
   .stat-grid,
   .two-column,
   .dashboard-glance,
-  .stats-breakdown-grid {
+  .stats-breakdown-grid,
+  .collector-token-commands {
     grid-template-columns: 1fr;
   }
 

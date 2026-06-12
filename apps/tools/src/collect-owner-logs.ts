@@ -43,7 +43,7 @@ const DEFAULT_PROFILE_DIR = ".codex/geocaching-browser";
 const DEFAULT_OUTPUT = "received-logs.csv";
 const DEFAULT_SERVER = "http://127.0.0.1:3001";
 const DEFAULT_HELIUM_PATH = "";
-const CSV_HEADER = ["gcCode", "date", "type", "finder", "text"];
+const CSV_HEADER = ["gcCode", "logId", "date", "type", "finder", "text"];
 
 function workspaceRoot(): string {
   return resolve(process.env.INIT_CWD ?? "../..");
@@ -404,7 +404,7 @@ async function main() {
       const cache = caches[index];
       console.log(`[${index + 1}/${caches.length}] ${cache.gcCode} ${cache.name}`);
       const logs = await fetchNewLogs(context, cache, args.pageSize, args.delayMs);
-      const rows = logs.map((log) => csvRow([log.gcCode, log.date, log.type, log.finder, log.text]));
+      const rows = logs.map((log) => csvRow([log.gcCode, log.logId ?? "", log.date, log.type, log.finder, log.text]));
       const newRows = rows.filter((row) => {
         if (existingRows.has(row)) {
           return false;

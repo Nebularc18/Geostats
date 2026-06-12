@@ -1,4 +1,22 @@
-import { BadRequestException, Body, ConflictException, Controller, Delete, Get, Header, Headers, NotFoundException, Param, Post, Req, UnauthorizedException, UseGuards } from "@nestjs/common";
+import {
+  BadRequestException,
+  Body,
+  ConflictException,
+  Controller,
+  Delete,
+  Get,
+  Header,
+  Headers,
+  NotFoundException,
+  Param,
+  Post,
+  Req,
+  UnauthorizedException,
+  UploadedFile,
+  UseGuards,
+  UseInterceptors
+} from "@nestjs/common";
+import { FileInterceptor } from "@nestjs/platform-express";
 import { randomBytes, createCipheriv, createDecipheriv, createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -20,6 +38,7 @@ type ReceivedLogInput = {
 
 const TOKEN_PREFIX = "gst";
 const COLLECTOR_SOURCE_PATH = resolve(process.cwd(), "apps/tools/src/collect-owner-logs.ts");
+const COLLECTOR_CSV_MAX_BYTES = 10_485_760;
 
 function tokenHash(token: string) {
   return createHash("sha256").update(token, "utf8").digest("hex");
@@ -109,7 +128,9 @@ if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
 
 $baseDir = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "Geostats\\hides-runner" } else { Join-Path $HOME ".geostats\\hides-runner" }
 $profileDir = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "Geostats\\geocaching-browser" } else { Join-Path $HOME ".geostats\\geocaching-browser" }
-$outputPath = Join-Path ([Environment]::GetFolderPath("MyDocuments")) "geostats-received-logs.csv"
+$downloadsPath = Join-Path ([Environment]::GetFolderPath("UserProfile")) "Downloads"
+New-Item -ItemType Directory -Force -Path $downloadsPath | Out-Null
+$outputPath = Join-Path $downloadsPath "geostats-received-logs.csv"
 $collectorPath = Join-Path $baseDir "collect-owner-logs.ts"
 $packagePath = Join-Path $baseDir "package.json"
 
@@ -180,6 +201,9 @@ try {
   }
 
   $runArgs = @($collectorPath, "--server", $server, "--token", $token, "--profile-dir", $profileDir, "--output", $outputPath)
+  if ($env:GEOSTATS_COLLECTOR_NO_UPLOAD -eq "1") {
+    $runArgs += @("--no-upload")
+  }
   if ($browser) {
     $runArgs += @("--browser", $browser)
   }
@@ -307,6 +331,96 @@ function countReceivedLogs(logs: Array<Record<string, any>>) {
   return logs.filter((log) => rawText(log["groundspeak:type"], log.type)?.toLowerCase() !== "publish listing").length;
 }
 
+function parseCsv(text: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let field = "";
+  let inQuotes = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    const next = text[index + 1];
+    if (inQuotes) {
+      if (char === '"' && next === '"') {
+        field += '"';
+        index += 1;
+      } else if (char === '"') {
+        inQuotes = false;
+      } else {
+        field += char;
+      }
+      continue;
+    }
+    if (char === '"') {
+      inQuotes = true;
+    } else if (char === ",") {
+      row.push(field);
+      field = "";
+    } else if (char === "\n") {
+      row.push(field);
+      rows.push(row);
+      row = [];
+      field = "";
+    } else if (char !== "\r") {
+      field += char;
+    }
+  }
+  if (inQuotes) {
+    throw new BadRequestException("CSV contains an unclosed quoted field");
+  }
+  if (field || row.length > 0) {
+    row.push(field);
+    rows.push(row);
+  }
+  return rows.filter((csvRow) => csvRow.some((value) => value.trim()));
+}
+
+function normalizedHeader(value: string) {
+  return value
+    .replace(/^\uFEFF/, "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+}
+
+function fieldIndex(headers: string[], ...names: string[]) {
+  const wanted = new Set(names.map(normalizedHeader));
+  return headers.findIndex((header) => wanted.has(normalizedHeader(header)));
+}
+
+export function parseReceivedLogsCsv(content: string): ReceivedLogInput[] {
+  const rows = parseCsv(content);
+  if (rows.length < 2) {
+    throw new BadRequestException("CSV must contain a header row and at least one log row");
+  }
+  const headers = rows[0];
+  const indexes = {
+    gcCode: fieldIndex(headers, "gcCode", "GC Code"),
+    logId: fieldIndex(headers, "logId", "Log ID"),
+    date: fieldIndex(headers, "date", "visited"),
+    type: fieldIndex(headers, "type", "logType"),
+    finder: fieldIndex(headers, "finder", "userName"),
+    text: fieldIndex(headers, "text", "logText")
+  };
+  const missing = [
+    ["gcCode", indexes.gcCode],
+    ["date", indexes.date],
+    ["finder", indexes.finder]
+  ].filter(([, index]) => index === -1);
+  if (missing.length > 0) {
+    throw new BadRequestException(`CSV is missing required columns: ${missing.map(([name]) => name).join(", ")}`);
+  }
+
+  return rows.slice(1).map((row) => ({
+    gcCode: row[indexes.gcCode],
+    logId: indexes.logId === -1 ? null : row[indexes.logId],
+    date: row[indexes.date],
+    type: indexes.type === -1 ? "Found it" : row[indexes.type],
+    finder: row[indexes.finder],
+    text: indexes.text === -1 ? "" : row[indexes.text]
+  }));
+}
+
 export function mergedRaw(raw: unknown, newLogs: Array<Record<string, any>>) {
   const root = rawObject(raw);
   const cacheKey = root["groundspeak:cache"] !== undefined || root.cache === undefined ? "groundspeak:cache" : "cache";
@@ -414,6 +528,24 @@ export class CollectorController {
   @Post("received-logs")
   async receivedLogs(@Headers("authorization") authorization: string | undefined, @Body() body: { logs?: ReceivedLogInput[] }) {
     const userId = await this.tokenUser(authorization);
+    return this.importReceivedLogsForUser(userId, body);
+  }
+
+  @Post("received-logs/csv")
+  @UseGuards(AuthGuard)
+  @UseInterceptors(FileInterceptor("file", { limits: { fileSize: COLLECTOR_CSV_MAX_BYTES } }))
+  async receivedLogsCsv(@CurrentUser() user: AuthUser, @UploadedFile() file?: Express.Multer.File) {
+    if (!file) {
+      throw new BadRequestException("Upload a CSV file using the file field");
+    }
+    if (!file.originalname.toLowerCase().endsWith(".csv")) {
+      throw new BadRequestException("Only CSV files are supported for owner log imports");
+    }
+    const logs = parseReceivedLogsCsv(file.buffer.toString("utf8"));
+    return this.importReceivedLogsForUser(user.id, { logs });
+  }
+
+  private async importReceivedLogsForUser(userId: string, body: { logs?: ReceivedLogInput[] }) {
     const logs = body.logs ?? [];
     if (!Array.isArray(logs)) {
       throw new BadRequestException("logs must be an array");

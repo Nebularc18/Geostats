@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { BadRequestException } from "@nestjs/common";
-import { cacheLogs, CollectorController, logKey, mergedRaw, rawFromInput, trustedBaseUrl } from "./collector.controller";
+import { cacheLogs, CollectorController, logKey, mergedRaw, parseReceivedLogsCsv, rawFromInput, trustedBaseUrl } from "./collector.controller";
 
 function withEnv(values: Record<string, string | undefined>, fn: () => void) {
   const previous = new Map<string, string | undefined>();
@@ -182,6 +182,38 @@ test("rawFromInput rejects malformed collector entries with BadRequestException"
   assert.throws(() => rawFromInput({ gcCode: "GC123", date: "2024-01-15" }), BadRequestException);
 });
 
+test("parseReceivedLogsCsv reads generated owner log CSV", () => {
+  const logs = parseReceivedLogsCsv(
+    'gcCode,logId,date,type,finder,text\nGC123,987,2024-01-15,Found it,Finder,"Nice, easy cache"\n'
+  );
+
+  assert.deepEqual(logs, [
+    {
+      gcCode: "GC123",
+      logId: "987",
+      date: "2024-01-15",
+      type: "Found it",
+      finder: "Finder",
+      text: "Nice, easy cache"
+    }
+  ]);
+});
+
+test("parseReceivedLogsCsv accepts older CSV without log ids", () => {
+  const logs = parseReceivedLogsCsv("gcCode,date,type,finder,text\nGC123,2024-01-15,Found it,Finder,Fresh\n");
+
+  assert.deepEqual(logs, [
+    {
+      gcCode: "GC123",
+      logId: null,
+      date: "2024-01-15",
+      type: "Found it",
+      finder: "Finder",
+      text: "Fresh"
+    }
+  ]);
+});
+
 function collectorControllerWithHides(hides: unknown[]) {
   const prisma = {
     collectorToken: {
@@ -305,4 +337,68 @@ test("receivedLogs rereads raw in the transaction and builds stats after commit"
   assert.deepEqual(result, { added: 1, changedCaches: 1 });
   assert.equal(transactionCount, 2);
   assert.equal(cacheLogs(writtenRaw).length, 2);
+});
+
+test("receivedLogsCsv imports uploaded owner log CSV for the authenticated user", async () => {
+  const updatedAt = new Date("2026-01-01T00:00:00.000Z");
+  const raw = {
+    "groundspeak:cache": {
+      "groundspeak:logs": {
+        "groundspeak:log": []
+      }
+    }
+  };
+  let writtenRaw: unknown;
+  const tx = {
+    hide: {
+      findFirst: async ({ where }: any) => {
+        assert.equal(where.userId, "user-1");
+        return {
+          id: "hide-1",
+          cacheId: "cache-1",
+          receivedLogCount: 0,
+          cache: { id: "cache-1", updatedAt, raw }
+        };
+      },
+      update: async () => ({})
+    },
+    cache: {
+      updateMany: async ({ data }: any) => {
+        writtenRaw = data.raw;
+        return { count: 1 };
+      }
+    }
+  };
+  const prisma = {
+    hide: {
+      findMany: async ({ where }: any) => {
+        assert.equal(where.userId, "user-1");
+        return [
+          {
+            id: "hide-1",
+            cacheId: "cache-1",
+            receivedLogCount: 0,
+            cache: { gcCode: "GC123", raw }
+          }
+        ];
+      }
+    },
+    $transaction: async (run: (client: unknown) => Promise<unknown>) => run(tx)
+  };
+  const stats = {
+    buildSnapshotForUser: async () => ({}),
+    replaceSnapshotForUser: async () => ({})
+  };
+  const controller = new CollectorController(prisma as any, stats as any);
+
+  const result = await controller.receivedLogsCsv(
+    { id: "user-1", email: "user@example.com", username: "user" },
+    {
+      originalname: "geostats-received-logs.csv",
+      buffer: Buffer.from("gcCode,logId,date,type,finder,text\nGC123,1,2024-01-15,Found it,Finder,Fresh\n")
+    } as Express.Multer.File
+  );
+
+  assert.deepEqual(result, { added: 1, changedCaches: 1 });
+  assert.equal(cacheLogs(writtenRaw).length, 1);
 });

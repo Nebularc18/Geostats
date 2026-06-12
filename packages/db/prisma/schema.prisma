@@ -32,7 +32,7 @@ model User {
   id           String              @id @default(cuid())
   email        String              @unique
   username     String              @unique
-  passwordHash String              @map("password_hash")
+  passwordHash String?             @map("password_hash")
   createdAt    DateTime            @default(now()) @map("created_at")
   updatedAt    DateTime            @updatedAt @map("updated_at")
 
@@ -43,8 +43,25 @@ model User {
   corrections  CorrectedCoordinate[]
   snapshots    StatSnapshot[]
   collectorTokens CollectorToken[]
+  oauthAccounts OAuthAccount[]
 
   @@map("users")
+}
+
+model OAuthAccount {
+  id                String   @id @default(cuid())
+  userId            String   @map("user_id")
+  provider          String
+  providerAccountId String   @map("provider_account_id")
+  providerUsername  String?  @map("provider_username")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+  @@map("oauth_accounts")
 }
 
 model CollectorToken {
