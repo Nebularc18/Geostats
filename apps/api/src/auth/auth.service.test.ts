@@ -145,13 +145,27 @@ test("external auth requires email_verified to be true when configured", async (
         const { service } = authServiceWithUsers();
 
         await assert.rejects(() => service.loginWithExternalProvider("code", "verifier"), {
-          message: "External auth account must have an email address"
+          message: "External auth account email must be verified"
         });
       } finally {
         globalThis.fetch = originalFetch;
       }
     }
   );
+});
+
+test("login rejects malformed scrypt hashes without throwing", async () => {
+  await withEnv({ AUTH_MODE: undefined }, async () => {
+    const { service, users } = authServiceWithUsers();
+    users.push({
+      id: "user-1",
+      email: "user@example.com",
+      username: "user",
+      passwordHash: "scrypt$NaN$8$1$salt$key"
+    });
+
+    await assert.rejects(() => service.login("user@example.com", "correct-password"), UnauthorizedException);
+  });
 });
 
 test("external auth mode disables password registration", async () => {
@@ -194,4 +208,29 @@ test("upsertOAuthUser recovers when concurrent account linking wins the race", a
 
   assert.equal(result, user);
   assert.equal(accountLookupCount, 2);
+});
+
+test("upsertOAuthUser skips account update when provider username is unchanged", async () => {
+  const user = { id: "user-1", email: "user@example.com", username: "user", passwordHash: null };
+  let updateCount = 0;
+  const prisma = {
+    oAuthAccount: {
+      findUnique: async () => ({ id: "oauth-1", providerUsername: "provider-user", user }),
+      update: async () => {
+        updateCount += 1;
+      }
+    }
+  };
+  const service = new AuthService(prisma as any, {} as any);
+
+  const result = await (service as any).upsertOAuthUser({
+    provider: "external",
+    providerAccountId: "provider-user-1",
+    providerUsername: "provider-user",
+    email: user.email,
+    username: user.username
+  });
+
+  assert.equal(result, user);
+  assert.equal(updateCount, 0);
 });

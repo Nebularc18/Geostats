@@ -117,8 +117,11 @@ export class AuthService {
     const profile = await this.fetchExternalProfile(accessToken);
     const email = profile.email?.trim().toLowerCase();
     const requireVerifiedEmail = envOrDefault("EXTERNAL_AUTH_REQUIRE_VERIFIED_EMAIL", "false") === "true";
-    if (!email || (requireVerifiedEmail && profile.email_verified !== true)) {
+    if (!email) {
       throw new BadRequestException("External auth account must have an email address");
+    }
+    if (requireVerifiedEmail && profile.email_verified !== true) {
+      throw new BadRequestException("External auth account email must be verified");
     }
 
     const user = await this.upsertOAuthUser({
@@ -247,10 +250,12 @@ export class AuthService {
   }) {
     const existingAccount = await this.findOAuthAccount(input.provider, input.providerAccountId);
     if (existingAccount) {
-      await this.prisma.oAuthAccount.update({
-        where: { id: existingAccount.id },
-        data: { providerUsername: input.providerUsername }
-      });
+      if (input.providerUsername !== existingAccount.providerUsername) {
+        await this.prisma.oAuthAccount.update({
+          where: { id: existingAccount.id },
+          data: { providerUsername: input.providerUsername }
+        });
+      }
       return existingAccount.user;
     }
 
@@ -352,11 +357,25 @@ export class AuthService {
     if (prefix !== PASSWORD_HASH_PREFIX || !n || !r || !p || !salt || !encodedKey) {
       return false;
     }
+    const parsedN = Number(n);
+    const parsedR = Number(r);
+    const parsedP = Number(p);
+    if (
+      !Number.isInteger(parsedN) ||
+      parsedN < 2 ||
+      (parsedN & (parsedN - 1)) !== 0 ||
+      !Number.isInteger(parsedR) ||
+      parsedR < 1 ||
+      !Number.isInteger(parsedP) ||
+      parsedP < 1
+    ) {
+      return false;
+    }
     const expected = Buffer.from(encodedKey, "base64url");
     const actual = await scryptAsync(password, salt, expected.length, {
-      N: Number(n),
-      r: Number(r),
-      p: Number(p),
+      N: parsedN,
+      r: parsedR,
+      p: parsedP,
       maxmem: PASSWORD_HASH_OPTIONS.maxmem
     });
     return expected.length === actual.length && timingSafeEqual(expected, actual);
