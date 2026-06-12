@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Post, Query, Res, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Logger, Post, Query, Res, UseGuards } from "@nestjs/common";
 import { Response } from "express";
 import { AuthUser } from "@geostats/shared";
 import { createHash, randomBytes } from "node:crypto";
@@ -9,6 +9,8 @@ import { envOrDefault } from "../common/env";
 
 @Controller("auth")
 export class AuthController {
+  private readonly logger = new Logger(AuthController.name);
+
   constructor(private readonly auth: AuthService) {}
 
   @Post("register")
@@ -70,7 +72,8 @@ export class AuthController {
       const user = await this.auth.loginWithExternalProvider(code, codeVerifier);
       this.setCookie(response, user);
       response.redirect(`${envOrDefault("WEB_ORIGIN", "http://localhost:3000")}/dashboard`);
-    } catch {
+    } catch (error) {
+      this.logger.error("External OAuth callback error", error);
       response.redirect(this.loginUrl("external"));
     }
   }

@@ -84,8 +84,14 @@ export default function ProfilePage() {
     if (!token.token) {
       return;
     }
-    await navigator.clipboard.writeText(mode === "csv" ? hidesCsvCommand(token.token) : hidesCommand(token.token));
-    setCopiedCommandId(`${token.id}:${mode}`);
+    try {
+      await navigator.clipboard.writeText(mode === "csv" ? hidesCsvCommand(token.token) : hidesCommand(token.token));
+      setCopiedCommandId(`${token.id}:${mode}`);
+      setMessage(null);
+    } catch {
+      setCopiedCommandId(null);
+      setMessage("Could not copy command. Select the command text and copy it manually.");
+    }
   }
 
   return (

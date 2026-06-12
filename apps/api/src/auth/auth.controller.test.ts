@@ -44,6 +44,7 @@ test("external callback redirects to login when provider login fails", async () 
     };
     const redirects: string[] = [];
     const clearedCookies: string[] = [];
+    let loggedError = false;
     const response = {
       req: {
         cookies: {
@@ -62,11 +63,17 @@ test("external callback redirects to login when provider login fails", async () 
       }
     };
     const controller = new AuthController(auth as any);
+    (controller as any).logger = {
+      error: () => {
+        loggedError = true;
+      }
+    };
 
     await controller.externalCallback("code", "state", response as any);
 
     assert.deepEqual(clearedCookies, ["geostats_oauth_state", "geostats_oauth_code_verifier"]);
     assert.deepEqual(redirects, ["http://localhost:3000/login?authError=external"]);
+    assert.equal(loggedError, true);
   });
 });
 
