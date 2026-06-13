@@ -104,3 +104,78 @@ test("external callback redirects to login with auth error when code or state is
     assert.deepEqual(redirects, ["http://localhost:3000/login?authError=external"]);
   });
 });
+
+test("browser login and register do not expose bearer tokens in response bodies", async () => {
+  const auth = {
+    register: async () => ({ id: "user-1", email: "a@example.com", username: "a" }),
+    login: async () => ({ id: "user-1", email: "a@example.com", username: "a" }),
+    sign: () => "jwt-token"
+  };
+  const cookies: Array<{ name: string; value: string }> = [];
+  const response = {
+    cookie: (name: string, value: string) => {
+      cookies.push({ name, value });
+    }
+  };
+  const controller = new AuthController(auth as any);
+
+  const registered = await controller.register({ email: "a@example.com", username: "a", password: "password" }, response as any);
+  const loggedIn = await controller.login({ email: "a@example.com", password: "password" }, response as any);
+
+  assert.deepEqual(registered, { user: { id: "user-1", email: "a@example.com", username: "a" } });
+  assert.deepEqual(loggedIn, { user: { id: "user-1", email: "a@example.com", username: "a" } });
+  assert.deepEqual(cookies, [
+    { name: "geostats_session", value: "jwt-token" },
+    { name: "geostats_session", value: "jwt-token" }
+  ]);
+});
+
+test("mobile login returns a bearer token through the mobile endpoint only", async () => {
+  const auth = {
+    login: async () => ({ id: "user-1", email: "a@example.com", username: "a" }),
+    sign: () => "jwt-token"
+  };
+  const controller = new AuthController(auth as any);
+
+  const loggedIn = await controller.mobileLogin({ email: "a@example.com", password: "password" });
+
+  assert.deepEqual(loggedIn, { user: { id: "user-1", email: "a@example.com", username: "a" }, token: "jwt-token" });
+});
+
+test("mobile external callback redirects bearer token in URL fragment", async () => {
+  const auth = {
+    loginWithExternalProvider: async () => ({ id: "user-1", email: "a@example.com", username: "a" }),
+    sign: () => "jwt-token"
+  };
+  const redirects: string[] = [];
+  const response = {
+    req: {
+      cookies: {
+        geostats_oauth_state: "state",
+        geostats_oauth_code_verifier: "verifier",
+        geostats_mobile_redirect_uri: "geostats://auth"
+      }
+    },
+    clearCookie: () => {},
+    cookie: () => {},
+    redirect: (url: string) => {
+      redirects.push(url);
+    }
+  };
+  const controller = new AuthController(auth as any);
+
+  await controller.externalCallback("code", "state", response as any);
+
+  assert.deepEqual(redirects, ["geostats://auth#token=jwt-token"]);
+});
+
+test("default mobile redirect validation only accepts the app auth URL", () => {
+  withEnv({ MOBILE_AUTH_REDIRECT_URI: undefined }, () => {
+    const controller = new AuthController({} as any);
+
+    assert.equal((controller as any).isAllowedMobileRedirectUri("geostats://auth"), true);
+    assert.equal((controller as any).isAllowedMobileRedirectUri("geostats://auth/"), true);
+    assert.equal((controller as any).isAllowedMobileRedirectUri("geostats://anything/auth"), false);
+    assert.equal((controller as any).isAllowedMobileRedirectUri("https://example.com/auth"), false);
+  });
+});
