@@ -91,6 +91,48 @@ Run migrations before using a fresh database:
 pnpm db:migrate
 ```
 
+## Dockhand
+
+For Dockhand, use `docker-compose.dockhand.yml` as the Compose file and paste the environment values from `.env.dockhand.example` into Dockhand's environment editor.
+
+Before deploying, replace these public URLs with the real URLs from your Dockhand host or reverse proxy:
+
+```env
+WEB_ORIGIN=https://geostats.example.com
+API_ORIGIN=https://geostats-api.example.com
+NEXT_PUBLIC_API_URL=https://geostats-api.example.com
+EXTERNAL_AUTH_CALLBACK_URL=https://geostats-api.example.com/auth/external/callback
+```
+
+Then replace all `change-this-*` secrets in the env file. Mark these as secrets in Dockhand if you use its secret toggle:
+
+```text
+POSTGRES_PASSWORD
+REDIS_PASSWORD
+MINIO_ROOT_PASSWORD
+JWT_SECRET
+COLLECTOR_TOKEN_ENCRYPTION_KEY
+EXTERNAL_AUTH_CLIENT_SECRET
+```
+
+For a Git-backed Dockhand stack that builds this repo, keep:
+
+```env
+GEOSTATS_IMAGE_PREFIX=geostats
+GEOSTATS_IMAGE_TAG=dockhand
+```
+
+To deploy prebuilt GitHub Container Registry images instead, set:
+
+```env
+GEOSTATS_IMAGE_PREFIX=ghcr.io/owner/repo
+GEOSTATS_IMAGE_TAG=release-YYYYMMDD-HHMMSS-utc
+```
+
+Prebuilt `web` images must already have been built with the same `NEXT_PUBLIC_API_URL`, `NEXT_PUBLIC_AUTH_MODE`, and `NEXT_PUBLIC_AUTH_PROVIDER_NAME` values you deploy with. Next.js bakes those values into the browser bundle at build time.
+
+The Dockhand Compose file includes a one-shot `migrate` service, so fresh databases run Prisma migrations before `api`, `worker`, and `web` start.
+
 ## GitHub Container Images
 
 Every push to `main` builds and publishes multi-platform `linux/amd64` and `linux/arm64` app images to GitHub Container Registry:
