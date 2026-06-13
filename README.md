@@ -91,6 +91,51 @@ Run migrations before using a fresh database:
 pnpm db:migrate
 ```
 
+## GitHub Container Images
+
+Every push to `main` builds and publishes multi-platform `linux/amd64` and `linux/arm64` app images to GitHub Container Registry:
+
+```text
+ghcr.io/OWNER/REPO/api:latest
+ghcr.io/OWNER/REPO/worker:latest
+ghcr.io/OWNER/REPO/web:latest
+```
+
+Each image is also tagged with the commit SHA as `sha-<commit>`.
+Each workflow run also publishes a shared timestamp release tag for all app images, for example `release-20260613-173045-utc`.
+
+Before the first push to `main`, configure these GitHub Actions repository variables because they are compiled into the Next.js `web` image at build time:
+
+```text
+NEXT_PUBLIC_API_URL=https://api.example.com
+NEXT_PUBLIC_AUTH_MODE=password
+NEXT_PUBLIC_AUTH_PROVIDER_NAME=Home Auth
+```
+
+On deployment hardware, set the image prefix and pull the prebuilt app images before starting Compose:
+
+```bash
+export GEOSTATS_IMAGE_PREFIX="ghcr.io/OWNER/REPO"
+export GEOSTATS_IMAGE_TAG="release-20260613-173045-utc"
+docker compose pull api worker web
+docker compose up -d
+```
+
+PowerShell:
+
+```powershell
+$env:GEOSTATS_IMAGE_PREFIX = "ghcr.io/OWNER/REPO"
+$env:GEOSTATS_IMAGE_TAG = "release-20260613-173045-utc"
+docker compose pull api worker web
+docker compose up -d
+```
+
+Replace `OWNER/REPO` with the lowercase GitHub repository path. If the package visibility is private, log in first:
+
+```powershell
+docker login ghcr.io
+```
+
 ## MVP Workflow
 
 1. Register a local account.
