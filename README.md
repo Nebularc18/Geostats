@@ -91,6 +91,33 @@ Run migrations before using a fresh database:
 pnpm db:migrate
 ```
 
+## GitHub Container Images
+
+Every push to `main` builds and publishes multi-platform `linux/amd64` and `linux/arm64` app images to GitHub Container Registry:
+
+```text
+ghcr.io/OWNER/REPO/api:latest
+ghcr.io/OWNER/REPO/worker:latest
+ghcr.io/OWNER/REPO/web:latest
+```
+
+Each image is also tagged with the commit SHA as `sha-<commit>`.
+
+On deployment hardware, set the image prefix and pull the prebuilt app images before starting Compose:
+
+```powershell
+$env:GEOSTATS_IMAGE_PREFIX = "ghcr.io/OWNER/REPO"
+$env:GEOSTATS_IMAGE_TAG = "latest"
+docker compose pull api worker web
+docker compose up -d
+```
+
+Replace `OWNER/REPO` with the lowercase GitHub repository path. If the package visibility is private, log in first:
+
+```powershell
+docker login ghcr.io
+```
+
 ## MVP Workflow
 
 1. Register a local account.
