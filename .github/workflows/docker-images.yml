@@ -15,8 +15,20 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  release-tag:
+    name: Resolve release tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+    steps:
+      - name: Create timestamp release tag
+        id: release
+        shell: bash
+        run: echo "tag=release-$(date -u +%Y%m%d-%H%M%S)-utc" >> "$GITHUB_OUTPUT"
+
   build-and-push:
     name: Build and push ${{ matrix.image }}
+    needs: release-tag
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -58,6 +70,7 @@ jobs:
           images: ${{ steps.image.outputs.namespace }}/${{ matrix.image }}
           tags: |
             type=raw,value=latest
+            type=raw,value=${{ needs.release-tag.outputs.tag }}
             type=sha,prefix=sha-
 
       - name: Validate web build variables

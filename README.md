@@ -102,6 +102,7 @@ ghcr.io/OWNER/REPO/web:latest
 ```
 
 Each image is also tagged with the commit SHA as `sha-<commit>`.
+Each workflow run also publishes a shared timestamp release tag for all app images, for example `release-20260613-173045-utc`.
 
 Before the first push to `main`, configure these GitHub Actions repository variables because they are compiled into the Next.js `web` image at build time:
 
@@ -115,7 +116,7 @@ On deployment hardware, set the image prefix and pull the prebuilt app images be
 
 ```bash
 export GEOSTATS_IMAGE_PREFIX="ghcr.io/OWNER/REPO"
-export GEOSTATS_IMAGE_TAG="latest"
+export GEOSTATS_IMAGE_TAG="release-20260613-173045-utc"
 docker compose pull api worker web
 docker compose up -d
 ```
@@ -124,7 +125,7 @@ PowerShell:
 
 ```powershell
 $env:GEOSTATS_IMAGE_PREFIX = "ghcr.io/OWNER/REPO"
-$env:GEOSTATS_IMAGE_TAG = "latest"
+$env:GEOSTATS_IMAGE_TAG = "release-20260613-173045-utc"
 docker compose pull api worker web
 docker compose up -d
 ```
