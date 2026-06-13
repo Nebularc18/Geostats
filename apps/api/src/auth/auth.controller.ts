@@ -19,8 +19,8 @@ export class AuthController {
     @Res({ passthrough: true }) response: Response
   ) {
     const user = await this.auth.register(body.email ?? "", body.username ?? "", body.password ?? "");
-    const token = this.setCookie(response, user);
-    return { user, token };
+    this.setCookie(response, user);
+    return { user };
   }
 
   @Post("login")
@@ -29,8 +29,8 @@ export class AuthController {
     @Res({ passthrough: true }) response: Response
   ) {
     const user = await this.auth.login(body.email ?? "", body.password ?? "");
-    const token = this.setCookie(response, user);
-    return { user, token };
+    this.setCookie(response, user);
+    return { user };
   }
 
   @Get("external")
@@ -94,6 +94,18 @@ export class AuthController {
   @Get("mobile/dev")
   async mobileDev() {
     const user = await this.auth.devUser();
+    return { user, token: this.auth.sign(user) };
+  }
+
+  @Post("mobile/register")
+  async mobileRegister(@Body() body: { email?: string; username?: string; password?: string }) {
+    const user = await this.auth.register(body.email ?? "", body.username ?? "", body.password ?? "");
+    return { user, token: this.auth.sign(user) };
+  }
+
+  @Post("mobile/login")
+  async mobileLogin(@Body() body: { email?: string; password?: string }) {
+    const user = await this.auth.login(body.email ?? "", body.password ?? "");
     return { user, token: this.auth.sign(user) };
   }
 
@@ -182,12 +194,10 @@ export class AuthController {
 
   private mobileLoginUrl(redirectUri: string, authError?: string, token?: string): string {
     const url = new URL(redirectUri);
-    if (authError) {
-      url.searchParams.set("authError", authError);
-    }
-    if (token) {
-      url.searchParams.set("token", token);
-    }
+    const params = new URLSearchParams();
+    if (authError) params.set("authError", authError);
+    if (token) params.set("token", token);
+    url.hash = params.toString();
     return url.toString();
   }
 
@@ -202,6 +212,6 @@ export class AuthController {
     if (configured) {
       return redirectUri === configured;
     }
-    return url.protocol === "geostats:";
+    return url.protocol === "geostats:" && url.hostname === "auth" && (url.pathname === "" || url.pathname === "/");
   }
 }

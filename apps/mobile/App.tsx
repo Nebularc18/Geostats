@@ -73,8 +73,6 @@ const screens: Array<{ id: ScreenId; label: string }> = [
   { id: "profile", label: "Profile" }
 ];
 
-let apiUrl = DEFAULT_API_URL;
-
 function normalizeServerUrl(value: string) {
   const trimmed = value.trim().replace(/\/+$/, "");
   if (!trimmed) return DEFAULT_API_URL;
@@ -82,16 +80,11 @@ function normalizeServerUrl(value: string) {
   return new URL(withProtocol).toString().replace(/\/+$/, "");
 }
 
-function setApiUrl(value: string) {
-  apiUrl = normalizeServerUrl(value);
-  return apiUrl;
-}
-
-async function apiFetch<T>(path: string, token: string | null, options: RequestInit = {}): Promise<T> {
+async function apiFetch<T>(baseUrl: string, path: string, token: string | null, options: RequestInit = {}): Promise<T> {
   const headers = new Headers(options.headers);
   if (!(options.body instanceof FormData) && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
   if (token) headers.set("Authorization", `Bearer ${token}`);
-  const response = await fetch(`${apiUrl}${path}`, { ...options, headers });
+  const response = await fetch(`${baseUrl}${path}`, { ...options, headers });
   if (!response.ok) {
     const body = await response.json().catch(() => ({ message: response.statusText }));
     throw new Error(body.message ?? "Request failed");
@@ -146,10 +139,10 @@ function powerShellString(value: string) {
   return `'${value.replace(/'/g, "''")}'`;
 }
 
-function hidesCommand(token: string, csv = false) {
+function hidesCommand(baseUrl: string, token: string, csv = false) {
   const parts = [`$env:GEOSTATS_COLLECTOR_TOKEN=${powerShellString(token)}`];
   if (csv) parts.push("$env:GEOSTATS_COLLECTOR_NO_UPLOAD='1'");
-  parts.push(`irm ${powerShellString(`${apiUrl}/collector/hides.ps1`)} | iex`);
+  parts.push(`irm ${powerShellString(`${baseUrl}/collector/hides.ps1`)} | iex`);
   return parts.join("; ");
 }
 
@@ -338,7 +331,7 @@ function scratchBucketsForLevel(countries: any[], activeCountry: any, level: Scr
   return level === "regions" ? activeCountry?.regions ?? [] : activeCountry?.counties ?? [];
 }
 
-function useApi<T>(token: string, path: string, fallback: T) {
+function useApi<T>(baseUrl: string, token: string, path: string, fallback: T) {
   const [data, setData] = useState<T>(fallback);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -346,7 +339,7 @@ function useApi<T>(token: string, path: string, fallback: T) {
     setLoading(true);
     setError(null);
     try {
-      setData(await apiFetch<T>(path, token));
+      setData(await apiFetch<T>(baseUrl, path, token));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load data");
     } finally {
@@ -355,13 +348,13 @@ function useApi<T>(token: string, path: string, fallback: T) {
   }
   useEffect(() => {
     void refresh();
-  }, [path, token]);
+  }, [baseUrl, path, token]);
   return { data, loading, error, refresh };
 }
 
-function AuthScreen({ onSession }: { onSession: (session: Session) => void }) {
+function AuthScreen({ apiBaseUrl, onApiBaseUrlChange, onSession }: { apiBaseUrl: string; onApiBaseUrlChange: (value: string) => void; onSession: (session: Session, baseUrl: string) => void }) {
   const [mode, setMode] = useState<"login" | "register">("login");
-  const [serverUrl, setServerUrl] = useState(apiUrl);
+  const [serverUrl, setServerUrl] = useState(apiBaseUrl);
   const [email, setEmail] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -370,9 +363,10 @@ function AuthScreen({ onSession }: { onSession: (session: Session) => void }) {
   useEffect(() => {
     const timeout = setTimeout(() => {
       try {
-        const nextUrl = setApiUrl(serverUrl);
+        const nextUrl = normalizeServerUrl(serverUrl);
+        onApiBaseUrlChange(nextUrl);
         setServerUrl(nextUrl);
-        void apiFetch<AuthConfig>("/auth/config", null)
+        void apiFetch<AuthConfig>(nextUrl, "/auth/config", null)
           .then(setConfig)
           .catch(() => setConfig({ mode: "password", providerName: "Home Auth" }));
       } catch {
@@ -382,7 +376,8 @@ function AuthScreen({ onSession }: { onSession: (session: Session) => void }) {
     return () => clearTimeout(timeout);
   }, [serverUrl]);
   async function saveServerUrl() {
-    const nextUrl = setApiUrl(serverUrl);
+    const nextUrl = normalizeServerUrl(serverUrl);
+    onApiBaseUrlChange(nextUrl);
     setServerUrl(nextUrl);
     await SecureStore.setItemAsync(SERVER_URL_KEY, nextUrl);
     return nextUrl;
@@ -390,13 +385,13 @@ function AuthScreen({ onSession }: { onSession: (session: Session) => void }) {
   async function submit() {
     setMessage("Signing in...");
     try {
-      await saveServerUrl();
-      const data = await apiFetch<Session>(`/auth/${mode}`, null, {
+      const nextUrl = await saveServerUrl();
+      const data = await apiFetch<Session>(nextUrl, `/auth/mobile/${mode}`, null, {
         method: "POST",
         body: JSON.stringify(mode === "login" ? { email, password } : { email, username, password })
       });
       await SecureStore.setItemAsync(TOKEN_KEY, data.token);
-      onSession(data);
+      onSession(data, nextUrl);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Could not sign in");
     }
@@ -404,10 +399,10 @@ function AuthScreen({ onSession }: { onSession: (session: Session) => void }) {
   async function continueDev() {
     setMessage("Signing in...");
     try {
-      await saveServerUrl();
-      const data = await apiFetch<Session>("/auth/mobile/dev", null);
+      const nextUrl = await saveServerUrl();
+      const data = await apiFetch<Session>(nextUrl, "/auth/mobile/dev", null);
       await SecureStore.setItemAsync(TOKEN_KEY, data.token);
-      onSession(data);
+      onSession(data, nextUrl);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Could not sign in");
     }
@@ -423,20 +418,21 @@ function AuthScreen({ onSession }: { onSession: (session: Session) => void }) {
         setMessage("Sign in was cancelled.");
         return;
       }
-      const parsed = Linking.parse(result.url);
-      const authError = parsed.queryParams?.authError;
-      const token = parsed.queryParams?.token;
-      if (typeof authError === "string") {
+      const parsed = new URL(result.url);
+      const params = new URLSearchParams(parsed.hash.replace(/^#/, "") || parsed.search.replace(/^\?/, ""));
+      const authError = params.get("authError");
+      const token = params.get("token");
+      if (authError) {
         setMessage("External sign in failed.");
         return;
       }
-      if (typeof token !== "string") {
+      if (!token) {
         setMessage("External sign in did not return a session.");
         return;
       }
-      const data = await apiFetch<{ user: Session["user"] }>("/auth/me", token);
+      const data = await apiFetch<{ user: Session["user"] }>(baseUrl, "/auth/me", token);
       await SecureStore.setItemAsync(TOKEN_KEY, token);
-      onSession({ token, user: data.user });
+      onSession({ token, user: data.user }, baseUrl);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Could not sign in");
     }
@@ -468,14 +464,15 @@ function AuthScreen({ onSession }: { onSession: (session: Session) => void }) {
 }
 
 export default function App() {
+  const [apiBaseUrl, setApiBaseUrl] = useState(DEFAULT_API_URL);
   const [session, setSession] = useState<Session | null>(null);
   const [booting, setBooting] = useState(true);
   const [needsOnboarding, setNeedsOnboarding] = useState(false);
   const [screen, setScreen] = useState<ScreenId>("dashboard");
-  async function acceptSession(nextSession: Session) {
+  async function acceptSession(nextSession: Session, baseUrl = apiBaseUrl) {
     setSession(nextSession);
     try {
-      const profile = await apiFetch<{ profile: any }>("/profile", nextSession.token);
+      const profile = await apiFetch<{ profile: any }>(baseUrl, "/profile", nextSession.token);
       setNeedsOnboarding(!profile.profile);
     } catch {
       setNeedsOnboarding(false);
@@ -484,10 +481,11 @@ export default function App() {
   useEffect(() => {
     void Promise.all([SecureStore.getItemAsync(SERVER_URL_KEY), SecureStore.getItemAsync(TOKEN_KEY)])
       .then(async ([serverUrl, token]) => {
-        if (serverUrl) setApiUrl(serverUrl);
+        const nextUrl = serverUrl ? normalizeServerUrl(serverUrl) : apiBaseUrl;
+        setApiBaseUrl(nextUrl);
         if (!token) return;
-        const data = await apiFetch<{ user: Session["user"] }>("/auth/me", token);
-        await acceptSession({ token, user: data.user });
+        const data = await apiFetch<{ user: Session["user"] }>(nextUrl, "/auth/me", token);
+        await acceptSession({ token, user: data.user }, nextUrl);
       })
       .catch(() => SecureStore.deleteItemAsync(TOKEN_KEY))
       .finally(() => setBooting(false));
@@ -501,9 +499,9 @@ export default function App() {
   if (booting) {
     content = <SafeAreaView style={styles.safeCenter}><ActivityIndicator color="#f3b34d" /></SafeAreaView>;
   } else if (!session) {
-    content = <AuthScreen onSession={acceptSession} />;
+    content = <AuthScreen apiBaseUrl={apiBaseUrl} onApiBaseUrlChange={setApiBaseUrl} onSession={acceptSession} />;
   } else if (needsOnboarding) {
-    content = <OnboardingScreen token={session.token} onComplete={() => setNeedsOnboarding(false)} onLogout={logout} />;
+    content = <OnboardingScreen apiBaseUrl={apiBaseUrl} token={session.token} onComplete={() => setNeedsOnboarding(false)} onLogout={logout} />;
   } else {
     content = (
       <SafeAreaView style={styles.safe}>
@@ -522,7 +520,7 @@ export default function App() {
           </ScrollView>
         </View>
         <ScrollView style={styles.content} contentContainerStyle={styles.contentInner}>
-          <ScreenSwitch screen={screen} token={session.token} />
+          <ScreenSwitch apiBaseUrl={apiBaseUrl} screen={screen} token={session.token} />
         </ScrollView>
       </SafeAreaView>
     );
@@ -530,20 +528,20 @@ export default function App() {
   return <SafeAreaProvider>{content}</SafeAreaProvider>;
 }
 
-function ScreenSwitch({ screen, token }: { screen: ScreenId; token: string }) {
-  if (screen === "dashboard") return <DashboardScreen token={token} />;
-  if (screen === "stats") return <StatsScreen token={token} />;
-  if (screen === "map") return <MapScreen token={token} />;
-  if (screen === "scratch") return <ScratchScreen token={token} />;
-  if (screen === "milestones") return <MilestonesScreen token={token} />;
-  if (screen === "ftf") return <FtfScreen token={token} />;
-  if (screen === "hides") return <HidesScreen token={token} />;
-  if (screen === "upload") return <UploadScreen token={token} />;
-  if (screen === "imports") return <ImportsScreen token={token} />;
-  return <ProfileScreen token={token} />;
+function ScreenSwitch({ apiBaseUrl, screen, token }: { apiBaseUrl: string; screen: ScreenId; token: string }) {
+  if (screen === "dashboard") return <DashboardScreen apiBaseUrl={apiBaseUrl} token={token} />;
+  if (screen === "stats") return <StatsScreen apiBaseUrl={apiBaseUrl} token={token} />;
+  if (screen === "map") return <MapScreen apiBaseUrl={apiBaseUrl} token={token} />;
+  if (screen === "scratch") return <ScratchScreen apiBaseUrl={apiBaseUrl} token={token} />;
+  if (screen === "milestones") return <MilestonesScreen apiBaseUrl={apiBaseUrl} token={token} />;
+  if (screen === "ftf") return <FtfScreen apiBaseUrl={apiBaseUrl} token={token} />;
+  if (screen === "hides") return <HidesScreen apiBaseUrl={apiBaseUrl} token={token} />;
+  if (screen === "upload") return <UploadScreen apiBaseUrl={apiBaseUrl} token={token} />;
+  if (screen === "imports") return <ImportsScreen apiBaseUrl={apiBaseUrl} token={token} />;
+  return <ProfileScreen apiBaseUrl={apiBaseUrl} token={token} />;
 }
 
-function OnboardingScreen({ token, onComplete, onLogout }: { token: string; onComplete: () => void; onLogout: () => void }) {
+function OnboardingScreen({ apiBaseUrl, token, onComplete, onLogout }: { apiBaseUrl: string; token: string; onComplete: () => void; onLogout: () => void }) {
   const [gcUsername, setGcUsername] = useState("");
   const [homeLatitude, setHomeLatitude] = useState("");
   const [homeLongitude, setHomeLongitude] = useState("");
@@ -554,7 +552,7 @@ function OnboardingScreen({ token, onComplete, onLogout }: { token: string; onCo
     setLoading(true);
     setError(null);
     try {
-      await apiFetch<{ profile: any }>("/profile", token, {
+      await apiFetch<{ profile: any }>(apiBaseUrl, "/profile", token, {
         method: "PUT",
         body: JSON.stringify({
           gcUsername,
@@ -589,9 +587,9 @@ function OnboardingScreen({ token, onComplete, onLogout }: { token: string; onCo
   );
 }
 
-function DashboardScreen({ token }: { token: string }) {
-  const stats = useApi<{ stats: any }>(token, "/stats/summary", { stats: {} });
-  const imports = useApi<{ imports: ImportListItem[] }>(token, "/imports", { imports: [] });
+function DashboardScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
+  const stats = useApi<{ stats: any }>(apiBaseUrl, token, "/stats/summary", { stats: {} });
+  const imports = useApi<{ imports: ImportListItem[] }>(apiBaseUrl, token, "/imports", { imports: [] });
   const s = stats.data.stats;
   return (
     <>
@@ -601,14 +599,14 @@ function DashboardScreen({ token }: { token: string }) {
         <Bars data={latestTwelveMonths(s.findsByMonth ?? [])} />
         <KeyValue rows={[["Best day", s.summaryNumbers?.bestDay ? `${s.summaryNumbers.bestDay.count} on ${s.summaryNumbers.bestDay.key}` : "-"], ["Best month", s.summaryNumbers?.bestMonth ? `${s.summaryNumbers.bestMonth.count} in ${s.summaryNumbers.bestMonth.key}` : "-"], ["Cache days", s.summaryNumbers?.cachingDays ?? 0], ["Average/day", s.summaryNumbers?.findsPerDay?.toFixed(2) ?? "0.00"], ["Average distance", s.distanceStats?.averageDistanceKm == null ? "-" : `${Math.round(s.distanceStats.averageDistanceKm)} km`]]} />
       </Panel>
-      <BadgesPanel stats={s} token={token} />
+      <BadgesPanel apiBaseUrl={apiBaseUrl} stats={s} token={token} />
       <LoadState loading={stats.loading || imports.loading} error={stats.error || imports.error} />
     </>
   );
 }
 
-function StatsScreen({ token }: { token: string }) {
-  const { data, loading, error } = useApi<{ stats: any }>(token, "/stats/summary", { stats: {} });
+function StatsScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
+  const { data, loading, error } = useApi<{ stats: any }>(apiBaseUrl, token, "/stats/summary", { stats: {} });
   const s = data.stats;
   return (
     <>
@@ -629,17 +627,17 @@ function StatsScreen({ token }: { token: string }) {
   );
 }
 
-function MapScreen({ token }: { token: string }) {
+function MapScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
   const [points, setPoints] = useState<CachePoint[]>([]);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
-    void Promise.allSettled([apiFetch<{ points: CachePoint[] }>("/map/caches", token), apiFetch<{ points: CachePoint[] }>("/map/hides", token)]).then(([finds, hides]) => {
+    void Promise.allSettled([apiFetch<{ points: CachePoint[] }>(apiBaseUrl, "/map/caches", token), apiFetch<{ points: CachePoint[] }>(apiBaseUrl, "/map/hides", token)]).then(([finds, hides]) => {
       const findPoints = finds.status === "fulfilled" ? finds.value.points : [];
       const hidePoints = hides.status === "fulfilled" ? hides.value.points : [];
       setPoints([...findPoints, ...hidePoints]);
       if (finds.status === "rejected" && hides.status === "rejected") setError("Could not load map points.");
     });
-  }, [token]);
+  }, [apiBaseUrl, token]);
   const findCount = points.filter((p) => !p.isOwnHide).length;
   const recent = [...points].sort((a, b) => Date.parse(b.foundAt ?? b.placedAt ?? "") - Date.parse(a.foundAt ?? a.placedAt ?? "")).slice(0, 40);
   return (
@@ -652,8 +650,8 @@ function MapScreen({ token }: { token: string }) {
   );
 }
 
-function ScratchScreen({ token }: { token: string }) {
-  const { data, loading, error } = useApi<{ totalFinds?: number; truncated?: boolean; limit?: number; continents?: CountBucket[]; countries?: any[]; maxCountryCount?: number }>(token, "/map/scratch", { countries: [], continents: [] });
+function ScratchScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
+  const { data, loading, error } = useApi<{ totalFinds?: number; truncated?: boolean; limit?: number; continents?: CountBucket[]; countries?: any[]; maxCountryCount?: number }>(apiBaseUrl, token, "/map/scratch", { countries: [], continents: [] });
   const [selected, setSelected] = useState<string | null>(null);
   const [level, setLevel] = useState<ScratchLevel>("countries");
   const [boundaryData, setBoundaryData] = useState<BoundaryFeatureCollection | null>(null);
@@ -718,8 +716,8 @@ function ScratchScreen({ token }: { token: string }) {
   );
 }
 
-function MilestonesScreen({ token }: { token: string }) {
-  const { data, loading, error } = useApi<{ stats: any }>(token, "/stats/summary", { stats: {} });
+function MilestonesScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
+  const { data, loading, error } = useApi<{ stats: any }>(apiBaseUrl, token, "/stats/summary", { stats: {} });
   const m = data.stats.milestoneStats ?? {};
   return (
     <>
@@ -736,12 +734,12 @@ function MilestonesScreen({ token }: { token: string }) {
   );
 }
 
-function FtfScreen({ token }: { token: string }) {
-  const summary = useApi<{ stats: any }>(token, "/stats/summary", { stats: {} });
-  const finds = useApi<{ finds: any[]; nextCursor: string | null }>(token, "/stats/ftf/finds?limit=100", { finds: [], nextCursor: null });
+function FtfScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
+  const summary = useApi<{ stats: any }>(apiBaseUrl, token, "/stats/summary", { stats: {} });
+  const finds = useApi<{ finds: any[]; nextCursor: string | null }>(apiBaseUrl, token, "/stats/ftf/finds?limit=100", { finds: [], nextCursor: null });
   const s = summary.data.stats.ftfStats ?? {};
   async function toggle(find: any) {
-    await apiFetch(`/stats/ftf/finds/${find.id}`, token, { method: "PATCH", body: JSON.stringify({ isFtf: !find.isFtf }) });
+    await apiFetch(apiBaseUrl, `/stats/ftf/finds/${find.id}`, token, { method: "PATCH", body: JSON.stringify({ isFtf: !find.isFtf }) });
     await Promise.all([summary.refresh(), finds.refresh()]);
   }
   return (
@@ -761,8 +759,8 @@ function FtfScreen({ token }: { token: string }) {
   );
 }
 
-function HidesScreen({ token }: { token: string }) {
-  const { data, loading, error } = useApi<{ stats: any }>(token, "/stats/summary", { stats: {} });
+function HidesScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
+  const { data, loading, error } = useApi<{ stats: any }>(apiBaseUrl, token, "/stats/summary", { stats: {} });
   const h = data.stats.hideStats ?? {};
   return (
     <>
@@ -779,9 +777,9 @@ function HidesScreen({ token }: { token: string }) {
   );
 }
 
-function UploadScreen({ token }: { token: string }) {
+function UploadScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
   const [message, setMessage] = useState<string | null>(null);
-  const imports = useApi<{ imports: ImportListItem[] }>(token, "/imports", { imports: [] });
+  const imports = useApi<{ imports: ImportListItem[] }>(apiBaseUrl, token, "/imports", { imports: [] });
   useEffect(() => {
     if (!hasActiveImports(imports.data.imports)) return;
     const interval = setInterval(() => {
@@ -797,7 +795,7 @@ function UploadScreen({ token }: { token: string }) {
     form.append("file", { uri: asset.uri, name: asset.name, type: asset.mimeType ?? "application/octet-stream" } as any);
     setMessage(kind === "cache" ? "Uploading import..." : "Uploading owner logs...");
     try {
-      await apiFetch(kind === "cache" ? "/imports/upload" : "/collector/received-logs/csv", token, { method: "POST", body: form });
+      await apiFetch(apiBaseUrl, kind === "cache" ? "/imports/upload" : "/collector/received-logs/csv", token, { method: "POST", body: form });
       setMessage(kind === "cache" ? "Import queued." : "Owner logs imported.");
       await imports.refresh();
     } catch (error) {
@@ -816,8 +814,8 @@ function UploadScreen({ token }: { token: string }) {
   );
 }
 
-function ImportsScreen({ token }: { token: string }) {
-  const { data, loading, error, refresh } = useApi<{ imports: ImportListItem[] }>(token, "/imports", { imports: [] });
+function ImportsScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
+  const { data, loading, error, refresh } = useApi<{ imports: ImportListItem[] }>(apiBaseUrl, token, "/imports", { imports: [] });
   useEffect(() => {
     if (!hasActiveImports(data.imports)) return;
     const interval = setInterval(() => {
@@ -828,9 +826,9 @@ function ImportsScreen({ token }: { token: string }) {
   return <><PageTitle eyebrow="Background jobs" title="Import history" /><PrimaryButton label="Refresh" onPress={refresh} /><Panel title="Imports"><ImportRows imports={data.imports} /></Panel><LoadState loading={loading} error={error} /></>;
 }
 
-function ProfileScreen({ token }: { token: string }) {
-  const profile = useApi<{ profile: any }>(token, "/profile", { profile: null });
-  const tokens = useApi<{ tokens: any[] }>(token, "/collector/tokens", { tokens: [] });
+function ProfileScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
+  const profile = useApi<{ profile: any }>(apiBaseUrl, token, "/profile", { profile: null });
+  const tokens = useApi<{ tokens: any[] }>(apiBaseUrl, token, "/collector/tokens", { tokens: [] });
   const [gcUsername, setGcUsername] = useState("");
   const [homeLatitude, setHomeLatitude] = useState("");
   const [homeLongitude, setHomeLongitude] = useState("");
@@ -849,7 +847,7 @@ function ProfileScreen({ token }: { token: string }) {
   }, [profile.data.profile]);
   async function save() {
     try {
-      await apiFetch<{ profile: any }>("/profile", token, { method: "PUT", body: JSON.stringify({ gcUsername, homeLatitude: parseOptionalNumber(homeLatitude), homeLongitude: parseOptionalNumber(homeLongitude), timeZone, ftfDetectionTerms: ftfTerms.split(/\r?\n|,/).map((x) => x.trim()).filter(Boolean) }) });
+      await apiFetch<{ profile: any }>(apiBaseUrl, "/profile", token, { method: "PUT", body: JSON.stringify({ gcUsername, homeLatitude: parseOptionalNumber(homeLatitude), homeLongitude: parseOptionalNumber(homeLongitude), timeZone, ftfDetectionTerms: ftfTerms.split(/\r?\n|,/).map((x) => x.trim()).filter(Boolean) }) });
       setMessage("Profile saved.");
       await profile.refresh();
     } catch (error) {
@@ -857,11 +855,11 @@ function ProfileScreen({ token }: { token: string }) {
     }
   }
   async function createToken() {
-    await apiFetch("/collector/tokens", token, { method: "POST", body: JSON.stringify({ name: "Owner logs collector" }) });
+    await apiFetch(apiBaseUrl, "/collector/tokens", token, { method: "POST", body: JSON.stringify({ name: "Owner logs collector" }) });
     await tokens.refresh();
   }
   async function deleteToken(id: string) {
-    await apiFetch(`/collector/tokens/${id}`, token, { method: "DELETE" });
+    await apiFetch(apiBaseUrl, `/collector/tokens/${id}`, token, { method: "DELETE" });
     await tokens.refresh();
   }
   async function copyCollectorCommand(item: any, mode: "direct" | "csv") {
@@ -869,7 +867,7 @@ function ProfileScreen({ token }: { token: string }) {
       setMessage("Command unavailable for this older token. Delete it and create a new token once.");
       return;
     }
-    await Clipboard.setStringAsync(hidesCommand(item.token, mode === "csv"));
+    await Clipboard.setStringAsync(hidesCommand(apiBaseUrl, item.token, mode === "csv"));
     setCopiedCommandId(`${item.id}:${mode}`);
     setMessage(null);
   }
@@ -891,13 +889,13 @@ function ProfileScreen({ token }: { token: string }) {
                 <CommandCard
                   label="Direct upload command"
                   copied={copiedCommandId === `${item.id}:direct`}
-                  command={hidesCommand(item.token)}
+                  command={hidesCommand(apiBaseUrl, item.token)}
                   onCopy={() => copyCollectorCommand(item, "direct")}
                 />
                 <CommandCard
                   label="CSV to Downloads command"
                   copied={copiedCommandId === `${item.id}:csv`}
-                  command={hidesCommand(item.token, true)}
+                  command={hidesCommand(apiBaseUrl, item.token, true)}
                   onCopy={() => copyCollectorCommand(item, "csv")}
                 />
               </>
@@ -1135,8 +1133,8 @@ function MilestoneList({ title, rows, labelKey = "label" }: { title: string; row
   return <Panel title={title}><Rows rows={rows.map((row) => [row[labelKey], row.gcCode, row.name, dateText(row.date)])} /></Panel>;
 }
 
-function BadgesPanel({ stats, token }: { stats: any; token: string }) {
-  const scratch = useApi<{ countries: any[] }>(token, "/map/scratch", { countries: [] });
+function BadgesPanel({ apiBaseUrl, stats, token }: { apiBaseUrl: string; stats: any; token: string }) {
+  const scratch = useApi<{ countries: any[] }>(apiBaseUrl, token, "/map/scratch", { countries: [] });
   const countryBadges = scratch.data.countries
     .map((country) => {
       const regions = country.regions?.filter((region: any) => region.name !== "Unknown") ?? [];
