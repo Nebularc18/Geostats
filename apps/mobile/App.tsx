@@ -60,6 +60,16 @@ const COUNTRY_NAME_ALIASES: Record<string, string[]> = {
   "Bolivia": ["Bolivia (Plurinational State of)"],
   "Venezuela": ["Venezuela (Bolivarian Republic of)"]
 };
+
+class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number
+  ) {
+    super(message);
+  }
+}
+
 const screens: Array<{ id: ScreenId; label: string }> = [
   { id: "dashboard", label: "Home" },
   { id: "stats", label: "Stats" },
@@ -87,7 +97,7 @@ async function apiFetch<T>(baseUrl: string, path: string, token: string | null, 
   const response = await fetch(`${baseUrl}${path}`, { ...options, headers });
   if (!response.ok) {
     const body = await response.json().catch(() => ({ message: response.statusText }));
-    throw new Error(body.message ?? "Request failed");
+    throw new ApiError(body.message ?? "Request failed", response.status);
   }
   return response.json() as Promise<T>;
 }
@@ -487,7 +497,11 @@ export default function App() {
         const data = await apiFetch<{ user: Session["user"] }>(nextUrl, "/auth/me", token);
         await acceptSession({ token, user: data.user }, nextUrl);
       })
-      .catch(() => SecureStore.deleteItemAsync(TOKEN_KEY))
+      .catch((error) => {
+        if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
+          return SecureStore.deleteItemAsync(TOKEN_KEY);
+        }
+      })
       .finally(() => setBooting(false));
   }, []);
   async function logout() {
