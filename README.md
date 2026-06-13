@@ -129,6 +129,8 @@ GEOSTATS_IMAGE_PREFIX=ghcr.io/owner/repo
 GEOSTATS_IMAGE_TAG=release-YYYYMMDD-HHMMSS-utc
 ```
 
+Prebuilt `web` images must already have been built with the same `NEXT_PUBLIC_API_URL`, `NEXT_PUBLIC_AUTH_MODE`, and `NEXT_PUBLIC_AUTH_PROVIDER_NAME` values you deploy with. Next.js bakes those values into the browser bundle at build time.
+
 The Dockhand Compose file includes a one-shot `migrate` service, so fresh databases run Prisma migrations before `api`, `worker`, and `web` start.
 
 ## GitHub Container Images
