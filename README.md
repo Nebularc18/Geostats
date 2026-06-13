@@ -103,7 +103,24 @@ ghcr.io/OWNER/REPO/web:latest
 
 Each image is also tagged with the commit SHA as `sha-<commit>`.
 
+Before the first push to `main`, configure these GitHub Actions repository variables because they are compiled into the Next.js `web` image at build time:
+
+```text
+NEXT_PUBLIC_API_URL=https://api.example.com
+NEXT_PUBLIC_AUTH_MODE=password
+NEXT_PUBLIC_AUTH_PROVIDER_NAME=Home Auth
+```
+
 On deployment hardware, set the image prefix and pull the prebuilt app images before starting Compose:
+
+```bash
+export GEOSTATS_IMAGE_PREFIX="ghcr.io/OWNER/REPO"
+export GEOSTATS_IMAGE_TAG="latest"
+docker compose pull api worker web
+docker compose up -d
+```
+
+PowerShell:
 
 ```powershell
 $env:GEOSTATS_IMAGE_PREFIX = "ghcr.io/OWNER/REPO"
