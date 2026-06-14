@@ -29,7 +29,7 @@ type BoundaryFeature = {
 };
 type BoundaryFeatureCollection = { type: "FeatureCollection"; features: BoundaryFeature[] };
 
-const DEFAULT_API_URL = process.env.EXPO_PUBLIC_API_URL ?? "http://10.0.2.2:3001";
+const DEFAULT_API_URL = process.env.EXPO_PUBLIC_API_URL ?? "https://geostats-api.hampusek.com";
 const TOKEN_KEY = "geostats_session";
 const SERVER_URL_KEY = "geostats_server_url";
 const monthLabels = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];

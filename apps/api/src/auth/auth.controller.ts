@@ -238,6 +238,34 @@ export class AuthController {
     if (configured) {
       return redirectUri === configured;
     }
-    return url.protocol === "geostats:" && url.hostname === "auth" && (url.pathname === "" || url.pathname === "/");
+    if (url.protocol === "geostats:" && url.hostname === "auth" && (url.pathname === "" || url.pathname === "/")) {
+      return true;
+    }
+    return this.isAllowedExpoGoRedirectUri(url);
+  }
+
+  private isAllowedExpoGoRedirectUri(url: URL): boolean {
+    if (url.protocol !== "exp:" && url.protocol !== "exps:") {
+      return false;
+    }
+    if (url.pathname !== "/--/auth") {
+      return false;
+    }
+    const hostname = url.hostname.toLowerCase();
+    return hostname === "localhost" || hostname === "127.0.0.1" || this.isPrivateIpv4Host(hostname);
+  }
+
+  private isPrivateIpv4Host(hostname: string): boolean {
+    const parts = hostname.split(".");
+    if (parts.length !== 4 || parts.some((part) => !/^\d+$/.test(part))) {
+      return false;
+    }
+    const octets = parts.map(Number);
+    if (octets.some((octet) => octet < 0 || octet > 255)) {
+      return false;
+    }
+    return octets[0] === 10
+      || (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31)
+      || (octets[0] === 192 && octets[1] === 168);
   }
 }

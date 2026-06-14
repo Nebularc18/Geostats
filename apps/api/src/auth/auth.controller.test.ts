@@ -175,6 +175,11 @@ test("default mobile redirect validation only accepts the app auth URL", () => {
 
     assert.equal((controller as any).isAllowedMobileRedirectUri("geostats://auth"), true);
     assert.equal((controller as any).isAllowedMobileRedirectUri("geostats://auth/"), true);
+    assert.equal((controller as any).isAllowedMobileRedirectUri("exp://10.11.18.75:8081/--/auth"), true);
+    assert.equal((controller as any).isAllowedMobileRedirectUri("exp://192.168.1.50:8081/--/auth"), true);
+    assert.equal((controller as any).isAllowedMobileRedirectUri("exp://8.8.8.8:8081/--/auth"), false);
+    assert.equal((controller as any).isAllowedMobileRedirectUri("exp://example.com:8081/--/auth"), false);
+    assert.equal((controller as any).isAllowedMobileRedirectUri("exp://10.11.18.75:8081/--/profile"), false);
     assert.equal((controller as any).isAllowedMobileRedirectUri("geostats://anything/auth"), false);
     assert.equal((controller as any).isAllowedMobileRedirectUri("https://example.com/auth"), false);
   });
