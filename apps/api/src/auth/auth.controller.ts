@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Get, Logger, Post, Query, Res, UseGuards } from "@nestjs/common";
+import { BadRequestException, Body, Controller, Get, Logger, Post, Query, Res, ServiceUnavailableException, UseGuards } from "@nestjs/common";
 import { Response } from "express";
 import { AuthUser } from "@geostats/shared";
 import { createHash, randomBytes } from "node:crypto";
@@ -50,6 +50,15 @@ export class AuthController {
       secure: process.env.NODE_ENV === "production",
       maxAge: 10 * 60 * 1000
     });
+    const directLoginUrl = process.env.EXTERNAL_AUTH_DIRECT_LOGIN_URL?.trim();
+    if (directLoginUrl) {
+      if (!this.isAbsoluteHttpUrl(directLoginUrl)) {
+        this.logger.error(`EXTERNAL_AUTH_DIRECT_LOGIN_URL is not an absolute HTTP(S) URL: ${directLoginUrl}`);
+        throw new ServiceUnavailableException("External auth direct login URL is invalid");
+      }
+      response.type("html").send(this.externalLoginForm(directLoginUrl, this.auth.externalAuthorizationUrl(state, codeChallenge)));
+      return;
+    }
     response.redirect(this.auth.externalAuthorizationUrl(state, codeChallenge));
   }
 
@@ -182,6 +191,23 @@ export class AuthController {
 
   private base64Url(value: Buffer): string {
     return value.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+  }
+
+  private externalLoginForm(action: string, returnTo: string): string {
+    return `<!doctype html><html><head><meta charset="utf-8"><title>Redirecting</title></head><body><form method="post" action="${this.escapeHtml(action)}"><input type="hidden" name="returnTo" value="${this.escapeHtml(returnTo)}"><button type="submit">Continue</button></form><script>document.forms[0].submit();</script></body></html>`;
+  }
+
+  private escapeHtml(value: string): string {
+    return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  private isAbsoluteHttpUrl(value: string): boolean {
+    try {
+      const url = new URL(value);
+      return url.protocol === "http:" || url.protocol === "https:";
+    } catch {
+      return false;
+    }
   }
 
   private loginUrl(authError?: string): string {
