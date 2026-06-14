@@ -73,21 +73,26 @@ jobs:
             type=raw,value=${{ needs.release-tag.outputs.tag }}
             type=sha,prefix=sha-
 
-      - name: Validate web build variables
+      - name: Resolve web build variables
         if: matrix.image == 'web'
+        id: web-env
         shell: bash
         env:
           NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL }}
           NEXT_PUBLIC_AUTH_MODE: ${{ vars.NEXT_PUBLIC_AUTH_MODE }}
           NEXT_PUBLIC_AUTH_PROVIDER_NAME: ${{ vars.NEXT_PUBLIC_AUTH_PROVIDER_NAME }}
         run: |
-          test -n "$NEXT_PUBLIC_API_URL" || missing="$missing NEXT_PUBLIC_API_URL"
-          test -n "$NEXT_PUBLIC_AUTH_MODE" || missing="$missing NEXT_PUBLIC_AUTH_MODE"
-          test -n "$NEXT_PUBLIC_AUTH_PROVIDER_NAME" || missing="$missing NEXT_PUBLIC_AUTH_PROVIDER_NAME"
-          if test -n "$missing"; then
-            echo "Missing required GitHub Actions repository variables:$missing" >&2
-            exit 1
-          fi
+          api_url="${NEXT_PUBLIC_API_URL:-http://localhost:3001}"
+          auth_mode="${NEXT_PUBLIC_AUTH_MODE:-password}"
+          provider_name="${NEXT_PUBLIC_AUTH_PROVIDER_NAME:-Home Auth}"
+
+          echo "api-url=$api_url" >> "$GITHUB_OUTPUT"
+          echo "auth-mode=$auth_mode" >> "$GITHUB_OUTPUT"
+          {
+            echo "provider-name<<EOF"
+            echo "$provider_name"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Build and push image
         if: matrix.image != 'web'
@@ -113,8 +118,8 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            NEXT_PUBLIC_API_URL=${{ vars.NEXT_PUBLIC_API_URL }}
-            NEXT_PUBLIC_AUTH_MODE=${{ vars.NEXT_PUBLIC_AUTH_MODE }}
-            NEXT_PUBLIC_AUTH_PROVIDER_NAME=${{ vars.NEXT_PUBLIC_AUTH_PROVIDER_NAME }}
+            NEXT_PUBLIC_API_URL=${{ steps.web-env.outputs.api-url }}
+            NEXT_PUBLIC_AUTH_MODE=${{ steps.web-env.outputs.auth-mode }}
+            NEXT_PUBLIC_AUTH_PROVIDER_NAME=${{ steps.web-env.outputs.provider-name }}
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}
