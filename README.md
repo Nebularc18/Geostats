@@ -199,17 +199,23 @@ corepack pnpm --filter @geostats/worker dev
 corepack pnpm --filter @geostats/web dev
 ```
 
+## Mobile
+
+The Expo app lives in `apps/mobile`.
+
+- By default it targets the Android emulator alias `http://10.0.2.2:3001`, so a local `expo start` works against a local API without extra config.
+- To point a device or Expo Go session at the hosted API instead, set `EXPO_PUBLIC_API_URL=https://geostats-api.hampusek.com` before starting Expo.
+
 ## Architecture Notes
 
 - The backend API is the source of truth. The frontend never reads from Prisma directly.
 - All user-owned data is scoped by `user_id`.
 - Cache coordinates are stored as scalar latitude/longitude and as a PostGIS geography point.
 - Object storage uses S3-compatible environment variables so MinIO can be replaced with cloud S3 later.
-- Mobile is intentionally not scaffolded yet; API contracts and shared packages are shaped so an Expo app can be added later.
+- The mobile app uses the same API contracts and shared packages as web.
 
 ## Not In The MVP
 
-- Android/Expo app
 - public profile sharing
 - friend comparison
 - challenge checker
