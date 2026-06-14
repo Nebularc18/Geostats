@@ -146,7 +146,7 @@ ghcr.io/OWNER/REPO/web:latest
 Each image is also tagged with the commit SHA as `sha-<commit>`.
 Each workflow run also publishes a shared timestamp release tag for all app images, for example `release-20260613-173045-utc`.
 
-Before the first push to `main`, configure these GitHub Actions repository variables because they are compiled into the Next.js `web` image at build time:
+Optionally configure these GitHub Actions repository variables to override the Next.js `web` image build defaults (`http://localhost:3001`, `password`, and `Home Auth`):
 
 ```text
 NEXT_PUBLIC_API_URL=https://api.example.com
