@@ -88,11 +88,7 @@ jobs:
 
           echo "api-url=$api_url" >> "$GITHUB_OUTPUT"
           echo "auth-mode=$auth_mode" >> "$GITHUB_OUTPUT"
-          {
-            echo "provider-name<<EOF"
-            echo "$provider_name"
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
+          echo "provider-name=$provider_name" >> "$GITHUB_OUTPUT"
 
       - name: Build and push image
         if: matrix.image != 'web'
