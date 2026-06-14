@@ -261,7 +261,7 @@ export class AuthController {
       return false;
     }
     const octets = parts.map(Number);
-    if (octets.some((octet) => octet < 0 || octet > 255)) {
+    if (octets.some((octet) => octet > 255)) {
       return false;
     }
     return octets[0] === 10
