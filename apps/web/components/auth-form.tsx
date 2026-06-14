@@ -1,20 +1,46 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { LogIn } from "lucide-react";
 import { API_URL, apiFetch } from "../lib/api";
 
+type AuthMode = "dev" | "external" | "password";
+type AuthConfig = {
+  mode: AuthMode;
+  providerName: string;
+};
+
 export function AuthForm({ mode }: { mode: "login" | "register" }) {
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [config, setConfig] = useState<AuthConfig | null>(null);
   const action = mode === "login" ? "Sign in" : "Create account";
-  const authMode = process.env.NEXT_PUBLIC_AUTH_MODE ?? "password";
-  const providerName = process.env.NEXT_PUBLIC_AUTH_PROVIDER_NAME ?? "Home Auth";
+  const authMode = config?.mode;
+  const providerName = config?.providerName ?? "Home Auth";
   const isDevMode = authMode === "dev";
   const isExternalMode = authMode === "external";
+
+  useEffect(() => {
+    let cancelled = false;
+    void apiFetch<AuthConfig>("/auth/config")
+      .then((data) => {
+        if (!cancelled) setConfig(data);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setConfig({
+            mode: (process.env.NEXT_PUBLIC_AUTH_MODE as AuthMode | undefined) ?? "password",
+            providerName: process.env.NEXT_PUBLIC_AUTH_PROVIDER_NAME ?? "Home Auth"
+          });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -45,7 +71,9 @@ export function AuthForm({ mode }: { mode: "login" | "register" }) {
             Import My Finds GPX files, keep ownership per user, and build a private statistics archive.
           </p>
         </div>
-        {isDevMode || isExternalMode ? (
+        {!config ? (
+          <p className="muted">Loading sign-in options...</p>
+        ) : isDevMode || isExternalMode ? (
           <a className="primary-button oauth-button" href={`${API_URL}${isDevMode ? "/auth/dev" : "/auth/external"}`}>
             <LogIn aria-hidden="true" size={18} />
             {isDevMode ? "Continue in dev mode" : `${action} with ${providerName}`}

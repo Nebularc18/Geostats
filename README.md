@@ -129,7 +129,7 @@ GEOSTATS_IMAGE_PREFIX=ghcr.io/owner/repo
 GEOSTATS_IMAGE_TAG=release-YYYYMMDD-HHMMSS-utc
 ```
 
-Prebuilt `web` images must already have been built with the same `NEXT_PUBLIC_API_URL`, `NEXT_PUBLIC_AUTH_MODE`, and `NEXT_PUBLIC_AUTH_PROVIDER_NAME` values you deploy with. Next.js bakes those values into the browser bundle at build time.
+Prebuilt `web` images must be built with the public API URL you deploy with. The login page reads auth mode and provider name from the API at runtime.
 
 The Dockhand Compose file includes a one-shot `migrate` service, so fresh databases run Prisma migrations before `api`, `worker`, and `web` start.
 
@@ -146,12 +146,10 @@ ghcr.io/OWNER/REPO/web:latest
 Each image is also tagged with the commit SHA as `sha-<commit>`.
 Each workflow run also publishes a shared timestamp release tag for all app images, for example `release-20260613-173045-utc`.
 
-Optionally configure these GitHub Actions repository variables to override the Next.js `web` image build defaults (`http://localhost:3001`, `password`, and `Home Auth`):
+Optionally configure this GitHub Actions repository variable to override the Next.js `web` image API URL default (`http://localhost:3001`):
 
 ```text
 NEXT_PUBLIC_API_URL=https://api.example.com
-NEXT_PUBLIC_AUTH_MODE=password
-NEXT_PUBLIC_AUTH_PROVIDER_NAME=Home Auth
 ```
 
 On deployment hardware, set the image prefix and pull the prebuilt app images before starting Compose:
