@@ -204,6 +204,47 @@ The Expo app lives in `apps/mobile`.
 - By default it targets the Android emulator alias `http://10.0.2.2:3001`, so a local `expo start` works against a local API without extra config.
 - To point a device or Expo Go session at the hosted API instead, set `EXPO_PUBLIC_API_URL=https://geostats-api.hampusek.com` before starting Expo.
 
+### Android production builds
+
+The repo now includes EAS build profiles in `eas.json`:
+
+- `preview`: installs as a downloadable `.apk`
+- `production`: builds a Play Store `.aab`
+
+Before building, create `apps/mobile/.env` from `apps/mobile/.env.example` and set your public API URL:
+
+```powershell
+Copy-Item apps/mobile/.env.example apps/mobile/.env
+```
+
+```env
+EXPO_PUBLIC_API_URL=https://api.example.com
+EXPO_PUBLIC_MOBILE_AUTH_REDIRECT_URI=geostats://auth
+EXPO_PUBLIC_GOOGLE_MAPS_ANDROID_API_KEY=your-google-maps-android-api-key
+```
+
+The Android map and scratch map screens require a Google Maps SDK for Android API key. After adding or changing `EXPO_PUBLIC_GOOGLE_MAPS_ANDROID_API_KEY`, rebuild and reinstall the Android app; a JS reload will not update the native manifest value.
+
+Then log into Expo and build:
+
+```powershell
+corepack pnpm mobile:build:apk
+```
+
+That produces an installable Android APK you can download and sideload onto your phone.
+
+For Play Store submission instead:
+
+```powershell
+corepack pnpm mobile:build:aab
+```
+
+If you use external auth in production, make sure the API deployment allows the mobile redirect URI:
+
+```env
+MOBILE_AUTH_REDIRECT_URI=geostats://auth
+```
+
 ## Architecture Notes
 
 - The backend API is the source of truth. The frontend never reads from Prisma directly.

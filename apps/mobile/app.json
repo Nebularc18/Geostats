@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "Geostats",
-    "slug": "geostats-mobile",
+    "slug": "geostats",
     "scheme": "geostats",
     "version": "0.1.0",
     "orientation": "portrait",
@@ -12,6 +12,7 @@
     },
     "android": {
       "package": "com.hampu.geostats",
+      "versionCode": 3,
       "adaptiveIcon": {
         "backgroundColor": "#07110d",
         "foregroundImage": "./assets/android-icon-foreground.png",
@@ -22,6 +23,14 @@
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "extra": {
+      "eas": {
+        "projectId": "08a3cc2d-e083-4cda-b8ad-96301c663253"
+      }
+    },
+    "plugins": [
+      "expo-secure-store"
+    ]
   }
 }

@@ -29,6 +29,38 @@ const gpx = `<?xml version="1.0" encoding="UTF-8"?>
   </wpt>
 </gpx>`;
 
+const cgeoGpx = `<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.0" creator="c:geo" xmlns:groundspeak="http://www.groundspeak.com/cache/1/0/1" xmlns:gsak="http://www.gsak.net/xmlv1/6">
+  <wpt lat="56.1943" lon="15.592383">
+    <time>2004-03-14T00:00:00Z</time>
+    <name>GCHXYE</name>
+    <desc>Vastra Mark</desc>
+    <type>Geocache|Traditional Cache</type>
+    <groundspeak:cache>
+      <groundspeak:name>Vastra Mark</groundspeak:name>
+      <groundspeak:placed_by>Darnell_SE</groundspeak:placed_by>
+      <groundspeak:owner>Darnell_SE</groundspeak:owner>
+      <groundspeak:type>Traditional Cache</groundspeak:type>
+      <groundspeak:container>Other</groundspeak:container>
+      <groundspeak:difficulty>2.5</groundspeak:difficulty>
+      <groundspeak:terrain>1.5</groundspeak:terrain>
+      <groundspeak:country>Sweden</groundspeak:country>
+      <groundspeak:state>Blekinge</groundspeak:state>
+    </groundspeak:cache>
+    <gsak:wptExtension>
+      <gsak:UserFound>2026-05-09T01:00:00Z</gsak:UserFound>
+    </gsak:wptExtension>
+  </wpt>
+  <wpt lat="56.7257" lon="16.374417">
+    <name>01B4GAW</name>
+    <desc>Parkering</desc>
+    <type>Waypoint|Parking Area</type>
+    <gsak:wptExtension>
+      <gsak:Parent>GCB4GAW</gsak:Parent>
+    </gsak:wptExtension>
+  </wpt>
+</gpx>`;
+
 test("parseGpx extracts caches and found logs", () => {
   const parsed = parseGpx(gpx, ImportSource.MY_FINDS_GPX);
 
@@ -58,6 +90,16 @@ test("parseGpx accepts large My Finds files with many escaped entities", () => {
 
   assert.equal(parsed.finds.length, 1);
   assert.match(parsed.finds[0]?.logText ?? "", /TFTC & nice cache/);
+});
+
+test("parseGpx accepts c:geo found exports with gsak UserFound dates", () => {
+  const parsed = parseGpx(cgeoGpx, ImportSource.MY_FINDS_GPX);
+
+  assert.equal(parsed.caches.length, 1);
+  assert.equal(parsed.finds.length, 1);
+  assert.equal(parsed.caches[0]?.gcCode, "GCHXYE");
+  assert.equal(parsed.caches[0]?.name, "Vastra Mark");
+  assert.equal(parsed.finds[0]?.foundAt?.toISOString(), "2026-05-09T01:00:00.000Z");
 });
 
 test("parseImportFile reads GPX files from a ZIP", async () => {

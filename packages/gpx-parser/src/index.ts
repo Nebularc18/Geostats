@@ -124,6 +124,18 @@ function findCacheExtension(waypoint: Record<string, any>): Record<string, any> 
   return null;
 }
 
+function findUserFoundDate(waypoint: Record<string, any>): Date | null {
+  const gsak =
+    waypoint["gsak:wptExtension"] ??
+    waypoint.gsak?.wptExtension ??
+    waypoint.extensions?.["gsak:wptExtension"] ??
+    waypoint.extensions?.gsak?.wptExtension;
+  if (!gsak || typeof gsak !== "object") {
+    return null;
+  }
+  return toDate((gsak as Record<string, any>)["gsak:UserFound"] ?? (gsak as Record<string, any>).UserFound);
+}
+
 function findFoundLog(cache: Record<string, any>): Record<string, any> | null {
   const logs = cache["groundspeak:logs"]?.["groundspeak:log"] ?? cache.logs?.log;
   const foundLog = asArray<Record<string, any>>(logs).find((log) => {
@@ -167,11 +179,11 @@ function parseWaypoint(waypoint: Record<string, any>, source: ImportSource): Par
   const lat = toNumber(waypoint.lat);
   const lon = toNumber(waypoint.lon);
   const gcCode = firstText(waypoint.name);
-  if (!gcCode || lat === null || lon === null) {
+  const cacheExtension = findCacheExtension(waypoint);
+  if (!gcCode || lat === null || lon === null || !cacheExtension) {
     return null;
   }
 
-  const cacheExtension = findCacheExtension(waypoint) ?? {};
   const foundLog = findFoundLog(cacheExtension);
   const placedBy = cacheExtension["groundspeak:placed_by"] ?? cacheExtension.placed_by;
   const owner = cacheExtension["groundspeak:owner"] ?? cacheExtension.owner;
@@ -196,7 +208,7 @@ function parseWaypoint(waypoint: Record<string, any>, source: ImportSource): Par
 
   return {
     cache,
-    foundAt: toDate(foundLog?.["groundspeak:date"] ?? foundLog?.date),
+    foundAt: toDate(foundLog?.["groundspeak:date"] ?? foundLog?.date) ?? findUserFoundDate(waypoint),
     logText: firstText(foundLog?.["groundspeak:text"], foundLog?.text),
     source
   };

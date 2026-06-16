@@ -1,9 +1,24 @@
 {
   "name": "geostats",
   "version": "0.1.0",
+  "main": "apps/mobile/index.ts",
   "private": true,
   "license": "Apache-2.0",
   "packageManager": "pnpm@9.15.0",
+  "dependencies": {
+    "@geostats/shared": "workspace:*",
+    "expo": "~56.0.11",
+    "expo-clipboard": "~56.0.4",
+    "expo-document-picker": "~56.0.4",
+    "expo-linking": "~56.0.14",
+    "expo-secure-store": "~56.0.4",
+    "expo-status-bar": "~56.0.4",
+    "expo-web-browser": "~56.0.5",
+    "react": "19.2.3",
+    "react-native": "0.85.3",
+    "react-native-maps": "1.27.2",
+    "react-native-safe-area-context": "^5.7.0"
+  },
   "scripts": {
     "build": "corepack pnpm -r build",
     "dev": "corepack pnpm -r --parallel dev",
@@ -11,6 +26,10 @@
     "test": "corepack pnpm -r test",
     "typecheck": "corepack pnpm -r typecheck",
     "format": "prettier --write .",
+    "mobile:start": "corepack pnpm --filter @geostats/mobile start",
+    "mobile:android": "corepack pnpm --filter @geostats/mobile android",
+    "mobile:build:apk": "corepack pnpm dlx eas-cli build --platform android --profile preview",
+    "mobile:build:aab": "corepack pnpm dlx eas-cli build --platform android --profile production",
     "collect-owner-logs": "corepack pnpm --filter @geostats/tools collect-owner-logs",
     "db:generate": "corepack pnpm --filter @geostats/db db:generate",
     "db:migrate": "corepack pnpm --filter @geostats/db db:migrate",
@@ -20,6 +39,6 @@
     "@types/node": "^22.10.2",
     "prettier": "^3.4.2",
     "turbo": "^2.3.3",
-    "typescript": "^5.7.2"
+    "typescript": "~6.0.3"
   }
 }
