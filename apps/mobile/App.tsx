@@ -1,11 +1,11 @@
 import { StatusBar } from "expo-status-bar";
 import { useEffect, useState } from "react";
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import * as DocumentPicker from "expo-document-picker";
 import * as SecureStore from "expo-secure-store";
 import * as Clipboard from "expo-clipboard";
-import MapView, { Callout, Marker, Polygon, type Region } from "react-native-maps";
+import MapView, { Callout, Marker, Polygon, PROVIDER_GOOGLE, type Region } from "react-native-maps";
 import * as Linking from "expo-linking";
 import * as WebBrowser from "expo-web-browser";
 
@@ -29,7 +29,8 @@ type BoundaryFeature = {
 };
 type BoundaryFeatureCollection = { type: "FeatureCollection"; features: BoundaryFeature[] };
 
-const DEFAULT_API_URL = process.env.EXPO_PUBLIC_API_URL ?? "http://10.0.2.2:3001";
+const DEFAULT_API_URL = process.env.EXPO_PUBLIC_API_URL ?? (__DEV__ ? "http://10.0.2.2:3001" : "");
+const ANDROID_MAP_PROVIDER = Platform.OS === "android" ? PROVIDER_GOOGLE : undefined;
 const TOKEN_KEY = "geostats_session";
 const SERVER_URL_KEY = "geostats_server_url";
 const monthLabels = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -88,6 +89,14 @@ function normalizeServerUrl(value: string) {
   if (!trimmed) return DEFAULT_API_URL;
   const withProtocol = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
   return new URL(withProtocol).toString().replace(/\/+$/, "");
+}
+
+function requireServerUrl(value: string) {
+  const normalized = normalizeServerUrl(value);
+  if (!normalized) {
+    throw new Error("Enter your public API URL before signing in.");
+  }
+  return normalized;
 }
 
 async function apiFetch<T>(baseUrl: string, path: string, token: string | null, options: RequestInit = {}): Promise<T> {
@@ -318,22 +327,32 @@ function namesForScratchBucket(bucket: any, level: ScratchLevel) {
   return [bucket.name];
 }
 
-function polygonOuterRings(feature: BoundaryFeature) {
+function sampledRing(ring: Position[], maxPoints = 350) {
+  const valid = ring.filter(([longitude, latitude]) =>
+    Number.isFinite(latitude) &&
+    Number.isFinite(longitude) &&
+    latitude >= -90 &&
+    latitude <= 90 &&
+    longitude >= -180 &&
+    longitude <= 180
+  );
+  if (valid.length <= maxPoints) return valid;
+  const step = Math.ceil(valid.length / maxPoints);
+  const sampled = valid.filter((_, index) => index % step === 0);
+  const last = valid.at(-1);
+  if (last && sampled.at(-1) !== last) sampled.push(last);
+  return sampled;
+}
+
+function polygonOuterRings(feature: BoundaryFeature, maxPoints = 350) {
   const polygons = feature.geometry.type === "Polygon"
     ? [feature.geometry.coordinates as PolygonCoordinates]
     : feature.geometry.coordinates as MultiPolygonCoordinates;
   return polygons
     .map((polygon) => polygon[0] ?? [])
+    .map((ring) => sampledRing(ring, maxPoints))
     .filter((ring) => ring.length >= 4)
     .map((ring) => ring.map(([longitude, latitude]) => ({ latitude, longitude })));
-}
-
-function featureCenter(feature: BoundaryFeature) {
-  const coordinates = polygonOuterRings(feature).flat();
-  if (coordinates.length === 0) return null;
-  const latitude = coordinates.reduce((sum, coordinate) => sum + coordinate.latitude, 0) / coordinates.length;
-  const longitude = coordinates.reduce((sum, coordinate) => sum + coordinate.longitude, 0) / coordinates.length;
-  return { latitude, longitude };
 }
 
 function scratchBucketsForLevel(countries: any[], activeCountry: any, level: ScratchLevel) {
@@ -376,6 +395,10 @@ function AuthScreen({ apiBaseUrl, onApiBaseUrlChange, onSession }: { apiBaseUrl:
         const nextUrl = normalizeServerUrl(serverUrl);
         onApiBaseUrlChange(nextUrl);
         setServerUrl(nextUrl);
+        if (!nextUrl) {
+          setConfig({ mode: "password", providerName: "Home Auth" });
+          return;
+        }
         void apiFetch<AuthConfig>(nextUrl, "/auth/config", null)
           .then(setConfig)
           .catch(() => setConfig({ mode: "password", providerName: "Home Auth" }));
@@ -386,7 +409,7 @@ function AuthScreen({ apiBaseUrl, onApiBaseUrlChange, onSession }: { apiBaseUrl:
     return () => clearTimeout(timeout);
   }, [serverUrl]);
   async function saveServerUrl() {
-    const nextUrl = normalizeServerUrl(serverUrl);
+    const nextUrl = requireServerUrl(serverUrl);
     onApiBaseUrlChange(nextUrl);
     setServerUrl(nextUrl);
     await SecureStore.setItemAsync(SERVER_URL_KEY, nextUrl);
@@ -454,6 +477,7 @@ function AuthScreen({ apiBaseUrl, onApiBaseUrlChange, onSession }: { apiBaseUrl:
         <Text style={styles.brand}>Geostats</Text>
         <Text style={styles.title}>{mode === "login" ? "Sign in" : "Create account"}</Text>
         <Field label="Server" value={serverUrl} onChangeText={setServerUrl} autoCapitalize="none" keyboardType="url" />
+        {!DEFAULT_API_URL ? <Text style={styles.muted}>Release builds need your public API URL here, for example https://api.example.com.</Text> : null}
         {config.mode === "password" ? (
           <>
             <Field label="Email" value={email} onChangeText={setEmail} autoCapitalize="none" keyboardType="email-address" />
@@ -1036,26 +1060,28 @@ function MonthMatrix({ data }: { data: CountBucket[] }) {
 }
 
 function NativeMap({ points }: { points: CachePoint[] }) {
-  const visible = validMapPoints(points).slice(0, 5000);
+  const visible = validMapPoints(points).slice(0, 1500);
   if (visible.length === 0) return <Text style={styles.muted}>No coordinates yet.</Text>;
   return (
-    <MapView style={styles.nativeMap} initialRegion={regionForPoints(visible)} showsCompass showsScale>
-      {visible.map((point) => (
-        <Marker
-          key={`${point.isOwnHide ? "hide" : "find"}-${point.gcCode}-${point.id}-${point.foundAt ?? point.placedAt ?? ""}`}
-          coordinate={{ latitude: point.latitude, longitude: point.longitude }}
-          pinColor={getCacheTypeColor(point.cacheType, point.isOwnHide)}
-        >
-          <Callout onPress={() => Linking.openURL(`https://coord.info/${point.gcCode}`)}>
-            <View style={styles.callout}>
-              <Text style={styles.calloutTitle}>{point.gcCode}</Text>
-              <Text style={styles.calloutBody}>{point.name}</Text>
-              <Text style={styles.calloutMeta}>{point.isOwnHide ? "Own hide" : point.cacheType ?? "Unknown"}</Text>
-            </View>
-          </Callout>
-        </Marker>
-      ))}
-    </MapView>
+    <View style={styles.nativeMapFrame}>
+      <MapView style={styles.nativeMap} initialRegion={regionForPoints(visible)} provider={ANDROID_MAP_PROVIDER} showsCompass showsScale>
+        {visible.map((point) => (
+          <Marker
+            key={`${point.isOwnHide ? "hide" : "find"}-${point.gcCode}-${point.id}-${point.foundAt ?? point.placedAt ?? ""}`}
+            coordinate={{ latitude: point.latitude, longitude: point.longitude }}
+            pinColor={getCacheTypeColor(point.cacheType, point.isOwnHide)}
+          >
+            <Callout onPress={() => Linking.openURL(`https://coord.info/${point.gcCode}`)}>
+              <View style={styles.callout}>
+                <Text style={styles.calloutTitle}>{point.gcCode}</Text>
+                <Text style={styles.calloutBody}>{point.name}</Text>
+                <Text style={styles.calloutMeta}>{point.isOwnHide ? "Own hide" : point.cacheType ?? "Unknown"}</Text>
+              </View>
+            </Callout>
+          </Marker>
+        ))}
+      </MapView>
+    </View>
   );
 }
 
@@ -1096,36 +1122,23 @@ function ScratchNativeMap({
     .filter((item) => item.bucket);
   const region = regionForScratch(level, activeCountry?.name);
   return (
-    <MapView style={styles.nativeMap} initialRegion={region} mapType="mutedStandard" showsCompass showsScale>
-      {features.flatMap(({ feature, featureName, bucket }, featureIndex) =>
-        polygonOuterRings(feature).map((coordinates, ringIndex) => (
-          <Polygon
-            key={`${featureName}-${featureIndex}-${ringIndex}`}
-            coordinates={coordinates}
-            fillColor={`${scratchColor(bucket.count ?? 0, max)}aa`}
-            strokeColor={selectedName && namesForScratchBucket(bucket, level).includes(selectedName) ? "#f3b34d" : "#dce8df"}
-            strokeWidth={selectedName && namesForScratchBucket(bucket, level).includes(selectedName) ? 2 : 0.7}
-            tappable
-            onPress={() => onSelect(featureName)}
-          />
-        ))
-      )}
-      {features.slice(0, 80).map(({ feature, featureName, bucket }) => {
-        const center = featureCenter(feature);
-        if (!center) return null;
-        return (
-          <Marker key={`label-${featureName}`} coordinate={center} opacity={0}>
-            <Callout onPress={() => onSelect(featureName)}>
-              <View style={styles.callout}>
-                <Text style={styles.calloutTitle}>{bucket.name}</Text>
-                <Text style={styles.calloutBody}>{bucket.count} finds</Text>
-                <Text style={styles.calloutMeta}>{level}</Text>
-              </View>
-            </Callout>
-          </Marker>
-        );
-      })}
-    </MapView>
+    <View style={styles.nativeMapFrame}>
+      <MapView style={styles.nativeMap} initialRegion={region} provider={ANDROID_MAP_PROVIDER} showsCompass showsScale>
+        {features.flatMap(({ feature, featureName, bucket }, featureIndex) =>
+          polygonOuterRings(feature).map((coordinates, ringIndex) => (
+            <Polygon
+              key={`${featureName}-${featureIndex}-${ringIndex}`}
+              coordinates={coordinates}
+              fillColor={`${scratchColor(bucket.count ?? 0, max)}aa`}
+              strokeColor={selectedName && namesForScratchBucket(bucket, level).includes(selectedName) ? "#f3b34d" : "#dce8df"}
+              strokeWidth={selectedName && namesForScratchBucket(bucket, level).includes(selectedName) ? 2 : 0.7}
+              tappable
+              onPress={() => onSelect(featureName)}
+            />
+          ))
+        )}
+      </MapView>
+    </View>
   );
 }
 
@@ -1286,7 +1299,8 @@ const styles = StyleSheet.create({
   monthMatrixYear: { width: 42, color: "#c9d8cf", fontWeight: "800" },
   monthMatrixCells: { flex: 1, flexDirection: "row", gap: 4 },
   monthMatrixCell: { flex: 1, aspectRatio: 1, borderRadius: 3, backgroundColor: "#244535" },
-  nativeMap: { height: 320, borderRadius: 8, overflow: "hidden" },
+  nativeMapFrame: { height: 320, borderRadius: 8, overflow: "hidden", backgroundColor: "#14271d" },
+  nativeMap: { position: "absolute", top: 0, right: 0, bottom: 0, left: 0 },
   scratchMapLoading: { height: 320, borderRadius: 8, backgroundColor: "#14271d", alignItems: "center", justifyContent: "center" },
   callout: { width: 190, gap: 3 },
   calloutTitle: { color: "#172016", fontWeight: "900", fontSize: 15 },

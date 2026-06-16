@@ -1,0 +1,30 @@
+{
+  "cli": {
+    "version": ">= 16.16.0",
+    "appVersionSource": "local"
+  },
+  "build": {
+    "development": {
+      "node": "22.22.2",
+      "pnpm": "9.15.0",
+      "developmentClient": true,
+      "distribution": "internal"
+    },
+    "preview": {
+      "node": "22.22.2",
+      "pnpm": "9.15.0",
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      }
+    },
+    "production": {
+      "node": "22.22.2",
+      "pnpm": "9.15.0",
+      "android": {
+        "buildType": "app-bundle"
+      },
+      "autoIncrement": true
+    }
+  }
+}
