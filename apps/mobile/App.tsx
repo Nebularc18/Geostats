@@ -1,6 +1,6 @@
 import { StatusBar } from "expo-status-bar";
 import { useEffect, useState } from "react";
-import { ActivityIndicator, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, Alert, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import * as DocumentPicker from "expo-document-picker";
 import * as SecureStore from "expo-secure-store";
@@ -408,8 +408,15 @@ function AuthScreen({ apiBaseUrl, onApiBaseUrlChange, onSession }: { apiBaseUrl:
     }, 350);
     return () => clearTimeout(timeout);
   }, [serverUrl]);
-  async function saveServerUrl() {
-    const nextUrl = requireServerUrl(serverUrl);
+  async function saveServerUrl(): Promise<string | null> {
+    let nextUrl: string;
+    try {
+      nextUrl = requireServerUrl(serverUrl);
+    } catch (error) {
+      setMessage(null);
+      Alert.alert("Server URL required", error instanceof Error ? error.message : String(error));
+      return null;
+    }
     onApiBaseUrlChange(nextUrl);
     setServerUrl(nextUrl);
     await SecureStore.setItemAsync(SERVER_URL_KEY, nextUrl);
@@ -419,6 +426,7 @@ function AuthScreen({ apiBaseUrl, onApiBaseUrlChange, onSession }: { apiBaseUrl:
     setMessage("Signing in...");
     try {
       const nextUrl = await saveServerUrl();
+      if (!nextUrl) return;
       const data = await apiFetch<Session>(nextUrl, `/auth/mobile/${mode}`, null, {
         method: "POST",
         body: JSON.stringify(mode === "login" ? { email, password } : { email, username, password })
@@ -433,6 +441,7 @@ function AuthScreen({ apiBaseUrl, onApiBaseUrlChange, onSession }: { apiBaseUrl:
     setMessage("Signing in...");
     try {
       const nextUrl = await saveServerUrl();
+      if (!nextUrl) return;
       const data = await apiFetch<Session>(nextUrl, "/auth/mobile/dev", null);
       await SecureStore.setItemAsync(TOKEN_KEY, data.token);
       onSession(data, nextUrl);
@@ -444,6 +453,7 @@ function AuthScreen({ apiBaseUrl, onApiBaseUrlChange, onSession }: { apiBaseUrl:
     setMessage(`Opening ${config.providerName}...`);
     try {
       const baseUrl = await saveServerUrl();
+      if (!baseUrl) return;
       const redirectUri = process.env.EXPO_PUBLIC_MOBILE_AUTH_REDIRECT_URI ?? Linking.createURL("auth", { scheme: "geostats" });
       const authUrl = `${baseUrl}/auth/mobile/external?redirectUri=${encodeURIComponent(redirectUri)}`;
       const result = await WebBrowser.openAuthSessionAsync(authUrl, redirectUri);
@@ -1123,7 +1133,7 @@ function ScratchNativeMap({
   const region = regionForScratch(level, activeCountry?.name);
   return (
     <View style={styles.nativeMapFrame}>
-      <MapView style={styles.nativeMap} initialRegion={region} provider={ANDROID_MAP_PROVIDER} showsCompass showsScale>
+      <MapView style={styles.nativeMap} initialRegion={region} provider={ANDROID_MAP_PROVIDER} mapType="mutedStandard" showsCompass showsScale>
         {features.flatMap(({ feature, featureName, bucket }, featureIndex) =>
           polygonOuterRings(feature).map((coordinates, ringIndex) => (
             <Polygon
