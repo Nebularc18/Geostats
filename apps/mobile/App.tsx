@@ -925,7 +925,9 @@ function UploadScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string
     if (result.canceled) return;
     const asset = result.assets[0];
     const form = new FormData();
-    form.append("file", new File(asset.uri), asset.name);
+    const fileObj = new File(asset.uri);
+    const uploadFile = fileObj.type ? fileObj : fileObj.slice(0, fileObj.size, asset.mimeType ?? "application/octet-stream");
+    form.append("file", uploadFile, asset.name);
     setMessage(kind === "cache" ? "Uploading import..." : "Uploading owner logs...");
     try {
       await apiFetch(apiBaseUrl, kind === "cache" ? "/imports/upload" : "/collector/received-logs/csv", token, { method: "POST", body: form });

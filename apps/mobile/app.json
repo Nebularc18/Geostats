@@ -12,7 +12,7 @@
     },
     "android": {
       "package": "com.hampu.geostats",
-      "versionCode": 4,
+      "versionCode": 5,
       "adaptiveIcon": {
         "backgroundColor": "#07110d",
         "foregroundImage": "./assets/android-icon-foreground.png",
