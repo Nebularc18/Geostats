@@ -7,7 +7,7 @@
   "packageManager": "pnpm@9.15.0",
   "dependencies": {
     "@geostats/shared": "workspace:*",
-    "expo": "~56.0.11",
+    "expo": "~56.0.12",
     "expo-clipboard": "~56.0.4",
     "expo-document-picker": "~56.0.4",
     "expo-linking": "~56.0.14",

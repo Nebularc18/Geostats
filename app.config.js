@@ -27,7 +27,7 @@ module.exports = {
     },
     android: {
       package: "com.hampu.geostats",
-      versionCode: 3,
+      versionCode: 5,
       adaptiveIcon: {
         backgroundColor: "#07110d",
         foregroundImage: "./apps/mobile/assets/android-icon-foreground.png",
