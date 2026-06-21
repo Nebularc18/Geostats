@@ -39,6 +39,13 @@ interface OAuthTokenResponse {
   error_description?: string;
 }
 
+interface ShooTokenResponse {
+  id_token?: string;
+  pairwise_sub?: string;
+  error?: string;
+  error_description?: string;
+}
+
 interface OidcUserInfoResponse {
   sub: string;
   email?: string | null;
@@ -100,6 +107,10 @@ export class AuthService {
 
   externalAuthorizationUrl(state: string, codeChallenge: string): string {
     this.assertExternalAuthMode();
+    if (this.isShooProvider()) {
+      return this.shooAuthorizationUrl(state, codeChallenge);
+    }
+
     const url = new URL(this.requiredExternalEnv("EXTERNAL_AUTH_AUTHORIZE_URL"));
     url.searchParams.set("client_id", this.requiredExternalEnv("EXTERNAL_AUTH_CLIENT_ID"));
     url.searchParams.set("redirect_uri", this.externalCallbackUrl());
@@ -113,6 +124,10 @@ export class AuthService {
 
   async loginWithExternalProvider(code: string, codeVerifier: string): Promise<AuthUser> {
     this.assertExternalAuthMode();
+    if (this.isShooProvider()) {
+      return this.loginWithShoo(code, codeVerifier);
+    }
+
     const accessToken = await this.exchangeExternalCode(code, codeVerifier);
     const profile = await this.fetchExternalProfile(accessToken);
     const email = profile.email?.trim().toLowerCase();
@@ -200,6 +215,98 @@ export class AuthService {
       throw new ServiceUnavailableException("External auth is not configured");
     }
     return value;
+  }
+
+  private isShooProvider(): boolean {
+    return envOrDefault("EXTERNAL_AUTH_PROVIDER_ID", "external").toLowerCase() === "shoo";
+  }
+
+  private shooBaseUrl(): string {
+    return envOrDefault("SHOO_BASE_URL", "https://shoo.dev").replace(/\/+$/, "");
+  }
+
+  private shooIssuer(): string {
+    return envOrDefault("SHOO_ISSUER", this.shooBaseUrl()).replace(/\/+$/, "");
+  }
+
+  private shooClientId(): string {
+    return `origin:${new URL(this.externalCallbackUrl()).origin}`;
+  }
+
+  private shooAuthorizationUrl(state: string, codeChallenge: string): string {
+    const url = new URL("/authorize", this.shooBaseUrl());
+    url.searchParams.set("client_id", this.shooClientId());
+    url.searchParams.set("redirect_uri", this.externalCallbackUrl());
+    url.searchParams.set("state", state);
+    url.searchParams.set("code_challenge", codeChallenge);
+    url.searchParams.set("code_challenge_method", "S256");
+    if (envOrDefault("SHOO_REQUEST_PII", "true") !== "false") {
+      url.searchParams.set("pii", "true");
+    }
+    return url.toString();
+  }
+
+  private async loginWithShoo(code: string, codeVerifier: string): Promise<AuthUser> {
+    const profile = await this.exchangeAndVerifyShooCode(code, codeVerifier);
+    const email = typeof profile.email === "string" ? profile.email.trim().toLowerCase() : "";
+    if (!email) {
+      throw new BadRequestException("Shoo auth requires email consent; keep SHOO_REQUEST_PII=true");
+    }
+    if (profile.emailVerified !== true) {
+      throw new BadRequestException("Shoo account email must be verified");
+    }
+
+    const user = await this.upsertOAuthUser({
+      provider: "shoo",
+      providerAccountId: profile.pairwiseSub,
+      providerUsername: profile.name ?? email,
+      email,
+      username: profile.name ?? email.split("@")[0]
+    });
+    return this.toAuthUser(user);
+  }
+
+  private async exchangeAndVerifyShooCode(code: string, codeVerifier: string) {
+    const body = new URLSearchParams({
+      grant_type: "authorization_code",
+      client_id: this.shooClientId(),
+      redirect_uri: this.externalCallbackUrl(),
+      code,
+      code_verifier: codeVerifier
+    });
+
+    const response = await fetch(new URL("/token", this.shooBaseUrl()), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded"
+      },
+      body: body.toString()
+    });
+    const json = (await response.json()) as ShooTokenResponse;
+    if (!response.ok || !json.id_token) {
+      throw new UnauthorizedException(json.error_description || json.error || "Shoo token exchange failed");
+    }
+
+    const importJose = new Function("specifier", "return import(specifier)") as (
+      specifier: string
+    ) => Promise<typeof import("jose")>;
+    const { createRemoteJWKSet, jwtVerify } = await importJose("jose");
+    const jwks = createRemoteJWKSet(new URL("/.well-known/jwks.json", this.shooBaseUrl()));
+    const { payload } = await jwtVerify(json.id_token, jwks, {
+      issuer: this.shooIssuer(),
+      audience: this.shooClientId()
+    });
+    const pairwiseSub = typeof payload.pairwise_sub === "string" ? payload.pairwise_sub : json.pairwise_sub;
+    if (!pairwiseSub) {
+      throw new UnauthorizedException("Shoo token missing pairwise_sub");
+    }
+
+    return {
+      pairwiseSub,
+      email: typeof payload.email === "string" ? payload.email : null,
+      emailVerified: typeof payload.email_verified === "boolean" ? payload.email_verified : null,
+      name: typeof payload.name === "string" ? payload.name : null
+    };
   }
 
   private async exchangeExternalCode(code: string, codeVerifier: string): Promise<string> {

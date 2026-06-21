@@ -178,6 +178,69 @@ test("external auth mode disables password registration", async () => {
   });
 });
 
+test("shoo external auth builds a Shoo authorize URL with PII consent", () => {
+  withEnv(
+    {
+      AUTH_MODE: "external",
+      EXTERNAL_AUTH_PROVIDER_ID: "shoo",
+      EXTERNAL_AUTH_CALLBACK_URL: "https://api.example.com/auth/external/callback",
+      SHOO_BASE_URL: "https://shoo.dev",
+      SHOO_REQUEST_PII: "true"
+    },
+    () => {
+      const { service } = authServiceWithUsers();
+      const url = new URL(service.externalAuthorizationUrl("state", "challenge"));
+
+      assert.equal(url.origin, "https://shoo.dev");
+      assert.equal(url.pathname, "/authorize");
+      assert.equal(url.searchParams.get("client_id"), "origin:https://api.example.com");
+      assert.equal(url.searchParams.get("redirect_uri"), "https://api.example.com/auth/external/callback");
+      assert.equal(url.searchParams.get("state"), "state");
+      assert.equal(url.searchParams.get("code_challenge"), "challenge");
+      assert.equal(url.searchParams.get("code_challenge_method"), "S256");
+      assert.equal(url.searchParams.get("pii"), "true");
+    }
+  );
+});
+
+test("shoo external auth exchanges codes against the Shoo token endpoint", async () => {
+  await withEnv(
+    {
+      AUTH_MODE: "external",
+      EXTERNAL_AUTH_PROVIDER_ID: "shoo",
+      EXTERNAL_AUTH_CALLBACK_URL: "https://api.example.com/auth/external/callback",
+      SHOO_BASE_URL: "https://shoo.dev"
+    },
+    async () => {
+      const originalFetch = globalThis.fetch;
+      let requestedUrl = "";
+      let requestedBody = "";
+      globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+        requestedUrl = input.toString();
+        requestedBody = init?.body?.toString() ?? "";
+        return new Response(JSON.stringify({ error: "invalid_grant" }), { status: 401 });
+      }) as typeof fetch;
+      try {
+        const { service } = authServiceWithUsers();
+
+        await assert.rejects(() => service.loginWithExternalProvider("code", "verifier"), {
+          message: "invalid_grant"
+        });
+
+        assert.equal(requestedUrl, "https://shoo.dev/token");
+        const body = new URLSearchParams(requestedBody);
+        assert.equal(body.get("grant_type"), "authorization_code");
+        assert.equal(body.get("client_id"), "origin:https://api.example.com");
+        assert.equal(body.get("redirect_uri"), "https://api.example.com/auth/external/callback");
+        assert.equal(body.get("code"), "code");
+        assert.equal(body.get("code_verifier"), "verifier");
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    }
+  );
+});
+
 test("upsertOAuthUser recovers when concurrent account linking wins the race", async () => {
   const user = { id: "user-1", email: "user@example.com", username: "user", passwordHash: null };
   let accountLookupCount = 0;
