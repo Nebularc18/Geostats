@@ -1,4 +1,5 @@
 import type { CacheMapPoint } from "../components/cache-map";
+import { isUnknownLocationName } from "./scratch-boundary-config";
 
 type Position = [number, number];
 type PolygonCoordinates = Position[][];
@@ -83,7 +84,7 @@ export async function deriveBucketsFromBoundaries(points: CacheMapPoint[], url: 
   for (const point of points) {
     const feature = geoJson.features.find((candidate) => pointInFeature(point.longitude, point.latitude, candidate));
     const name = String(feature?.properties[propertyName] ?? "").trim();
-    if (name) {
+    if (!isUnknownLocationName(name)) {
       counts.set(name, (counts.get(name) ?? 0) + 1);
     }
   }

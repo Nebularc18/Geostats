@@ -10,14 +10,15 @@ import {
   ScratchMapData,
   ScratchMapLevel,
   ScratchMapView,
-  ICELAND_COUNTY_GEOJSON_URL,
-  ICELAND_REGION_GEOJSON_URL,
-  SWEDEN_REGION_GEOJSON_URL,
-  SWEDEN_COUNTY_GEOJSON_URL,
   scratchColor
 } from "../../components/scratch-map";
 import { apiFetch } from "../../lib/api";
 import { boundaryNames, deriveBucketsFromBoundaries } from "../../lib/scratch-boundaries";
+import {
+  boundaryConfigForLevel,
+  filterKnownLocationBuckets,
+  isUnknownLocationName
+} from "../../lib/scratch-boundary-config";
 
 const ALL_CONTINENTS = "All continents";
 const WORLD_VIEW = "world";
@@ -26,22 +27,16 @@ const MAP_LEVELS: { value: ScratchMapLevel; label: string }[] = [
   { value: "regions", label: "Regions" },
   { value: "counties", label: "Counties" }
 ];
-const DETAIL_BOUNDARIES = [
-  { country: "Sweden", level: "regions", url: SWEDEN_REGION_GEOJSON_URL, propertyName: "name" },
-  { country: "Sweden", level: "counties", url: SWEDEN_COUNTY_GEOJSON_URL, propertyName: "kom_namn" },
-  { country: "Iceland", level: "regions", url: ICELAND_REGION_GEOJSON_URL, propertyName: "shapeName" },
-  { country: "Iceland", level: "counties", url: ICELAND_COUNTY_GEOJSON_URL, propertyName: "shapeName" }
-] as const;
-
 type DetailLevel = Extract<ScratchMapLevel, "regions" | "counties">;
 type DetailTotals = Record<string, Partial<Record<DetailLevel, number>>>;
+type DetailBuckets = Record<string, Partial<Record<DetailLevel, ScratchLocationBucket[]>>>;
 
 function findPercent(count: number, total: number) {
   return total > 0 ? Math.round((count / total) * 100) : 0;
 }
 
 function completedLocationCount(buckets: ScratchLocationBucket[]) {
-  return buckets.filter((bucket) => bucket.name !== "Unknown" && bucket.count > 0).length;
+  return buckets.filter((bucket) => !isUnknownLocationName(bucket.name) && bucket.count > 0).length;
 }
 
 function LocationTile({
@@ -66,9 +61,7 @@ function LocationTile({
 export default function ScratchPage() {
   const [scratch, setScratch] = useState<ScratchMapData | null>(null);
   const [points, setPoints] = useState<CacheMapPoint[]>([]);
-  const [swedenCountyBuckets, setSwedenCountyBuckets] = useState<ScratchLocationBucket[]>([]);
-  const [icelandRegionBuckets, setIcelandRegionBuckets] = useState<ScratchLocationBucket[]>([]);
-  const [icelandCountyBuckets, setIcelandCountyBuckets] = useState<ScratchLocationBucket[]>([]);
+  const [detailBuckets, setDetailBuckets] = useState<DetailBuckets>({});
   const [detailTotals, setDetailTotals] = useState<DetailTotals>({});
   const [activeContinent, setActiveContinent] = useState(ALL_CONTINENTS);
   const [selectedCountry, setSelectedCountry] = useState<string | null>(null);
@@ -91,68 +84,60 @@ export default function ScratchPage() {
   }, []);
 
   useEffect(() => {
-    let cancelled = false;
-
-    void Promise.all(
-      DETAIL_BOUNDARIES.map(async (boundary) => [
-        boundary.country,
-        boundary.level,
-        (await boundaryNames(boundary.url, boundary.propertyName)).length
-      ] as const)
-    )
-      .then((totals) => {
-        if (cancelled) {
-          return;
-        }
-
-        setDetailTotals(
-          totals.reduce<DetailTotals>((nextTotals, [country, level, total]) => {
-            nextTotals[country] = {
-              ...nextTotals[country],
-              [level]: total
-            };
-            return nextTotals;
-          }, {})
-        );
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setDetailTotals({});
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
-    if (points.length === 0) {
-      setSwedenCountyBuckets([]);
-      setIcelandRegionBuckets([]);
-      setIcelandCountyBuckets([]);
+    if (!scratch || points.length === 0) {
+      setDetailBuckets({});
+      setDetailTotals({});
       return;
     }
 
     let cancelled = false;
-    void Promise.allSettled([
-      deriveBucketsFromBoundaries(points, SWEDEN_COUNTY_GEOJSON_URL, "kom_namn"),
-      deriveBucketsFromBoundaries(points, ICELAND_REGION_GEOJSON_URL, "shapeName"),
-      deriveBucketsFromBoundaries(points, ICELAND_COUNTY_GEOJSON_URL, "shapeName")
-    ]).then(([swedenCounties, icelandRegions, icelandCounties]) => {
+    const jobs = scratch.countries
+      .filter((country) => !isUnknownLocationName(country.name))
+      .flatMap((country) =>
+        (["regions", "counties"] as DetailLevel[]).map(async (level) => {
+          const config = await boundaryConfigForLevel(level, country.name);
+          if (!config.isDetail) {
+            return null;
+          }
+
+          const [buckets, names] = await Promise.all([
+            deriveBucketsFromBoundaries(points, config.url, config.propertyName),
+            boundaryNames(config.url, config.propertyName)
+          ]);
+          return { country: country.name, level, buckets, total: names.length };
+        })
+      );
+
+    void Promise.allSettled(jobs).then((results) => {
       if (cancelled) {
         return;
       }
 
-      setSwedenCountyBuckets(swedenCounties.status === "fulfilled" ? swedenCounties.value : []);
-      setIcelandRegionBuckets(icelandRegions.status === "fulfilled" ? icelandRegions.value : []);
-      setIcelandCountyBuckets(icelandCounties.status === "fulfilled" ? icelandCounties.value : []);
+      const nextBuckets: DetailBuckets = {};
+      const nextTotals: DetailTotals = {};
+      results.forEach((result) => {
+        if (result.status !== "fulfilled" || !result.value) {
+          return;
+        }
+
+        const { country, level, buckets, total } = result.value;
+        nextBuckets[country] = {
+          ...nextBuckets[country],
+          [level]: buckets
+        };
+        nextTotals[country] = {
+          ...nextTotals[country],
+          [level]: total
+        };
+      });
+      setDetailBuckets(nextBuckets);
+      setDetailTotals(nextTotals);
     });
 
     return () => {
       cancelled = true;
     };
-  }, [points]);
+  }, [points, scratch]);
 
   const continents = useMemo(
     () => [ALL_CONTINENTS, ...(scratch?.continents.map((continent) => continent.name) ?? [])],
@@ -182,23 +167,17 @@ export default function ScratchPage() {
     }
 
     const country = visibleCountries.find((candidate) => candidate.name === selectedCountry) ?? visibleCountries[0] ?? null;
-    if (country?.name === "Sweden") {
-      return {
-        ...country,
-        counties: swedenCountyBuckets
-      };
+    if (!country) {
+      return null;
     }
 
-    if (country?.name === "Iceland") {
-      return {
-        ...country,
-        regions: icelandRegionBuckets,
-        counties: icelandCountyBuckets
-      };
-    }
-
-    return country;
-  }, [icelandCountyBuckets, icelandRegionBuckets, scratch, selectedCountry, swedenCountyBuckets, visibleCountries]);
+    const derived = detailBuckets[country.name] ?? {};
+    return {
+      ...country,
+      regions: derived.regions ?? filterKnownLocationBuckets(country.regions),
+      counties: derived.counties ?? filterKnownLocationBuckets(country.counties)
+    };
+  }, [detailBuckets, scratch, selectedCountry, visibleCountries]);
 
   const selectCountry = useCallback((country: string) => {
     setSelectedCountry(country);
@@ -223,7 +202,6 @@ export default function ScratchPage() {
   const maxVisibleCountryCount = Math.max(0, ...visibleCountries.map((country) => country.count));
   const maxRegionCount = Math.max(0, ...(activeCountry?.regions.map((region) => region.count) ?? []));
   const maxCountyCount = Math.max(0, ...(activeCountry?.counties.map((county) => county.count) ?? []));
-  const hasSupportedDetailMap = activeCountry?.name === "Sweden" || activeCountry?.name === "Iceland";
   const mapLevelLabel = MAP_LEVELS.find((level) => level.value === mapLevel)?.label ?? "Countries";
   const findCountLabel = scratch?.truncated ? `${scratch.limit}+ logged finds` : `${scratch?.totalFinds ?? 0} logged finds`;
   const activeDetailBuckets =
@@ -232,6 +210,7 @@ export default function ScratchPage() {
     activeCountry && (mapLevel === "regions" || mapLevel === "counties")
       ? (detailTotals[activeCountry.name]?.[mapLevel] ?? null)
       : null;
+  const hasSupportedDetailMap = mapLevel === "countries" || activeDetailTotal !== null;
   const activeDetailCompleted = completedLocationCount(activeDetailBuckets);
   const activeDetailPercent = activeDetailTotal ? findPercent(activeDetailCompleted, activeDetailTotal) : null;
 
@@ -320,7 +299,7 @@ export default function ScratchPage() {
           </div>
         </div>
         {mapLevel !== "countries" && !hasSupportedDetailMap ? (
-          <p className="scratch-map-note">Region and county polygons are currently available for Sweden and Iceland. Select one of them to draw detail boundaries on the map.</p>
+          <p className="scratch-map-note">Region and county polygons are not available for this country yet.</p>
         ) : null}
         <div className="scratch-layout">
           <div className="scratch-country-list" aria-label="Countries with finds">
