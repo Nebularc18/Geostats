@@ -63,6 +63,7 @@ export default function ScratchPage() {
   const [points, setPoints] = useState<CacheMapPoint[]>([]);
   const [detailBuckets, setDetailBuckets] = useState<DetailBuckets>({});
   const [detailTotals, setDetailTotals] = useState<DetailTotals>({});
+  const [detailLoaded, setDetailLoaded] = useState(false);
   const [activeContinent, setActiveContinent] = useState(ALL_CONTINENTS);
   const [selectedCountry, setSelectedCountry] = useState<string | null>(null);
   const [mapLevel, setMapLevel] = useState<ScratchMapLevel>("countries");
@@ -87,10 +88,12 @@ export default function ScratchPage() {
     if (!scratch || points.length === 0) {
       setDetailBuckets({});
       setDetailTotals({});
+      setDetailLoaded(false);
       return;
     }
 
     let cancelled = false;
+    setDetailLoaded(false);
     const jobs = scratch.countries
       .filter((country) => !isUnknownLocationName(country.name))
       .flatMap((country) =>
@@ -132,6 +135,7 @@ export default function ScratchPage() {
       });
       setDetailBuckets(nextBuckets);
       setDetailTotals(nextTotals);
+      setDetailLoaded(true);
     });
 
     return () => {
@@ -210,9 +214,14 @@ export default function ScratchPage() {
     activeCountry && (mapLevel === "regions" || mapLevel === "counties")
       ? (detailTotals[activeCountry.name]?.[mapLevel] ?? null)
       : null;
-  const hasSupportedDetailMap = mapLevel === "countries" || activeDetailTotal !== null;
+  const hasSupportedDetailMap = mapLevel === "countries" || !detailLoaded || activeDetailTotal !== null;
   const activeDetailCompleted = completedLocationCount(activeDetailBuckets);
   const activeDetailPercent = activeDetailTotal ? findPercent(activeDetailCompleted, activeDetailTotal) : null;
+  const activeDetailStatus = !detailLoaded
+    ? "Total loading"
+    : activeDetailTotal === null
+      ? "Not available"
+      : `${activeDetailPercent}%`;
 
   return (
     <AppShell>
@@ -293,7 +302,7 @@ export default function ScratchPage() {
                   {activeDetailCompleted.toLocaleString()}
                   {activeDetailTotal ? ` / ${activeDetailTotal.toLocaleString()}` : ""}
                 </strong>
-                {activeDetailPercent === null ? <small>Total loading</small> : <small>{activeDetailPercent}%</small>}
+                <small>{activeDetailStatus}</small>
               </div>
             ) : null}
           </div>
