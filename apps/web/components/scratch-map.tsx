@@ -53,6 +53,12 @@ type GeoJsonFeatureCollection = {
   features: GeoJsonFeature[];
 };
 
+type ResolvedBoundaryConfig = {
+  level: ScratchMapLevel;
+  selectedCountry: string | null;
+  config: ScratchBoundaryConfig;
+};
+
 type Position = [number, number];
 
 const geoJsonCache = new Map<string, Promise<GeoJsonFeatureCollection>>();
@@ -300,7 +306,14 @@ export function ScratchMap({
   onSelectCountry: (country: string) => void;
   onUserMove: () => void;
 }) {
-  const [boundaryConfig, setBoundaryConfig] = useState<ScratchBoundaryConfig>(countryBoundaryConfig);
+  const [resolvedBoundaryConfig, setResolvedBoundaryConfig] = useState<ResolvedBoundaryConfig>({
+    level: "countries",
+    selectedCountry: null,
+    config: countryBoundaryConfig
+  });
+  const boundaryConfig = resolvedBoundaryConfig.config;
+  const boundaryConfigIsCurrent =
+    resolvedBoundaryConfig.level === level && resolvedBoundaryConfig.selectedCountry === selectedCountry;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const popupRef = useRef<maplibregl.Popup | null>(null);
@@ -322,7 +335,7 @@ export function ScratchMap({
     let cancelled = false;
     void boundaryConfigForLevel(level, selectedCountry).then((config) => {
       if (!cancelled) {
-        setBoundaryConfig(config);
+        setResolvedBoundaryConfig({ level, selectedCountry, config });
       }
     });
 
@@ -332,6 +345,11 @@ export function ScratchMap({
   }, [level, selectedCountry]);
 
   useEffect(() => {
+    if (!boundaryConfigIsCurrent) {
+      return;
+    }
+
+    const interactionLevel = boundaryConfig.isDetail ? level : "countries";
     if (level === "regions" && boundaryConfig.isDetail) {
       bucketsRef.current = activeCountry?.regions ?? [];
     } else if (level === "counties" && boundaryConfig.isDetail) {
@@ -339,12 +357,12 @@ export function ScratchMap({
     } else {
       bucketsRef.current = countries;
     }
-    levelRef.current = level;
+    levelRef.current = interactionLevel;
     propertyNameRef.current = boundaryConfig.propertyName;
     sourceUrlRef.current = boundaryConfig.url;
     selectedCountryRef.current = selectedCountry;
     supportsEmptyFeaturePopupRef.current = isDetailLevel(level) && boundaryConfig.isDetail;
-  }, [activeCountry, boundaryConfig, countries, level, selectedCountry]);
+  }, [activeCountry, boundaryConfig, boundaryConfigIsCurrent, countries, level, selectedCountry]);
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) {
@@ -453,12 +471,13 @@ export function ScratchMap({
 
   useEffect(() => {
     const map = mapRef.current;
-    if (!map) {
+    if (!map || !boundaryConfigIsCurrent) {
       return;
     }
     const activeMap = map;
     let cancelled = false;
     const config = boundaryConfig;
+    const interactionLevel = config.isDetail ? level : "countries";
     const isSupportedDetailLevel = boundaryConfig.isDetail && (level === "regions" || level === "counties");
     const buckets =
       level === "regions" && boundaryConfig.isDetail
@@ -520,7 +539,7 @@ export function ScratchMap({
           type: "fill",
           source: COUNTRY_SOURCE_ID,
           paint: {
-            "fill-color": fillExpression(buckets, maxCount, config.propertyName, level),
+            "fill-color": fillExpression(buckets, maxCount, config.propertyName, interactionLevel),
             "fill-opacity": 0.82
           }
         });
@@ -549,7 +568,7 @@ export function ScratchMap({
           id: COUNTRY_SELECTED_LINE_LAYER_ID,
           type: "line",
           source: COUNTRY_SOURCE_ID,
-          filter: selectedFeatureFilter(selectedFeatureName, config.propertyName, level),
+          filter: selectedFeatureFilter(selectedFeatureName, config.propertyName, interactionLevel),
           paint: {
             "line-color": "#fff7de",
             "line-width": 2.5
@@ -559,8 +578,15 @@ export function ScratchMap({
       } else {
         const source = map.getSource(COUNTRY_SOURCE_ID) as maplibregl.GeoJSONSource | undefined;
         source?.setData(config.url);
-        map.setPaintProperty(COUNTRY_FILL_LAYER_ID, "fill-color", fillExpression(buckets, maxCount, config.propertyName, level));
-        map.setFilter(COUNTRY_SELECTED_LINE_LAYER_ID, selectedFeatureFilter(selectedFeatureName, config.propertyName, level));
+        map.setPaintProperty(
+          COUNTRY_FILL_LAYER_ID,
+          "fill-color",
+          fillExpression(buckets, maxCount, config.propertyName, interactionLevel)
+        );
+        map.setFilter(
+          COUNTRY_SELECTED_LINE_LAYER_ID,
+          selectedFeatureFilter(selectedFeatureName, config.propertyName, interactionLevel)
+        );
         focusDetailBoundaries();
       }
     }
@@ -570,7 +596,7 @@ export function ScratchMap({
     return () => {
       cancelled = true;
     };
-  }, [activeCountry, boundaryConfig, countries, level, maxCountryCount, selectedCountry]);
+  }, [activeCountry, boundaryConfig, boundaryConfigIsCurrent, countries, level, maxCountryCount, selectedCountry]);
 
   useEffect(() => {
     const map = mapRef.current;

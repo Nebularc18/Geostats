@@ -25,6 +25,7 @@ type CountryFeatureCollection = {
 };
 
 const UNKNOWN_LOCATION_NAMES = new Set(["", "none", "unknown", "not chosen"]);
+const countryGeoJsonCache = new Map<string, Promise<CountryFeatureCollection>>();
 const countryCodeCache = new Map<string, Promise<string | null>>();
 const boundarySupportCache = new Map<string, Promise<boolean>>();
 
@@ -76,10 +77,31 @@ function boundaryFileExists(url: string) {
     return existing;
   }
 
-  const request = fetch(url)
+  const request = fetch(url, { method: "HEAD" })
     .then((response) => response.ok)
     .catch(() => false);
   boundarySupportCache.set(url, request);
+  return request;
+}
+
+function loadCountryGeoJson(url: string) {
+  const existing = countryGeoJsonCache.get(url);
+  if (existing) {
+    return existing;
+  }
+
+  const request = fetch(url)
+    .then(async (response) => {
+      if (!response.ok) {
+        throw new Error("Could not load country boundary data");
+      }
+      return (await response.json()) as CountryFeatureCollection;
+    })
+    .catch((error: unknown) => {
+      countryGeoJsonCache.delete(url);
+      throw error;
+    });
+  countryGeoJsonCache.set(url, request);
   return request;
 }
 
@@ -90,12 +112,8 @@ async function loadCountryCode(countryName: string) {
     return existing;
   }
 
-  const request = fetch(COUNTRY_GEOJSON_URL)
-    .then(async (response) => {
-      if (!response.ok) {
-        throw new Error("Could not load country boundary data");
-      }
-      const geoJson = (await response.json()) as CountryFeatureCollection;
+  const request = loadCountryGeoJson(COUNTRY_GEOJSON_URL)
+    .then((geoJson) => {
       const names = new Set(countryNamesForBoundary(countryName).map((name) => name.toLowerCase()));
       const feature = geoJson.features.find((candidate) =>
         names.has(String(candidate.properties?.name ?? "").trim().toLowerCase())
