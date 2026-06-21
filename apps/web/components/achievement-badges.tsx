@@ -18,9 +18,13 @@ import {
   type LucideIcon
 } from "lucide-react";
 import type { CacheMapPoint } from "./cache-map";
-import { ICELAND_REGION_GEOJSON_URL, SWEDEN_REGION_GEOJSON_URL } from "./scratch-map";
 import { apiFetch } from "../lib/api";
 import { boundaryNames, deriveBucketsFromBoundaries } from "../lib/scratch-boundaries";
+import {
+  boundaryConfigForLevel,
+  filterKnownLocationBuckets,
+  isUnknownLocationName
+} from "../lib/scratch-boundary-config";
 
 type CountBucket = { key: string; count: number };
 type PercentBucket = CountBucket & { percent: number };
@@ -482,12 +486,12 @@ function remainingLabel(badge: BadgeDefinition, index: number) {
 }
 
 function countCompletedRegions(country: ScratchCountryBucket) {
-  return country.regions.filter((region) => region.name !== "Unknown" && region.count > 0).length;
+  return country.regions.filter((region) => !isUnknownLocationName(region.name) && region.count > 0).length;
 }
 
 function buildCountryBadges(countries: ScratchCountryBucket[], totalRegionCounts: Map<string, number>): CountryBadge[] {
   return countries
-    .filter((country) => country.name !== "Unknown" && countCompletedRegions(country) > 0)
+    .filter((country) => !isUnknownLocationName(country.name) && countCompletedRegions(country) > 0)
     .map((country) => {
       const completedRegions = countCompletedRegions(country);
       const totalRegions = totalRegionCounts.get(country.name) ?? null;
@@ -509,7 +513,10 @@ function withDerivedRegions(
 ) {
   return countries.map((country) => {
     const regions = derivedRegions.get(country.name);
-    return regions && regions.length > 0 ? { ...country, regions } : country;
+    return {
+      ...country,
+      regions: regions && regions.length > 0 ? regions : filterKnownLocationBuckets(country.regions)
+    };
   });
 }
 
@@ -602,12 +609,17 @@ export function AchievementBadges({
         if (active) {
           setScratchCountries(data.countries);
         }
-        const detailCountries = [
-          { name: "Sweden", url: SWEDEN_REGION_GEOJSON_URL, propertyName: "name" },
-          { name: "Iceland", url: ICELAND_REGION_GEOJSON_URL, propertyName: "shapeName" }
-        ].filter((detailCountry) => data.countries.some((country) => country.name === detailCountry.name));
+        const detailCountries = await Promise.all(
+          data.countries
+            .filter((country) => !isUnknownLocationName(country.name))
+            .map(async (country) => {
+              const config = await boundaryConfigForLevel("regions", country.name);
+              return config.isDetail ? { name: country.name, url: config.url, propertyName: config.propertyName } : null;
+            })
+        );
+        const supportedDetailCountries = detailCountries.filter((country): country is NonNullable<typeof country> => Boolean(country));
 
-        if (detailCountries.length === 0) {
+        if (supportedDetailCountries.length === 0) {
           if (active) {
             setCountryRegionTotals(new Map());
           }
@@ -617,13 +629,13 @@ export function AchievementBadges({
         try {
           const pointsData = await apiFetch<{ points: CacheMapPoint[] }>("/map/caches");
           const derivedRegions = await Promise.all(
-            detailCountries.map(async (country) => [
+            supportedDetailCountries.map(async (country) => [
               country.name,
               await deriveBucketsFromBoundaries(pointsData.points, country.url, country.propertyName)
             ] as const)
           );
           const regionTotals = await Promise.all(
-            detailCountries.map(async (country) => [
+            supportedDetailCountries.map(async (country) => [
               country.name,
               (await boundaryNames(country.url, country.propertyName)).length
             ] as const)

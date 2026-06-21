@@ -1,7 +1,15 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import maplibregl, { ExpressionSpecification, StyleSpecification } from "maplibre-gl";
+import {
+  boundaryConfigForLevel,
+  countryNamesForBoundary,
+  COUNTRY_GEOJSON_URL,
+  SWEDEN_COUNTY_GEOJSON_URL,
+  SWEDEN_REGION_GEOJSON_URL,
+  type ScratchBoundaryConfig
+} from "../lib/scratch-boundary-config";
 
 export interface ScratchLocationBucket {
   name: string;
@@ -32,16 +40,7 @@ const COUNTRY_HIT_LAYER_ID = "scratch-country-hit-targets";
 const COUNTRY_LINE_LAYER_ID = "scratch-country-lines";
 const COUNTRY_SELECTED_LINE_LAYER_ID = "scratch-selected-country";
 const COUNTRY_NAME_PROPERTY = "name";
-const COUNTRY_GEOJSON_URL =
-  "https://raw.githubusercontent.com/datasets/geo-countries/master/data/countries.geojson";
-export const SWEDEN_REGION_GEOJSON_URL =
-  "https://raw.githubusercontent.com/okfse/sweden-geojson/master/swedish_regions.geojson";
-export const SWEDEN_COUNTY_GEOJSON_URL =
-  "https://raw.githubusercontent.com/okfse/sweden-geojson/master/swedish_municipalities.geojson";
-export const ICELAND_REGION_GEOJSON_URL =
-  "https://media.githubusercontent.com/media/wmgeolab/geoBoundaries/9469f09592ced973a3448cf66b6100b741b64c0d/releaseData/gbOpen/ISL/ADM1/geoBoundaries-ISL-ADM1_simplified.geojson";
-export const ICELAND_COUNTY_GEOJSON_URL =
-  "https://media.githubusercontent.com/media/wmgeolab/geoBoundaries/9469f09592ced973a3448cf66b6100b741b64c0d/releaseData/gbOpen/ISL/ADM2/geoBoundaries-ISL-ADM2_simplified.geojson";
+export { SWEDEN_COUNTY_GEOJSON_URL, SWEDEN_REGION_GEOJSON_URL };
 
 type GeoJsonFeature = {
   type: "Feature";
@@ -83,21 +82,12 @@ const scratchStyle: StyleSpecification = {
   ]
 };
 
-const COUNTRY_NAME_ALIASES: Record<string, string[]> = {
-  "United States": ["United States of America"],
-  "Russia": ["Russian Federation"],
-  "South Korea": ["Republic of Korea"],
-  "North Korea": ["Democratic People's Republic of Korea"],
-  "Czech Republic": ["Czechia"],
-  "Czechia": ["Czech Republic"],
-  "United Kingdom": ["United Kingdom of Great Britain and Northern Ireland"],
-  "Vietnam": ["Viet Nam"],
-  "Iran": ["Iran (Islamic Republic of)"],
-  "Moldova": ["Republic of Moldova"],
-  "Tanzania": ["United Republic of Tanzania"],
-  "Syria": ["Syrian Arab Republic"],
-  "Bolivia": ["Bolivia (Plurinational State of)"],
-  "Venezuela": ["Venezuela (Bolivarian Republic of)"]
+const countryBoundaryConfig: ScratchBoundaryConfig = {
+  url: COUNTRY_GEOJSON_URL,
+  propertyName: COUNTRY_NAME_PROPERTY,
+  center: [11, 24],
+  zoom: 1.22,
+  isDetail: false
 };
 
 function mixColor(start: string, end: string, amount: number) {
@@ -120,7 +110,7 @@ export function scratchColor(count: number, max: number) {
 }
 
 function countryNamesFor(bucket: ScratchCountryBucket) {
-  return [bucket.name, ...(COUNTRY_NAME_ALIASES[bucket.name] ?? [])];
+  return countryNamesForBoundary(bucket.name);
 }
 
 function namesForBucket(bucket: ScratchLocationBucket, level: ScratchMapLevel) {
@@ -153,8 +143,7 @@ function selectedFeatureFilter(featureName: string | null, propertyName: string,
     return ["==", ["get", propertyName], ""] as maplibregl.FilterSpecification;
   }
 
-  const names =
-    level === "countries" ? [featureName, ...(COUNTRY_NAME_ALIASES[featureName] ?? [])] : [featureName];
+  const names = level === "countries" ? countryNamesForBoundary(featureName) : [featureName];
   return ["in", ["get", propertyName], ["literal", names]] as maplibregl.FilterSpecification;
 }
 
@@ -238,51 +227,6 @@ function centerFromFeatureGeometry(features: GeoJsonFeature[]) {
   return null;
 }
 
-function boundaryConfig(level: ScratchMapLevel, selectedCountry: string | null) {
-  if (selectedCountry === "Sweden" && level === "regions") {
-    return {
-      url: SWEDEN_REGION_GEOJSON_URL,
-      propertyName: "name",
-      center: [15.2, 62.1] as [number, number],
-      zoom: 3.65
-    };
-  }
-
-  if (selectedCountry === "Sweden" && level === "counties") {
-    return {
-      url: SWEDEN_COUNTY_GEOJSON_URL,
-      propertyName: "kom_namn",
-      center: [15.2, 62.1] as [number, number],
-      zoom: 3.65
-    };
-  }
-
-  if (selectedCountry === "Iceland" && level === "regions") {
-    return {
-      url: ICELAND_REGION_GEOJSON_URL,
-      propertyName: "shapeName",
-      center: [-18.8, 64.95] as [number, number],
-      zoom: 5.1
-    };
-  }
-
-  if (selectedCountry === "Iceland" && level === "counties") {
-    return {
-      url: ICELAND_COUNTY_GEOJSON_URL,
-      propertyName: "shapeName",
-      center: [-18.8, 64.95] as [number, number],
-      zoom: 5.1
-    };
-  }
-
-  return {
-    url: COUNTRY_GEOJSON_URL,
-    propertyName: COUNTRY_NAME_PROPERTY,
-    center: [11, 24] as [number, number],
-    zoom: 1.22
-  };
-}
-
 const VIEW_CONFIG: Record<string, { center: [number, number]; zoom: number }> = {
   world: { center: [11, 24], zoom: 1.22 },
   Africa: { center: [19, 2], zoom: 2.45 },
@@ -356,6 +300,7 @@ export function ScratchMap({
   onSelectCountry: (country: string) => void;
   onUserMove: () => void;
 }) {
+  const [boundaryConfig, setBoundaryConfig] = useState<ScratchBoundaryConfig>(countryBoundaryConfig);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const popupRef = useRef<maplibregl.Popup | null>(null);
@@ -371,26 +316,35 @@ export function ScratchMap({
     void loadGeoJson(COUNTRY_GEOJSON_URL);
     void loadGeoJson(SWEDEN_REGION_GEOJSON_URL);
     void loadGeoJson(SWEDEN_COUNTY_GEOJSON_URL);
-    void loadGeoJson(ICELAND_REGION_GEOJSON_URL);
-    void loadGeoJson(ICELAND_COUNTY_GEOJSON_URL);
   }, []);
 
   useEffect(() => {
-    if (level === "regions" && (selectedCountry === "Sweden" || selectedCountry === "Iceland")) {
+    let cancelled = false;
+    void boundaryConfigForLevel(level, selectedCountry).then((config) => {
+      if (!cancelled) {
+        setBoundaryConfig(config);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [level, selectedCountry]);
+
+  useEffect(() => {
+    if (level === "regions" && boundaryConfig.isDetail) {
       bucketsRef.current = activeCountry?.regions ?? [];
-    } else if (level === "counties" && (selectedCountry === "Sweden" || selectedCountry === "Iceland")) {
+    } else if (level === "counties" && boundaryConfig.isDetail) {
       bucketsRef.current = activeCountry?.counties ?? [];
     } else {
       bucketsRef.current = countries;
     }
     levelRef.current = level;
-    const config = boundaryConfig(level, selectedCountry);
-    propertyNameRef.current = config.propertyName;
-    sourceUrlRef.current = config.url;
+    propertyNameRef.current = boundaryConfig.propertyName;
+    sourceUrlRef.current = boundaryConfig.url;
     selectedCountryRef.current = selectedCountry;
-    supportsEmptyFeaturePopupRef.current =
-      isDetailLevel(level) && (selectedCountry === "Sweden" || selectedCountry === "Iceland");
-  }, [activeCountry, countries, level, selectedCountry]);
+    supportsEmptyFeaturePopupRef.current = isDetailLevel(level) && boundaryConfig.isDetail;
+  }, [activeCountry, boundaryConfig, countries, level, selectedCountry]);
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) {
@@ -502,23 +456,48 @@ export function ScratchMap({
     if (!map) {
       return;
     }
+    const activeMap = map;
     let cancelled = false;
-    const config = boundaryConfig(level, selectedCountry);
-    const isSupportedDetailLevel =
-      (selectedCountry === "Sweden" || selectedCountry === "Iceland") && (level === "regions" || level === "counties");
+    const config = boundaryConfig;
+    const isSupportedDetailLevel = boundaryConfig.isDetail && (level === "regions" || level === "counties");
     const buckets =
-      level === "regions" && (selectedCountry === "Sweden" || selectedCountry === "Iceland")
+      level === "regions" && boundaryConfig.isDetail
         ? (activeCountry?.regions ?? [])
-        : level === "counties" && (selectedCountry === "Sweden" || selectedCountry === "Iceland")
+        : level === "counties" && boundaryConfig.isDetail
           ? (activeCountry?.counties ?? [])
           : countries;
     const maxCount =
-      level === "regions" && (selectedCountry === "Sweden" || selectedCountry === "Iceland")
+      level === "regions" && boundaryConfig.isDetail
         ? Math.max(0, ...buckets.map((bucket) => bucket.count))
-        : level === "counties" && (selectedCountry === "Sweden" || selectedCountry === "Iceland")
+        : level === "counties" && boundaryConfig.isDetail
           ? Math.max(0, ...buckets.map((bucket) => bucket.count))
           : maxCountryCount;
     const selectedFeatureName = isSupportedDetailLevel ? null : selectedCountry;
+
+    function focusDetailBoundaries() {
+      if (!isSupportedDetailLevel) {
+        return;
+      }
+
+      void loadGeoJson(config.url).then((geoJson) => {
+        if (cancelled || geoJson.features.length === 0) {
+          return;
+        }
+
+        const bounds = boundsFromFeatureGeometry(geoJson.features[0]!);
+        geoJson.features.slice(1).forEach((feature) => {
+          const featureBounds = boundsFromFeatureGeometry(feature);
+          if (!featureBounds.isEmpty()) {
+            bounds.extend(featureBounds.getSouthWest());
+            bounds.extend(featureBounds.getNorthEast());
+          }
+        });
+
+        if (!bounds.isEmpty()) {
+          activeMap.fitBounds(bounds, { padding: 42, maxZoom: 6.1, duration: 600 });
+        }
+      });
+    }
 
     function syncLayers() {
       if (cancelled || !map) {
@@ -576,14 +555,13 @@ export function ScratchMap({
             "line-width": 2.5
           }
         });
+        focusDetailBoundaries();
       } else {
         const source = map.getSource(COUNTRY_SOURCE_ID) as maplibregl.GeoJSONSource | undefined;
         source?.setData(config.url);
         map.setPaintProperty(COUNTRY_FILL_LAYER_ID, "fill-color", fillExpression(buckets, maxCount, config.propertyName, level));
         map.setFilter(COUNTRY_SELECTED_LINE_LAYER_ID, selectedFeatureFilter(selectedFeatureName, config.propertyName, level));
-        if (isSupportedDetailLevel) {
-          map.easeTo({ center: config.center, zoom: config.zoom, duration: 600 });
-        }
+        focusDetailBoundaries();
       }
     }
 
@@ -592,7 +570,7 @@ export function ScratchMap({
     return () => {
       cancelled = true;
     };
-  }, [activeCountry, countries, level, maxCountryCount, selectedCountry]);
+  }, [activeCountry, boundaryConfig, countries, level, maxCountryCount, selectedCountry]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -603,9 +581,26 @@ export function ScratchMap({
     const activeMap = map;
 
     const currentLevel = levelRef.current;
-    const config = boundaryConfig(currentLevel, country);
-    if ((country === "Sweden" || country === "Iceland") && (currentLevel === "regions" || currentLevel === "counties")) {
-      activeMap.easeTo({ center: config.center, zoom: config.zoom, duration: 600 });
+    const config = boundaryConfig;
+    if (config.isDetail && (currentLevel === "regions" || currentLevel === "counties")) {
+      void loadGeoJson(config.url).then((geoJson) => {
+        if (geoJson.features.length === 0) {
+          return;
+        }
+
+        const bounds = boundsFromFeatureGeometry(geoJson.features[0]!);
+        geoJson.features.slice(1).forEach((feature) => {
+          const featureBounds = boundsFromFeatureGeometry(feature);
+          if (!featureBounds.isEmpty()) {
+            bounds.extend(featureBounds.getSouthWest());
+            bounds.extend(featureBounds.getNorthEast());
+          }
+        });
+
+        if (!bounds.isEmpty()) {
+          activeMap.fitBounds(bounds, { padding: 42, maxZoom: 6.1, duration: 600 });
+        }
+      });
       return;
     }
 
@@ -616,7 +611,7 @@ export function ScratchMap({
         return;
       }
 
-      const names = [country, ...(COUNTRY_NAME_ALIASES[country] ?? [])];
+      const names = countryNamesForBoundary(country);
       const features = geoJson.features.filter((feature) =>
         names.includes(String(feature.properties?.[COUNTRY_NAME_PROPERTY] ?? ""))
       );
@@ -641,7 +636,7 @@ export function ScratchMap({
     return () => {
       cancelled = true;
     };
-  }, [countryFocusVersion]);
+  }, [boundaryConfig, countryFocusVersion]);
 
   useEffect(() => {
     const map = mapRef.current;
