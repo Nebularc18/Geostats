@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { ActivityIndicator, Alert, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import * as DocumentPicker from "expo-document-picker";
+import { File } from "expo-file-system";
 import * as SecureStore from "expo-secure-store";
 import * as Clipboard from "expo-clipboard";
 import MapView, { Callout, Marker, Polygon, PROVIDER_GOOGLE, type Region } from "react-native-maps";
@@ -12,6 +13,7 @@ import * as WebBrowser from "expo-web-browser";
 WebBrowser.maybeCompleteAuthSession();
 
 type CountBucket = { key: string; count: number };
+type LocationBucket = { name: string; count: number };
 type PercentBucket = CountBucket & { percent: number };
 type CachePoint = { id: string; gcCode: string; name: string; cacheType: string | null; latitude: number; longitude: number; foundAt?: string; placedAt?: string; isOwnHide?: boolean };
 type ImportListItem = { id: string; fileName: string; source: string; status: string; createdAt: string; errorMessage: string | null };
@@ -353,6 +355,48 @@ function polygonOuterRings(feature: BoundaryFeature, maxPoints = 350) {
     .map((ring) => sampledRing(ring, maxPoints))
     .filter((ring) => ring.length >= 4)
     .map((ring) => ring.map(([longitude, latitude]) => ({ latitude, longitude })));
+}
+
+function pointInRing(longitude: number, latitude: number, ring: Position[]) {
+  let inside = false;
+  for (let current = 0, previous = ring.length - 1; current < ring.length; previous = current++) {
+    const [currentLongitude, currentLatitude] = ring[current] ?? [0, 0];
+    const [previousLongitude, previousLatitude] = ring[previous] ?? [0, 0];
+    const crosses =
+      currentLatitude > latitude !== previousLatitude > latitude &&
+      longitude <
+        ((previousLongitude - currentLongitude) * (latitude - currentLatitude)) /
+          (previousLatitude - currentLatitude || Number.EPSILON) +
+          currentLongitude;
+    if (crosses) inside = !inside;
+  }
+  return inside;
+}
+
+function pointInPolygon(longitude: number, latitude: number, polygon: PolygonCoordinates) {
+  const [outerRing, ...holes] = polygon;
+  if (!outerRing || !pointInRing(longitude, latitude, outerRing)) return false;
+  return !holes.some((hole) => pointInRing(longitude, latitude, hole));
+}
+
+function pointInFeature(longitude: number, latitude: number, feature: BoundaryFeature) {
+  const polygons = feature.geometry.type === "Polygon"
+    ? [feature.geometry.coordinates as PolygonCoordinates]
+    : feature.geometry.coordinates as MultiPolygonCoordinates;
+  return polygons.some((polygon) => pointInPolygon(longitude, latitude, polygon));
+}
+
+async function deriveBucketsFromBoundaries(points: CachePoint[], url: string, propertyName: string) {
+  const geoJson = await fetchJson<BoundaryFeatureCollection>(url);
+  const counts = new Map<string, number>();
+  for (const point of validMapPoints(points)) {
+    const feature = geoJson.features.find((candidate) => pointInFeature(point.longitude, point.latitude, candidate));
+    const name = String(feature?.properties?.[propertyName] ?? "").trim();
+    if (name) counts.set(name, (counts.get(name) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([name, count]) => ({ name, count }))
+    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
 }
 
 function scratchBucketsForLevel(countries: any[], activeCountry: any, level: ScratchLevel) {
@@ -704,8 +748,16 @@ function ScratchScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: strin
   const [level, setLevel] = useState<ScratchLevel>("countries");
   const [boundaryData, setBoundaryData] = useState<BoundaryFeatureCollection | null>(null);
   const [boundaryError, setBoundaryError] = useState<string | null>(null);
+  const [swedenCountyBuckets, setSwedenCountyBuckets] = useState<LocationBucket[]>([]);
+  const [icelandRegionBuckets, setIcelandRegionBuckets] = useState<LocationBucket[]>([]);
+  const [icelandCountyBuckets, setIcelandCountyBuckets] = useState<LocationBucket[]>([]);
   const countries = data.countries ?? [];
-  const active = countries.find((c) => c.name === selected) ?? countries[0];
+  const baseActive = countries.find((c) => c.name === selected) ?? countries[0];
+  const active = baseActive?.name === "Sweden"
+    ? { ...baseActive, counties: swedenCountyBuckets }
+    : baseActive?.name === "Iceland"
+      ? { ...baseActive, regions: icelandRegionBuckets, counties: icelandCountyBuckets }
+      : baseActive;
   const supportsDetail = active?.name === "Sweden" || active?.name === "Iceland";
   const effectiveLevel = level === "countries" || supportsDetail ? level : "countries";
   const config = boundaryConfig(effectiveLevel, active?.name);
@@ -726,6 +778,35 @@ function ScratchScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: strin
       mounted = false;
     };
   }, [config.url]);
+  useEffect(() => {
+    let mounted = true;
+    setSwedenCountyBuckets([]);
+    setIcelandRegionBuckets([]);
+    setIcelandCountyBuckets([]);
+    void apiFetch<{ points: CachePoint[] }>(apiBaseUrl, "/map/caches", token)
+      .then((pointData) =>
+        Promise.allSettled([
+          deriveBucketsFromBoundaries(pointData.points, SWEDEN_COUNTY_GEOJSON_URL, "kom_namn"),
+          deriveBucketsFromBoundaries(pointData.points, ICELAND_REGION_GEOJSON_URL, "shapeName"),
+          deriveBucketsFromBoundaries(pointData.points, ICELAND_COUNTY_GEOJSON_URL, "shapeName")
+        ])
+      )
+      .then(([swedenCounties, icelandRegions, icelandCounties]) => {
+        if (!mounted) return;
+        setSwedenCountyBuckets(swedenCounties.status === "fulfilled" ? swedenCounties.value : []);
+        setIcelandRegionBuckets(icelandRegions.status === "fulfilled" ? icelandRegions.value : []);
+        setIcelandCountyBuckets(icelandCounties.status === "fulfilled" ? icelandCounties.value : []);
+      })
+      .catch(() => {
+        if (!mounted) return;
+        setSwedenCountyBuckets([]);
+        setIcelandRegionBuckets([]);
+        setIcelandCountyBuckets([]);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [apiBaseUrl, token]);
   return (
     <>
       <PageTitle eyebrow="Scratch-off coverage" title="Scratch Map" />
@@ -738,21 +819,25 @@ function ScratchScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: strin
             </Pressable>
           ))}
         </View>
-        <ScratchNativeMap
-          activeCountry={active}
-          boundaryData={boundaryData}
-          buckets={levelBuckets}
-          level={effectiveLevel}
-          max={effectiveLevel === "countries" ? max : Math.max(1, ...levelBuckets.map((bucket: any) => bucket.count ?? 0))}
-          propertyName={config.propertyName}
-          selectedName={effectiveLevel === "countries" ? active?.name : null}
-          onSelect={(name) => {
-            if (effectiveLevel === "countries") {
-              const matched = countries.find((country) => namesForScratchBucket(country, "countries").includes(name));
-              if (matched) setSelected(matched.name);
-            }
-          }}
-        />
+        {Platform.OS === "web" ? (
+          <ScratchMapFallback buckets={levelBuckets} max={effectiveLevel === "countries" ? max : Math.max(1, ...levelBuckets.map((bucket: any) => bucket.count ?? 0))} />
+        ) : (
+          <ScratchNativeMap
+            activeCountry={active}
+            boundaryData={boundaryData}
+            buckets={levelBuckets}
+            level={effectiveLevel}
+            max={effectiveLevel === "countries" ? max : Math.max(1, ...levelBuckets.map((bucket: any) => bucket.count ?? 0))}
+            propertyName={config.propertyName}
+            selectedName={effectiveLevel === "countries" ? active?.name : null}
+            onSelect={(name) => {
+              if (effectiveLevel === "countries") {
+                const matched = countries.find((country) => namesForScratchBucket(country, "countries").includes(name));
+                if (matched) setSelected(matched.name);
+              }
+            }}
+          />
+        )}
         {boundaryError ? <Text style={styles.error}>{boundaryError}</Text> : null}
         {level !== "countries" && !supportsDetail ? <Text style={styles.muted}>Region and county polygons are currently available for Sweden and Iceland.</Text> : null}
       </Panel>
@@ -840,7 +925,9 @@ function UploadScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string
     if (result.canceled) return;
     const asset = result.assets[0];
     const form = new FormData();
-    form.append("file", { uri: asset.uri, name: asset.name, type: asset.mimeType ?? "application/octet-stream" } as any);
+    const fileObj = new File(asset.uri);
+    const uploadFile = fileObj.type ? fileObj : fileObj.slice(0, fileObj.size, asset.mimeType ?? "application/octet-stream");
+    form.append("file", uploadFile, asset.name);
     setMessage(kind === "cache" ? "Uploading import..." : "Uploading owner logs...");
     try {
       await apiFetch(apiBaseUrl, kind === "cache" ? "/imports/upload" : "/collector/received-logs/csv", token, { method: "POST", body: form });
@@ -1095,6 +1182,29 @@ function NativeMap({ points }: { points: CachePoint[] }) {
   );
 }
 
+function ScratchMapFallback({ buckets, max }: { buckets: any[]; max: number }) {
+  const visible = [...buckets].sort((a, b) => (b.count ?? 0) - (a.count ?? 0)).slice(0, 16);
+  if (visible.length === 0) {
+    return <View style={styles.scratchMapFallback}><Text style={styles.muted}>No scratch coverage yet.</Text></View>;
+  }
+  return (
+    <View style={styles.scratchMapFallback}>
+      {visible.map((bucket) => {
+        const count = bucket.count ?? 0;
+        return (
+          <View key={bucket.name} style={styles.scratchFallbackRow}>
+            <Text style={styles.scratchFallbackLabel} numberOfLines={1}>{bucket.name}</Text>
+            <View style={styles.scratchFallbackTrack}>
+              <View style={[styles.scratchFallbackFill, { width: `${Math.max(4, (count / Math.max(1, max)) * 100)}%`, backgroundColor: scratchColor(count, max) }]} />
+            </View>
+            <Text style={styles.scratchFallbackValue}>{count}</Text>
+          </View>
+        );
+      })}
+    </View>
+  );
+}
+
 function ScratchNativeMap({
   activeCountry,
   boundaryData,
@@ -1133,7 +1243,7 @@ function ScratchNativeMap({
   const region = regionForScratch(level, activeCountry?.name);
   return (
     <View style={styles.nativeMapFrame}>
-      <MapView style={styles.nativeMap} initialRegion={region} provider={ANDROID_MAP_PROVIDER} mapType="mutedStandard" showsCompass showsScale>
+      <MapView style={styles.nativeMap} initialRegion={region} provider={ANDROID_MAP_PROVIDER} showsCompass showsScale>
         {features.flatMap(({ feature, featureName, bucket }, featureIndex) =>
           polygonOuterRings(feature).map((coordinates, ringIndex) => (
             <Polygon
@@ -1312,6 +1422,12 @@ const styles = StyleSheet.create({
   nativeMapFrame: { height: 320, borderRadius: 8, overflow: "hidden", backgroundColor: "#14271d" },
   nativeMap: { position: "absolute", top: 0, right: 0, bottom: 0, left: 0 },
   scratchMapLoading: { height: 320, borderRadius: 8, backgroundColor: "#14271d", alignItems: "center", justifyContent: "center" },
+  scratchMapFallback: { minHeight: 320, borderRadius: 8, backgroundColor: "#14271d", padding: 12, gap: 9, justifyContent: "center" },
+  scratchFallbackRow: { flexDirection: "row", alignItems: "center", gap: 8 },
+  scratchFallbackLabel: { width: 92, color: "#dce8df", fontWeight: "800", fontSize: 12 },
+  scratchFallbackTrack: { flex: 1, height: 10, borderRadius: 999, overflow: "hidden", backgroundColor: "#244535" },
+  scratchFallbackFill: { height: "100%", borderRadius: 999 },
+  scratchFallbackValue: { width: 34, color: "#9fb0a6", textAlign: "right", fontWeight: "800", fontSize: 12 },
   callout: { width: 190, gap: 3 },
   calloutTitle: { color: "#172016", fontWeight: "900", fontSize: 15 },
   calloutBody: { color: "#172016", fontWeight: "700" },
