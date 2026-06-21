@@ -183,18 +183,22 @@ export default function ScratchPage() {
     };
   }, [detailBuckets, scratch, selectedCountry, visibleCountries]);
 
-  const selectCountry = useCallback((country: string) => {
+  const selectCountry = useCallback((country: string, shouldFocusMap = false) => {
     setSelectedCountry(country);
-    setCountryFocusVersion((version) => version + 1);
+    if (shouldFocusMap) {
+      setCountryFocusVersion((version) => version + 1);
+    }
   }, []);
 
   const selectContinent = useCallback((continent: string) => {
     setActiveContinent(continent);
+    setMapLevel("countries");
     setMapView(continent === ALL_CONTINENTS ? WORLD_VIEW : (continent as ScratchMapView));
     setMapViewFocusVersion((version) => version + 1);
   }, []);
 
   const selectMapView = useCallback((view: ScratchMapView) => {
+    setMapLevel("countries");
     setMapView(view);
     setMapViewFocusVersion((version) => version + 1);
   }, []);
@@ -318,7 +322,7 @@ export default function ScratchPage() {
                 className={activeCountry?.name === country.name ? "active" : ""}
                 style={{ "--scratch-color": scratchColor(country.count, maxVisibleCountryCount) } as React.CSSProperties}
                 type="button"
-                onClick={() => selectCountry(country.name)}
+                onClick={() => selectCountry(country.name, true)}
               >
                 <strong>{country.name}</strong>
                 <span>
