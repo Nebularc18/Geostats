@@ -217,12 +217,11 @@ export default function ScratchPage() {
   const hasSupportedDetailMap = mapLevel === "countries" || !detailLoaded || activeDetailTotal !== null;
   const activeDetailCompleted = completedLocationCount(activeDetailBuckets);
   const activeDetailPercent = activeDetailTotal ? findPercent(activeDetailCompleted, activeDetailTotal) : null;
-  const activeDetailStatus =
-    detailLoaded && !hasSupportedDetailMap
+  const activeDetailStatus = !detailLoaded
+    ? "Total loading"
+    : activeDetailTotal === null
       ? "Not available"
-      : activeDetailPercent === null
-        ? "Total loading"
-        : `${activeDetailPercent}%`;
+      : `${activeDetailPercent}%`;
 
   return (
     <AppShell>
