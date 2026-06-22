@@ -39,6 +39,13 @@ function withEnv<T>(values: Record<string, string | undefined>, fn: () => T | Pr
 
 function authServiceWithUsers() {
   const users: Array<{ id: string; email: string; username: string; passwordHash: string | null }> = [];
+  const oauthAccounts: Array<{
+    id: string;
+    userId: string;
+    provider: string;
+    providerAccountId: string;
+    providerUsername: string | null;
+  }> = [];
   const prisma = {
     user: {
       findFirst: async ({ where }: any) =>
@@ -61,9 +68,40 @@ function authServiceWithUsers() {
         users.push(user);
         return user;
       }
+    },
+    oAuthAccount: {
+      findUnique: async ({ where, include }: any) => {
+        const key = where.provider_providerAccountId;
+        const account = oauthAccounts.find(
+          (candidate) => candidate.provider === key.provider && candidate.providerAccountId === key.providerAccountId
+        );
+        if (!account) {
+          return null;
+        }
+        const user = users.find((candidate) => candidate.id === account.userId);
+        return include?.user ? { ...account, user } : account;
+      },
+      create: async ({ data }: any) => {
+        const account = {
+          id: `oauth-${oauthAccounts.length + 1}`,
+          userId: data.userId,
+          provider: data.provider,
+          providerAccountId: data.providerAccountId,
+          providerUsername: data.providerUsername ?? null
+        };
+        oauthAccounts.push(account);
+        return account;
+      },
+      update: async ({ where, data }: any) => {
+        const account = oauthAccounts.find((candidate) => candidate.id === where.id);
+        if (account) {
+          account.providerUsername = data.providerUsername ?? null;
+        }
+        return account;
+      }
     }
   };
-  return { service: new AuthService(prisma as any, {} as any), users };
+  return { service: new AuthService(prisma as any, {} as any), users, oauthAccounts };
 }
 
 test("password auth is the default mode", () => {
@@ -126,11 +164,11 @@ test("login verifies legacy bcrypt password hashes", async () => {
   });
 });
 
-test("external auth requires email_verified to be true when configured", async () => {
+test("external auth requires email_verified to be true by default", async () => {
   await withEnv(
     {
       AUTH_MODE: "external",
-      EXTERNAL_AUTH_REQUIRE_VERIFIED_EMAIL: "true",
+      EXTERNAL_AUTH_REQUIRE_VERIFIED_EMAIL: undefined,
       EXTERNAL_AUTH_PROVIDER_ID: "external",
       EXTERNAL_AUTH_CLIENT_ID: "client",
       EXTERNAL_AUTH_TOKEN_URL: "https://auth.example/token",
@@ -150,6 +188,37 @@ test("external auth requires email_verified to be true when configured", async (
         await assert.rejects(() => service.loginWithExternalProvider("code", "verifier"), {
           message: "External auth account email must be verified"
         });
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    }
+  );
+});
+
+test("external auth can allow unverified email only when explicitly configured", async () => {
+  await withEnv(
+    {
+      AUTH_MODE: "external",
+      EXTERNAL_AUTH_REQUIRE_VERIFIED_EMAIL: "false",
+      EXTERNAL_AUTH_PROVIDER_ID: "external",
+      EXTERNAL_AUTH_CLIENT_ID: "client",
+      EXTERNAL_AUTH_TOKEN_URL: "https://auth.example/token",
+      EXTERNAL_AUTH_USERINFO_URL: "https://auth.example/userinfo"
+    },
+    async () => {
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = (async (url: string) => {
+        if (url === "https://auth.example/token") {
+          return new Response(JSON.stringify({ access_token: "token" }), { status: 200 });
+        }
+        return new Response(JSON.stringify({ sub: "external-user-1", email: "user@example.com" }), { status: 200 });
+      }) as typeof fetch;
+      try {
+        const { service } = authServiceWithUsers();
+
+        const user = await service.loginWithExternalProvider("code", "verifier");
+
+        assert.equal(user.email, "user@example.com");
       } finally {
         globalThis.fetch = originalFetch;
       }

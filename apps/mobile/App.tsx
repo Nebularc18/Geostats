@@ -90,7 +90,40 @@ function normalizeServerUrl(value: string) {
   const trimmed = value.trim().replace(/\/+$/, "");
   if (!trimmed) return DEFAULT_API_URL;
   const withProtocol = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
-  return new URL(withProtocol).toString().replace(/\/+$/, "");
+  const url = new URL(withProtocol);
+  if (url.protocol !== "https:" && !isLocalDevelopmentUrl(url)) {
+    throw new Error("Use HTTPS for remote API servers. HTTP is only allowed for local development hosts.");
+  }
+  return url.toString().replace(/\/+$/, "");
+}
+
+function isLocalDevelopmentUrl(url: URL) {
+  const host = url.hostname.toLowerCase();
+  return url.protocol === "http:" && (host === "localhost" || host === "127.0.0.1" || host === "10.0.2.2");
+}
+
+function sameOrigin(left: string, right: string) {
+  try {
+    return new URL(left).origin === new URL(right).origin;
+  } catch {
+    return false;
+  }
+}
+
+function confirmServerChange(currentUrl: string, nextUrl: string): Promise<boolean> {
+  if (sameOrigin(currentUrl, nextUrl)) {
+    return Promise.resolve(true);
+  }
+  return new Promise((resolve) => {
+    Alert.alert(
+      "Switch API server?",
+      "Your session token is only sent after you sign in again on the new server.",
+      [
+        { text: "Cancel", style: "cancel", onPress: () => resolve(false) },
+        { text: "Continue", style: "destructive", onPress: () => resolve(true) }
+      ]
+    );
+  });
 }
 
 function requireServerUrl(value: string) {
@@ -460,6 +493,13 @@ function AuthScreen({ apiBaseUrl, onApiBaseUrlChange, onSession }: { apiBaseUrl:
       setMessage(null);
       Alert.alert("Server URL required", error instanceof Error ? error.message : String(error));
       return null;
+    }
+    const savedToken = await SecureStore.getItemAsync(TOKEN_KEY);
+    if (savedToken && !(await confirmServerChange(apiBaseUrl, nextUrl))) {
+      return null;
+    }
+    if (savedToken && !sameOrigin(apiBaseUrl, nextUrl)) {
+      await SecureStore.deleteItemAsync(TOKEN_KEY);
     }
     onApiBaseUrlChange(nextUrl);
     setServerUrl(nextUrl);

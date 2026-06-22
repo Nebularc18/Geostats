@@ -1,5 +1,6 @@
 import { XMLParser } from "fast-xml-parser";
 import JSZip from "jszip";
+import { Readable } from "node:stream";
 import { ImportSource } from "@geostats/shared";
 
 export interface ParsedCache {
@@ -112,6 +113,43 @@ function toDate(value: unknown): Date | null {
       : text;
   const date = new Date(normalized);
   return Number.isNaN(date.getTime()) ? null : date;
+}
+
+async function readZipEntryLimited(file: JSZip.JSZipObject, maxBytes: number): Promise<Buffer> {
+  const stream = file.nodeStream("nodebuffer") as Readable;
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    let settled = false;
+    const fail = (error: Error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      stream.destroy(error);
+      reject(error);
+    };
+    stream.on("data", (chunk) => {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      total += buffer.length;
+      if (total > maxBytes) {
+        fail(new Error(`ZIP entry ${file.name} exceeds ${maxBytes} bytes`));
+        return;
+      }
+      chunks.push(buffer);
+    });
+    stream.on("error", (error) => fail(error instanceof Error ? error : new Error(String(error))));
+    stream.on("end", () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      resolve(Buffer.concat(chunks));
+    });
+    if (typeof (stream as unknown as { resume?: () => void }).resume === "function") {
+      stream.resume();
+    }
+  });
 }
 
 function normalizeUsername(value: string | null | undefined): string | null {
@@ -305,10 +343,7 @@ export async function parseImportFile(
         throw new Error(`ZIP GPX content exceeds ${maxTotalBytes} bytes`);
       }
 
-      const entry = await file.async("nodebuffer");
-      if (entry.length > maxEntryBytes) {
-        throw new Error(`ZIP entry ${file.name} exceeds ${maxEntryBytes} bytes`);
-      }
+      const entry = await readZipEntryLimited(file, maxEntryBytes);
       totalBytes += entry.length;
       if (totalBytes > maxTotalBytes) {
         throw new Error(`ZIP GPX content exceeds ${maxTotalBytes} bytes`);

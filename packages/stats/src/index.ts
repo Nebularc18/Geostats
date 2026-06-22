@@ -26,6 +26,7 @@ export interface StatsFind {
 export interface StatsHide {
   placedAt?: Date | string | null;
   receivedLogCount: number;
+  receivedLogsRaw?: unknown;
   cache: StatsCache;
 }
 
@@ -757,6 +758,14 @@ function rawCacheExtension(cache: StatsCache): Record<string, any> {
   return (raw as Record<string, any>)["groundspeak:cache"] ?? (raw as Record<string, any>).cache ?? {};
 }
 
+function rawLogExtension(raw: unknown): Record<string, any> {
+  if (!raw || typeof raw !== "object") {
+    return {};
+  }
+  const root = raw as Record<string, any>;
+  return root["groundspeak:cache"] ?? root.cache ?? {};
+}
+
 function asRawArray<T>(value: T | T[] | undefined): T[] {
   if (!value) {
     return [];
@@ -765,7 +774,7 @@ function asRawArray<T>(value: T | T[] | undefined): T[] {
 }
 
 function hideLogs(hide: StatsHide): HideLog[] {
-  const extension = rawCacheExtension(hide.cache);
+  const extension = rawLogExtension(hide.receivedLogsRaw);
   const logs = extension["groundspeak:logs"]?.["groundspeak:log"] ?? extension.logs?.log;
   return asRawArray<Record<string, any>>(logs)
     .map((log) => {

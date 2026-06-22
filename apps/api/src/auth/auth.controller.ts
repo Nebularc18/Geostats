@@ -238,6 +238,9 @@ export class AuthController {
     if (configured) {
       return redirectUri === configured;
     }
+    if (process.env.NODE_ENV === "production") {
+      return false;
+    }
     if (url.protocol === "geostats:" && url.hostname === "auth" && (url.pathname === "" || url.pathname === "/")) {
       return true;
     }

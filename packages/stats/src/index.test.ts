@@ -94,6 +94,25 @@ test("calculateHideStats derives owner-side log and date buckets", () => {
     {
       placedAt: "2026-05-01T00:00:00.000Z",
       receivedLogCount: 0,
+      receivedLogsRaw: {
+        "groundspeak:cache": {
+          "groundspeak:logs": {
+            "groundspeak:log": [
+              {
+                "groundspeak:date": "2026-05-03T19:00:00Z",
+                "groundspeak:type": "Found it",
+                "groundspeak:finder": "FinderOne",
+                "groundspeak:text": "Nice hide"
+              },
+              {
+                "groundspeak:date": "2026-05-04T19:00:00Z",
+                "groundspeak:type": "Publish Listing",
+                "groundspeak:finder": "Reviewer"
+              }
+            ]
+          }
+        }
+      },
       cache: {
         gcCode: "GCHIDE1",
         name: "First hide",
@@ -105,27 +124,7 @@ test("calculateHideStats derives owner-side log and date buckets", () => {
         longitude: 15.1,
         country: "Sweden",
         region: "Blekinge",
-        county: "Karlskrona",
-        raw: {
-          "groundspeak:cache": {
-            archived: "False",
-            "groundspeak:logs": {
-              "groundspeak:log": [
-                {
-                  "groundspeak:date": "2026-05-03T19:00:00Z",
-                  "groundspeak:type": "Found it",
-                  "groundspeak:finder": "FinderOne",
-                  "groundspeak:text": "Nice hide"
-                },
-                {
-                  "groundspeak:date": "2026-05-04T19:00:00Z",
-                  "groundspeak:type": "Publish Listing",
-                  "groundspeak:finder": "Reviewer"
-                }
-              ]
-            }
-          }
-        }
+        county: "Karlskrona"
       }
     }
   ]);

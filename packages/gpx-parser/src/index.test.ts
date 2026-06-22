@@ -29,6 +29,20 @@ const gpx = `<?xml version="1.0" encoding="UTF-8"?>
   </wpt>
 </gpx>`;
 
+function patchZipUncompressedSizes(content: Buffer, size: number): Buffer {
+  const patched = Buffer.from(content);
+  for (let index = 0; index < patched.length - 4; index += 1) {
+    const signature = patched.readUInt32LE(index);
+    if (signature === 0x04034b50) {
+      patched.writeUInt32LE(size, index + 22);
+    }
+    if (signature === 0x02014b50) {
+      patched.writeUInt32LE(size, index + 24);
+    }
+  }
+  return patched;
+}
+
 const cgeoGpx = `<?xml version="1.0" encoding="UTF-8"?>
 <gpx version="1.0" creator="c:geo" xmlns:groundspeak="http://www.groundspeak.com/cache/1/0/1" xmlns:gsak="http://www.gsak.net/xmlv1/6">
   <wpt lat="56.1943" lon="15.592383">
@@ -217,6 +231,24 @@ test("parseImportFile rejects oversized ZIP GPX entries", async () => {
     const content = await zip.generateAsync({ type: "nodebuffer" });
 
     await assert.rejects(() => parseImportFile("query.zip", content, ImportSource.POCKET_QUERY), /exceeds 20/);
+  } finally {
+    if (previous === undefined) {
+      delete process.env.IMPORT_MAX_ZIP_ENTRY_BYTES;
+    } else {
+      process.env.IMPORT_MAX_ZIP_ENTRY_BYTES = previous;
+    }
+  }
+});
+
+test("parseImportFile aborts ZIP entries that inflate beyond the entry limit", async () => {
+  const previous = process.env.IMPORT_MAX_ZIP_ENTRY_BYTES;
+  process.env.IMPORT_MAX_ZIP_ENTRY_BYTES = "1024";
+  try {
+    const zip = new JSZip();
+    zip.file("pocket-query.gpx", gpx.repeat(200));
+    const content = patchZipUncompressedSizes(await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" }), 1);
+
+    await assert.rejects(() => parseImportFile("query.zip", content, ImportSource.POCKET_QUERY), /exceeds 1024|size mismatch/);
   } finally {
     if (previous === undefined) {
       delete process.env.IMPORT_MAX_ZIP_ENTRY_BYTES;
