@@ -26,6 +26,7 @@ redis-data
 minio-data
 received-logs.csv
 .codex/
+security-scans/
 
 .DS_Store
 Thumbs.db
