@@ -97,6 +97,13 @@ function normalizeServerUrl(value: string) {
   return url.toString().replace(/\/+$/, "");
 }
 
+function normalizeStoredServerUrl(value: string) {
+  const trimmed = value.trim().replace(/\/+$/, "");
+  if (!trimmed) return DEFAULT_API_URL;
+  const withProtocol = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+  return new URL(withProtocol).toString().replace(/\/+$/, "");
+}
+
 function isLocalDevelopmentUrl(url: URL) {
   const host = url.hostname.toLowerCase();
   return url.protocol === "http:" && (host === "localhost" || host === "127.0.0.1" || host === "10.0.2.2");
@@ -609,7 +616,7 @@ export default function App() {
   useEffect(() => {
     void Promise.all([SecureStore.getItemAsync(SERVER_URL_KEY), SecureStore.getItemAsync(TOKEN_KEY)])
       .then(async ([serverUrl, token]) => {
-        const nextUrl = serverUrl ? normalizeServerUrl(serverUrl) : apiBaseUrl;
+        const nextUrl = serverUrl ? normalizeStoredServerUrl(serverUrl) : apiBaseUrl;
         setApiBaseUrl(nextUrl);
         if (!token) return;
         const data = await apiFetch<{ user: Session["user"] }>(nextUrl, "/auth/me", token);
