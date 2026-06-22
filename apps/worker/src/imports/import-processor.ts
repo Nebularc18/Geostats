@@ -141,14 +141,14 @@ export class ImportProcessor {
     try {
       const importSource = importRecord.source as ImportSource;
       const content = await this.storage.getObject(importRecord.objectKey);
-      const parsed = await parseImportFile(importRecord.fileName, content, importSource);
       const profile =
-        parsed.finds.length > 0
-          ? await this.prisma.geocachingProfile.findUnique({
+        importSource === ImportSource.MY_HIDES_GPX
+          ? null
+          : await this.prisma.geocachingProfile.findUnique({
               where: { userId: payload.userId },
-              select: { ftfDetectionTerms: true, timeZone: true }
-            })
-          : null;
+              select: { gcUsername: true, ftfDetectionTerms: true, timeZone: true }
+            });
+      const parsed = await parseImportFile(importRecord.fileName, content, importSource, { gcUsername: profile?.gcUsername });
       const ftfDetectionTerms = profile?.ftfDetectionTerms ?? DEFAULT_FTF_DETECTION_TERMS;
       const timeZone = profile?.timeZone ?? "Europe/Stockholm";
       const effectiveSource =
