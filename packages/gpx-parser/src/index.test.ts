@@ -102,6 +102,74 @@ test("parseGpx accepts c:geo found exports with gsak UserFound dates", () => {
   assert.equal(parsed.finds[0]?.foundAt?.toISOString(), "2026-05-09T01:00:00.000Z");
 });
 
+test("parseGpx prefers the matching c:geo finder log over other public found logs", () => {
+  const cgeoWithLogs = cgeoGpx.replace(
+    "</groundspeak:cache>",
+    `<groundspeak:logs>
+        <groundspeak:log>
+          <groundspeak:date>2026-04-05T01:00:00Z</groundspeak:date>
+          <groundspeak:type>Found it</groundspeak:type>
+          <groundspeak:finder>SomeoneElse</groundspeak:finder>
+          <groundspeak:text>Different user's log.</groundspeak:text>
+        </groundspeak:log>
+        <groundspeak:log>
+          <groundspeak:date>2026-05-09T01:23:00Z</groundspeak:date>
+          <groundspeak:type>Found it</groundspeak:type>
+          <groundspeak:finder>Nebularc_</groundspeak:finder>
+          <groundspeak:text>My c:geo log.</groundspeak:text>
+        </groundspeak:log>
+      </groundspeak:logs>
+    </groundspeak:cache>`
+  );
+
+  const parsed = parseGpx(cgeoWithLogs, ImportSource.MY_FINDS_GPX, { gcUsername: "Nebularc_" });
+
+  assert.equal(parsed.finds[0]?.foundAt?.toISOString(), "2026-05-09T01:23:00.000Z");
+  assert.equal(parsed.finds[0]?.logText, "My c:geo log.");
+});
+
+test("parseGpx uses c:geo UserFound instead of an unrelated public found log", () => {
+  const cgeoWithOtherLog = cgeoGpx.replace(
+    "</groundspeak:cache>",
+    `<groundspeak:logs>
+        <groundspeak:log>
+          <groundspeak:date>2026-04-05T01:00:00Z</groundspeak:date>
+          <groundspeak:type>Found it</groundspeak:type>
+          <groundspeak:finder>SomeoneElse</groundspeak:finder>
+          <groundspeak:text>Different user's log.</groundspeak:text>
+        </groundspeak:log>
+      </groundspeak:logs>
+    </groundspeak:cache>`
+  );
+
+  const parsed = parseGpx(cgeoWithOtherLog, ImportSource.MY_FINDS_GPX, { gcUsername: "Nebularc_" });
+
+  assert.equal(parsed.finds[0]?.foundAt?.toISOString(), "2026-05-09T01:00:00.000Z");
+  assert.equal(parsed.finds[0]?.logText, null);
+});
+
+test("parseGpx does not use unrelated log text when username is provided without UserFound", () => {
+  const cgeoWithOnlyOtherLog = cgeoGpx
+    .replace(/\s*<gsak:wptExtension>[\s\S]*?<\/gsak:wptExtension>/, "")
+    .replace(
+      "</groundspeak:cache>",
+      `<groundspeak:logs>
+        <groundspeak:log>
+          <groundspeak:date>2026-04-05T01:00:00Z</groundspeak:date>
+          <groundspeak:type>Found it</groundspeak:type>
+          <groundspeak:finder>SomeoneElse</groundspeak:finder>
+          <groundspeak:text>Different user's log.</groundspeak:text>
+        </groundspeak:log>
+      </groundspeak:logs>
+    </groundspeak:cache>`
+    );
+
+  const parsed = parseGpx(cgeoWithOnlyOtherLog, ImportSource.MY_FINDS_GPX, { gcUsername: "Nebularc_" });
+
+  assert.equal(parsed.finds[0]?.foundAt?.toISOString(), "2026-04-05T01:00:00.000Z");
+  assert.equal(parsed.finds[0]?.logText, null);
+});
+
 test("parseImportFile reads GPX files from a ZIP", async () => {
   const zip = new JSZip();
   zip.file("pocket-query.gpx", gpx);
