@@ -162,12 +162,18 @@ test("development browser login redirects only to web app paths", async () => {
 
     await controller.dev("/scratch?country=SE", response as any);
     await controller.dev("https://example.com/steal", response as any);
+    await controller.dev("//evil.com/steal", response as any);
 
     assert.deepEqual(cookies, [
       { name: "geostats_session", value: "jwt-token" },
+      { name: "geostats_session", value: "jwt-token" },
       { name: "geostats_session", value: "jwt-token" }
     ]);
-    assert.deepEqual(redirects, ["http://localhost:3000/scratch?country=SE", "http://localhost:3000/dashboard"]);
+    assert.deepEqual(redirects, [
+      "http://localhost:3000/scratch?country=SE",
+      "http://localhost:3000/dashboard",
+      "http://localhost:3000/dashboard"
+    ]);
   });
 });
 

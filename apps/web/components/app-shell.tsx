@@ -22,6 +22,7 @@ const nav = [
 let hasCompletedProfileCheck = false;
 
 const DEV_AUTO_LOGIN = process.env.NEXT_PUBLIC_DEV_AUTO_LOGIN === "true";
+const DEV_AUTO_LOGIN_ATTEMPT_KEY = "geostats_dev_auto_login_attempted";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -58,14 +59,22 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 return;
               }
               if (config.mode === "dev") {
+                if (sessionStorage.getItem(DEV_AUTO_LOGIN_ATTEMPT_KEY) === "true") {
+                  sessionStorage.removeItem(DEV_AUTO_LOGIN_ATTEMPT_KEY);
+                  router.replace("/login");
+                  return;
+                }
+                sessionStorage.setItem(DEV_AUTO_LOGIN_ATTEMPT_KEY, "true");
                 const returnTo = `${window.location.pathname}${window.location.search}${window.location.hash}`;
                 window.location.href = `${API_URL}/auth/dev?returnTo=${encodeURIComponent(returnTo)}`;
                 return;
               }
+              sessionStorage.removeItem(DEV_AUTO_LOGIN_ATTEMPT_KEY);
               router.replace("/login");
             })
             .catch(() => {
               if (active) {
+                sessionStorage.removeItem(DEV_AUTO_LOGIN_ATTEMPT_KEY);
                 router.replace("/login");
               }
             });
