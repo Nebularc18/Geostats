@@ -606,14 +606,14 @@ export function ScratchMap({
     if (!boundaryConfigIsCurrent || handledCountryFocusVersionRef.current === countryFocusVersion) {
       return;
     }
-    handledCountryFocusVersionRef.current = countryFocusVersion;
     const activeMap = map;
+    let cancelled = false;
 
     const currentLevel = levelRef.current;
     const config = boundaryConfig;
     if (config.isDetail && (currentLevel === "regions" || currentLevel === "counties")) {
       void loadGeoJson(config.url).then((geoJson) => {
-        if (geoJson.features.length === 0) {
+        if (cancelled || geoJson.features.length === 0) {
           return;
         }
 
@@ -628,12 +628,14 @@ export function ScratchMap({
 
         if (!bounds.isEmpty()) {
           activeMap.fitBounds(bounds, { padding: 42, maxZoom: 6.1, duration: 600 });
+          handledCountryFocusVersionRef.current = countryFocusVersion;
         }
       });
-      return;
-    }
 
-    let cancelled = false;
+      return () => {
+        cancelled = true;
+      };
+    }
 
     void loadGeoJson(COUNTRY_GEOJSON_URL).then((geoJson) => {
       if (cancelled) {
@@ -659,6 +661,7 @@ export function ScratchMap({
 
       if (!bounds.isEmpty()) {
         activeMap.fitBounds(bounds, { padding: 46, maxZoom: 5.4, duration: 600 });
+        handledCountryFocusVersionRef.current = countryFocusVersion;
       }
     });
 
