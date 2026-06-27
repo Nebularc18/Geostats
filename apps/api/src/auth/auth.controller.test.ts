@@ -142,6 +142,35 @@ test("mobile login returns a bearer token through the mobile endpoint only", asy
   assert.deepEqual(loggedIn, { user: { id: "user-1", email: "a@example.com", username: "a" }, token: "jwt-token" });
 });
 
+test("development browser login redirects only to web app paths", async () => {
+  await withEnv({ WEB_ORIGIN: "http://localhost:3000" }, async () => {
+    const auth = {
+      devUser: async () => ({ id: "user-1", email: "dev@example.com", username: "dev" }),
+      sign: () => "jwt-token"
+    };
+    const cookies: Array<{ name: string; value: string }> = [];
+    const redirects: string[] = [];
+    const response = {
+      cookie: (name: string, value: string) => {
+        cookies.push({ name, value });
+      },
+      redirect: (url: string) => {
+        redirects.push(url);
+      }
+    };
+    const controller = new AuthController(auth as any);
+
+    await controller.dev("/scratch?country=SE", response as any);
+    await controller.dev("https://example.com/steal", response as any);
+
+    assert.deepEqual(cookies, [
+      { name: "geostats_session", value: "jwt-token" },
+      { name: "geostats_session", value: "jwt-token" }
+    ]);
+    assert.deepEqual(redirects, ["http://localhost:3000/scratch?country=SE", "http://localhost:3000/dashboard"]);
+  });
+});
+
 test("mobile external callback redirects bearer token in URL fragment", async () => {
   const auth = {
     loginWithExternalProvider: async () => ({ id: "user-1", email: "a@example.com", username: "a" }),

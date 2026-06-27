@@ -160,10 +160,10 @@ export class AuthController {
   }
 
   @Get("dev")
-  async dev(@Res({ passthrough: true }) response: Response) {
+  async dev(@Query("returnTo") returnTo: string | undefined, @Res({ passthrough: true }) response: Response) {
     const user = await this.auth.devUser();
     this.setCookie(response, user);
-    response.redirect(`${envOrDefault("WEB_ORIGIN", "http://localhost:3000")}/dashboard`);
+    response.redirect(this.webRedirectUrl(returnTo));
   }
 
   @Post("logout")
@@ -216,6 +216,13 @@ export class AuthController {
       url.searchParams.set("authError", authError);
     }
     return url.toString();
+  }
+
+  private webRedirectUrl(returnTo?: string): string {
+    if (returnTo && returnTo.startsWith("/") && !returnTo.startsWith("//")) {
+      return new URL(returnTo, envOrDefault("WEB_ORIGIN", "http://localhost:3000")).toString();
+    }
+    return new URL("/dashboard", envOrDefault("WEB_ORIGIN", "http://localhost:3000")).toString();
   }
 
   private mobileLoginUrl(redirectUri: string, authError?: string, token?: string): string {
