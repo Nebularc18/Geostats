@@ -116,7 +116,7 @@ export class AuthService {
     const accessToken = await this.exchangeExternalCode(code, codeVerifier);
     const profile = await this.fetchExternalProfile(accessToken);
     const email = profile.email?.trim().toLowerCase();
-    const requireVerifiedEmail = envOrDefault("EXTERNAL_AUTH_REQUIRE_VERIFIED_EMAIL", "false") === "true";
+    const requireVerifiedEmail = envOrDefault("EXTERNAL_AUTH_REQUIRE_VERIFIED_EMAIL", "true") !== "false";
     if (!email) {
       throw new BadRequestException("External auth account must have an email address");
     }

@@ -276,20 +276,21 @@ test("receivedLogs rereads raw in the transaction and builds stats after commit"
       findFirst: async () => ({
         id: "hide-1",
         cacheId: "cache-1",
+        updatedAt,
         receivedLogCount: 1,
+        receivedLogsRaw: transactionRaw,
         cache: {
           id: "cache-1",
           updatedAt,
           raw: transactionRaw
         }
       }),
-      update: async () => ({})
-    },
-    cache: {
       updateMany: async ({ where, data }: any) => {
-        assert.equal(where.id, "cache-1");
+        assert.equal(where.id, "hide-1");
+        assert.equal(where.userId, "user-1");
         assert.equal(where.updatedAt, updatedAt);
-        writtenRaw = data.raw;
+        assert.equal(data.receivedLogCount, 2);
+        writtenRaw = data.receivedLogsRaw;
         return { count: 1 };
       }
     }
@@ -305,6 +306,7 @@ test("receivedLogs rereads raw in the transaction and builds stats after commit"
           id: "hide-1",
           cacheId: "cache-1",
           receivedLogCount: 0,
+          receivedLogsRaw: preloadedRaw,
           cache: { gcCode: "GC123", raw: preloadedRaw }
         }
       ]
@@ -355,12 +357,11 @@ test("receivedLogs returns committed import result when stats rebuild fails", as
       findFirst: async () => ({
         id: "hide-1",
         cacheId: "cache-1",
+        updatedAt,
         receivedLogCount: 0,
+        receivedLogsRaw: raw,
         cache: { id: "cache-1", updatedAt, raw }
       }),
-      update: async () => ({})
-    },
-    cache: {
       updateMany: async () => ({ count: 1 })
     }
   };
@@ -375,6 +376,7 @@ test("receivedLogs returns committed import result when stats rebuild fails", as
           id: "hide-1",
           cacheId: "cache-1",
           receivedLogCount: 0,
+          receivedLogsRaw: raw,
           cache: { gcCode: "GC123", raw }
         }
       ]
@@ -425,15 +427,16 @@ test("receivedLogsCsv imports uploaded owner log CSV for the authenticated user"
         return {
           id: "hide-1",
           cacheId: "cache-1",
+          updatedAt,
           receivedLogCount: 0,
+          receivedLogsRaw: raw,
           cache: { id: "cache-1", updatedAt, raw }
         };
       },
-      update: async () => ({})
-    },
-    cache: {
-      updateMany: async ({ data }: any) => {
-        writtenRaw = data.raw;
+      updateMany: async ({ where, data }: any) => {
+        assert.equal(where.id, "hide-1");
+        assert.equal(where.userId, "user-1");
+        writtenRaw = data.receivedLogsRaw;
         return { count: 1 };
       }
     }
@@ -447,6 +450,7 @@ test("receivedLogsCsv imports uploaded owner log CSV for the authenticated user"
             id: "hide-1",
             cacheId: "cache-1",
             receivedLogCount: 0,
+            receivedLogsRaw: raw,
             cache: { gcCode: "GC123", raw }
           }
         ];

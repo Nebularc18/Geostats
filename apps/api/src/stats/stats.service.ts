@@ -161,6 +161,7 @@ export class StatsService {
       hides.map((hide) => ({
         placedAt: hide.placedAt,
         receivedLogCount: hide.receivedLogCount,
+        receivedLogsRaw: hide.receivedLogsRaw,
         cache: {
           latitude: Number(hide.cache.corrections[0]?.latitude ?? hide.cache.latitude),
           longitude: Number(hide.cache.corrections[0]?.longitude ?? hide.cache.longitude),
