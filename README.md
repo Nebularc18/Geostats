@@ -77,6 +77,18 @@ EXTERNAL_AUTH_REQUIRE_VERIFIED_EMAIL=true
 
 When external auth is enabled, the login page shows a single provider button instead of the password form.
 
+For local Docker development where you want the app to boot without signing in, enable dev auth and rebuild the web image so its public auth flags are baked in:
+
+```env
+AUTH_MODE=dev
+NEXT_PUBLIC_AUTH_MODE=dev
+NEXT_PUBLIC_DEV_AUTO_LOGIN=true
+DEV_AUTH_EMAIL=dev@local.geostats
+DEV_AUTH_USERNAME=dev
+```
+
+With those values, opening a protected web page redirects through `/auth/dev`, creates the development user if needed, sets the session cookie, and returns to the page. Keep `NEXT_PUBLIC_DEV_AUTO_LOGIN=false` outside development.
+
 ## Docker Compose
 
 For a full local deployment:

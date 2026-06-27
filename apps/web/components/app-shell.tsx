@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { BarChart3, Database, Flag, Globe2, Home, Map, Settings, Trophy, Upload } from "lucide-react";
-import { apiFetch } from "../lib/api";
+import { API_URL, apiFetch } from "../lib/api";
 
 const nav = [
   { href: "/dashboard", label: "Dashboard", icon: Home },
@@ -20,6 +20,9 @@ const nav = [
 ];
 
 let hasCompletedProfileCheck = false;
+
+const DEV_AUTO_LOGIN = process.env.NEXT_PUBLIC_DEV_AUTO_LOGIN === "true";
+const DEV_AUTO_LOGIN_ATTEMPT_KEY = "geostats_dev_auto_login_attempted";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -42,13 +45,43 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           router.replace("/onboarding");
           return;
         }
+        sessionStorage.removeItem(DEV_AUTO_LOGIN_ATTEMPT_KEY);
         hasCompletedProfileCheck = true;
         setProfileChecked(true);
       })
       .catch(() => {
-        if (active) {
-          router.replace("/login");
+        if (!active) {
+          return;
         }
+        if (DEV_AUTO_LOGIN) {
+          void apiFetch<{ mode: string }>("/auth/config")
+            .then((config) => {
+              if (!active) {
+                return;
+              }
+              if (config.mode === "dev") {
+                if (sessionStorage.getItem(DEV_AUTO_LOGIN_ATTEMPT_KEY) === "true") {
+                  sessionStorage.removeItem(DEV_AUTO_LOGIN_ATTEMPT_KEY);
+                  router.replace("/login");
+                  return;
+                }
+                sessionStorage.setItem(DEV_AUTO_LOGIN_ATTEMPT_KEY, "true");
+                const returnTo = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+                window.location.href = `${API_URL}/auth/dev?returnTo=${encodeURIComponent(returnTo)}`;
+                return;
+              }
+              sessionStorage.removeItem(DEV_AUTO_LOGIN_ATTEMPT_KEY);
+              router.replace("/login");
+            })
+            .catch(() => {
+              if (active) {
+                sessionStorage.removeItem(DEV_AUTO_LOGIN_ATTEMPT_KEY);
+                router.replace("/login");
+              }
+            });
+          return;
+        }
+        router.replace("/login");
       });
 
     return () => {
