@@ -45,6 +45,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           router.replace("/onboarding");
           return;
         }
+        sessionStorage.removeItem(DEV_AUTO_LOGIN_ATTEMPT_KEY);
         hasCompletedProfileCheck = true;
         setProfileChecked(true);
       })
