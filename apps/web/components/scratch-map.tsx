@@ -321,7 +321,7 @@ export function ScratchMap({
   const levelRef = useRef<ScratchMapLevel>(level);
   const propertyNameRef = useRef(COUNTRY_NAME_PROPERTY);
   const sourceUrlRef = useRef(COUNTRY_GEOJSON_URL);
-  const selectedCountryRef = useRef<string | null>(selectedCountry);
+  const handledCountryFocusVersionRef = useRef(0);
   const supportsEmptyFeaturePopupRef = useRef(false);
   const popupLocationCacheRef = useRef(new Map<string, [number, number]>());
 
@@ -360,7 +360,6 @@ export function ScratchMap({
     levelRef.current = interactionLevel;
     propertyNameRef.current = boundaryConfig.propertyName;
     sourceUrlRef.current = boundaryConfig.url;
-    selectedCountryRef.current = selectedCountry;
     supportsEmptyFeaturePopupRef.current = isDetailLevel(level) && boundaryConfig.isDetail;
   }, [activeCountry, boundaryConfig, boundaryConfigIsCurrent, countries, level, selectedCountry]);
 
@@ -600,10 +599,14 @@ export function ScratchMap({
 
   useEffect(() => {
     const map = mapRef.current;
-    const country = selectedCountryRef.current;
+    const country = selectedCountry;
     if (!map || !country || countryFocusVersion === 0) {
       return;
     }
+    if (!boundaryConfigIsCurrent || handledCountryFocusVersionRef.current === countryFocusVersion) {
+      return;
+    }
+    handledCountryFocusVersionRef.current = countryFocusVersion;
     const activeMap = map;
 
     const currentLevel = levelRef.current;
@@ -662,7 +665,7 @@ export function ScratchMap({
     return () => {
       cancelled = true;
     };
-  }, [boundaryConfig, countryFocusVersion]);
+  }, [boundaryConfig, boundaryConfigIsCurrent, countryFocusVersion, selectedCountry]);
 
   useEffect(() => {
     const map = mapRef.current;
