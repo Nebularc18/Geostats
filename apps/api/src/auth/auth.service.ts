@@ -54,8 +54,14 @@ interface OidcUserInfoResponse {
   preferred_username?: string | null;
 }
 
+type JoseModule = typeof import("jose");
+type RemoteJwks = ReturnType<JoseModule["createRemoteJWKSet"]>;
+
 @Injectable()
 export class AuthService {
+  private shooJwks?: RemoteJwks;
+  private joseModule?: Promise<JoseModule>;
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwt: JwtService
@@ -287,16 +293,12 @@ export class AuthService {
       throw new UnauthorizedException(json.error_description || json.error || "Shoo token exchange failed");
     }
 
-    const importJose = new Function("specifier", "return import(specifier)") as (
-      specifier: string
-    ) => Promise<typeof import("jose")>;
-    const { createRemoteJWKSet, jwtVerify } = await importJose("jose");
-    const jwks = createRemoteJWKSet(new URL("/.well-known/jwks.json", this.shooBaseUrl()));
+    const [{ jwtVerify }, jwks] = await Promise.all([this.importJose(), this.shooRemoteJwks()]);
     const { payload } = await jwtVerify(json.id_token, jwks, {
       issuer: this.shooIssuer(),
       audience: this.shooClientId()
     });
-    const pairwiseSub = typeof payload.pairwise_sub === "string" ? payload.pairwise_sub : json.pairwise_sub;
+    const pairwiseSub = typeof payload.pairwise_sub === "string" ? payload.pairwise_sub : "";
     if (!pairwiseSub) {
       throw new UnauthorizedException("Shoo token missing pairwise_sub");
     }
@@ -307,6 +309,26 @@ export class AuthService {
       emailVerified: typeof payload.email_verified === "boolean" ? payload.email_verified : null,
       name: typeof payload.name === "string" ? payload.name : null
     };
+  }
+
+  private importJose(): Promise<JoseModule> {
+    if (!this.joseModule) {
+      // jose v6 is ESM-only, while this Nest app currently builds to CommonJS.
+      // Indirect dynamic import keeps TypeScript from rewriting this to require().
+      const dynamicImport = new Function("specifier", "return import(specifier)") as (
+        specifier: string
+      ) => Promise<JoseModule>;
+      this.joseModule = dynamicImport("jose");
+    }
+    return this.joseModule;
+  }
+
+  private async shooRemoteJwks(): Promise<RemoteJwks> {
+    if (!this.shooJwks) {
+      const { createRemoteJWKSet } = await this.importJose();
+      this.shooJwks = createRemoteJWKSet(new URL("/.well-known/jwks.json", this.shooBaseUrl()));
+    }
+    return this.shooJwks;
   }
 
   private async exchangeExternalCode(code: string, codeVerifier: string): Promise<string> {

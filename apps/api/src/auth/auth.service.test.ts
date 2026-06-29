@@ -241,6 +241,88 @@ test("shoo external auth exchanges codes against the Shoo token endpoint", async
   );
 });
 
+test("shoo external auth ignores unverified response body pairwise_sub", async () => {
+  await withEnv(
+    {
+      AUTH_MODE: "external",
+      EXTERNAL_AUTH_PROVIDER_ID: "shoo",
+      EXTERNAL_AUTH_CALLBACK_URL: "https://api.example.com/auth/external/callback",
+      SHOO_BASE_URL: "https://shoo.dev"
+    },
+    async () => {
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = (async () =>
+        new Response(JSON.stringify({ id_token: "verified-token", pairwise_sub: "unverified-body-sub" }), {
+          status: 200
+        })) as typeof fetch;
+      try {
+        const { service } = authServiceWithUsers();
+        (service as any).importJose = async () => ({
+          createRemoteJWKSet: () => "jwks",
+          jwtVerify: async () => ({
+            payload: {
+              email: "user@example.com",
+              email_verified: true,
+              name: "User"
+            }
+          })
+        });
+
+        await assert.rejects(() => service.loginWithExternalProvider("code", "verifier"), {
+          message: "Shoo token missing pairwise_sub"
+        });
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    }
+  );
+});
+
+test("shoo JWKS fetcher is cached across token exchanges", async () => {
+  await withEnv(
+    {
+      AUTH_MODE: "external",
+      EXTERNAL_AUTH_PROVIDER_ID: "shoo",
+      EXTERNAL_AUTH_CALLBACK_URL: "https://api.example.com/auth/external/callback",
+      SHOO_BASE_URL: "https://shoo.dev"
+    },
+    async () => {
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = (async () => new Response(JSON.stringify({ id_token: "verified-token" }), { status: 200 })) as typeof fetch;
+      try {
+        const { service } = authServiceWithUsers();
+        let jwksCreationCount = 0;
+        let verifyCount = 0;
+        (service as any).importJose = async () => ({
+          createRemoteJWKSet: () => {
+            jwksCreationCount += 1;
+            return "jwks";
+          },
+          jwtVerify: async () => {
+            verifyCount += 1;
+            return {
+              payload: {
+                pairwise_sub: `shoo-user-${verifyCount}`,
+                email: "user@example.com",
+                email_verified: true,
+                name: "User"
+              }
+            };
+          }
+        });
+
+        await (service as any).exchangeAndVerifyShooCode("code-1", "verifier-1");
+        await (service as any).exchangeAndVerifyShooCode("code-2", "verifier-2");
+
+        assert.equal(jwksCreationCount, 1);
+        assert.equal(verifyCount, 2);
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    }
+  );
+});
+
 test("upsertOAuthUser recovers when concurrent account linking wins the race", async () => {
   const user = { id: "user-1", email: "user@example.com", username: "user", passwordHash: null };
   let accountLookupCount = 0;
