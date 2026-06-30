@@ -642,6 +642,94 @@ h2 {
   resize: vertical;
 }
 
+.profile-html-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.profile-html-actions .primary-button,
+.profile-html-actions .inline-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  width: auto;
+  margin-top: 0;
+  white-space: nowrap;
+}
+
+.profile-html-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: center;
+}
+
+.profile-html-options label {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  color: var(--ink);
+}
+
+.profile-html-options input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--green);
+}
+
+.profile-html-layout {
+  display: grid;
+  grid-template-columns: minmax(320px, 0.9fr) minmax(360px, 1.1fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.profile-html-code-panel,
+.profile-html-preview-panel {
+  min-width: 0;
+}
+
+.profile-html-code-panel textarea {
+  min-height: 680px;
+  font-family: "Cascadia Mono", "Consolas", monospace;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  white-space: pre;
+  overflow: auto;
+}
+
+.profile-html-embed-panel textarea {
+  min-height: 84px;
+  font-family: "Cascadia Mono", "Consolas", monospace;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  white-space: pre;
+  overflow: auto;
+}
+
+.profile-html-embed-panel .primary-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+}
+
+.profile-html-embed-panel a {
+  overflow-wrap: anywhere;
+}
+
+.profile-html-preview-panel iframe {
+  width: 100%;
+  min-height: 680px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+}
+
 .cache-link {
   text-decoration: none;
 }
@@ -1949,6 +2037,7 @@ select:focus {
   .two-column,
   .dashboard-glance,
   .stats-breakdown-grid,
+  .profile-html-layout,
   .collector-token-commands {
     grid-template-columns: 1fr;
   }
@@ -1969,6 +2058,10 @@ select:focus {
   }
 
   .panel-metrics {
+    justify-content: flex-start;
+  }
+
+  .profile-html-actions {
     justify-content: flex-start;
   }
 

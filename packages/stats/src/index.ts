@@ -69,6 +69,7 @@ const monthLabels = [
   "December"
 ];
 const weekdayLabels = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const ratingValues = ["1.0", "1.5", "2.0", "2.5", "3.0", "3.5", "4.0", "4.5", "5.0"];
 
 function monthName(monthIndex: number): string {
   return monthLabels[monthIndex] ?? "Unknown";
@@ -314,6 +315,8 @@ export interface StatsSnapshot {
   findsToTodayByYear: PercentBucket[];
   averageDifficultyByYear: AverageByYear[];
   averageTerrainByYear: AverageByYear[];
+  findsByDifficulty: PercentBucket[];
+  findsByTerrain: PercentBucket[];
   foundDateMatrix: CountBucket[];
   hiddenDateMatrix: CountBucket[];
   hiddenMonthMatrix: CountBucket[];
@@ -587,7 +590,6 @@ function calculateFtfStats(finds: StatsFind[], options: StatsOptions = {}): FtfS
     (best, bucket) => (!best || bucket.count > best.count ? bucket : best),
     null
   );
-  const ratingValues = ["1.0", "1.5", "2.0", "2.5", "3.0", "3.5", "4.0", "4.5", "5.0"];
   const archivedCount = rows.filter((row) => row.archived).length;
   const mostNorthern = [...rowsWithCoordinates].sort((a, b) => b.latitude! - a.latitude!)[0] ?? null;
   const mostSouthern = [...rowsWithCoordinates].sort((a, b) => a.latitude! - b.latitude!)[0] ?? null;
@@ -1151,6 +1153,8 @@ export function calculateStats(finds: StatsFind[], options: StatsOptions = {}): 
   const toTodayByYear = new Map<string, number>();
   const difficultyByYear = new Map<string, { total: number; count: number }>();
   const terrainByYear = new Map<string, { total: number; count: number }>();
+  const byDifficulty = new Map<string, number>();
+  const byTerrain = new Map<string, number>();
   const byType = new Map<string, number>();
   const bySize = new Map<string, number>();
   const byCountry = new Map<string, number>();
@@ -1197,6 +1201,9 @@ export function calculateStats(finds: StatsFind[], options: StatsOptions = {}): 
     }
 
     if (find.cache.difficulty && find.cache.terrain) {
+      increment(byDifficulty, find.cache.difficulty.toFixed(1));
+      increment(byTerrain, find.cache.terrain.toFixed(1));
+
       const currentDifficulty = difficultyByYear.get(year) ?? { total: 0, count: 0 };
       currentDifficulty.total += find.cache.difficulty;
       currentDifficulty.count += 1;
@@ -1277,7 +1284,7 @@ export function calculateStats(finds: StatsFind[], options: StatsOptions = {}): 
   const milestoneStats = calculateMilestoneStats(sorted);
 
   return {
-    statsVersion: 16,
+    statsVersion: 17,
     totalFinds,
     findsByYear: buckets(byYear).sort((a, b) => a.key.localeCompare(b.key)),
     findsByMonth: sortedMonths,
@@ -1293,6 +1300,8 @@ export function calculateStats(finds: StatsFind[], options: StatsOptions = {}): 
     findsToTodayByYear: percentBuckets(toTodayByYear, [...toTodayByYear.values()].reduce((sum, count) => sum + count, 0)).sort((a, b) => a.key.localeCompare(b.key)),
     averageDifficultyByYear: averageBuckets(difficultyByYear),
     averageTerrainByYear: averageBuckets(terrainByYear),
+    findsByDifficulty: fixedPercentBuckets(ratingValues, byDifficulty, totalFinds),
+    findsByTerrain: fixedPercentBuckets(ratingValues, byTerrain, totalFinds),
     foundDateMatrix: buckets(byFoundDate).sort((a, b) => a.key.localeCompare(b.key)),
     hiddenDateMatrix: buckets(byHiddenDate).sort((a, b) => a.key.localeCompare(b.key)),
     hiddenMonthMatrix: buckets(byHiddenMonth).sort((a, b) => a.key.localeCompare(b.key)),
