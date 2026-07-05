@@ -17,7 +17,7 @@ type FinderCountryRow = {
 };
 
 const DEFAULT_SERVER = "http://127.0.0.1:3001";
-const DEFAULT_PROFILE_DIR = ".codex/project-gc-browser";
+const DEFAULT_PROFILE_DIR = ".geostats/project-gc-browser";
 
 function workspaceRoot(): string {
   return resolve(process.env.INIT_CWD ?? "../..");

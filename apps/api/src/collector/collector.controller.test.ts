@@ -565,3 +565,20 @@ test("projectGcFinderCountries stores aggregate rows and clears snapshots", asyn
   ]);
   assert.deepEqual(actions, ["delete-countries", "create-countries", "delete-snapshots"]);
 });
+
+test("projectGcFinderCountries rejects empty rows before clearing data", async () => {
+  let transactionCalled = false;
+  const prisma = {
+    collectorToken: {
+      findUnique: async () => ({ id: "token-1", userId: "user-1" }),
+      update: async () => ({})
+    },
+    $transaction: async () => {
+      transactionCalled = true;
+    }
+  };
+  const controller = new CollectorController(prisma as any, {} as any);
+
+  await assert.rejects(() => controller.projectGcFinderCountries("Bearer token", { rows: [] }), BadRequestException);
+  assert.equal(transactionCalled, false);
+});

@@ -25,6 +25,7 @@ import { AuthUser } from "@geostats/shared";
 import { Prisma } from "@geostats/db";
 import { AuthGuard } from "../auth/auth.guard";
 import { CurrentUser } from "../auth/current-user.decorator";
+import { normalizeCountry } from "../common/geocaching.utils";
 import { PrismaService } from "../common/prisma.service";
 import { StatsService } from "../stats/stats.service";
 
@@ -540,11 +541,6 @@ export function parseReceivedLogsCsv(content: string): ReceivedLogInput[] {
   }));
 }
 
-function normalizeCountry(value: unknown): string | null {
-  const country = String(value ?? "").trim().replace(/\s+/g, " ");
-  return country ? country : null;
-}
-
 export function normalizeFinderCountryRows(rows: FinderCountryInput[] | undefined): Array<{ country: string; count: number }> {
   if (!Array.isArray(rows)) {
     throw new BadRequestException("rows must be an array");
@@ -712,6 +708,9 @@ export class CollectorController {
   ) {
     const userId = await this.tokenUser(authorization);
     const rows = normalizeFinderCountryRows(body.rows);
+    if (rows.length === 0) {
+      throw new BadRequestException("No finder-country rows found");
+    }
     if (rows.length > 250) {
       throw new BadRequestException("Too many finder-country rows");
     }

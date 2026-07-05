@@ -2,6 +2,7 @@ import { BadRequestException, Body, Controller, Get, Post, Put, UseGuards } from
 import { AuthUser } from "@geostats/shared";
 import { ArrayMaxSize, IsArray, IsNotEmpty, IsNumber, IsOptional, IsString, Max, MaxLength, Min } from "class-validator";
 import { AuthGuard } from "../auth/auth.guard";
+import { normalizeCountry } from "../common/geocaching.utils";
 import { CurrentUser } from "../auth/current-user.decorator";
 import { PrismaService } from "../common/prisma.service";
 
@@ -55,11 +56,6 @@ function cleanTimeZone(timeZone: string): string {
   } catch {
     return "Europe/Stockholm";
   }
-}
-
-function normalizeCountry(value: unknown): string | null {
-  const country = String(value ?? "").trim().replace(/\s+/g, " ");
-  return country ? country : null;
 }
 
 function parseFinderCountryText(text: unknown): Array<{ country: string; count: number }> {
