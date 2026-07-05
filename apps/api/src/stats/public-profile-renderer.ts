@@ -693,7 +693,7 @@ export function renderPublicProfileHtml(profile: { gcUsername: string }, stats: 
   <div id="gsakstats" align="center" style="background:#dedeee; font-family:Verdana, Arial, sans-serif; font-size:12px; color:black; overflow-x:hidden; margin:1px; border:outset; line-height:normal; padding:12px 0;">
     <a name="top"></a>
     <div style="font-family:Tahoma, Arial, sans-serif; font-size:16px; font-weight:bold;">
-      ${escapeHtml(username)} has ${formatNumber(stats?.totalFinds)} Finds on ${formatNumber(stats?.totalFinds)} unique Geocaches
+      ${escapeHtml(username)} has ${formatNumber(stats?.totalFinds)} Finds
     </div>
     <br>
     <i>Statistics generated on ${generatedDateForStats(stats)}</i>

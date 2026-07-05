@@ -1,6 +1,6 @@
 import { Controller, Get, Header, NotFoundException, Param, Res } from "@nestjs/common";
 import type { Response } from "express";
-import { existsSync, readFileSync } from "fs";
+import { readFile } from "fs/promises";
 import { join } from "path";
 import { renderPublicProfileHtml, renderPublicProfileSvg } from "./public-profile-renderer";
 import { StatsService } from "./stats.service";
@@ -27,16 +27,17 @@ export class PublicStatsController {
 
   @Get("profile-map/:asset")
   @Header("Cache-Control", "public, max-age=86400")
-  profileMap(@Param("asset") asset: string, @Res() response: Response) {
+  async profileMap(@Param("asset") asset: string, @Res() response: Response) {
     if (!/^ProjectGC_[A-Za-z0-9_.-]+\.svg$/.test(asset)) {
       throw new NotFoundException("Map asset not found");
     }
 
     const filePath = join(__dirname, "map-assets", asset);
-    if (!existsSync(filePath)) {
+    try {
+      const content = await readFile(filePath);
+      response.type("image/svg+xml").send(content);
+    } catch {
       throw new NotFoundException("Map asset not found");
     }
-
-    response.type("image/svg+xml").send(readFileSync(filePath));
   }
 }

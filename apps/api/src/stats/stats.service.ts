@@ -94,16 +94,14 @@ export class StatsService {
         userId: true,
         createdAt: true,
         updatedAt: true
-      }
+      },
+      take: 1
     });
-    const latestImportByUser = new Map(latestImports.map((item) => [item.userId, item]));
-    const profile = latestImports[0]
-      ? (profiles.find((candidate) => candidate.userId === latestImports[0]!.userId) ?? profiles[0]!)
+    const latestImport = latestImports[0] ?? null;
+    const profile = latestImport
+      ? (profiles.find((candidate) => candidate.userId === latestImport.userId) ?? profiles[0]!)
       : profiles[0]!;
-    const [stats, latestImport] = await Promise.all([
-      this.snapshotForUser(profile.userId),
-      Promise.resolve(latestImportByUser.get(profile.userId) ?? null)
-    ]);
+    const stats = await this.snapshotForUser(profile.userId);
 
     return {
       profile,
