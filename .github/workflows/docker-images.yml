@@ -69,8 +69,8 @@ jobs:
         with:
           images: ${{ steps.image.outputs.namespace }}/${{ matrix.image }}
           tags: |
-            type=raw,value=latest
-            type=raw,value=${{ needs.release-tag.outputs.tag }}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=${{ needs.release-tag.outputs.tag }},enable=${{ github.ref == 'refs/heads/main' }}
             type=sha,prefix=sha-
 
       - name: Resolve web build variables

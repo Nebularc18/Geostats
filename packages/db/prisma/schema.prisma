@@ -172,6 +172,7 @@ model Hide {
   importId         String?  @map("import_id")
   placedAt         DateTime? @map("placed_at") @db.Date
   receivedLogCount Int      @default(0) @map("received_log_count")
+  receivedLogsRaw  Json?    @map("received_logs_raw")
   createdAt        DateTime @default(now()) @map("created_at")
   updatedAt        DateTime @updatedAt @map("updated_at")
 

@@ -1,5 +1,6 @@
 import { XMLParser } from "fast-xml-parser";
 import JSZip from "jszip";
+import { Readable } from "node:stream";
 import { ImportSource } from "@geostats/shared";
 
 export interface ParsedCache {
@@ -30,6 +31,10 @@ export interface ParsedFind {
 export interface ParsedImport {
   caches: ParsedCache[];
   finds: ParsedFind[];
+}
+
+export interface ParseImportOptions {
+  gcUsername?: string | null;
 }
 
 const parser = new XMLParser({
@@ -110,6 +115,48 @@ function toDate(value: unknown): Date | null {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
+async function readZipEntryLimited(file: JSZip.JSZipObject, maxBytes: number): Promise<Buffer> {
+  const stream = file.nodeStream("nodebuffer") as Readable;
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    let settled = false;
+    const fail = (error: Error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      stream.destroy(error);
+      reject(error);
+    };
+    stream.on("data", (chunk) => {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      total += buffer.length;
+      if (total > maxBytes) {
+        fail(new Error(`ZIP entry ${file.name} exceeds ${maxBytes} bytes`));
+        return;
+      }
+      chunks.push(buffer);
+    });
+    stream.on("error", (error) => fail(error instanceof Error ? error : new Error(String(error))));
+    stream.on("end", () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      resolve(Buffer.concat(chunks));
+    });
+    if (typeof (stream as unknown as { resume?: () => void }).resume === "function") {
+      stream.resume();
+    }
+  });
+}
+
+function normalizeUsername(value: string | null | undefined): string | null {
+  const username = value?.trim().toLowerCase();
+  return username ? username : null;
+}
+
 function findCacheExtension(waypoint: Record<string, any>): Record<string, any> | null {
   const groundspeak = waypoint["groundspeak:cache"] ?? waypoint.cache;
   if (groundspeak && typeof groundspeak === "object") {
@@ -136,13 +183,27 @@ function findUserFoundDate(waypoint: Record<string, any>): Date | null {
   return toDate((gsak as Record<string, any>)["gsak:UserFound"] ?? (gsak as Record<string, any>).UserFound);
 }
 
-function findFoundLog(cache: Record<string, any>): Record<string, any> | null {
+function findFoundLog(cache: Record<string, any>, userFoundDate: Date | null, gcUsername?: string | null): Record<string, any> | null {
   const logs = cache["groundspeak:logs"]?.["groundspeak:log"] ?? cache.logs?.log;
-  const foundLog = asArray<Record<string, any>>(logs).find((log) => {
+  const foundLogs = asArray<Record<string, any>>(logs).filter((log) => {
     const type = firstText(log["groundspeak:type"], log.type)?.toLowerCase();
     return type === "found it" || type === "attended" || type === "webcam photo taken";
   });
-  return foundLog ?? null;
+  const username = normalizeUsername(gcUsername);
+  if (username) {
+    const userLog = foundLogs.find((log) => normalizeUsername(firstText(log["groundspeak:finder"], log.finder)) === username);
+    if (userLog) {
+      return userLog;
+    }
+  }
+  if (userFoundDate) {
+    const timestamp = userFoundDate.getTime();
+    const userFoundLog = foundLogs.find((log) => toDate(log["groundspeak:date"] ?? log.date)?.getTime() === timestamp);
+    if (userFoundLog) {
+      return userFoundLog;
+    }
+  }
+  return foundLogs[0] ?? null;
 }
 
 function escapeRegex(value: string): string {
@@ -175,7 +236,7 @@ function countReceivedLogs(cache: Record<string, any>): number {
   }).length;
 }
 
-function parseWaypoint(waypoint: Record<string, any>, source: ImportSource): ParsedFind | null {
+function parseWaypoint(waypoint: Record<string, any>, source: ImportSource, options: ParseImportOptions = {}): ParsedFind | null {
   const lat = toNumber(waypoint.lat);
   const lon = toNumber(waypoint.lon);
   const gcCode = firstText(waypoint.name);
@@ -184,7 +245,15 @@ function parseWaypoint(waypoint: Record<string, any>, source: ImportSource): Par
     return null;
   }
 
-  const foundLog = findFoundLog(cacheExtension);
+  const userFoundDate = findUserFoundDate(waypoint);
+  const foundLog = findFoundLog(cacheExtension, userFoundDate, options.gcUsername);
+  const foundLogDate = toDate(foundLog?.["groundspeak:date"] ?? foundLog?.date);
+  const username = normalizeUsername(options.gcUsername);
+  const foundLogMatchesUser =
+    username !== null && normalizeUsername(firstText(foundLog?.["groundspeak:finder"], foundLog?.finder)) === username;
+  const foundLogMatchesUserFoundDate =
+    userFoundDate !== null && foundLogDate !== null && userFoundDate.getTime() === foundLogDate.getTime();
+  const shouldUseFoundLogText = foundLogMatchesUser || (userFoundDate === null && username === null) || foundLogMatchesUserFoundDate;
   const placedBy = cacheExtension["groundspeak:placed_by"] ?? cacheExtension.placed_by;
   const owner = cacheExtension["groundspeak:owner"] ?? cacheExtension.owner;
 
@@ -208,13 +277,13 @@ function parseWaypoint(waypoint: Record<string, any>, source: ImportSource): Par
 
   return {
     cache,
-    foundAt: toDate(foundLog?.["groundspeak:date"] ?? foundLog?.date) ?? findUserFoundDate(waypoint),
-    logText: firstText(foundLog?.["groundspeak:text"], foundLog?.text),
+    foundAt: foundLogMatchesUser ? foundLogDate ?? userFoundDate : userFoundDate ?? foundLogDate,
+    logText: shouldUseFoundLogText ? firstText(foundLog?.["groundspeak:text"], foundLog?.text) : null,
     source
   };
 }
 
-export function parseGpx(content: string | Buffer, source: ImportSource): ParsedImport {
+export function parseGpx(content: string | Buffer, source: ImportSource, options: ParseImportOptions = {}): ParsedImport {
   const maxBytes = positiveLimit("IMPORT_MAX_BYTES", DEFAULT_MAX_IMPORT_BYTES);
   if (byteLength(content) > maxBytes) {
     throw new Error(`GPX file exceeds ${maxBytes} bytes`);
@@ -231,7 +300,7 @@ export function parseGpx(content: string | Buffer, source: ImportSource): Parsed
   }
 
   const parsedWaypoints = waypoints
-    .map((waypoint) => parseWaypoint(waypoint, source))
+    .map((waypoint) => parseWaypoint(waypoint, source, options))
     .filter((find): find is ParsedFind => find !== null);
 
   if (parsedWaypoints.length === 0) {
@@ -247,7 +316,8 @@ export function parseGpx(content: string | Buffer, source: ImportSource): Parsed
 export async function parseImportFile(
   fileName: string,
   content: Buffer,
-  source: ImportSource
+  source: ImportSource,
+  options: ParseImportOptions = {}
 ): Promise<ParsedImport> {
   if (fileName.toLowerCase().endsWith(".zip")) {
     const zip = await JSZip.loadAsync(content);
@@ -273,15 +343,12 @@ export async function parseImportFile(
         throw new Error(`ZIP GPX content exceeds ${maxTotalBytes} bytes`);
       }
 
-      const entry = await file.async("nodebuffer");
-      if (entry.length > maxEntryBytes) {
-        throw new Error(`ZIP entry ${file.name} exceeds ${maxEntryBytes} bytes`);
-      }
+      const entry = await readZipEntryLimited(file, maxEntryBytes);
       totalBytes += entry.length;
       if (totalBytes > maxTotalBytes) {
         throw new Error(`ZIP GPX content exceeds ${maxTotalBytes} bytes`);
       }
-      parsed.push(parseGpx(entry, source));
+      parsed.push(parseGpx(entry, source, options));
     }
     return {
       caches: parsed.flatMap((item) => item.caches),
@@ -293,5 +360,5 @@ export async function parseImportFile(
     throw new Error("Only GPX and ZIP files are supported");
   }
 
-  return parseGpx(content, source);
+  return parseGpx(content, source, options);
 }

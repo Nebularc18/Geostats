@@ -160,10 +160,10 @@ export class AuthController {
   }
 
   @Get("dev")
-  async dev(@Res({ passthrough: true }) response: Response) {
+  async dev(@Query("returnTo") returnTo: string | undefined, @Res({ passthrough: true }) response: Response) {
     const user = await this.auth.devUser();
     this.setCookie(response, user);
-    response.redirect(`${envOrDefault("WEB_ORIGIN", "http://localhost:3000")}/dashboard`);
+    response.redirect(this.webRedirectUrl(returnTo));
   }
 
   @Post("logout")
@@ -218,6 +218,13 @@ export class AuthController {
     return url.toString();
   }
 
+  private webRedirectUrl(returnTo?: string): string {
+    if (returnTo && returnTo.startsWith("/") && !returnTo.startsWith("//")) {
+      return new URL(returnTo, envOrDefault("WEB_ORIGIN", "http://localhost:3000")).toString();
+    }
+    return new URL("/dashboard", envOrDefault("WEB_ORIGIN", "http://localhost:3000")).toString();
+  }
+
   private mobileLoginUrl(redirectUri: string, authError?: string, token?: string): string {
     const url = new URL(redirectUri);
     const params = new URLSearchParams();
@@ -237,6 +244,9 @@ export class AuthController {
     const configured = process.env.MOBILE_AUTH_REDIRECT_URI?.trim();
     if (configured) {
       return redirectUri === configured;
+    }
+    if (process.env.NODE_ENV === "production") {
+      return false;
     }
     if (url.protocol === "geostats:" && url.hostname === "auth" && (url.pathname === "" || url.pathname === "/")) {
       return true;

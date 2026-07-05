@@ -517,7 +517,7 @@ export class CollectorController {
     });
     return {
       caches: hides.map((hide) => {
-        const logs = cacheLogs(hide.cache.raw);
+        const logs = cacheLogs(hide.receivedLogsRaw);
         return {
           gcCode: hide.cache.gcCode,
           name: hide.cache.name,
@@ -585,18 +585,20 @@ export class CollectorController {
         if (!current) {
           throw new BadRequestException(`Unknown owned caches: ${gcCode}`);
         }
-        const merged = mergedRaw(current.cache.raw, cacheLogsToAdd);
+        const merged = mergedRaw(current.receivedLogsRaw, cacheLogsToAdd);
         if (merged.added === 0 && current.receivedLogCount === merged.receivedLogCount) {
           continue;
         }
-        const updated = await tx.cache.updateMany({
-          where: { id: current.cacheId, updatedAt: current.cache.updatedAt },
-          data: { raw: merged.raw as Prisma.InputJsonValue }
+        const updated = await tx.hide.updateMany({
+          where: { id: current.id, userId, updatedAt: current.updatedAt },
+          data: {
+            receivedLogCount: merged.receivedLogCount,
+            receivedLogsRaw: merged.raw as Prisma.InputJsonValue
+          }
         });
         if (updated.count !== 1) {
-          throw new ConflictException(`Cache changed while receiving logs: ${gcCode}`);
+          throw new ConflictException(`Hide changed while receiving logs: ${gcCode}`);
         }
-        await tx.hide.update({ where: { id: current.id }, data: { receivedLogCount: merged.receivedLogCount } });
         added += merged.added;
         changedCaches += 1;
       }

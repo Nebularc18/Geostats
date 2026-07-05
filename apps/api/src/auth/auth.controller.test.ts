@@ -142,6 +142,41 @@ test("mobile login returns a bearer token through the mobile endpoint only", asy
   assert.deepEqual(loggedIn, { user: { id: "user-1", email: "a@example.com", username: "a" }, token: "jwt-token" });
 });
 
+test("development browser login redirects only to web app paths", async () => {
+  await withEnv({ WEB_ORIGIN: "http://localhost:3000" }, async () => {
+    const auth = {
+      devUser: async () => ({ id: "user-1", email: "dev@example.com", username: "dev" }),
+      sign: () => "jwt-token"
+    };
+    const cookies: Array<{ name: string; value: string }> = [];
+    const redirects: string[] = [];
+    const response = {
+      cookie: (name: string, value: string) => {
+        cookies.push({ name, value });
+      },
+      redirect: (url: string) => {
+        redirects.push(url);
+      }
+    };
+    const controller = new AuthController(auth as any);
+
+    await controller.dev("/scratch?country=SE", response as any);
+    await controller.dev("https://example.com/steal", response as any);
+    await controller.dev("//evil.com/steal", response as any);
+
+    assert.deepEqual(cookies, [
+      { name: "geostats_session", value: "jwt-token" },
+      { name: "geostats_session", value: "jwt-token" },
+      { name: "geostats_session", value: "jwt-token" }
+    ]);
+    assert.deepEqual(redirects, [
+      "http://localhost:3000/scratch?country=SE",
+      "http://localhost:3000/dashboard",
+      "http://localhost:3000/dashboard"
+    ]);
+  });
+});
+
 test("mobile external callback redirects bearer token in URL fragment", async () => {
   const auth = {
     loginWithExternalProvider: async () => ({ id: "user-1", email: "a@example.com", username: "a" }),
@@ -169,8 +204,8 @@ test("mobile external callback redirects bearer token in URL fragment", async ()
   assert.deepEqual(redirects, ["geostats://auth#token=jwt-token"]);
 });
 
-test("default mobile redirect validation only accepts the app auth URL", () => {
-  withEnv({ MOBILE_AUTH_REDIRECT_URI: undefined }, () => {
+test("development mobile redirect validation accepts app and Expo auth URLs", () => {
+  withEnv({ MOBILE_AUTH_REDIRECT_URI: undefined, NODE_ENV: "development" }, () => {
     const controller = new AuthController({} as any);
 
     assert.equal((controller as any).isAllowedMobileRedirectUri("geostats://auth"), true);
@@ -184,5 +219,20 @@ test("default mobile redirect validation only accepts the app auth URL", () => {
     assert.equal((controller as any).isAllowedMobileRedirectUri("exp://10.11.18.75:8081/--/profile"), false);
     assert.equal((controller as any).isAllowedMobileRedirectUri("geostats://anything/auth"), false);
     assert.equal((controller as any).isAllowedMobileRedirectUri("https://example.com/auth"), false);
+  });
+});
+
+test("production mobile redirect validation requires an exact configured URI", () => {
+  withEnv({ MOBILE_AUTH_REDIRECT_URI: undefined, NODE_ENV: "production" }, () => {
+    const controller = new AuthController({} as any);
+
+    assert.equal((controller as any).isAllowedMobileRedirectUri("geostats://auth"), false);
+    assert.equal((controller as any).isAllowedMobileRedirectUri("exp://10.11.18.75:8081/--/auth"), false);
+  });
+  withEnv({ MOBILE_AUTH_REDIRECT_URI: "geostats://auth", NODE_ENV: "production" }, () => {
+    const controller = new AuthController({} as any);
+
+    assert.equal((controller as any).isAllowedMobileRedirectUri("geostats://auth"), true);
+    assert.equal((controller as any).isAllowedMobileRedirectUri("geostats://auth/"), false);
   });
 });
