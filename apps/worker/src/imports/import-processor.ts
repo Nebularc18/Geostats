@@ -390,6 +390,10 @@ export class ImportProcessor {
       },
       orderBy: { placedAt: "asc" }
     });
+    const ownerFinderCountryStats = await this.prisma.ownerFinderCountryStat.findMany({
+      where: { userId },
+      orderBy: [{ count: "desc" }, { country: "asc" }]
+    });
     const gcUsername = normalizedGcUsername(profile);
     const finds = await this.prisma.find.findMany({
       where: countableFindWhere(userId, gcUsername),
@@ -453,7 +457,10 @@ export class ImportProcessor {
           elevationMeters: elevationFromRaw(hide.cache.raw),
           raw: hide.cache.raw
         }
-      }))
+      })),
+      {
+        finderCountryBuckets: ownerFinderCountryStats.map((row) => ({ key: row.country, count: row.count }))
+      }
     );
 
     await this.prisma.$transaction(async (tx) => {

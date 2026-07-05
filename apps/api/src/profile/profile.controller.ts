@@ -1,7 +1,8 @@
-import { Body, Controller, Get, Put, UseGuards } from "@nestjs/common";
+import { BadRequestException, Body, Controller, Get, Post, Put, UseGuards } from "@nestjs/common";
 import { AuthUser } from "@geostats/shared";
 import { ArrayMaxSize, IsArray, IsNotEmpty, IsNumber, IsOptional, IsString, Max, MaxLength, Min } from "class-validator";
 import { AuthGuard } from "../auth/auth.guard";
+import { normalizeCountry } from "../common/geocaching.utils";
 import { CurrentUser } from "../auth/current-user.decorator";
 import { PrismaService } from "../common/prisma.service";
 
@@ -35,6 +36,11 @@ class ProfileDto {
   ftfDetectionTerms?: string[];
 }
 
+type FinderCountryRow = {
+  country?: unknown;
+  count?: unknown;
+};
+
 function cleanFtfDetectionTerms(terms: string[] | undefined): string[] {
   const cleaned = (terms ?? [])
     .map((term) => term.trim())
@@ -50,6 +56,45 @@ function cleanTimeZone(timeZone: string): string {
   } catch {
     return "Europe/Stockholm";
   }
+}
+
+function parseFinderCountryText(text: unknown): Array<{ country: string; count: number }> {
+  const rows: Array<{ country: string; count: number }> = [];
+  for (const rawLine of String(text ?? "").split(/\r?\n/)) {
+    const line = rawLine.replace(/\s+/g, " ").trim();
+    if (!line || /^(country|finders by country)\b/i.test(line)) {
+      continue;
+    }
+    const match = line.match(/^(?:\d+\s*[–-]\s*)?(.+?)\s+(\d+)\s+\d+(?:[.,]\d+)?%?$/);
+    if (!match) {
+      continue;
+    }
+    const country = normalizeCountry(match[1]);
+    const count = Number(match[2]);
+    if (country && Number.isInteger(count) && count > 0) {
+      rows.push({ country, count });
+    }
+  }
+  return rows;
+}
+
+function normalizeFinderCountryRows(body: { rows?: FinderCountryRow[]; text?: unknown }): Array<{ country: string; count: number }> {
+  const parsedRows = Array.isArray(body.rows)
+    ? body.rows
+        .map((row) => {
+          const country = normalizeCountry(row.country);
+          const count = Number(row.count);
+          return country && Number.isInteger(count) && count > 0 ? { country, count } : null;
+        })
+        .filter((row): row is { country: string; count: number } => Boolean(row))
+    : parseFinderCountryText(body.text);
+  const byCountry = new Map<string, number>();
+  for (const row of parsedRows) {
+    byCountry.set(row.country, (byCountry.get(row.country) ?? 0) + row.count);
+  }
+  return [...byCountry.entries()]
+    .map(([country, count]) => ({ country, count }))
+    .sort((a, b) => b.count - a.count || a.country.localeCompare(b.country));
 }
 
 @Controller("profile")
@@ -91,5 +136,28 @@ export class ProfileController {
       return updated;
     });
     return { profile };
+  }
+
+  @Post("owner-finder-countries")
+  async importOwnerFinderCountries(@CurrentUser() user: AuthUser, @Body() body: { rows?: FinderCountryRow[]; text?: unknown }) {
+    const rows = normalizeFinderCountryRows(body);
+    if (rows.length === 0) {
+      throw new BadRequestException("No finder-country rows found");
+    }
+    if (rows.length > 250) {
+      throw new BadRequestException("Too many finder-country rows");
+    }
+    await this.prisma.$transaction(async (tx) => {
+      await tx.ownerFinderCountryStat.deleteMany({ where: { userId: user.id } });
+      await tx.ownerFinderCountryStat.createMany({
+        data: rows.map((row) => ({
+          userId: user.id,
+          country: row.country,
+          count: row.count
+        }))
+      });
+      await tx.statSnapshot.deleteMany({ where: { userId: user.id } });
+    });
+    return { rows };
   }
 }

@@ -942,11 +942,27 @@ function FtfScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
 function HidesScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
   const { data, loading, error } = useApi<{ stats: any }>(apiBaseUrl, token, "/stats/summary", { stats: {} });
   const h = data.stats.hideStats ?? {};
+  const ownerGroups: Array<[string, any[]]> = [
+    ["Cumulative finds of my caches", h.cumulativeReceivedLogsByMonth ?? []],
+    ["Caching karma", h.receivedLogsByYear ?? []],
+    ["Finds on hides by month", h.receivedLogsByMonth ?? []]
+  ];
+  if ((h.finderCountryBuckets ?? []).some((row: any) => row.key !== "Unknown" && row.count > 0)) {
+    ownerGroups.push(["Finders by country", h.finderCountryBuckets ?? []]);
+  }
+  ownerGroups.push(
+    ["Placed by country", h.hidesByCountry ?? []],
+    ["Top finders of my caches", h.finderBuckets ?? []],
+    ["Placed by type", h.hidesByType ?? []],
+    ["Placed by size", h.hidesBySize ?? []],
+    ["Placed by found month", h.receivedLogsByCalendarMonth ?? []],
+    ["Placed by found weekday", h.receivedLogsByWeekday ?? []]
+  );
   return (
     <>
       <PageTitle eyebrow="Owner statistics" title="Hides" />
       <StatGrid rows={[["Owned", h.totalHides ?? 0], ["Active", h.activeHides ?? 0], ["Received logs", h.totalReceivedLogs ?? 0], ["Finders", h.totalUniqueFinders ?? 0]]} />
-      <BreakdownPanel title="Owner charts" groups={[["Cumulative finds of my caches", h.cumulativeReceivedLogsByMonth ?? []], ["Caching karma", h.receivedLogsByYear ?? []], ["Finds on hides by month", h.receivedLogsByMonth ?? []], ["Finders by country", h.hidesByCountry ?? []], ["Top finders of my caches", h.finderBuckets ?? []], ["Placed by type", h.hidesByType ?? []], ["Placed by size", h.hidesBySize ?? []], ["Placed by found month", h.receivedLogsByCalendarMonth ?? []], ["Placed by found weekday", h.receivedLogsByWeekday ?? []]]} />
+      <BreakdownPanel title="Owner charts" groups={ownerGroups} />
       <Panel title="Owned cache statistics"><KeyValue rows={(h.hideSummaryRows ?? []).map((row: any) => [row.label, row.value])} /></Panel>
       <Panel title="Placed D/T chart"><DifficultyGrid data={h.hidesByDifficultyTerrain ?? []} /></Panel>
       <Panel title="Placed by hidden date"><CalendarHeatmap data={h.placedHiddenDateMatrix ?? []} /></Panel>
