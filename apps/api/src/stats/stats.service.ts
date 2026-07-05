@@ -3,7 +3,7 @@ import { countableFindWhere, Prisma } from "@geostats/db";
 import { calculateHideStats, calculateStats, normalizedGcUsername } from "@geostats/stats";
 import { PrismaService } from "../common/prisma.service";
 
-const STATS_VERSION = 16;
+const STATS_VERSION = 17;
 const DEFAULT_FTF_FIND_LIMIT = 100;
 const MAX_FTF_FIND_LIMIT = 200;
 const MAX_FTF_LOG_TEXT_LENGTH = 1_000;
@@ -59,6 +59,57 @@ export class StatsService {
     }
 
     return this.recalculateSnapshotForUser(userId, profile);
+  }
+
+  async publicSnapshotForUsername(username: string) {
+    const cleanUsername = username.trim();
+    if (!cleanUsername) {
+      throw new NotFoundException("Profile not found");
+    }
+
+    const profiles = await this.prisma.geocachingProfile.findMany({
+      where: {
+        gcUsername: {
+          equals: cleanUsername,
+          mode: "insensitive"
+        }
+      },
+      select: {
+        userId: true,
+        gcUsername: true
+      },
+      orderBy: { updatedAt: "desc" }
+    });
+
+    if (!profiles.length) {
+      throw new NotFoundException("Profile not found");
+    }
+    const latestImports = await this.prisma.import.findMany({
+      where: {
+        userId: { in: profiles.map((profile) => profile.userId) },
+        status: "COMPLETED"
+      },
+      orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
+      select: {
+        userId: true,
+        createdAt: true,
+        updatedAt: true
+      },
+      take: 1
+    });
+    const latestImport = latestImports[0] ?? null;
+    const profile = latestImport
+      ? (profiles.find((candidate) => candidate.userId === latestImport.userId) ?? profiles[0]!)
+      : profiles[0]!;
+    const stats = await this.snapshotForUser(profile.userId);
+
+    return {
+      profile,
+      stats: {
+        ...stats,
+        latestImportAt: latestImport?.updatedAt?.toISOString() ?? latestImport?.createdAt?.toISOString() ?? null
+      }
+    };
   }
 
   async buildSnapshotForUser(userId: string) {
