@@ -30,9 +30,14 @@ export interface StatsHide {
   cache: StatsCache;
 }
 
+export interface HideStatsOptions {
+  finderCountryBuckets?: CountBucket[];
+}
+
 export interface HideLog {
   date: string;
   finder: string;
+  finderCountry: string | null;
   type: string;
   text: string | null;
   gcCode: string;
@@ -282,6 +287,7 @@ export interface HideStats {
   hidesByCountry: CountBucket[];
   hidesByRegion: CountBucket[];
   hidesByDifficultyTerrain: DifficultyTerrainCell[];
+  finderCountryBuckets: PercentBucket[];
   finderBuckets: PercentBucket[];
   hideSummaryRows: Array<{ label: string; value: string }>;
   logsReceived: Array<{
@@ -783,9 +789,17 @@ function hideLogs(hide: StatsHide): HideLog[] {
       const type = firstRawText(log["groundspeak:type"], log.type) ?? "Unknown";
       const date = firstRawText(log["groundspeak:date"], log.date);
       const finder = firstRawText(log["groundspeak:finder"], log.finder) ?? "Unknown";
+      const finderCountry = firstRawText(
+        log["geostats:finder_country"],
+        log["groundspeak:finder_country"],
+        log.finderCountry,
+        log.finder_country,
+        log.country
+      );
       return {
         date: date ? dateKey(toDate(date)) : "",
         finder,
+        finderCountry,
         type,
         text: firstRawText(log["groundspeak:text"], log.text),
         gcCode: hide.cache.gcCode,
@@ -884,7 +898,14 @@ function hideLogDateRows(logs: HideLog[]): {
   };
 }
 
-export function calculateHideStats(hides: StatsHide[]): HideStats {
+function countryPercentBuckets(rows: CountBucket[]): PercentBucket[] {
+  const total = rows.reduce((sum, row) => sum + row.count, 0);
+  return rows
+    .map((row) => ({ ...row, percent: total > 0 ? (row.count / total) * 100 : 0 }))
+    .sort((a, b) => b.count - a.count || a.key.localeCompare(b.key));
+}
+
+export function calculateHideStats(hides: StatsHide[], options: HideStatsOptions = {}): HideStats {
   const byYear = new Map<string, number>();
   const byMonth = new Map<string, number>();
   const byType = new Map<string, number>();
@@ -894,6 +915,7 @@ export function calculateHideStats(hides: StatsHide[]): HideStats {
   const byCountry = new Map<string, number>();
   const byRegion = new Map<string, number>();
   const byFinder = new Map<string, number>();
+  const byFinderCountry = new Map<string, number>();
   const byPlacedDate = new Map<string, number>();
   const dt = new Map<string, DifficultyTerrainCell>();
   const allLogs: HideLog[] = [];
@@ -909,6 +931,7 @@ export function calculateHideStats(hides: StatsHide[]): HideStats {
     totalFavoritePoints += favoritePoints(hide.cache);
     for (const log of logs) {
       increment(byFinder, log.finder);
+      increment(byFinderCountry, log.finderCountry);
     }
     if (isArchived(hide.cache)) {
       archivedHides += 1;
@@ -1010,6 +1033,10 @@ export function calculateHideStats(hides: StatsHide[]): HideStats {
     hidesByCountry: buckets(byCountry),
     hidesByRegion: buckets(byRegion),
     hidesByDifficultyTerrain: [...dt.values()].sort((a, b) => a.difficulty - b.difficulty || a.terrain - b.terrain),
+    finderCountryBuckets:
+      options.finderCountryBuckets && options.finderCountryBuckets.length > 0
+        ? countryPercentBuckets(options.finderCountryBuckets)
+        : percentBuckets(byFinderCountry, totalReceivedLogs),
     finderBuckets: percentBuckets(byFinder, totalReceivedLogs),
     hideSummaryRows: [
       { label: "Owned", value: `${totalHides}, ${archivedHides} archived` },
@@ -1293,7 +1320,7 @@ export function calculateStats(finds: StatsFind[], options: StatsOptions = {}): 
   const milestoneStats = calculateMilestoneStats(sorted);
 
   return {
-    statsVersion: 17,
+    statsVersion: 19,
     totalFinds,
     findsByYear: buckets(byYear).sort((a, b) => a.key.localeCompare(b.key)),
     findsByMonth: sortedMonths,

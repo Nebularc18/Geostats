@@ -102,6 +102,7 @@ test("calculateHideStats derives owner-side log and date buckets", () => {
                 "groundspeak:date": "2026-05-03T19:00:00Z",
                 "groundspeak:type": "Found it",
                 "groundspeak:finder": "FinderOne",
+                "geostats:finder_country": "Sweden",
                 "groundspeak:text": "Nice hide"
               },
               {
@@ -137,4 +138,5 @@ test("calculateHideStats derives owner-side log and date buckets", () => {
   assert.deepEqual(stats.receivedFoundDateMatrix, [{ key: "05-03", count: 1 }]);
   assert.equal(stats.logsReceived[0]?.gcCode, "GCHIDE1");
   assert.equal(stats.finderBuckets[0]?.key, "FinderOne");
+  assert.deepEqual(stats.finderCountryBuckets, [{ key: "Sweden", count: 1, percent: 100 }]);
 });

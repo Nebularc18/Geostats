@@ -3,7 +3,7 @@ import { countableFindWhere, Prisma } from "@geostats/db";
 import { calculateHideStats, calculateStats, normalizedGcUsername } from "@geostats/stats";
 import { PrismaService } from "../common/prisma.service";
 
-const STATS_VERSION = 17;
+const STATS_VERSION = 19;
 const DEFAULT_FTF_FIND_LIMIT = 100;
 const MAX_FTF_FIND_LIMIT = 200;
 const MAX_FTF_LOG_TEXT_LENGTH = 1_000;
@@ -166,6 +166,10 @@ export class StatsService {
       },
       orderBy: { placedAt: "asc" }
     });
+    const ownerFinderCountryStats = await prisma.ownerFinderCountryStat.findMany({
+      where: { userId },
+      orderBy: [{ count: "desc" }, { country: "asc" }]
+    });
     const gcUsername = normalizedGcUsername(profile);
     const finds = await prisma.find.findMany({
       where: countableFindWhere(userId, gcUsername),
@@ -230,7 +234,10 @@ export class StatsService {
           elevationMeters: elevationFromRaw(hide.cache.raw),
           raw: hide.cache.raw
         }
-      }))
+      })),
+      {
+        finderCountryBuckets: ownerFinderCountryStats.map((row) => ({ key: row.country, count: row.count }))
+      }
     );
     stats.achievementStats.hostedEventCaches = stats.hideStats.hostedEventCaches;
 

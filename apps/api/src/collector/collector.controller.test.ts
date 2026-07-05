@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { BadRequestException } from "@nestjs/common";
-import { cacheLogs, CollectorController, logKey, mergedRaw, parseReceivedLogsCsv, rawFromInput, trustedBaseUrl } from "./collector.controller";
+import {
+  cacheLogs,
+  CollectorController,
+  logKey,
+  mergedRaw,
+  normalizeFinderCountryRows,
+  parseReceivedLogsCsv,
+  rawFromInput,
+  trustedBaseUrl
+} from "./collector.controller";
 
 function withEnv(values: Record<string, string | undefined>, fn: () => void) {
   const previous = new Map<string, string | undefined>();
@@ -184,7 +193,7 @@ test("rawFromInput rejects malformed collector entries with BadRequestException"
 
 test("parseReceivedLogsCsv reads generated owner log CSV", () => {
   const logs = parseReceivedLogsCsv(
-    'gcCode,logId,date,type,finder,text\nGC123,987,2024-01-15,Found it,Finder,"Nice, easy cache"\n'
+    'gcCode,logId,date,type,finder,country,text\nGC123,987,2024-01-15,Found it,Finder,Sweden,"Nice, easy cache"\n'
   );
 
   assert.deepEqual(logs, [
@@ -194,6 +203,7 @@ test("parseReceivedLogsCsv reads generated owner log CSV", () => {
       date: "2024-01-15",
       type: "Found it",
       finder: "Finder",
+      finderCountry: "Sweden",
       text: "Nice, easy cache"
     }
   ]);
@@ -209,9 +219,25 @@ test("parseReceivedLogsCsv accepts older CSV without log ids", () => {
       date: "2024-01-15",
       type: "Found it",
       finder: "Finder",
+      finderCountry: null,
       text: "Fresh"
     }
   ]);
+});
+
+test("normalizeFinderCountryRows validates and merges country counts", () => {
+  assert.deepEqual(
+    normalizeFinderCountryRows([
+      { country: "Sweden", count: 18 },
+      { country: "Germany", count: "5" },
+      { country: "Sweden", count: 1 }
+    ]),
+    [
+      { country: "Sweden", count: 19 },
+      { country: "Germany", count: 5 }
+    ]
+  );
+  assert.throws(() => normalizeFinderCountryRows([{ country: "Sweden", count: 0 }]), BadRequestException);
 });
 
 function collectorControllerWithHides(hides: unknown[]) {
@@ -492,4 +518,50 @@ test("receivedLogsCsv rejects renamed non-CSV uploads by MIME type", async () =>
       ),
     BadRequestException
   );
+});
+
+test("projectGcFinderCountries stores aggregate rows and clears snapshots", async () => {
+  const actions: string[] = [];
+  const tx = {
+    ownerFinderCountryStat: {
+      deleteMany: async ({ where }: any) => {
+        assert.equal(where.userId, "user-1");
+        actions.push("delete-countries");
+      },
+      createMany: async ({ data }: any) => {
+        assert.deepEqual(data, [
+          { userId: "user-1", country: "Sweden", count: 18 },
+          { userId: "user-1", country: "Germany", count: 5 }
+        ]);
+        actions.push("create-countries");
+      }
+    },
+    statSnapshot: {
+      deleteMany: async ({ where }: any) => {
+        assert.equal(where.userId, "user-1");
+        actions.push("delete-snapshots");
+      }
+    }
+  };
+  const prisma = {
+    collectorToken: {
+      findUnique: async () => ({ id: "token-1", userId: "user-1" }),
+      update: async () => ({})
+    },
+    $transaction: async (run: (client: unknown) => Promise<unknown>) => run(tx)
+  };
+  const controller = new CollectorController(prisma as any, {} as any);
+
+  const result = await controller.projectGcFinderCountries("Bearer token", {
+    rows: [
+      { country: "Sweden", count: 18 },
+      { country: "Germany", count: 5 }
+    ]
+  });
+
+  assert.deepEqual(result.rows, [
+    { country: "Sweden", count: 18 },
+    { country: "Germany", count: 5 }
+  ]);
+  assert.deepEqual(actions, ["delete-countries", "create-countries", "delete-snapshots"]);
 });

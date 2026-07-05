@@ -30,10 +30,15 @@ function hidesCsvCommand(token: string) {
   return `$env:GEOSTATS_COLLECTOR_TOKEN=${powerShellString(token)}; $env:GEOSTATS_COLLECTOR_NO_UPLOAD='1'; irm ${powerShellString(`${API_URL}/collector/hides.ps1`)} | iex`;
 }
 
+function projectGcCommand(token: string) {
+  return `$env:GEOSTATS_COLLECTOR_TOKEN=${powerShellString(token)}; irm ${powerShellString(`${API_URL}/collector/project-gc.ps1`)} | iex`;
+}
+
 export default function ProfilePage() {
   const [profile, setProfile] = useState<any>(null);
   const [tokens, setTokens] = useState<any[]>([]);
   const [message, setMessage] = useState<string | null>(null);
+  const [projectGcText, setProjectGcText] = useState("");
   const [copiedCommandId, setCopiedCommandId] = useState<string | null>(null);
   const selectedTimeZone = profile?.timeZone || defaultTimeZone;
   const timeZoneOptions = useMemo(() => supportedTimeZones(selectedTimeZone), [selectedTimeZone]);
@@ -80,12 +85,24 @@ export default function ProfilePage() {
     setTokens((current) => current.filter((token) => token.id !== id));
   }
 
-  async function copyCommand(token: any, mode: "direct" | "csv") {
+  async function importProjectGcFinderCountries(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const data = await apiFetch<{ rows: Array<{ country: string; count: number }> }>("/profile/owner-finder-countries", {
+      method: "POST",
+      body: JSON.stringify({ text: projectGcText })
+    });
+    setProjectGcText("");
+    setMessage(`Imported ${data.rows.length} finder country rows from Project-GC.`);
+  }
+
+  async function copyCommand(token: any, mode: "direct" | "csv" | "project-gc") {
     if (!token.token) {
       return;
     }
     try {
-      await navigator.clipboard.writeText(mode === "csv" ? hidesCsvCommand(token.token) : hidesCommand(token.token));
+      await navigator.clipboard.writeText(
+        mode === "csv" ? hidesCsvCommand(token.token) : mode === "project-gc" ? projectGcCommand(token.token) : hidesCommand(token.token)
+      );
       setCopiedCommandId(`${token.id}:${mode}`);
       setMessage(null);
     } catch {
@@ -200,6 +217,16 @@ export default function ProfilePage() {
                       </div>
                       <textarea readOnly rows={3} value={hidesCsvCommand(token.token)} />
                     </div>
+                    <div className="collector-token-command-card">
+                      <div className="collector-command-title">
+                        <span>Project-GC country command</span>
+                        <button className="ghost-button collector-command-action" type="button" onClick={() => copyCommand(token, "project-gc")}>
+                          <UploadCloud size={16} />
+                          {copiedCommandId === `${token.id}:project-gc` ? "Copied" : "Copy"}
+                        </button>
+                      </div>
+                      <textarea readOnly rows={3} value={projectGcCommand(token.token)} />
+                    </div>
                   </div>
                 ) : (
                   <p className="muted">Command unavailable for this older token. Delete it and create a new token once.</p>
@@ -208,6 +235,30 @@ export default function ProfilePage() {
             </div>
           ))}
         </div>
+      </section>
+      <section className="panel narrow">
+        <h2>Project-GC finder countries</h2>
+        <form className="form" onSubmit={importProjectGcFinderCountries}>
+          <label>
+            <span className="field-label">
+              Finders by country table
+              <em>Optional</em>
+            </span>
+            <textarea
+              rows={8}
+              value={projectGcText}
+              onChange={(event) => setProjectGcText(event.target.value)}
+              placeholder={"Finders by country\nCountry Number Percent\n1 - Sweden 18 69.23%\n2 - Germany 5 19.23%"}
+            />
+          </label>
+          <p className="muted">
+            Paste the Finders by country rows from Project-GC Profile Stats. These aggregate rows are used only for the Hides finder-country chart.
+          </p>
+          <button className="primary-button" type="submit">
+            <UploadCloud size={18} />
+            Import Project-GC countries
+          </button>
+        </form>
       </section>
     </AppShell>
   );

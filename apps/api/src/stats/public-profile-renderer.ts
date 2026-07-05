@@ -580,6 +580,10 @@ function ownedCachesTable(username: string, hides: any) {
   if (!hides?.totalHides) {
     return "";
   }
+  const finderCountryRows = (hides.finderCountryBuckets ?? []) as PercentBucket[];
+  const finderCountries = finderCountryRows.some((row) => row.key !== "Unknown" && row.count > 0)
+    ? percentRows("Finders by Country", finderCountryRows, 12)
+    : "";
   return `${sectionHead("Owned Caches Statistics")}
     <table width="740" style="text-align:left; font-size:12px; border-collapse:separate; border-spacing:1px;">
       ${[
@@ -597,6 +601,7 @@ function ownedCachesTable(username: string, hides: any) {
         )
         .join("")}
     </table><br><br>
+    ${finderCountries}
     ${bucketRows(`Finders of My Caches (${escapeHtml(username)})`, hides.finderBuckets ?? [], 12)}`;
 }
 

@@ -44,8 +44,24 @@ model User {
   snapshots    StatSnapshot[]
   collectorTokens CollectorToken[]
   oauthAccounts OAuthAccount[]
+  ownerFinderCountryStats OwnerFinderCountryStat[]
 
   @@map("users")
+}
+
+model OwnerFinderCountryStat {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  country   String
+  count     Int
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, country])
+  @@index([userId])
+  @@map("owner_finder_country_stats")
 }
 
 model OAuthAccount {

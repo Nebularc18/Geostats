@@ -34,11 +34,18 @@ type ReceivedLogInput = {
   date?: string;
   type?: string;
   finder?: string;
+  finderCountry?: string | null;
   text?: string | null;
+};
+
+type FinderCountryInput = {
+  country?: unknown;
+  count?: unknown;
 };
 
 const TOKEN_PREFIX = "gst";
 const COLLECTOR_SOURCE_PATH = resolve(process.cwd(), "apps/tools/src/collect-owner-logs.ts");
+const PROJECT_GC_SOURCE_PATH = resolve(process.cwd(), "apps/tools/src/collect-project-gc-finder-countries.ts");
 const COLLECTOR_CSV_MAX_BYTES = 10_485_760;
 const COLLECTOR_CSV_MIME_TYPES = new Set(["text/csv", "application/csv", "text/plain"]);
 
@@ -216,6 +223,111 @@ try {
 `;
 }
 
+function projectGcRunnerScript(serverUrl: string) {
+  const server = powershellString(serverUrl);
+  return `$ErrorActionPreference = "Stop"
+
+$server = ${server}
+$token = $env:GEOSTATS_COLLECTOR_TOKEN
+if (-not $token) {
+  $token = Read-Host "Paste Geostats collector token"
+}
+if (-not $token) {
+  throw "Collector token is required."
+}
+
+if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
+  throw "Node.js 22 or newer is required. Install Node.js, then run this command again."
+}
+if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+  throw "npm is required. Install Node.js with npm, then run this command again."
+}
+
+$baseDir = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "Geostats\\project-gc-runner" } else { Join-Path $HOME ".geostats\\project-gc-runner" }
+$profileDir = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "Geostats\\project-gc-browser" } else { Join-Path $HOME ".geostats\\project-gc-browser" }
+$collectorPath = Join-Path $baseDir "collect-project-gc-finder-countries.ts"
+$packagePath = Join-Path $baseDir "package.json"
+
+New-Item -ItemType Directory -Force -Path $baseDir | Out-Null
+New-Item -ItemType Directory -Force -Path $profileDir | Out-Null
+
+$packageJson = '{"private":true,"dependencies":{"playwright":"^1.51.1","tsx":"^4.19.2"}}'
+$utf8NoBom = New-Object System.Text.UTF8Encoding $false
+[System.IO.File]::WriteAllText($packagePath, $packageJson, $utf8NoBom)
+
+Invoke-WebRequest -UseBasicParsing -Uri "$server/collector/project-gc.ts" -OutFile $collectorPath
+
+Push-Location $baseDir
+try {
+  if (-not (Test-Path (Join-Path $baseDir "node_modules"))) {
+    npm install --no-audit --no-fund
+  }
+
+  function Get-CommandExecutable([string] $command) {
+    if (-not $command) {
+      return $null
+    }
+    $trimmed = $command.Trim()
+    if ($trimmed.StartsWith('"')) {
+      $end = $trimmed.IndexOf('"', 1)
+      if ($end -gt 1) {
+        return $trimmed.Substring(1, $end - 1)
+      }
+    }
+    return ($trimmed -split "\\s+")[0]
+  }
+
+  function Get-DefaultBrowserExecutable {
+    try {
+      $choice = Get-ItemProperty -Path "HKCU:\\Software\\Microsoft\\Windows\\Shell\\Associations\\UrlAssociations\\https\\UserChoice" -ErrorAction Stop
+      if ($choice.ProgId) {
+        $commandItem = Get-ItemProperty -Path "Registry::HKEY_CLASSES_ROOT\\$($choice.ProgId)\\shell\\open\\command" -ErrorAction Stop
+        $exe = Get-CommandExecutable $commandItem.'(default)'
+        if ($exe -and (Test-Path $exe)) {
+          return $exe
+        }
+      }
+    } catch {
+    }
+    return $null
+  }
+
+  $browser = $null
+  $defaultBrowser = Get-DefaultBrowserExecutable
+  $browserCandidates = @(
+    $defaultBrowser,
+    (Join-Path $env:LOCALAPPDATA "imput\\Helium\\Application\\chrome.exe"),
+    (Join-Path \${env:ProgramFiles} "Microsoft\\Edge\\Application\\msedge.exe"),
+    (Join-Path \${env:ProgramFiles(x86)} "Microsoft\\Edge\\Application\\msedge.exe"),
+    (Join-Path \${env:ProgramFiles} "Google\\Chrome\\Application\\chrome.exe"),
+    (Join-Path \${env:ProgramFiles(x86)} "Google\\Chrome\\Application\\chrome.exe"),
+    (Join-Path $env:LOCALAPPDATA "Google\\Chrome\\Application\\chrome.exe")
+  ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
+  if ($browserCandidates.Count -gt 0) {
+    $browser = $browserCandidates[0]
+    Write-Host "Using browser: $browser"
+  } else {
+    $playwrightCache = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "ms-playwright" } else { Join-Path $HOME ".cache\\ms-playwright" }
+    $hasCachedChromium = (Test-Path $playwrightCache) -and ((Get-ChildItem -Path $playwrightCache -Directory -Filter "chromium-*" -ErrorAction SilentlyContinue | Select-Object -First 1) -ne $null)
+    if (-not $hasCachedChromium) {
+      npx --yes playwright install chromium
+    }
+  }
+
+  $runArgs = @($collectorPath, "--server", $server, "--token", $token, "--profile-dir", $profileDir)
+  if ($env:GEOSTATS_PROJECT_GC_HEADLESS -eq "1") {
+    $runArgs += @("--headless")
+  }
+  if ($browser) {
+    $runArgs += @("--browser", $browser)
+  }
+  npx --yes tsx @runArgs
+} finally {
+  Pop-Location
+}
+`;
+}
+
 function authToken(header: string | undefined) {
   const match = header?.match(/^Bearer\s+(.+)$/i);
   return match?.[1]?.trim() ?? null;
@@ -326,6 +438,9 @@ export function rawFromInput(log: ReceivedLogInput) {
   if (log.logId != null && String(log.logId).trim()) {
     raw["geostats:log_id"] = String(log.logId).trim();
   }
+  if (log.finderCountry?.trim()) {
+    raw["geostats:finder_country"] = log.finderCountry.trim();
+  }
   return { gcCode, raw };
 }
 
@@ -402,6 +517,7 @@ export function parseReceivedLogsCsv(content: string): ReceivedLogInput[] {
     date: fieldIndex(headers, "date", "visited"),
     type: fieldIndex(headers, "type", "logType"),
     finder: fieldIndex(headers, "finder", "userName"),
+    finderCountry: fieldIndex(headers, "finderCountry", "finder_country", "country"),
     text: fieldIndex(headers, "text", "logText")
   };
   const missing = [
@@ -419,8 +535,32 @@ export function parseReceivedLogsCsv(content: string): ReceivedLogInput[] {
     date: row[indexes.date],
     type: indexes.type === -1 ? "Found it" : row[indexes.type],
     finder: row[indexes.finder],
+    finderCountry: indexes.finderCountry === -1 ? null : row[indexes.finderCountry],
     text: indexes.text === -1 ? "" : row[indexes.text]
   }));
+}
+
+function normalizeCountry(value: unknown): string | null {
+  const country = String(value ?? "").trim().replace(/\s+/g, " ");
+  return country ? country : null;
+}
+
+export function normalizeFinderCountryRows(rows: FinderCountryInput[] | undefined): Array<{ country: string; count: number }> {
+  if (!Array.isArray(rows)) {
+    throw new BadRequestException("rows must be an array");
+  }
+  const byCountry = new Map<string, number>();
+  for (const row of rows) {
+    const country = normalizeCountry(row.country);
+    const count = Number(row.count);
+    if (!country || !Number.isInteger(count) || count < 1) {
+      throw new BadRequestException("rows must contain country and positive integer count");
+    }
+    byCountry.set(country, (byCountry.get(country) ?? 0) + count);
+  }
+  return [...byCountry.entries()]
+    .map(([country, count]) => ({ country, count }))
+    .sort((a, b) => b.count - a.count || a.country.localeCompare(b.country));
 }
 
 export function mergedRaw(raw: unknown, newLogs: Array<Record<string, any>>) {
@@ -491,6 +631,23 @@ export class CollectorController {
     return readFileSync(COLLECTOR_SOURCE_PATH, "utf8");
   }
 
+  @Get("project-gc.ps1")
+  @Header("Content-Type", "text/plain; charset=utf-8")
+  @Header("Cache-Control", "no-store")
+  projectGcPowerShell(@Req() request: any) {
+    return projectGcRunnerScript(trustedBaseUrl(request));
+  }
+
+  @Get("project-gc.ts")
+  @Header("Content-Type", "text/plain; charset=utf-8")
+  @Header("Cache-Control", "no-store")
+  projectGcSource() {
+    if (!existsSync(PROJECT_GC_SOURCE_PATH)) {
+      throw new NotFoundException("Project-GC collector source is not available in this deployment.");
+    }
+    return readFileSync(PROJECT_GC_SOURCE_PATH, "utf8");
+  }
+
   private async tokenUser(authorization: string | undefined) {
     const token = authToken(authorization);
     if (!token) {
@@ -529,10 +686,47 @@ export class CollectorController {
     };
   }
 
+  @Get("project-gc-profile")
+  async projectGcProfile(@Headers("authorization") authorization?: string) {
+    const userId = await this.tokenUser(authorization);
+    const profile = await this.prisma.geocachingProfile.findUnique({
+      where: { userId },
+      select: { gcUsername: true }
+    });
+    if (!profile?.gcUsername?.trim()) {
+      throw new BadRequestException("Set a Geocaching username in Profile first");
+    }
+    return { gcUsername: profile.gcUsername };
+  }
+
   @Post("received-logs")
   async receivedLogs(@Headers("authorization") authorization: string | undefined, @Body() body: { logs?: ReceivedLogInput[] }) {
     const userId = await this.tokenUser(authorization);
     return this.importReceivedLogsForUser(userId, body);
+  }
+
+  @Post("project-gc/finder-countries")
+  async projectGcFinderCountries(
+    @Headers("authorization") authorization: string | undefined,
+    @Body() body: { rows?: FinderCountryInput[] }
+  ) {
+    const userId = await this.tokenUser(authorization);
+    const rows = normalizeFinderCountryRows(body.rows);
+    if (rows.length > 250) {
+      throw new BadRequestException("Too many finder-country rows");
+    }
+    await this.prisma.$transaction(async (tx) => {
+      await tx.ownerFinderCountryStat.deleteMany({ where: { userId } });
+      await tx.ownerFinderCountryStat.createMany({
+        data: rows.map((row) => ({
+          userId,
+          country: row.country,
+          count: row.count
+        }))
+      });
+      await tx.statSnapshot.deleteMany({ where: { userId } });
+    });
+    return { rows };
   }
 
   @Post("received-logs/csv")

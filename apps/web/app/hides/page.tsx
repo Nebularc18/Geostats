@@ -33,6 +33,7 @@ type HideStats = {
   hidesByCountry: CountBucket[];
   hidesByRegion: CountBucket[];
   hidesByDifficultyTerrain: Array<{ difficulty: number; terrain: number; count: number }>;
+  finderCountryBuckets: PercentBucket[];
   finderBuckets: PercentBucket[];
   hideSummaryRows: Array<{ label: string; value: string }>;
   logsReceived: Array<{
@@ -238,6 +239,7 @@ function MonthPerYearTable({ data }: { data: CountBucket[] }) {
 export default function HidesPage() {
   const [hideStats, setHideStats] = useState<HideStats | null>(null);
   const [ownerName, setOwnerName] = useState("you");
+  const hasFinderCountries = hideStats?.finderCountryBuckets?.some((row) => row.key !== "Unknown" && row.count > 0) ?? false;
 
   useEffect(() => {
     void apiFetch<{ stats: { hideStats?: HideStats } }>("/stats/summary")
@@ -279,7 +281,8 @@ export default function HidesPage() {
       <section className="panel hide-report-section">
         <h2>Finder and favorite breakdowns</h2>
         <div className="stats-breakdown-grid">
-          <CountPercentTable title="Finders by country" data={hideStats?.hidesByCountry ?? []} total={hideStats?.totalHides ?? 0} />
+          {hasFinderCountries ? <PercentTable title="Finders by country" data={hideStats?.finderCountryBuckets ?? []} /> : null}
+          <CountPercentTable title="Placed by country" data={hideStats?.hidesByCountry ?? []} total={hideStats?.totalHides ?? 0} />
           <PercentTable title="Top finders of my caches" data={hideStats?.finderBuckets ?? []} />
           <PercentTable title="Placed by type" data={hideStats?.hidesByType ?? []} />
           <PercentTable title="Placed by size" data={hideStats?.hidesBySize ?? []} />
