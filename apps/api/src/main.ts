@@ -9,8 +9,9 @@ async function bootstrap() {
   validateRuntimeEnv();
   const app = await NestFactory.create(AppModule);
   const webOrigin = envOrDefault("WEB_ORIGIN", "http://localhost:3000");
+  const corsOrigins = envOrDefault("API_CORS_ORIGINS", webOrigin);
   const allowedOrigins = new Set([
-    ...webOrigin
+    ...corsOrigins
       .split(",")
       .map((origin) => origin.trim())
       .filter(Boolean)

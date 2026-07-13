@@ -2,8 +2,21 @@ import { Controller, Get, Header, NotFoundException, Param, Res } from "@nestjs/
 import type { Response } from "express";
 import { readFile } from "fs/promises";
 import { join } from "path";
-import { renderPublicProfileHtml, renderPublicProfileSvg } from "./public-profile-renderer";
+import { renderPublicProfileHtml, renderPublicProfileSvg, renderPublicScratchMapSvg } from "./public-profile-renderer";
 import { StatsService } from "./stats.service";
+
+const worldMapTemplatePath = join(__dirname, "map-assets", "ProjectGC_World.svg");
+let worldMapTemplatePromise: Promise<string> | null = null;
+
+function loadWorldMapTemplate() {
+  if (!worldMapTemplatePromise) {
+    worldMapTemplatePromise = readFile(worldMapTemplatePath, "utf8").catch((error) => {
+      worldMapTemplatePromise = null;
+      throw error;
+    });
+  }
+  return worldMapTemplatePromise;
+}
 
 @Controller("public")
 export class PublicStatsController {
@@ -23,6 +36,20 @@ export class PublicStatsController {
   async profileStatsImage(@Param("username") username: string) {
     const { profile, stats } = await this.stats.publicSnapshotForUsername(username);
     return renderPublicProfileSvg(profile, stats);
+  }
+
+  @Get("profile-scratch-map-image/:username")
+  @Header("Content-Type", "image/svg+xml; charset=utf-8")
+  @Header("Cache-Control", "public, max-age=300")
+  async profileScratchMapImage(@Param("username") username: string) {
+    const { profile, stats } = await this.stats.publicSnapshotForUsername(username);
+    let worldMapTemplate: string;
+    try {
+      worldMapTemplate = await loadWorldMapTemplate();
+    } catch {
+      throw new NotFoundException("Map asset not found");
+    }
+    return renderPublicScratchMapSvg(profile, stats, worldMapTemplate);
   }
 
   @Get("profile-map/:asset")

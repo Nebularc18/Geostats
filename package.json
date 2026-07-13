@@ -26,6 +26,7 @@
     "test": "corepack pnpm -r test",
     "typecheck": "corepack pnpm -r typecheck",
     "format": "prettier --write .",
+    "agent:up": "powershell -ExecutionPolicy Bypass -File scripts/agent-up.ps1",
     "mobile:start": "corepack pnpm --filter @geostats/mobile start",
     "mobile:android": "corepack pnpm --filter @geostats/mobile android",
     "mobile:build:apk": "corepack pnpm dlx eas-cli build --platform android --profile preview",
