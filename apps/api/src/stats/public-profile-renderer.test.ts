@@ -40,3 +40,17 @@ test("escapes profile text in the generated SVG", () => {
   assert.doesNotMatch(svg, /<unsafe>/);
   assert.match(svg, /&lt;unsafe&gt; Scratch Map/);
 });
+
+test("extracts map content after an XML declaration and comment", () => {
+  const templateWithPreamble = `<?xml version="1.0" encoding="UTF-8"?>
+<!-- generated map -->
+${worldMapTemplate}`;
+  const svg = renderPublicScratchMapSvg(
+    { gcUsername: "Nebularc_" },
+    { totalFinds: 1, countries: [{ key: "Sweden", count: 1 }] },
+    templateWithPreamble,
+  );
+
+  assert.doesNotMatch(svg, /<\?xml|generated map/);
+  assert.match(svg, /<title>Sweden: 1<\/title>/);
+});

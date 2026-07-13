@@ -5,6 +5,19 @@ import { join } from "path";
 import { renderPublicProfileHtml, renderPublicProfileSvg, renderPublicScratchMapSvg } from "./public-profile-renderer";
 import { StatsService } from "./stats.service";
 
+const worldMapTemplatePath = join(__dirname, "map-assets", "ProjectGC_World.svg");
+let worldMapTemplatePromise: Promise<string> | null = null;
+
+function loadWorldMapTemplate() {
+  if (!worldMapTemplatePromise) {
+    worldMapTemplatePromise = readFile(worldMapTemplatePath, "utf8").catch((error) => {
+      worldMapTemplatePromise = null;
+      throw error;
+    });
+  }
+  return worldMapTemplatePromise;
+}
+
 @Controller("public")
 export class PublicStatsController {
   constructor(private readonly stats: StatsService) {}
@@ -30,7 +43,12 @@ export class PublicStatsController {
   @Header("Cache-Control", "public, max-age=300")
   async profileScratchMapImage(@Param("username") username: string) {
     const { profile, stats } = await this.stats.publicSnapshotForUsername(username);
-    const worldMapTemplate = await readFile(join(__dirname, "map-assets", "ProjectGC_World.svg"), "utf8");
+    let worldMapTemplate: string;
+    try {
+      worldMapTemplate = await loadWorldMapTemplate();
+    } catch {
+      throw new NotFoundException("Map asset not found");
+    }
     return renderPublicScratchMapSvg(profile, stats, worldMapTemplate);
   }
 

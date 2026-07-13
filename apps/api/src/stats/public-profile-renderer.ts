@@ -228,10 +228,12 @@ export function renderPublicScratchMapSvg(
       return `${pathStart}${gsakMapColor(count)}${titleStart}${escapeHtml(boundaryName)}: ${count}${pathEnd}`;
     }
   );
-  const mapContents = coloredTemplate.slice(
-    coloredTemplate.indexOf(">") + 1,
-    coloredTemplate.lastIndexOf("</svg>")
-  );
+  const svgOpenTag = /<svg\b[^>]*>/i.exec(coloredTemplate);
+  const svgCloseIndex = coloredTemplate.lastIndexOf("</svg>");
+  if (!svgOpenTag || svgCloseIndex < svgOpenTag.index + svgOpenTag[0].length) {
+    throw new Error("Invalid world map SVG template");
+  }
+  const mapContents = coloredTemplate.slice(svgOpenTag.index + svgOpenTag[0].length, svgCloseIndex);
   const username = profile.gcUsername;
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="750" height="455" viewBox="0 0 750 455" role="img" aria-label="${escapeHtml(username)} scratch map">
