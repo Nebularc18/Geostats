@@ -168,6 +168,7 @@ export class AuthService {
       email,
       username
     });
+    await this.ensureDevProfile(user.id, username);
     return this.toAuthUser(user);
   }
 
@@ -464,6 +465,33 @@ export class AuthService {
         throw new ConflictException("Email or username is already registered");
       }
       throw error;
+    }
+  }
+
+  private async ensureDevProfile(userId: string, username: string) {
+    if (process.env.DEV_AUTH_CREATE_PROFILE === "false") {
+      return;
+    }
+    await this.prisma.geocachingProfile.upsert({
+      where: { userId },
+      create: {
+        userId,
+        gcUsername: envOrDefault("DEV_AUTH_GC_USERNAME", username),
+        homeLatitude: null,
+        homeLongitude: null,
+        timeZone: this.devProfileTimeZone()
+      },
+      update: {}
+    });
+  }
+
+  private devProfileTimeZone(): string {
+    const timeZone = envOrDefault("DEV_AUTH_TIME_ZONE", "Europe/Stockholm");
+    try {
+      new Intl.DateTimeFormat("en-US", { timeZone }).format(new Date());
+      return timeZone;
+    } catch {
+      return "Europe/Stockholm";
     }
   }
 
