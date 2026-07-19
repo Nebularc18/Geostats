@@ -40,6 +40,7 @@ const defaultTimeZone = "Europe/Stockholm";
 const defaultFtfTerms = ["FTF", "first to find"];
 const badgeTiers = ["Bronze", "Silver", "Gold", "Platinum", "Ruby", "Sapphire", "Emerald", "Diamond"];
 const ACTIVE_IMPORT_STATUSES = new Set(["UPLOADED", "QUEUED", "PROCESSING"]);
+const MAX_SCRATCH_MAP_POLYGONS = 400;
 const COUNTRY_GEOJSON_URL = "https://raw.githubusercontent.com/datasets/geo-countries/master/data/countries.geojson";
 const SWEDEN_REGION_GEOJSON_URL = "https://raw.githubusercontent.com/okfse/sweden-geojson/master/swedish_regions.geojson";
 const SWEDEN_COUNTY_GEOJSON_URL = "https://raw.githubusercontent.com/okfse/sweden-geojson/master/swedish_municipalities.geojson";
@@ -385,8 +386,15 @@ function boundaryFileExists(url: string) {
   if (cached) return cached;
 
   const request = fetch(url, { method: "HEAD" })
-    .then((response) => response.ok)
-    .catch(() => false);
+    .then((response) => {
+      if (response.ok) return true;
+      if (response.status !== 404 && response.status !== 410) boundarySupportCache.delete(url);
+      return false;
+    })
+    .catch(() => {
+      boundarySupportCache.delete(url);
+      return false;
+    });
   boundarySupportCache.set(url, request);
   return request;
 }
@@ -416,7 +424,10 @@ async function countryCodeForScratch(countryName: string) {
       );
       return String(feature?.properties?.["ISO3166-1-Alpha-3"] ?? "").trim() || null;
     })
-    .catch(() => null);
+    .catch(() => {
+      countryCodeCache.delete(key);
+      return null;
+    });
   countryCodeCache.set(key, request);
   return request;
 }
@@ -1409,25 +1420,42 @@ function ScratchNativeMap({
       const bucket = byName.get(featureName);
       return { feature, featureName, bucket };
     })
-    .filter((item) => item.featureName && (level !== "countries" || item.bucket));
+    .filter((item) => item.featureName && (level !== "countries" || item.bucket))
+    .sort((left, right) => Number(Boolean(right.bucket)) - Number(Boolean(left.bucket)));
+  const polygons: Array<{
+    coordinates: Array<{ latitude: number; longitude: number }>;
+    featureName: string;
+    locationBucket: LocationBucket;
+    key: string;
+  }> = [];
+  for (const { feature, featureName, bucket } of features) {
+    const locationBucket = bucket ?? { name: featureName, count: 0 };
+    const rings = polygonOuterRings(feature);
+    for (let ringIndex = 0; ringIndex < rings.length && polygons.length < MAX_SCRATCH_MAP_POLYGONS; ringIndex += 1) {
+      polygons.push({
+        coordinates: rings[ringIndex]!,
+        featureName,
+        locationBucket,
+        key: `${featureName}-${polygons.length}-${ringIndex}`
+      });
+    }
+    if (polygons.length >= MAX_SCRATCH_MAP_POLYGONS) break;
+  }
   const region = regionForScratch(level, boundaryData);
   return (
     <View style={styles.nativeMapFrame}>
       <MapView key={`${activeCountry?.name ?? "world"}:${level}`} style={styles.nativeMap} initialRegion={region} provider={ANDROID_MAP_PROVIDER} showsCompass showsScale>
-        {features.flatMap(({ feature, featureName, bucket }, featureIndex) => {
-          const locationBucket = bucket ?? { name: featureName, count: 0 };
-          return polygonOuterRings(feature).map((coordinates, ringIndex) => (
-            <Polygon
-              key={`${featureName}-${featureIndex}-${ringIndex}`}
-              coordinates={coordinates}
-              fillColor={`${scratchColor(locationBucket.count, max)}aa`}
-              strokeColor={selectedName && namesForScratchBucket(locationBucket, level).includes(selectedName) ? "#f3b34d" : "#dce8df"}
-              strokeWidth={selectedName && namesForScratchBucket(locationBucket, level).includes(selectedName) ? 2 : 0.7}
-              tappable
-              onPress={() => onSelect(featureName)}
-            />
-          ));
-        })}
+        {polygons.map(({ coordinates, featureName, key, locationBucket }) => (
+          <Polygon
+            key={key}
+            coordinates={coordinates}
+            fillColor={`${scratchColor(locationBucket.count, max)}aa`}
+            strokeColor={selectedName && namesForScratchBucket(locationBucket, level).includes(selectedName) ? "#f3b34d" : "#dce8df"}
+            strokeWidth={selectedName && namesForScratchBucket(locationBucket, level).includes(selectedName) ? 2 : 0.7}
+            tappable
+            onPress={() => onSelect(featureName)}
+          />
+        ))}
       </MapView>
     </View>
   );
