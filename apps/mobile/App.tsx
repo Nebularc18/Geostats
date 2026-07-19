@@ -40,13 +40,12 @@ const defaultTimeZone = "Europe/Stockholm";
 const defaultFtfTerms = ["FTF", "first to find"];
 const badgeTiers = ["Bronze", "Silver", "Gold", "Platinum", "Ruby", "Sapphire", "Emerald", "Diamond"];
 const ACTIVE_IMPORT_STATUSES = new Set(["UPLOADED", "QUEUED", "PROCESSING"]);
+const MAX_SCRATCH_MAP_POLYGONS = 400;
 const COUNTRY_GEOJSON_URL = "https://raw.githubusercontent.com/datasets/geo-countries/master/data/countries.geojson";
 const SWEDEN_REGION_GEOJSON_URL = "https://raw.githubusercontent.com/okfse/sweden-geojson/master/swedish_regions.geojson";
 const SWEDEN_COUNTY_GEOJSON_URL = "https://raw.githubusercontent.com/okfse/sweden-geojson/master/swedish_municipalities.geojson";
-const ICELAND_REGION_GEOJSON_URL =
-  "https://media.githubusercontent.com/media/wmgeolab/geoBoundaries/9469f09592ced973a3448cf66b6100b741b64c0d/releaseData/gbOpen/ISL/ADM1/geoBoundaries-ISL-ADM1_simplified.geojson";
-const ICELAND_COUNTY_GEOJSON_URL =
-  "https://media.githubusercontent.com/media/wmgeolab/geoBoundaries/9469f09592ced973a3448cf66b6100b741b64c0d/releaseData/gbOpen/ISL/ADM2/geoBoundaries-ISL-ADM2_simplified.geojson";
+const GEOBOUNDARIES_BASE_URL =
+  "https://media.githubusercontent.com/media/wmgeolab/geoBoundaries/9469f09592ced973a3448cf66b6100b741b64c0d/releaseData/gbOpen";
 const COUNTRY_NAME_ALIASES: Record<string, string[]> = {
   "United States": ["United States of America"],
   "Russia": ["Russian Federation"],
@@ -63,6 +62,10 @@ const COUNTRY_NAME_ALIASES: Record<string, string[]> = {
   "Bolivia": ["Bolivia (Plurinational State of)"],
   "Venezuela": ["Venezuela (Bolivarian Republic of)"]
 };
+type ScratchBoundaryConfig = { url: string; propertyName: string; isDetail: boolean };
+const countryCodeCache = new Map<string, Promise<string | null>>();
+const boundarySupportCache = new Map<string, Promise<boolean>>();
+const scratchGeoJsonCache = new Map<string, Promise<BoundaryFeatureCollection>>();
 
 class ApiError extends Error {
   constructor(
@@ -336,30 +339,118 @@ function regionForPoints(points: CachePoint[]): Region {
   };
 }
 
-function regionForScratch(level: ScratchLevel, selectedCountry?: string | null): Region {
-  if (selectedCountry === "Iceland" && level !== "countries") {
-    return { latitude: 64.95, longitude: -18.8, latitudeDelta: 5.8, longitudeDelta: 9 };
+function regionForScratch(level: ScratchLevel, boundaryData: BoundaryFeatureCollection | null): Region {
+  if (level === "countries" || !boundaryData) {
+    return { latitude: 24, longitude: 11, latitudeDelta: 140, longitudeDelta: 170 };
   }
-  if (selectedCountry === "Sweden" && level !== "countries") {
-    return { latitude: 62.1, longitude: 15.2, latitudeDelta: 15, longitudeDelta: 17 };
+
+  const positions = boundaryData.features.flatMap((feature) => {
+    const polygons = feature.geometry.type === "Polygon"
+      ? [feature.geometry.coordinates as PolygonCoordinates]
+      : feature.geometry.coordinates as MultiPolygonCoordinates;
+    return polygons.flatMap((polygon) => polygon[0] ?? []);
+  });
+  if (positions.length === 0) {
+    return { latitude: 24, longitude: 11, latitudeDelta: 140, longitudeDelta: 170 };
   }
-  return { latitude: 24, longitude: 11, latitudeDelta: 140, longitudeDelta: 170 };
+
+  let minLatitude = Infinity;
+  let maxLatitude = -Infinity;
+  let minLongitude = Infinity;
+  let maxLongitude = -Infinity;
+  positions.forEach(([longitude, latitude]) => {
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return;
+    minLatitude = Math.min(minLatitude, latitude);
+    maxLatitude = Math.max(maxLatitude, latitude);
+    minLongitude = Math.min(minLongitude, longitude);
+    maxLongitude = Math.max(maxLongitude, longitude);
+  });
+  if (![minLatitude, maxLatitude, minLongitude, maxLongitude].every(Number.isFinite)) {
+    return { latitude: 24, longitude: 11, latitudeDelta: 140, longitudeDelta: 170 };
+  }
+  return {
+    latitude: (minLatitude + maxLatitude) / 2,
+    longitude: (minLongitude + maxLongitude) / 2,
+    latitudeDelta: Math.max(0.2, (maxLatitude - minLatitude) * 1.2),
+    longitudeDelta: Math.max(0.2, (maxLongitude - minLongitude) * 1.2)
+  };
 }
 
-function boundaryConfig(level: ScratchLevel, selectedCountry?: string | null) {
+function geoBoundariesUrl(countryCode: string, level: Exclude<ScratchLevel, "countries">) {
+  const boundaryLevel = level === "regions" ? "ADM1" : "ADM2";
+  return `${GEOBOUNDARIES_BASE_URL}/${countryCode}/${boundaryLevel}/geoBoundaries-${countryCode}-${boundaryLevel}_simplified.geojson`;
+}
+
+function boundaryFileExists(url: string) {
+  const cached = boundarySupportCache.get(url);
+  if (cached) return cached;
+
+  const request = fetch(url, { method: "HEAD" })
+    .then((response) => {
+      if (response.ok) return true;
+      if (response.status !== 404 && response.status !== 410) boundarySupportCache.delete(url);
+      return false;
+    })
+    .catch(() => {
+      boundarySupportCache.delete(url);
+      return false;
+    });
+  boundarySupportCache.set(url, request);
+  return request;
+}
+
+function loadScratchGeoJson(url: string) {
+  const cached = scratchGeoJsonCache.get(url);
+  if (cached) return cached;
+
+  const request = fetchJson<BoundaryFeatureCollection>(url).catch((error: unknown) => {
+    scratchGeoJsonCache.delete(url);
+    throw error;
+  });
+  scratchGeoJsonCache.set(url, request);
+  return request;
+}
+
+async function countryCodeForScratch(countryName: string) {
+  const key = countryName.trim().toLowerCase();
+  const cached = countryCodeCache.get(key);
+  if (cached) return cached;
+
+  const request = loadScratchGeoJson(COUNTRY_GEOJSON_URL)
+    .then((geoJson) => {
+      const names = new Set([countryName, ...(COUNTRY_NAME_ALIASES[countryName] ?? [])].map((name) => name.toLowerCase()));
+      const feature = geoJson.features.find((candidate) =>
+        names.has(String(candidate.properties?.name ?? "").trim().toLowerCase())
+      );
+      return String(feature?.properties?.["ISO3166-1-Alpha-3"] ?? "").trim() || null;
+    })
+    .catch(() => {
+      countryCodeCache.delete(key);
+      return null;
+    });
+  countryCodeCache.set(key, request);
+  return request;
+}
+
+async function boundaryConfigForLevel(level: ScratchLevel, selectedCountry?: string | null): Promise<ScratchBoundaryConfig> {
+  if (level === "countries" || !selectedCountry) {
+    return { url: COUNTRY_GEOJSON_URL, propertyName: "name", isDetail: false };
+  }
   if (selectedCountry === "Sweden" && level === "regions") {
-    return { url: SWEDEN_REGION_GEOJSON_URL, propertyName: "name" };
+    return { url: SWEDEN_REGION_GEOJSON_URL, propertyName: "name", isDetail: true };
   }
   if (selectedCountry === "Sweden" && level === "counties") {
-    return { url: SWEDEN_COUNTY_GEOJSON_URL, propertyName: "kom_namn" };
+    return { url: SWEDEN_COUNTY_GEOJSON_URL, propertyName: "kom_namn", isDetail: true };
   }
-  if (selectedCountry === "Iceland" && level === "regions") {
-    return { url: ICELAND_REGION_GEOJSON_URL, propertyName: "shapeName" };
+
+  const countryCode = await countryCodeForScratch(selectedCountry);
+  if (!countryCode) {
+    return { url: COUNTRY_GEOJSON_URL, propertyName: "name", isDetail: false };
   }
-  if (selectedCountry === "Iceland" && level === "counties") {
-    return { url: ICELAND_COUNTY_GEOJSON_URL, propertyName: "shapeName" };
-  }
-  return { url: COUNTRY_GEOJSON_URL, propertyName: "name" };
+  const url = geoBoundariesUrl(countryCode, level);
+  return (await boundaryFileExists(url))
+    ? { url, propertyName: "shapeName", isDetail: true }
+    : { url: COUNTRY_GEOJSON_URL, propertyName: "name", isDetail: false };
 }
 
 function namesForScratchBucket(bucket: any, level: ScratchLevel) {
@@ -427,7 +518,7 @@ function pointInFeature(longitude: number, latitude: number, feature: BoundaryFe
 }
 
 async function deriveBucketsFromBoundaries(points: CachePoint[], url: string, propertyName: string) {
-  const geoJson = await fetchJson<BoundaryFeatureCollection>(url);
+  const geoJson = await loadScratchGeoJson(url);
   const counts = new Map<string, number>();
   for (const point of validMapPoints(points)) {
     const feature = geoJson.features.find((candidate) => pointInFeature(point.longitude, point.latitude, candidate));
@@ -795,26 +886,66 @@ function ScratchScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: strin
   const [level, setLevel] = useState<ScratchLevel>("countries");
   const [boundaryData, setBoundaryData] = useState<BoundaryFeatureCollection | null>(null);
   const [boundaryError, setBoundaryError] = useState<string | null>(null);
-  const [swedenCountyBuckets, setSwedenCountyBuckets] = useState<LocationBucket[]>([]);
-  const [icelandRegionBuckets, setIcelandRegionBuckets] = useState<LocationBucket[]>([]);
-  const [icelandCountyBuckets, setIcelandCountyBuckets] = useState<LocationBucket[]>([]);
+  const [points, setPoints] = useState<CachePoint[]>([]);
+  const [detailBuckets, setDetailBuckets] = useState<Record<string, LocationBucket[]>>({});
+  const [resolvedConfig, setResolvedConfig] = useState<{
+    level: ScratchLevel;
+    country: string | null;
+    config: ScratchBoundaryConfig;
+  }>({
+    level: "countries",
+    country: null,
+    config: { url: COUNTRY_GEOJSON_URL, propertyName: "name", isDetail: false }
+  });
   const countries = data.countries ?? [];
   const baseActive = countries.find((c) => c.name === selected) ?? countries[0];
-  const active = baseActive?.name === "Sweden"
-    ? { ...baseActive, counties: swedenCountyBuckets }
-    : baseActive?.name === "Iceland"
-      ? { ...baseActive, regions: icelandRegionBuckets, counties: icelandCountyBuckets }
-      : baseActive;
-  const supportsDetail = active?.name === "Sweden" || active?.name === "Iceland";
-  const effectiveLevel = level === "countries" || supportsDetail ? level : "countries";
-  const config = boundaryConfig(effectiveLevel, active?.name);
+  const active = baseActive
+    ? {
+        ...baseActive,
+        regions: detailBuckets[`${baseActive.name}:regions`] ?? baseActive.regions ?? [],
+        counties: detailBuckets[`${baseActive.name}:counties`] ?? baseActive.counties ?? []
+      }
+    : baseActive;
+  const configIsCurrent = resolvedConfig.level === level && resolvedConfig.country === (active?.name ?? null);
+  const supportsDetail = level === "countries" || (configIsCurrent && resolvedConfig.config.isDetail);
+  const effectiveLevel = supportsDetail ? level : "countries";
+  const config = configIsCurrent
+    ? resolvedConfig.config
+    : { url: COUNTRY_GEOJSON_URL, propertyName: "name", isDetail: false };
   const levelBuckets = scratchBucketsForLevel(countries, active, effectiveLevel);
   const max = Math.max(1, data.maxCountryCount ?? 1);
+
   useEffect(() => {
+    let mounted = true;
+    void apiFetch<{ points: CachePoint[] }>(apiBaseUrl, "/map/caches", token)
+      .then((pointData) => {
+        if (mounted) setPoints(pointData.points);
+      })
+      .catch(() => {
+        if (mounted) setPoints([]);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [apiBaseUrl, token]);
+
+  useEffect(() => {
+    let mounted = true;
+    const country = active?.name ?? null;
+    void boundaryConfigForLevel(level, country).then((nextConfig) => {
+      if (mounted) setResolvedConfig({ level, country, config: nextConfig });
+    });
+    return () => {
+      mounted = false;
+    };
+  }, [active?.name, level]);
+
+  useEffect(() => {
+    if (!configIsCurrent) return;
     let mounted = true;
     setBoundaryData(null);
     setBoundaryError(null);
-    void fetchJson<BoundaryFeatureCollection>(config.url)
+    void loadScratchGeoJson(config.url)
       .then((geoJson) => {
         if (mounted) setBoundaryData(geoJson);
       })
@@ -824,36 +955,23 @@ function ScratchScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: strin
     return () => {
       mounted = false;
     };
-  }, [config.url]);
+  }, [config.url, configIsCurrent]);
+
   useEffect(() => {
+    if (!configIsCurrent || !config.isDetail || level === "countries" || points.length === 0 || !active?.name) return;
     let mounted = true;
-    setSwedenCountyBuckets([]);
-    setIcelandRegionBuckets([]);
-    setIcelandCountyBuckets([]);
-    void apiFetch<{ points: CachePoint[] }>(apiBaseUrl, "/map/caches", token)
-      .then((pointData) =>
-        Promise.allSettled([
-          deriveBucketsFromBoundaries(pointData.points, SWEDEN_COUNTY_GEOJSON_URL, "kom_namn"),
-          deriveBucketsFromBoundaries(pointData.points, ICELAND_REGION_GEOJSON_URL, "shapeName"),
-          deriveBucketsFromBoundaries(pointData.points, ICELAND_COUNTY_GEOJSON_URL, "shapeName")
-        ])
-      )
-      .then(([swedenCounties, icelandRegions, icelandCounties]) => {
-        if (!mounted) return;
-        setSwedenCountyBuckets(swedenCounties.status === "fulfilled" ? swedenCounties.value : []);
-        setIcelandRegionBuckets(icelandRegions.status === "fulfilled" ? icelandRegions.value : []);
-        setIcelandCountyBuckets(icelandCounties.status === "fulfilled" ? icelandCounties.value : []);
+    const bucketKey = `${active.name}:${level}`;
+    void deriveBucketsFromBoundaries(points, config.url, config.propertyName)
+      .then((buckets) => {
+        if (mounted) setDetailBuckets((current) => ({ ...current, [bucketKey]: buckets }));
       })
       .catch(() => {
-        if (!mounted) return;
-        setSwedenCountyBuckets([]);
-        setIcelandRegionBuckets([]);
-        setIcelandCountyBuckets([]);
+        if (mounted) setDetailBuckets((current) => ({ ...current, [bucketKey]: [] }));
       });
     return () => {
       mounted = false;
     };
-  }, [apiBaseUrl, token]);
+  }, [active?.name, config.isDetail, config.propertyName, config.url, configIsCurrent, level, points]);
   return (
     <>
       <PageTitle eyebrow="Scratch-off coverage" title="Scratch Map" />
@@ -871,7 +989,7 @@ function ScratchScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: strin
         ) : (
           <ScratchNativeMap
             activeCountry={active}
-            boundaryData={boundaryData}
+            boundaryData={configIsCurrent ? boundaryData : null}
             buckets={levelBuckets}
             level={effectiveLevel}
             max={effectiveLevel === "countries" ? max : Math.max(1, ...levelBuckets.map((bucket: any) => bucket.count ?? 0))}
@@ -885,8 +1003,8 @@ function ScratchScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: strin
             }}
           />
         )}
-        {boundaryError ? <Text style={styles.error}>{boundaryError}</Text> : null}
-        {level !== "countries" && !supportsDetail ? <Text style={styles.muted}>Region and county polygons are currently available for Sweden and Iceland.</Text> : null}
+        {configIsCurrent && boundaryError ? <Text style={styles.error}>{boundaryError}</Text> : null}
+        {level !== "countries" && configIsCurrent && !supportsDetail ? <Text style={styles.muted}>Region and county polygons are not available for this country.</Text> : null}
       </Panel>
       <Panel title="Continents"><Bars data={data.continents ?? []} /></Panel>
       <Panel title="Countries">{countries.map((country) => <Pressable key={country.name} onPress={() => setSelected(country.name)} style={[styles.countryRow, active?.name === country.name && styles.countryRowActive]}><View style={[styles.countrySwatch, { opacity: 0.3 + Math.min(0.7, country.count / max) }]} /><View style={styles.flex}><Text style={styles.rowTitle}>{country.name}</Text><Text style={styles.muted}>{country.continent} - {country.count} finds</Text></View></Pressable>)}</Panel>
@@ -1302,24 +1420,42 @@ function ScratchNativeMap({
       const bucket = byName.get(featureName);
       return { feature, featureName, bucket };
     })
-    .filter((item) => item.bucket);
-  const region = regionForScratch(level, activeCountry?.name);
+    .filter((item) => item.featureName && (level !== "countries" || item.bucket))
+    .sort((left, right) => Number(Boolean(right.bucket)) - Number(Boolean(left.bucket)));
+  const polygons: Array<{
+    coordinates: Array<{ latitude: number; longitude: number }>;
+    featureName: string;
+    locationBucket: LocationBucket;
+    key: string;
+  }> = [];
+  for (const { feature, featureName, bucket } of features) {
+    const locationBucket = bucket ?? { name: featureName, count: 0 };
+    const rings = polygonOuterRings(feature);
+    for (let ringIndex = 0; ringIndex < rings.length && polygons.length < MAX_SCRATCH_MAP_POLYGONS; ringIndex += 1) {
+      polygons.push({
+        coordinates: rings[ringIndex]!,
+        featureName,
+        locationBucket,
+        key: `${featureName}-${polygons.length}-${ringIndex}`
+      });
+    }
+    if (polygons.length >= MAX_SCRATCH_MAP_POLYGONS) break;
+  }
+  const region = regionForScratch(level, boundaryData);
   return (
     <View style={styles.nativeMapFrame}>
-      <MapView style={styles.nativeMap} initialRegion={region} provider={ANDROID_MAP_PROVIDER} showsCompass showsScale>
-        {features.flatMap(({ feature, featureName, bucket }, featureIndex) =>
-          polygonOuterRings(feature).map((coordinates, ringIndex) => (
-            <Polygon
-              key={`${featureName}-${featureIndex}-${ringIndex}`}
-              coordinates={coordinates}
-              fillColor={`${scratchColor(bucket.count ?? 0, max)}aa`}
-              strokeColor={selectedName && namesForScratchBucket(bucket, level).includes(selectedName) ? "#f3b34d" : "#dce8df"}
-              strokeWidth={selectedName && namesForScratchBucket(bucket, level).includes(selectedName) ? 2 : 0.7}
-              tappable
-              onPress={() => onSelect(featureName)}
-            />
-          ))
-        )}
+      <MapView key={`${activeCountry?.name ?? "world"}:${level}`} style={styles.nativeMap} initialRegion={region} provider={ANDROID_MAP_PROVIDER} showsCompass showsScale>
+        {polygons.map(({ coordinates, featureName, key, locationBucket }) => (
+          <Polygon
+            key={key}
+            coordinates={coordinates}
+            fillColor={`${scratchColor(locationBucket.count, max)}aa`}
+            strokeColor={selectedName && namesForScratchBucket(locationBucket, level).includes(selectedName) ? "#f3b34d" : "#dce8df"}
+            strokeWidth={selectedName && namesForScratchBucket(locationBucket, level).includes(selectedName) ? 2 : 0.7}
+            tappable
+            onPress={() => onSelect(featureName)}
+          />
+        ))}
       </MapView>
     </View>
   );
