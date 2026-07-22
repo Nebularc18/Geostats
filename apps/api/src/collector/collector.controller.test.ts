@@ -62,16 +62,18 @@ test("trustedBaseUrl requires API_ORIGIN in production", () => {
   });
 });
 
-test("PowerShell collectors use cmd launchers that do not require script execution permission", () => {
+test("PowerShell collectors select platform-specific npm launchers", () => {
   withEnv({ API_ORIGIN: "https://api.geostats.example", NODE_ENV: "production" }, () => {
     const controller = new CollectorController(undefined as never, undefined as never);
     const request = { headers: {}, protocol: "https" };
 
     for (const script of [controller.hidesPowerShell(request), controller.projectGcPowerShell(request)]) {
-      assert.match(script, /Get-Command npm\.cmd/);
-      assert.match(script, /npm\.cmd install --no-audit --no-fund/);
-      assert.match(script, /npx\.cmd --yes playwright install chromium/);
-      assert.match(script, /npx\.cmd --yes tsx @runArgs/);
+      assert.match(script, /\$isWindowsPlatform = \$env:OS -eq "Windows_NT"/);
+      assert.match(script, /\$npmCommand = if \(\$isWindowsPlatform\) \{ "npm\.cmd" \} else \{ "npm" \}/);
+      assert.match(script, /\$npxCommand = if \(\$isWindowsPlatform\) \{ "npx\.cmd" \} else \{ "npx" \}/);
+      assert.match(script, /& \$npmCommand install --no-audit --no-fund/);
+      assert.match(script, /& \$npxCommand --yes playwright install chromium/);
+      assert.match(script, /& \$npxCommand --yes tsx @runArgs/);
       assert.doesNotMatch(script, /(?<![.\w])npm install/);
       assert.doesNotMatch(script, /(?<![.\w])npx --yes/);
     }

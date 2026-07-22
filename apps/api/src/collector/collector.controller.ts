@@ -132,8 +132,14 @@ if (-not $token) {
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
   throw "Node.js 22 or newer is required. Install Node.js, then run this command again."
 }
-if (-not (Get-Command npm.cmd -ErrorAction SilentlyContinue)) {
+$isWindowsPlatform = $env:OS -eq "Windows_NT"
+$npmCommand = if ($isWindowsPlatform) { "npm.cmd" } else { "npm" }
+$npxCommand = if ($isWindowsPlatform) { "npx.cmd" } else { "npx" }
+if (-not (Get-Command $npmCommand -ErrorAction SilentlyContinue)) {
   throw "npm is required. Install Node.js with npm, then run this command again."
+}
+if (-not (Get-Command $npxCommand -ErrorAction SilentlyContinue)) {
+  throw "npx is required. Install Node.js with npm, then run this command again."
 }
 
 $baseDir = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "Geostats\\hides-runner" } else { Join-Path $HOME ".geostats\\hides-runner" }
@@ -156,7 +162,7 @@ Invoke-WebRequest -UseBasicParsing -Uri "$server/collector/hides.ts" -OutFile $c
 Push-Location $baseDir
 try {
   if (-not (Test-Path (Join-Path $baseDir "node_modules"))) {
-    npm.cmd install --no-audit --no-fund
+    & $npmCommand install --no-audit --no-fund
   }
 
   function Get-CommandExecutable([string] $command) {
@@ -206,7 +212,7 @@ try {
     $playwrightCache = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "ms-playwright" } else { Join-Path $HOME ".cache\\ms-playwright" }
     $hasCachedChromium = (Test-Path $playwrightCache) -and ((Get-ChildItem -Path $playwrightCache -Directory -Filter "chromium-*" -ErrorAction SilentlyContinue | Select-Object -First 1) -ne $null)
     if (-not $hasCachedChromium) {
-      npx.cmd --yes playwright install chromium
+      & $npxCommand --yes playwright install chromium
     }
   }
 
@@ -217,7 +223,7 @@ try {
   if ($browser) {
     $runArgs += @("--browser", $browser)
   }
-  npx.cmd --yes tsx @runArgs
+  & $npxCommand --yes tsx @runArgs
 } finally {
   Pop-Location
 }
@@ -240,8 +246,14 @@ if (-not $token) {
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
   throw "Node.js 22 or newer is required. Install Node.js, then run this command again."
 }
-if (-not (Get-Command npm.cmd -ErrorAction SilentlyContinue)) {
+$isWindowsPlatform = $env:OS -eq "Windows_NT"
+$npmCommand = if ($isWindowsPlatform) { "npm.cmd" } else { "npm" }
+$npxCommand = if ($isWindowsPlatform) { "npx.cmd" } else { "npx" }
+if (-not (Get-Command $npmCommand -ErrorAction SilentlyContinue)) {
   throw "npm is required. Install Node.js with npm, then run this command again."
+}
+if (-not (Get-Command $npxCommand -ErrorAction SilentlyContinue)) {
+  throw "npx is required. Install Node.js with npm, then run this command again."
 }
 
 $baseDir = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "Geostats\\project-gc-runner" } else { Join-Path $HOME ".geostats\\project-gc-runner" }
@@ -261,7 +273,7 @@ Invoke-WebRequest -UseBasicParsing -Uri "$server/collector/project-gc.ts" -OutFi
 Push-Location $baseDir
 try {
   if (-not (Test-Path (Join-Path $baseDir "node_modules"))) {
-    npm.cmd install --no-audit --no-fund
+    & $npmCommand install --no-audit --no-fund
   }
 
   function Get-CommandExecutable([string] $command) {
@@ -311,7 +323,7 @@ try {
     $playwrightCache = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "ms-playwright" } else { Join-Path $HOME ".cache\\ms-playwright" }
     $hasCachedChromium = (Test-Path $playwrightCache) -and ((Get-ChildItem -Path $playwrightCache -Directory -Filter "chromium-*" -ErrorAction SilentlyContinue | Select-Object -First 1) -ne $null)
     if (-not $hasCachedChromium) {
-      npx.cmd --yes playwright install chromium
+      & $npxCommand --yes playwright install chromium
     }
   }
 
@@ -322,7 +334,7 @@ try {
   if ($browser) {
     $runArgs += @("--browser", $browser)
   }
-  npx.cmd --yes tsx @runArgs
+  & $npxCommand --yes tsx @runArgs
 } finally {
   Pop-Location
 }
