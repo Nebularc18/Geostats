@@ -132,7 +132,7 @@ if (-not $token) {
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
   throw "Node.js 22 or newer is required. Install Node.js, then run this command again."
 }
-if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+if (-not (Get-Command npm.cmd -ErrorAction SilentlyContinue)) {
   throw "npm is required. Install Node.js with npm, then run this command again."
 }
 
@@ -156,7 +156,7 @@ Invoke-WebRequest -UseBasicParsing -Uri "$server/collector/hides.ts" -OutFile $c
 Push-Location $baseDir
 try {
   if (-not (Test-Path (Join-Path $baseDir "node_modules"))) {
-    npm install --no-audit --no-fund
+    npm.cmd install --no-audit --no-fund
   }
 
   function Get-CommandExecutable([string] $command) {
@@ -206,7 +206,7 @@ try {
     $playwrightCache = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "ms-playwright" } else { Join-Path $HOME ".cache\\ms-playwright" }
     $hasCachedChromium = (Test-Path $playwrightCache) -and ((Get-ChildItem -Path $playwrightCache -Directory -Filter "chromium-*" -ErrorAction SilentlyContinue | Select-Object -First 1) -ne $null)
     if (-not $hasCachedChromium) {
-      npx --yes playwright install chromium
+      npx.cmd --yes playwright install chromium
     }
   }
 
@@ -217,7 +217,7 @@ try {
   if ($browser) {
     $runArgs += @("--browser", $browser)
   }
-  npx --yes tsx @runArgs
+  npx.cmd --yes tsx @runArgs
 } finally {
   Pop-Location
 }
@@ -240,7 +240,7 @@ if (-not $token) {
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
   throw "Node.js 22 or newer is required. Install Node.js, then run this command again."
 }
-if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+if (-not (Get-Command npm.cmd -ErrorAction SilentlyContinue)) {
   throw "npm is required. Install Node.js with npm, then run this command again."
 }
 
@@ -261,7 +261,7 @@ Invoke-WebRequest -UseBasicParsing -Uri "$server/collector/project-gc.ts" -OutFi
 Push-Location $baseDir
 try {
   if (-not (Test-Path (Join-Path $baseDir "node_modules"))) {
-    npm install --no-audit --no-fund
+    npm.cmd install --no-audit --no-fund
   }
 
   function Get-CommandExecutable([string] $command) {
@@ -311,7 +311,7 @@ try {
     $playwrightCache = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "ms-playwright" } else { Join-Path $HOME ".cache\\ms-playwright" }
     $hasCachedChromium = (Test-Path $playwrightCache) -and ((Get-ChildItem -Path $playwrightCache -Directory -Filter "chromium-*" -ErrorAction SilentlyContinue | Select-Object -First 1) -ne $null)
     if (-not $hasCachedChromium) {
-      npx --yes playwright install chromium
+      npx.cmd --yes playwright install chromium
     }
   }
 
@@ -322,7 +322,7 @@ try {
   if ($browser) {
     $runArgs += @("--browser", $browser)
   }
-  npx --yes tsx @runArgs
+  npx.cmd --yes tsx @runArgs
 } finally {
   Pop-Location
 }
