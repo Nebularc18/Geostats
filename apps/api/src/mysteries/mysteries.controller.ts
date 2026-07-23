@@ -35,7 +35,9 @@ function snapshotRevision(value: unknown): number {
 }
 
 async function lockMystery(tx: Prisma.TransactionClient, ownerId: string, clientId: string) {
-  await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${ownerId}), hashtext(${clientId}))`;
+  await tx.$queryRaw`
+    SELECT pg_advisory_xact_lock(hashtext(${ownerId}), hashtext(${clientId}))::text AS lock_result
+  `;
 }
 
 @Controller("mysteries")

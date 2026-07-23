@@ -175,7 +175,8 @@ test("delete removes only the owner's workspace so its grants cascade", async ()
   let deleteInput: unknown;
   let tombstoneInput: unknown;
   const transaction = {
-    $queryRaw: async () => {
+    $queryRaw: async (query: TemplateStringsArray) => {
+      assert.match(query.join("?"), /pg_advisory_xact_lock[\s\S]*::text AS lock_result/);
       operations.push("lock");
       return [];
     },
