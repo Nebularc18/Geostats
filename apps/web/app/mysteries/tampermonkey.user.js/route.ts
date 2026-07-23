@@ -4,7 +4,7 @@ function userscript(appOrigin: string) {
   return `// ==UserScript==
 // @name         Geostats Mystery Importer
 // @namespace    ${appOrigin}
-// @version      2.2.0
+// @version      2.2.1
 // @description  Import mystery caches and automatically sync corrected coordinates from Geostats.
 // @match        https://www.geocaching.com/geocache/*
 // @match        https://www.geocaching.com/seek/cache_details.aspx*
@@ -142,34 +142,20 @@ function userscript(appOrigin: string) {
   }
 
   function pageArea() {
-    const locationNode = document.querySelector([
-      "#ctl00_ContentBody_mcd1",
-      "[data-testid='cache-location']",
-      "[data-testid='cache-region']",
-      ".CacheLocation",
-      ".cache-location",
-      "[class*='cacheLocation']",
-      "[class*='CacheLocation']"
-    ].join(","));
-    if (locationNode) {
-      const breadcrumb = [...locationNode.querySelectorAll("a")]
-        .map((link) => link.textContent?.trim())
-        .filter(Boolean);
-      if (breadcrumb.length) return breadcrumb[breadcrumb.length - 1];
-
-      const text = (locationNode.textContent || "").replace(/\\s+/g, " ").trim();
-      if (text) {
-        const parts = text.split(/\\s*(?:>|›|»|→)\\s*/).filter(Boolean);
-        return (parts[parts.length - 1] || text)
-          .replace(/^(?:located\\s+)?in\\s+/i, "")
-          .trim();
-      }
-    }
+    const cleanArea = (value) => {
+      const area = String(value || "").replace(/\\s+/g, " ").trim();
+      return /^(?:a\\s+)?cache\\s+by\\b/i.test(area) ||
+        /\\bmessage\\s+this\\s+owner\\b/i.test(area) ||
+        /\\bhidden\\s*:\\s*/i.test(area)
+        ? ""
+        : area;
+    };
 
     const findAddressRegion = (value) => {
       if (!value || typeof value !== "object") return "";
-      if (typeof value.addressRegion === "string" && value.addressRegion.trim()) {
-        return value.addressRegion.trim();
+      if (typeof value.addressRegion === "string") {
+        const region = cleanArea(value.addressRegion);
+        if (region) return region;
       }
       for (const nested of Object.values(value)) {
         const region = findAddressRegion(nested);
@@ -187,7 +173,37 @@ function userscript(appOrigin: string) {
     }
 
     const regionMeta = document.querySelector("meta[property='place:region']");
-    return regionMeta?.getAttribute("content")?.trim() || "";
+    const metaArea = cleanArea(regionMeta?.getAttribute("content"));
+    if (metaArea) return metaArea;
+
+    const locationNodes = document.querySelectorAll([
+      "[data-testid='cache-location']",
+      "[data-testid='cache-region']",
+      ".CacheLocation",
+      ".cache-location",
+      "[class*='cacheLocation']",
+      "[class*='CacheLocation']"
+    ].join(","));
+    for (const locationNode of locationNodes) {
+      const breadcrumb = [...locationNode.querySelectorAll("a")]
+        .map((link) => link.textContent?.trim())
+        .filter(Boolean);
+      if (breadcrumb.length) {
+        const breadcrumbArea = cleanArea(breadcrumb[breadcrumb.length - 1]);
+        if (breadcrumbArea) return breadcrumbArea;
+      }
+
+      const text = (locationNode.textContent || "").replace(/\\s+/g, " ").trim();
+      if (text) {
+        const parts = text.split(/\\s*(?:>|›|»|→)\\s*/).filter(Boolean);
+        const area = cleanArea((parts[parts.length - 1] || text)
+          .replace(/^(?:located\\s+)?in\\s+/i, "")
+          .trim());
+        if (area) return area;
+      }
+    }
+
+    return "";
   }
 
   function pageData() {
