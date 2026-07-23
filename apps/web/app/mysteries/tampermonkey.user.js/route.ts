@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
+import { areaFromCachePageMetadata } from "../../../lib/mystery-area";
 
 function userscript(appOrigin: string) {
   return `// ==UserScript==
 // @name         Geostats Mystery Importer
 // @namespace    ${appOrigin}
-// @version      2.2.1
+// @version      2.2.2
 // @description  Import mystery caches and automatically sync corrected coordinates from Geostats.
 // @match        https://www.geocaching.com/geocache/*
 // @match        https://www.geocaching.com/seek/cache_details.aspx*
@@ -142,6 +143,7 @@ function userscript(appOrigin: string) {
   }
 
   function pageArea() {
+    const areaFromMetadata = ${areaFromCachePageMetadata.toString()};
     const cleanArea = (value) => {
       const area = String(value || "").replace(/\\s+/g, " ").trim();
       return /^(?:a\\s+)?cache\\s+by\\b/i.test(area) ||
@@ -204,7 +206,8 @@ function userscript(appOrigin: string) {
       }
     }
 
-    return "";
+    const description = document.querySelector("meta[name='description']")?.getAttribute("content") || "";
+    return cleanArea(areaFromMetadata(document.title, description));
   }
 
   function pageData() {
@@ -607,7 +610,7 @@ function userscript(appOrigin: string) {
     Object.assign(panel.style, { position: "fixed", right: "22px", bottom: "82px", zIndex: "2147483646", width: "min(360px, calc(100vw - 44px))", padding: "16px", border: "1px solid #79d99d", borderRadius: "10px", color: "#f4f7f2", background: "#15261d", boxShadow: "0 16px 45px rgba(0,0,0,.45)", font: "14px/1.4 system-ui" });
 
     const title = document.createElement("strong");
-    title.textContent = "Automatic coordinate sync · v2.1.0";
+    title.textContent = "Automatic coordinate sync · v2.2.2";
     title.style.display = "block";
     title.style.marginBottom = "7px";
 
