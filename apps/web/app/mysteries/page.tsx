@@ -443,9 +443,13 @@ export default function MysteriesPage() {
       .catch(() => {
         // Keep the last locally cached shared snapshot while offline.
       });
-    void apiFetch<{ mysteries: OwnedMysteryShares[] }>("/mysteries/owned-shares")
-      .then(({ mysteries }) => {
+    void apiFetch<{ mysteries: OwnedMysteryShares[]; deletedClientIds: string[] }>("/mysteries/owned-shares")
+      .then(({ mysteries, deletedClientIds }) => {
         if (!active) return;
+        const serverDeletedIds = Array.isArray(deletedClientIds)
+          ? deletedClientIds.filter((cacheId): cacheId is string => typeof cacheId === "string" && cacheId.length > 0)
+          : [];
+        serverDeletedIds.forEach(rememberDeletedCache);
         const sharesByClientId = new Map(mysteries.map(({ clientId, revision, sharedWith }) => {
           rememberSnapshotRevision(clientId, revision);
           return [
@@ -453,7 +457,7 @@ export default function MysteriesPage() {
           Array.isArray(sharedWith) ? sharedWith.filter(isAppUser) : []
           ] as const;
         }));
-        setCaches((current) => current.map((cache) => {
+        setCaches((current) => current.filter((cache) => !deletedCacheIds.current.has(cache.id)).map((cache) => {
           const sharedWith = sharesByClientId.get(cache.id);
           return !cache.sharedBy && sharedWith ? { ...cache, sharedWith } : cache;
         }));

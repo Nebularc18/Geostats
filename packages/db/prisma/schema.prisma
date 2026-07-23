@@ -47,6 +47,7 @@ model User {
   ownerFinderCountryStats OwnerFinderCountryStat[]
   mysteryWorkspaces       MysteryWorkspace[]       @relation("MysteryOwner")
   mysteryShares           MysteryShare[]           @relation("MysteryRecipient")
+  mysteryDeletions        MysteryWorkspaceDeletion[]
 
   @@map("users")
 }
@@ -80,6 +81,19 @@ model MysteryShare {
   @@unique([mysteryId, recipientId])
   @@index([recipientId, createdAt])
   @@map("mystery_shares")
+}
+
+model MysteryWorkspaceDeletion {
+  id        String   @id @default(cuid())
+  ownerId   String   @map("owner_id")
+  clientId  String   @map("client_id")
+  deletedAt DateTime @default(now()) @map("deleted_at")
+
+  owner User @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  @@unique([ownerId, clientId])
+  @@index([ownerId])
+  @@map("mystery_workspace_deletions")
 }
 
 model OwnerFinderCountryStat {

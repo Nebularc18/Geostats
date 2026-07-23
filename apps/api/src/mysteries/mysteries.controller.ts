@@ -41,23 +41,30 @@ export class MysteriesController {
 
   @Get("owned-shares")
   async ownedShares(@CurrentUser() user: AuthUser) {
-    const mysteries = await this.prisma.mysteryWorkspace.findMany({
-      where: { ownerId: user.id, shares: { some: {} } },
-      select: {
-        clientId: true,
-        snapshotRevision: true,
-        shares: {
-          select: { recipient: { select: { id: true, username: true } } },
-          orderBy: { createdAt: "asc" }
+    const [mysteries, deletions] = await Promise.all([
+      this.prisma.mysteryWorkspace.findMany({
+        where: { ownerId: user.id, shares: { some: {} } },
+        select: {
+          clientId: true,
+          snapshotRevision: true,
+          shares: {
+            select: { recipient: { select: { id: true, username: true } } },
+            orderBy: { createdAt: "asc" }
+          }
         }
-      }
-    });
+      }),
+      this.prisma.mysteryWorkspaceDeletion.findMany({
+        where: { ownerId: user.id },
+        select: { clientId: true }
+      })
+    ]);
     return {
       mysteries: mysteries.map((mystery) => ({
         clientId: mystery.clientId,
         revision: mystery.snapshotRevision,
         sharedWith: mystery.shares.map(({ recipient }) => recipient)
-      }))
+      })),
+      deletedClientIds: deletions.map(({ clientId }) => clientId)
     };
   }
 
@@ -108,6 +115,11 @@ export class MysteriesController {
     if (!recipient) throw new NotFoundException("Recipient was not found");
 
     const storedRevision = await this.prisma.$transaction(async (tx) => {
+      const deletion = await tx.mysteryWorkspaceDeletion.findUnique({
+        where: { ownerId_clientId: { ownerId: user.id, clientId } },
+        select: { id: true }
+      });
+      if (deletion) throw new NotFoundException("Mystery was deleted");
       const mystery = await tx.mysteryWorkspace.upsert({
         where: { ownerId_clientId: { ownerId: user.id, clientId } },
         create: { ownerId: user.id, clientId, data, snapshotRevision: revision },
@@ -156,8 +168,15 @@ export class MysteriesController {
 
   @Delete(":clientId")
   async delete(@CurrentUser() user: AuthUser, @Param("clientId") clientId: string) {
-    await this.prisma.mysteryWorkspace.deleteMany({
-      where: { ownerId: user.id, clientId }
+    await this.prisma.$transaction(async (tx) => {
+      await tx.mysteryWorkspace.deleteMany({
+        where: { ownerId: user.id, clientId }
+      });
+      await tx.mysteryWorkspaceDeletion.upsert({
+        where: { ownerId_clientId: { ownerId: user.id, clientId } },
+        create: { ownerId: user.id, clientId },
+        update: { deletedAt: new Date() }
+      });
     });
     return { ok: true };
   }

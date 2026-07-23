@@ -10,6 +10,9 @@ const mystery = { id: "local-1", gcCode: "GC12345", name: "A mystery", sharedWit
 test("share persists both the owner snapshot and recipient grant", async () => {
   const calls: Array<{ operation: string; input: unknown }> = [];
   const transaction = {
+    mysteryWorkspaceDeletion: {
+      findUnique: async () => null
+    },
     mysteryWorkspace: {
       upsert: async (input: unknown) => {
         calls.push({ operation: "workspace", input });
@@ -77,6 +80,9 @@ test("ownedShares returns the server-authoritative recipient list", async () => 
         snapshotRevision: 4,
         shares: [{ recipient }]
       }]
+    },
+    mysteryWorkspaceDeletion: {
+      findMany: async () => [{ clientId: "deleted-local-1" }]
     }
   };
   const controller = new MysteriesController(prisma as any);
@@ -84,7 +90,8 @@ test("ownedShares returns the server-authoritative recipient list", async () => 
   const result = await controller.ownedShares(owner);
 
   assert.deepEqual(result, {
-    mysteries: [{ clientId: mystery.id, revision: 4, sharedWith: [recipient] }]
+    mysteries: [{ clientId: mystery.id, revision: 4, sharedWith: [recipient] }],
+    deletedClientIds: ["deleted-local-1"]
   });
 });
 
@@ -160,13 +167,23 @@ test("an older in-flight update cannot overwrite a newer snapshot", async () => 
 
 test("delete removes only the owner's workspace so its grants cascade", async () => {
   let deleteInput: unknown;
-  const prisma = {
+  let tombstoneInput: unknown;
+  const transaction = {
     mysteryWorkspace: {
       deleteMany: async (input: unknown) => {
         deleteInput = input;
         return { count: 1 };
       }
+    },
+    mysteryWorkspaceDeletion: {
+      upsert: async (input: unknown) => {
+        tombstoneInput = input;
+        return { id: "deletion-1" };
+      }
     }
+  };
+  const prisma = {
+    $transaction: async (callback: (tx: typeof transaction) => unknown) => callback(transaction)
   };
   const controller = new MysteriesController(prisma as any);
 
@@ -174,4 +191,29 @@ test("delete removes only the owner's workspace so its grants cascade", async ()
 
   assert.deepEqual(result, { ok: true });
   assert.deepEqual((deleteInput as any).where, { ownerId: owner.id, clientId: mystery.id });
+  assert.deepEqual((tombstoneInput as any).where, {
+    ownerId_clientId: { ownerId: owner.id, clientId: mystery.id }
+  });
+});
+
+test("a durable deletion tombstone blocks stale tabs from resharing", async () => {
+  const transaction = {
+    mysteryWorkspaceDeletion: {
+      findUnique: async () => ({ id: "deletion-1" })
+    }
+  };
+  const prisma = {
+    user: { findUnique: async () => recipient },
+    $transaction: async (callback: (tx: typeof transaction) => unknown) => callback(transaction)
+  };
+  const controller = new MysteriesController(prisma as any);
+
+  await assert.rejects(
+    controller.share(owner, mystery.id, {
+      recipientId: recipient.id,
+      mystery,
+      revision: 1
+    }),
+    /Mystery was deleted/
+  );
 });
