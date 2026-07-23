@@ -276,6 +276,7 @@ export default function MysteriesPage() {
   const initialized = useRef(false);
   const persistedCaches = useRef<MysteryCache[]>([]);
   const snapshotRevisions = useRef(new Map<string, number>());
+  const shareMutationRevisions = useRef(new Map<string, number>());
   const deletedCacheIds = useRef(new Set<string>());
   const deletionChannel = useRef<BroadcastChannel | null>(null);
   const [caches, setCaches] = useState<MysteryCache[]>([]);
@@ -440,6 +441,7 @@ export default function MysteriesPage() {
       .catch(() => {
         // Keep the last locally cached shared snapshot while offline.
       });
+    const reconciliationRevisions = new Map(shareMutationRevisions.current);
     void apiFetch<{ mysteries: OwnedMysteryShares[]; deletedClientIds: string[] }>("/mysteries/owned-shares")
       .then(({ mysteries, deletedClientIds }) => {
         if (!active) return;
@@ -456,7 +458,9 @@ export default function MysteriesPage() {
         }));
         setCaches((current) => current.filter((cache) => !deletedCacheIds.current.has(cache.id)).map((cache) => {
           const sharedWith = sharesByClientId.get(cache.id);
-          return !cache.sharedBy && sharedWith ? { ...cache, sharedWith } : cache;
+          const unchangedSinceRequest =
+            (shareMutationRevisions.current.get(cache.id) ?? 0) === (reconciliationRevisions.get(cache.id) ?? 0);
+          return !cache.sharedBy && sharedWith && unchangedSinceRequest ? { ...cache, sharedWith } : cache;
         }));
       })
       .catch(() => {
@@ -641,6 +645,10 @@ export default function MysteriesPage() {
     return revision;
   }
 
+  function rememberShareMutation(cacheId: string) {
+    shareMutationRevisions.current.set(cacheId, (shareMutationRevisions.current.get(cacheId) ?? 0) + 1);
+  }
+
   function addAttempt(event: FormEvent) {
     event.preventDefault();
     if (!selected) return;
@@ -818,7 +826,12 @@ export default function MysteriesPage() {
         })
       });
       rememberSnapshotRevision(selected.id, revision);
-      updateSelected({ sharedWith: [...selected.sharedWith, recipient] });
+      rememberShareMutation(selected.id);
+      setCaches((current) => current.map((cache) =>
+        cache.id === selected.id && !cache.sharedWith.some((person) => person.id === recipient.id)
+          ? { ...cache, sharedWith: [...cache.sharedWith, recipient] }
+          : cache
+      ));
       setShowShare(false);
       setNotice(`Shared with ${recipient.username}`);
     } catch {
@@ -832,7 +845,12 @@ export default function MysteriesPage() {
     if (!selected || selected.sharedBy) return;
     try {
       await apiFetch(`/mysteries/${encodeURIComponent(selected.id)}/shares/${encodeURIComponent(user.id)}`, { method: "DELETE" });
-      updateSelected({ sharedWith: selected.sharedWith.filter((item) => item.id !== user.id) });
+      rememberShareMutation(selected.id);
+      setCaches((current) => current.map((cache) =>
+        cache.id === selected.id
+          ? { ...cache, sharedWith: cache.sharedWith.filter((item) => item.id !== user.id) }
+          : cache
+      ));
       setNotice(`Stopped sharing with ${user.username}`);
     } catch {
       setNotice(`Could not update sharing for ${user.username}`);
