@@ -631,7 +631,11 @@ export default function MysteriesPage() {
     try {
       localStorage.setItem(DELETION_STORAGE_KEY, JSON.stringify([...deletedCacheIds.current]));
     } catch {
-      // The in-memory tombstone still protects this page.
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(persistedCaches.current));
+      } catch {
+        // The in-memory tombstone still protects this page.
+      }
     }
   }
 

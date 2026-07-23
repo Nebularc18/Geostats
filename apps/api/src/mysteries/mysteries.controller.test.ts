@@ -231,3 +231,34 @@ test("a durable deletion tombstone blocks stale tabs from resharing", async () =
     /Mystery was deleted/
   );
 });
+
+test("unshare locks the mystery before revoking its recipient grant", async () => {
+  const operations: string[] = [];
+  const transaction = {
+    $queryRaw: async () => {
+      operations.push("lock");
+      return [];
+    },
+    mysteryWorkspace: {
+      findUnique: async () => {
+        operations.push("workspace");
+        return { id: "workspace-1" };
+      }
+    },
+    mysteryShare: {
+      deleteMany: async () => {
+        operations.push("revoke");
+        return { count: 1 };
+      }
+    }
+  };
+  const prisma = {
+    $transaction: async (callback: (tx: typeof transaction) => unknown) => callback(transaction)
+  };
+  const controller = new MysteriesController(prisma as any);
+
+  const result = await controller.unshare(owner, mystery.id, recipient.id);
+
+  assert.deepEqual(result, { ok: true });
+  assert.deepEqual(operations, ["lock", "workspace", "revoke"]);
+});

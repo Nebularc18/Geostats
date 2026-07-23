@@ -193,12 +193,15 @@ export class MysteriesController {
     @Param("clientId") clientId: string,
     @Param("recipientId") recipientId: string
   ) {
-    const mystery = await this.prisma.mysteryWorkspace.findUnique({
-      where: { ownerId_clientId: { ownerId: user.id, clientId } },
-      select: { id: true }
+    await this.prisma.$transaction(async (tx) => {
+      await lockMystery(tx, user.id, clientId);
+      const mystery = await tx.mysteryWorkspace.findUnique({
+        where: { ownerId_clientId: { ownerId: user.id, clientId } },
+        select: { id: true }
+      });
+      if (!mystery) throw new NotFoundException("Shared mystery was not found");
+      await tx.mysteryShare.deleteMany({ where: { mysteryId: mystery.id, recipientId } });
     });
-    if (!mystery) throw new NotFoundException("Shared mystery was not found");
-    await this.prisma.mysteryShare.deleteMany({ where: { mysteryId: mystery.id, recipientId } });
     return { ok: true };
   }
 }
