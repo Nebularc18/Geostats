@@ -784,9 +784,12 @@ export default function MysteriesPage() {
     setDeletingCache(true);
     try {
       await apiFetch(`/mysteries/${encodeURIComponent(deleting.id)}`, { method: "DELETE" });
-    } catch {
+    } catch (error) {
       setDeletingCache(false);
-      setNotice("Could not revoke shared access. The mystery was not deleted.");
+      const message = error instanceof Error && error.message
+        ? error.message
+        : "The request failed";
+      setNotice(`Could not delete ${deleting.gcCode}: ${message}`);
       return;
     }
 
