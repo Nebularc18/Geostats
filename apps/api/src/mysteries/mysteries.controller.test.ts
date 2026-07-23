@@ -14,7 +14,12 @@ test("share persists both the owner snapshot and recipient grant", async () => {
       upsert: async (input: unknown) => {
         calls.push({ operation: "workspace", input });
         return { id: "workspace-1" };
-      }
+      },
+      updateMany: async (input: unknown) => {
+        calls.push({ operation: "snapshot", input });
+        return { count: 0 };
+      },
+      findUnique: async () => ({ snapshotRevision: 1 })
     },
     mysteryShare: {
       upsert: async (input: unknown) => {
@@ -29,13 +34,14 @@ test("share persists both the owner snapshot and recipient grant", async () => {
   };
   const controller = new MysteriesController(prisma as any);
 
-  const result = await controller.share(owner, "local-1", { recipientId: recipient.id, mystery });
+  const result = await controller.share(owner, "local-1", { recipientId: recipient.id, mystery, revision: 1 });
 
-  assert.deepEqual(result, { recipient });
+  assert.deepEqual(result, { recipient, revision: 1 });
   assert.equal(calls[0].operation, "workspace");
   assert.deepEqual((calls[0].input as any).where, { ownerId_clientId: { ownerId: owner.id, clientId: "local-1" } });
-  assert.equal(calls[1].operation, "grant");
-  assert.deepEqual((calls[1].input as any).create, { mysteryId: "workspace-1", recipientId: recipient.id });
+  assert.equal(calls[1].operation, "snapshot");
+  assert.equal(calls[2].operation, "grant");
+  assert.deepEqual((calls[2].input as any).create, { mysteryId: "workspace-1", recipientId: recipient.id });
 });
 
 test("shared returns the granted snapshot through the recipient lookup", async () => {
@@ -68,6 +74,7 @@ test("ownedShares returns the server-authoritative recipient list", async () => 
     mysteryWorkspace: {
       findMany: async () => [{
         clientId: mystery.id,
+        snapshotRevision: 4,
         shares: [{ recipient }]
       }]
     }
@@ -77,7 +84,7 @@ test("ownedShares returns the server-authoritative recipient list", async () => 
   const result = await controller.ownedShares(owner);
 
   assert.deepEqual(result, {
-    mysteries: [{ clientId: mystery.id, sharedWith: [recipient] }]
+    mysteries: [{ clientId: mystery.id, revision: 4, sharedWith: [recipient] }]
   });
 });
 
@@ -103,23 +110,52 @@ test("update refreshes an owned shared snapshot", async () => {
   const controller = new MysteriesController(prisma as any);
   const updatedMystery = { ...mystery, notes: "New solution" };
 
-  const result = await controller.update(owner, mystery.id, { mystery: updatedMystery });
+  const result = await controller.update(owner, mystery.id, { mystery: updatedMystery, revision: 2 });
 
-  assert.deepEqual(result, { ok: true });
-  assert.deepEqual((updateInput as any).where, { ownerId: owner.id, clientId: mystery.id });
-  assert.deepEqual((updateInput as any).data, { data: updatedMystery });
+  assert.deepEqual(result, { ok: true, revision: 2 });
+  assert.deepEqual((updateInput as any).where, {
+    ownerId: owner.id,
+    clientId: mystery.id,
+    snapshotRevision: { lt: 2 }
+  });
+  assert.deepEqual((updateInput as any).data, { data: updatedMystery, snapshotRevision: 2 });
 });
 
 test("update cannot modify another owner's shared snapshot", async () => {
   const prisma = {
-    mysteryWorkspace: { updateMany: async () => ({ count: 0 }) }
+    mysteryWorkspace: {
+      updateMany: async () => ({ count: 0 }),
+      findUnique: async () => null
+    }
   };
   const controller = new MysteriesController(prisma as any);
 
   await assert.rejects(
-    controller.update(owner, mystery.id, { mystery }),
+    controller.update(owner, mystery.id, { mystery, revision: 1 }),
     /Shared mystery was not found/
   );
+});
+
+test("an older in-flight update cannot overwrite a newer snapshot", async () => {
+  let updateInput: unknown;
+  const prisma = {
+    mysteryWorkspace: {
+      updateMany: async (input: unknown) => {
+        updateInput = input;
+        return { count: 0 };
+      },
+      findUnique: async () => ({ snapshotRevision: 2 })
+    }
+  };
+  const controller = new MysteriesController(prisma as any);
+
+  const result = await controller.update(owner, mystery.id, {
+    mystery: { ...mystery, notes: "Older notes" },
+    revision: 1
+  });
+
+  assert.deepEqual(result, { ok: true, revision: 2 });
+  assert.deepEqual((updateInput as any).where.snapshotRevision, { lt: 1 });
 });
 
 test("delete removes only the owner's workspace so its grants cascade", async () => {

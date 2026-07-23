@@ -69,6 +69,7 @@ type SharedMysteryGrant = {
 
 type OwnedMysteryShares = {
   clientId: string;
+  revision: number;
   sharedWith: AppUser[];
 };
 
@@ -272,6 +273,7 @@ function applyGeocachingSyncReceipt(caches: MysteryCache[], value: GeocachingSyn
 export default function MysteriesPage() {
   const initialized = useRef(false);
   const persistedCaches = useRef<MysteryCache[]>([]);
+  const snapshotRevisions = useRef(new Map<string, number>());
   const [caches, setCaches] = useState<MysteryCache[]>([]);
   const [selectedId, setSelectedId] = useState("");
   const [ready, setReady] = useState(false);
@@ -384,10 +386,13 @@ export default function MysteriesPage() {
 
     const timeout = window.setTimeout(() => {
       void Promise.all(sharedCaches.map((cache) =>
-        apiFetch(`/mysteries/${encodeURIComponent(cache.id)}`, {
+        apiFetch<{ revision: number }>(`/mysteries/${encodeURIComponent(cache.id)}`, {
           method: "PUT",
-          body: JSON.stringify({ mystery: shareableMystery(cache) })
-        })
+          body: JSON.stringify({
+            mystery: shareableMystery(cache),
+            revision: nextSnapshotRevision(cache.id)
+          })
+        }).then(({ revision }) => rememberSnapshotRevision(cache.id, revision))
       )).catch(() => {
         setNotice("Saved locally, but shared copies could not be updated.");
       });
@@ -419,10 +424,13 @@ export default function MysteriesPage() {
     void apiFetch<{ mysteries: OwnedMysteryShares[] }>("/mysteries/owned-shares")
       .then(({ mysteries }) => {
         if (!active) return;
-        const sharesByClientId = new Map(mysteries.map(({ clientId, sharedWith }) => [
+        const sharesByClientId = new Map(mysteries.map(({ clientId, revision, sharedWith }) => {
+          rememberSnapshotRevision(clientId, revision);
+          return [
           clientId,
           Array.isArray(sharedWith) ? sharedWith.filter(isAppUser) : []
-        ]));
+          ] as const;
+        }));
         setCaches((current) => current.map((cache) => {
           const sharedWith = sharesByClientId.get(cache.id);
           return !cache.sharedBy && sharedWith ? { ...cache, sharedWith } : cache;
@@ -543,6 +551,17 @@ export default function MysteriesPage() {
   function updateSelected(patch: Partial<MysteryCache>) {
     if (!selected || selected.sharedBy) return;
     setCaches((current) => current.map((cache) => (cache.id === selected.id ? { ...cache, ...patch } : cache)));
+  }
+
+  function rememberSnapshotRevision(cacheId: string, revision: number) {
+    if (!Number.isSafeInteger(revision) || revision < 0) return;
+    snapshotRevisions.current.set(cacheId, Math.max(snapshotRevisions.current.get(cacheId) ?? 0, revision));
+  }
+
+  function nextSnapshotRevision(cacheId: string) {
+    const revision = (snapshotRevisions.current.get(cacheId) ?? 0) + 1;
+    snapshotRevisions.current.set(cacheId, revision);
+    return revision;
   }
 
   function addAttempt(event: FormEvent) {
@@ -711,10 +730,15 @@ export default function MysteriesPage() {
     if (!selected || selected.sharedWith.some((person) => person.id === user.id)) return;
     setSharingUserId(user.id);
     try {
-      const { recipient } = await apiFetch<{ recipient: AppUser }>(`/mysteries/${encodeURIComponent(selected.id)}/shares`, {
+      const { recipient, revision } = await apiFetch<{ recipient: AppUser; revision: number }>(`/mysteries/${encodeURIComponent(selected.id)}/shares`, {
         method: "POST",
-        body: JSON.stringify({ recipientId: user.id, mystery: shareableMystery(selected) })
+        body: JSON.stringify({
+          recipientId: user.id,
+          mystery: shareableMystery(selected),
+          revision: nextSnapshotRevision(selected.id)
+        })
       });
+      rememberSnapshotRevision(selected.id, revision);
       updateSelected({ sharedWith: [...selected.sharedWith, recipient] });
       setShowShare(false);
       setNotice(`Shared with ${recipient.username}`);

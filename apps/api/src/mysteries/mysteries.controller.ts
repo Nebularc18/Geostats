@@ -8,10 +8,12 @@ import { PrismaService } from "../common/prisma.service";
 type ShareMysteryBody = {
   recipientId?: unknown;
   mystery?: unknown;
+  revision?: unknown;
 };
 
 type UpdateMysteryBody = {
   mystery?: unknown;
+  revision?: unknown;
 };
 
 function mysteryData(value: unknown, clientId: string): Prisma.InputJsonValue {
@@ -25,6 +27,13 @@ function mysteryData(value: unknown, clientId: string): Prisma.InputJsonValue {
   return mystery as Prisma.InputJsonObject;
 }
 
+function snapshotRevision(value: unknown): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 1) {
+    throw new BadRequestException("A positive snapshot revision is required");
+  }
+  return value as number;
+}
+
 @Controller("mysteries")
 @UseGuards(AuthGuard)
 export class MysteriesController {
@@ -36,6 +45,7 @@ export class MysteriesController {
       where: { ownerId: user.id, shares: { some: {} } },
       select: {
         clientId: true,
+        snapshotRevision: true,
         shares: {
           select: { recipient: { select: { id: true, username: true } } },
           orderBy: { createdAt: "asc" }
@@ -45,6 +55,7 @@ export class MysteriesController {
     return {
       mysteries: mysteries.map((mystery) => ({
         clientId: mystery.clientId,
+        revision: mystery.snapshotRevision,
         sharedWith: mystery.shares.map(({ recipient }) => recipient)
       }))
     };
@@ -88,6 +99,7 @@ export class MysteriesController {
       throw new BadRequestException("Choose another registered user");
     }
     const data = mysteryData(body.mystery, clientId);
+    const revision = snapshotRevision(body.revision);
 
     const recipient = await this.prisma.user.findUnique({
       where: { id: body.recipientId },
@@ -95,20 +107,29 @@ export class MysteriesController {
     });
     if (!recipient) throw new NotFoundException("Recipient was not found");
 
-    await this.prisma.$transaction(async (tx) => {
+    const storedRevision = await this.prisma.$transaction(async (tx) => {
       const mystery = await tx.mysteryWorkspace.upsert({
         where: { ownerId_clientId: { ownerId: user.id, clientId } },
-        create: { ownerId: user.id, clientId, data },
-        update: { data }
+        create: { ownerId: user.id, clientId, data, snapshotRevision: revision },
+        update: {}
+      });
+      await tx.mysteryWorkspace.updateMany({
+        where: { id: mystery.id, snapshotRevision: { lt: revision } },
+        data: { data, snapshotRevision: revision }
       });
       await tx.mysteryShare.upsert({
         where: { mysteryId_recipientId: { mysteryId: mystery.id, recipientId: recipient.id } },
         create: { mysteryId: mystery.id, recipientId: recipient.id },
         update: {}
       });
+      const stored = await tx.mysteryWorkspace.findUnique({
+        where: { id: mystery.id },
+        select: { snapshotRevision: true }
+      });
+      return stored?.snapshotRevision ?? revision;
     });
 
-    return { recipient };
+    return { recipient, revision: storedRevision };
   }
 
   @Put(":clientId")
@@ -118,12 +139,19 @@ export class MysteriesController {
     @Body() body: UpdateMysteryBody
   ) {
     const data = mysteryData(body.mystery, clientId);
+    const revision = snapshotRevision(body.revision);
     const result = await this.prisma.mysteryWorkspace.updateMany({
-      where: { ownerId: user.id, clientId },
-      data: { data }
+      where: { ownerId: user.id, clientId, snapshotRevision: { lt: revision } },
+      data: { data, snapshotRevision: revision }
     });
-    if (result.count === 0) throw new NotFoundException("Shared mystery was not found");
-    return { ok: true };
+    if (result.count > 0) return { ok: true, revision };
+
+    const existing = await this.prisma.mysteryWorkspace.findUnique({
+      where: { ownerId_clientId: { ownerId: user.id, clientId } },
+      select: { snapshotRevision: true }
+    });
+    if (!existing) throw new NotFoundException("Shared mystery was not found");
+    return { ok: true, revision: existing.snapshotRevision };
   }
 
   @Delete(":clientId")

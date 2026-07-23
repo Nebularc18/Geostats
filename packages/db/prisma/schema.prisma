@@ -56,6 +56,7 @@ model MysteryWorkspace {
   ownerId   String   @map("owner_id")
   clientId  String   @map("client_id")
   data      Json
+  snapshotRevision Int @default(0) @map("snapshot_revision")
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
