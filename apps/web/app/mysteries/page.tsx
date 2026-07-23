@@ -274,6 +274,7 @@ export default function MysteriesPage() {
   const initialized = useRef(false);
   const persistedCaches = useRef<MysteryCache[]>([]);
   const snapshotRevisions = useRef(new Map<string, number>());
+  const deletedCacheIds = useRef(new Set<string>());
   const [caches, setCaches] = useState<MysteryCache[]>([]);
   const [selectedId, setSelectedId] = useState("");
   const [ready, setReady] = useState(false);
@@ -361,9 +362,12 @@ export default function MysteriesPage() {
     try {
       localStorage.setItem(STORAGE_KEY, serialized);
       persistedCaches.current = caches;
+      for (const cacheId of deletedCacheIds.current) {
+        if (!caches.some((cache) => cache.id === cacheId)) deletedCacheIds.current.delete(cacheId);
+      }
     } catch {
       const currentById = new Map(caches.map((cache) => [cache.id, cache]));
-      const rollback = persistedCaches.current.map((cache) => {
+      const rollback = persistedCaches.current.filter((cache) => !deletedCacheIds.current.has(cache.id)).map((cache) => {
         const current = currentById.get(cache.id);
         return current ? {
           ...cache,
@@ -381,7 +385,11 @@ export default function MysteriesPage() {
 
   useEffect(() => {
     if (!ready || persistedCaches.current !== caches) return;
-    const sharedCaches = caches.filter((cache) => !cache.sharedBy && cache.sharedWith.length > 0);
+    const sharedCaches = caches.filter((cache) =>
+      !cache.sharedBy &&
+      cache.sharedWith.length > 0 &&
+      snapshotRevisions.current.has(cache.id)
+    );
     if (!sharedCaches.length) return;
 
     const timeout = window.setTimeout(() => {
@@ -700,6 +708,8 @@ export default function MysteriesPage() {
       return;
     }
 
+    deletedCacheIds.current.add(deleting.id);
+    persistedCaches.current = persistedCaches.current.filter((cache) => cache.id !== deleting.id);
     const deletedIndex = caches.findIndex((cache) => cache.id === deleting.id);
     const remainingCaches = caches.filter((cache) => cache.id !== deleting.id);
     const nextCache = remainingCaches[Math.min(Math.max(deletedIndex, 0), remainingCaches.length - 1)];
