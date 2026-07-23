@@ -456,6 +456,7 @@ export default function MysteriesPage() {
           Array.isArray(sharedWith) ? sharedWith.filter(isAppUser) : []
           ] as const;
         }));
+        setPersistedForSync((current) => current ? [...current] : current);
         setCaches((current) => current.filter((cache) => !deletedCacheIds.current.has(cache.id)).map((cache) => {
           const sharedWith = sharesByClientId.get(cache.id);
           const unchangedSinceRequest =
