@@ -102,6 +102,7 @@ type GeocachingSyncPayload = {
 };
 
 const STORAGE_KEY = "geostats-mysteries-v1";
+const DELETION_CHANNEL = "geostats-mystery-deletions";
 const MAX_REASONABLE_DISTANCE_KM = 3.2;
 
 const starterCaches: MysteryCache[] = [
@@ -275,6 +276,7 @@ export default function MysteriesPage() {
   const persistedCaches = useRef<MysteryCache[]>([]);
   const snapshotRevisions = useRef(new Map<string, number>());
   const deletedCacheIds = useRef(new Set<string>());
+  const deletionChannel = useRef<BroadcastChannel | null>(null);
   const [caches, setCaches] = useState<MysteryCache[]>([]);
   const [selectedId, setSelectedId] = useState("");
   const [ready, setReady] = useState(false);
@@ -362,9 +364,6 @@ export default function MysteriesPage() {
     try {
       localStorage.setItem(STORAGE_KEY, serialized);
       persistedCaches.current = caches;
-      for (const cacheId of deletedCacheIds.current) {
-        if (!caches.some((cache) => cache.id === cacheId)) deletedCacheIds.current.delete(cacheId);
-      }
     } catch {
       const currentById = new Map(caches.map((cache) => [cache.id, cache]));
       const rollback = persistedCaches.current.filter((cache) => !deletedCacheIds.current.has(cache.id)).map((cache) => {
@@ -453,16 +452,41 @@ export default function MysteriesPage() {
   }, [ready]);
 
   useEffect(() => {
+    const applyDeletion = (cacheId: string) => {
+      if (!cacheId) return;
+      deletedCacheIds.current.add(cacheId);
+      persistedCaches.current = persistedCaches.current.filter((cache) => cache.id !== cacheId);
+      setCaches((current) => current.filter((cache) => cache.id !== cacheId));
+      setCacheToDelete((current) => current?.id === cacheId ? null : current);
+    };
+    const channel = typeof BroadcastChannel === "undefined" ? null : new BroadcastChannel(DELETION_CHANNEL);
+    deletionChannel.current = channel;
+    if (channel) {
+      channel.onmessage = (event: MessageEvent<unknown>) => {
+        const message = event.data as { type?: unknown; cacheId?: unknown } | null;
+        if (message?.type === "cache-deleted" && typeof message.cacheId === "string") {
+          applyDeletion(message.cacheId);
+        }
+      };
+    }
+
     const receiveStorageUpdate = (event: StorageEvent) => {
       if (event.key !== STORAGE_KEY || !event.newValue) return;
       try {
-        setCaches(verifiedStoredShares(JSON.parse(event.newValue) as MysteryCache[]));
+        const updated = verifiedStoredShares(JSON.parse(event.newValue) as MysteryCache[])
+          .filter((cache) => !deletedCacheIds.current.has(cache.id));
+        persistedCaches.current = updated;
+        setCaches(updated);
       } catch {
         // Ignore malformed updates from another tab.
       }
     };
     window.addEventListener("storage", receiveStorageUpdate);
-    return () => window.removeEventListener("storage", receiveStorageUpdate);
+    return () => {
+      window.removeEventListener("storage", receiveStorageUpdate);
+      channel?.close();
+      deletionChannel.current = null;
+    };
   }, []);
 
   useEffect(() => {
@@ -710,6 +734,7 @@ export default function MysteriesPage() {
 
     deletedCacheIds.current.add(deleting.id);
     persistedCaches.current = persistedCaches.current.filter((cache) => cache.id !== deleting.id);
+    deletionChannel.current?.postMessage({ type: "cache-deleted", cacheId: deleting.id });
     const deletedIndex = caches.findIndex((cache) => cache.id === deleting.id);
     const remainingCaches = caches.filter((cache) => cache.id !== deleting.id);
     const nextCache = remainingCaches[Math.min(Math.max(deletedIndex, 0), remainingCaches.length - 1)];
