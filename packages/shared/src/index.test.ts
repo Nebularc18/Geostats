@@ -18,6 +18,11 @@ test("parses geocaching coordinates with straight or curly apostrophes", () => {
   assertCoordinates("N 59° 55.881’ E 016° 34.374’", 59.93135, 16.5729);
 });
 
+test("parses geocaching coordinates without degree and minute symbols", () => {
+  assertCoordinates("N 59 56.493 E 016 35.068", 59.94155, 16.584466666666667);
+  assertCoordinates("S 59 56.493 W 016 35.068", -59.94155, -16.584466666666667);
+});
+
 test("continues to parse decimal coordinates", () => {
   assert.deepEqual(parseCoordinate("59.93135, 16.57290"), {
     latitude: 59.93135,
@@ -27,6 +32,7 @@ test("continues to parse decimal coordinates", () => {
 
 test("rejects out-of-range degrees and minutes", () => {
   assert.equal(parseCoordinate("N 59° 60.000′ E 016° 34.374′"), null);
+  assert.equal(parseCoordinate("N 59 60.000 E 016 34.374"), null);
   assert.equal(parseCoordinate("N 91° 00.000′ E 016° 34.374′"), null);
   assert.equal(parseCoordinate("N 59° 55.881′ E 181° 00.000′"), null);
 });

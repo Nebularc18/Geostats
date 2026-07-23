@@ -51,7 +51,8 @@ export interface ParsedCoordinate {
 
 /**
  * Parse either decimal coordinates or geocaching's degrees and decimal
- * minutes format (for example, N 59° 55.881′ E 016° 34.374′).
+ * minutes format, with or without degree/minute symbols (for example,
+ * N 59° 55.881′ E 016° 34.374′ or N 59 55.881 E 016 34.374).
  */
 export function parseCoordinate(value: string): ParsedCoordinate | null {
   const decimal = value.match(/^\s*(-?\d{1,2}(?:\.\d+)?)\s*[, ]\s*(-?\d{1,3}(?:\.\d+)?)\s*$/);
@@ -64,7 +65,7 @@ export function parseCoordinate(value: string): ParsedCoordinate | null {
   }
 
   const dmm = value.match(
-    /^\s*([NS])\s*(\d{1,2})\s*°\s*(\d{1,2}(?:\.\d+)?)\s*['’′]?\s*[,;]?\s*([EW])\s*(\d{1,3})\s*°\s*(\d{1,2}(?:\.\d+)?)\s*['’′]?\s*$/i
+    /^\s*([NS])\s*(\d{1,2})(?:\s*°\s*|\s+)(\d{1,2}(?:\.\d+)?)\s*['’′]?\s*[,;]?\s*([EW])\s*(\d{1,3})(?:\s*°\s*|\s+)(\d{1,2}(?:\.\d+)?)\s*['’′]?\s*$/i
   );
   if (!dmm) return null;
 
