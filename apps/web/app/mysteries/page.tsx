@@ -25,6 +25,7 @@ import {
 import { AppShell } from "../../components/app-shell";
 import { apiFetch } from "../../lib/api";
 import { normalizeMysteryArea } from "../../lib/mystery-area";
+import { MYSTERY_USERSCRIPT_VERSION } from "../../lib/mystery-userscript";
 
 type CheckState = "correct" | "wrong" | "unchecked";
 type MysteryStatus = "solving" | "solved" | "planned";
@@ -553,7 +554,7 @@ export default function MysteriesPage() {
     if (!showBrowserImport || userscript) return;
     let active = true;
     setUserscriptError("");
-    void fetch("/mysteries/tampermonkey.user.js", { cache: "no-store" })
+    void fetch(`/mysteries/tampermonkey.user.js?v=${MYSTERY_USERSCRIPT_VERSION}`, { cache: "no-store" })
       .then((response) => {
         if (!response.ok) throw new Error("Could not load userscript");
         return response.text();
@@ -1100,7 +1101,7 @@ export default function MysteriesPage() {
               {userscriptError ? <p className="coordinate-error"><AlertTriangle size={15} /> {userscriptError}</p> : <textarea ref={scriptTextRef} readOnly spellCheck={false} value={userscript || "Generating script…"} aria-label="Tampermonkey userscript" />}
             </div>
             <div className="browser-import-privacy"><WifiOff size={17} /><span><strong>Local and token-free</strong><small>The cache data travels directly between your browser tabs. Your collector token is never exposed.</small></span></div>
-            <div className="modal-actions"><button className="secondary-button" type="button" onClick={() => setShowBrowserImport(false)}>Close</button><button className="secondary-button icon-button" type="button" disabled={!userscript} onClick={copyUserscript}>{scriptCopied ? <Check size={17} /> : <Copy size={17} />} {scriptCopied ? "Copied" : "Copy script"}</button><a className="primary-button icon-button" href="/mysteries/tampermonkey.user.js" target="_blank" rel="noreferrer"><ExternalLink size={17} /> Install/update helper</a></div>
+            <div className="modal-actions"><button className="secondary-button" type="button" onClick={() => setShowBrowserImport(false)}>Close</button><button className="secondary-button icon-button" type="button" disabled={!userscript} onClick={copyUserscript}>{scriptCopied ? <Check size={17} /> : <Copy size={17} />} {scriptCopied ? "Copied" : "Copy script"}</button><a className="primary-button icon-button" href={`/mysteries/tampermonkey.user.js?v=${MYSTERY_USERSCRIPT_VERSION}`} target="_blank" rel="noreferrer"><ExternalLink size={17} /> Install/update helper</a></div>
           </div>
         </div>
       )}

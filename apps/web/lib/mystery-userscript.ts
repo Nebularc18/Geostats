@@ -1,0 +1,1 @@
+export const MYSTERY_USERSCRIPT_VERSION = "2.2.2";
