@@ -102,6 +102,7 @@ type GeocachingSyncPayload = {
 };
 
 const STORAGE_KEY = "geostats-mysteries-v1";
+const DELETION_STORAGE_KEY = "geostats-mystery-deletions-v1";
 const DELETION_CHANNEL = "geostats-mystery-deletions";
 const MAX_REASONABLE_DISTANCE_KM = 3.2;
 
@@ -278,6 +279,7 @@ export default function MysteriesPage() {
   const deletedCacheIds = useRef(new Set<string>());
   const deletionChannel = useRef<BroadcastChannel | null>(null);
   const [caches, setCaches] = useState<MysteryCache[]>([]);
+  const [persistedForSync, setPersistedForSync] = useState<MysteryCache[] | null>(null);
   const [selectedId, setSelectedId] = useState("");
   const [ready, setReady] = useState(false);
   const [query, setQuery] = useState("");
@@ -303,6 +305,14 @@ export default function MysteriesPage() {
   useEffect(() => {
     if (initialized.current) return;
     initialized.current = true;
+    try {
+      const storedDeletionIds = JSON.parse(sessionStorage.getItem(DELETION_STORAGE_KEY) ?? "[]") as unknown;
+      if (Array.isArray(storedDeletionIds)) {
+        deletedCacheIds.current = new Set(storedDeletionIds.filter((cacheId): cacheId is string => typeof cacheId === "string" && cacheId.length > 0));
+      }
+    } catch {
+      sessionStorage.removeItem(DELETION_STORAGE_KEY);
+    }
     const saved = localStorage.getItem(STORAGE_KEY);
     let initial = starterCaches;
     if (saved) {
@@ -312,6 +322,7 @@ export default function MysteriesPage() {
         localStorage.removeItem(STORAGE_KEY);
       }
     }
+    initial = initial.filter((cache) => !deletedCacheIds.current.has(cache.id));
     const lastStoredCaches = initial;
     const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
     const requestedCacheId = new URLSearchParams(window.location.search).get("cache");
@@ -364,6 +375,10 @@ export default function MysteriesPage() {
     try {
       localStorage.setItem(STORAGE_KEY, serialized);
       persistedCaches.current = caches;
+      setPersistedForSync(caches);
+      if ([...deletedCacheIds.current].every((cacheId) => !caches.some((cache) => cache.id === cacheId))) {
+        sessionStorage.removeItem(DELETION_STORAGE_KEY);
+      }
     } catch {
       const currentById = new Map(caches.map((cache) => [cache.id, cache]));
       const rollback = persistedCaches.current.filter((cache) => !deletedCacheIds.current.has(cache.id)).map((cache) => {
@@ -383,8 +398,8 @@ export default function MysteriesPage() {
   }, [caches, ready]);
 
   useEffect(() => {
-    if (!ready || persistedCaches.current !== caches) return;
-    const sharedCaches = caches.filter((cache) =>
+    if (!ready || !persistedForSync) return;
+    const sharedCaches = persistedForSync.filter((cache) =>
       !cache.sharedBy &&
       cache.sharedWith.length > 0 &&
       snapshotRevisions.current.has(cache.id)
@@ -405,7 +420,7 @@ export default function MysteriesPage() {
       });
     }, 400);
     return () => window.clearTimeout(timeout);
-  }, [caches, ready]);
+  }, [persistedForSync, ready]);
 
   useEffect(() => {
     if (!ready) return;
@@ -454,8 +469,7 @@ export default function MysteriesPage() {
   useEffect(() => {
     const applyDeletion = (cacheId: string) => {
       if (!cacheId) return;
-      deletedCacheIds.current.add(cacheId);
-      persistedCaches.current = persistedCaches.current.filter((cache) => cache.id !== cacheId);
+      rememberDeletedCache(cacheId);
       setCaches((current) => current.filter((cache) => cache.id !== cacheId));
       setCacheToDelete((current) => current?.id === cacheId ? null : current);
     };
@@ -583,6 +597,16 @@ export default function MysteriesPage() {
   function updateSelected(patch: Partial<MysteryCache>) {
     if (!selected || selected.sharedBy) return;
     setCaches((current) => current.map((cache) => (cache.id === selected.id ? { ...cache, ...patch } : cache)));
+  }
+
+  function rememberDeletedCache(cacheId: string) {
+    deletedCacheIds.current.add(cacheId);
+    persistedCaches.current = persistedCaches.current.filter((cache) => cache.id !== cacheId);
+    try {
+      sessionStorage.setItem(DELETION_STORAGE_KEY, JSON.stringify([...deletedCacheIds.current]));
+    } catch {
+      // The in-memory tombstone still protects this page and other open tabs.
+    }
   }
 
   function rememberSnapshotRevision(cacheId: string, revision: number) {
@@ -732,8 +756,7 @@ export default function MysteriesPage() {
       return;
     }
 
-    deletedCacheIds.current.add(deleting.id);
-    persistedCaches.current = persistedCaches.current.filter((cache) => cache.id !== deleting.id);
+    rememberDeletedCache(deleting.id);
     deletionChannel.current?.postMessage({ type: "cache-deleted", cacheId: deleting.id });
     const deletedIndex = caches.findIndex((cache) => cache.id === deleting.id);
     const remainingCaches = caches.filter((cache) => cache.id !== deleting.id);
