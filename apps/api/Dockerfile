@@ -29,4 +29,4 @@ COPY --from=build /app/apps/api/dist ./apps/api/dist
 COPY --from=build /app/apps/api/src/stats/map-assets ./apps/api/dist/stats/map-assets
 COPY --from=build /app/apps/tools/src ./apps/tools/src
 RUN node -e "require('./packages/db/node_modules/@prisma/client')"
-CMD ["node", "apps/api/dist/main.js"]
+CMD ["sh", "-c", "node packages/db/node_modules/prisma/build/index.js migrate deploy --schema packages/db/prisma/schema.prisma && exec node apps/api/dist/main.js"]
