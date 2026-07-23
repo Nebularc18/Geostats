@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { BarChart3, Code2, Database, Flag, Globe2, Home, Map, Settings, Trophy, Upload } from "lucide-react";
+import { BarChart3, Code2, Database, Flag, Globe2, Home, Map, Navigation, Puzzle, Settings, Trophy, Upload } from "lucide-react";
 import { API_URL, apiFetch } from "../lib/api";
 
 const nav = [
@@ -16,6 +16,8 @@ const nav = [
   { href: "/milestones", label: "Milestones", icon: Flag },
   { href: "/profile-html", label: "Profile HTML", icon: Code2 },
   { href: "/map", label: "Map", icon: Map },
+  { href: "/mysteries", label: "Mysteries", icon: Puzzle },
+  { href: "/travel", label: "Travel", icon: Navigation },
   { href: "/scratch", label: "Scratch Map", icon: Globe2 },
   { href: "/settings/profile", label: "Profile", icon: Settings }
 ];
@@ -23,14 +25,20 @@ const nav = [
 let hasCompletedProfileCheck = false;
 
 const DEV_AUTO_LOGIN = process.env.NEXT_PUBLIC_DEV_AUTO_LOGIN === "true";
+const DEV_OFFLINE = process.env.NODE_ENV === "development" && process.env.NEXT_PUBLIC_DEV_OFFLINE === "true";
 const DEV_AUTO_LOGIN_ATTEMPT_KEY = "geostats_dev_auto_login_attempted";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
-  const [profileChecked, setProfileChecked] = useState(hasCompletedProfileCheck);
+  const [profileChecked, setProfileChecked] = useState(hasCompletedProfileCheck || DEV_OFFLINE);
 
   useEffect(() => {
+    if (DEV_OFFLINE) {
+      hasCompletedProfileCheck = true;
+      setProfileChecked(true);
+      return;
+    }
     if (hasCompletedProfileCheck) {
       return;
     }
@@ -91,6 +99,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, [router]);
 
   async function logout() {
+    if (DEV_OFFLINE) {
+      return;
+    }
     await apiFetch("/auth/logout", { method: "POST" });
     hasCompletedProfileCheck = false;
     router.push("/login");
@@ -117,9 +128,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             );
           })}
         </nav>
-        <button className="ghost-button" type="button" onClick={logout}>
-          Sign out
-        </button>
+        {!DEV_OFFLINE && <button className="ghost-button" type="button" onClick={logout}>Sign out</button>}
         <p className="sidebar-attribution">Inspired by Project-GC</p>
       </aside>
       <main className="content">{profileChecked ? children : null}</main>

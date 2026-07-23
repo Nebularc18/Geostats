@@ -39,6 +39,25 @@ function completedLocationCount(buckets: ScratchLocationBucket[]) {
   return buckets.filter((bucket) => !isUnknownLocationName(bucket.name) && bucket.count > 0).length;
 }
 
+function normalizeScratchMapData(data: Partial<ScratchMapData> | null | undefined): ScratchMapData {
+  const countries = Array.isArray(data?.countries)
+    ? data.countries.map((country) => ({
+        ...country,
+        regions: Array.isArray(country.regions) ? country.regions : [],
+        counties: Array.isArray(country.counties) ? country.counties : []
+      }))
+    : [];
+
+  return {
+    totalFinds: typeof data?.totalFinds === "number" ? data.totalFinds : 0,
+    truncated: data?.truncated === true,
+    limit: typeof data?.limit === "number" ? data.limit : 0,
+    continents: Array.isArray(data?.continents) ? data.continents : [],
+    countries,
+    maxCountryCount: typeof data?.maxCountryCount === "number" ? data.maxCountryCount : 0
+  };
+}
+
 function LocationTile({
   bucket,
   max,
@@ -73,14 +92,15 @@ export default function ScratchPage() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    void apiFetch<ScratchMapData>("/map/scratch")
+    void apiFetch<Partial<ScratchMapData>>("/map/scratch")
       .then((data) => {
-        setScratch(data);
-        setSelectedCountry(data.countries[0]?.name ?? null);
+        const normalized = normalizeScratchMapData(data);
+        setScratch(normalized);
+        setSelectedCountry(normalized.countries[0]?.name ?? null);
       })
       .catch(() => setError("Could not load scratch map coverage."));
     void apiFetch<{ points: CacheMapPoint[] }>("/map/caches")
-      .then((data) => setPoints(data.points))
+      .then((data) => setPoints(Array.isArray(data.points) ? data.points : []))
       .catch(() => setError("Could not load scratch map points."));
   }, []);
 

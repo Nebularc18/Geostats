@@ -111,6 +111,26 @@ export class AuthService {
     return this.toAuthUser(user);
   }
 
+  async searchUsers(query: string, currentUserId: string): Promise<Array<{ id: string; username: string }>> {
+    const normalizedQuery = query.trim();
+    if (normalizedQuery.length < 2) {
+      return [];
+    }
+    if (normalizedQuery.length > 40) {
+      throw new BadRequestException("User search must be 40 characters or fewer");
+    }
+
+    return this.prisma.user.findMany({
+      where: {
+        id: { not: currentUserId },
+        username: { contains: normalizedQuery, mode: "insensitive" }
+      },
+      select: { id: true, username: true },
+      orderBy: { username: "asc" },
+      take: 10
+    });
+  }
+
   externalAuthorizationUrl(state: string, codeChallenge: string): string {
     this.assertExternalAuthMode();
     if (this.isShooProvider()) {

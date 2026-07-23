@@ -178,6 +178,12 @@ export class AuthController {
     return { user };
   }
 
+  @Get("users")
+  @UseGuards(AuthGuard)
+  async users(@CurrentUser() user: AuthUser, @Query("query") query = "") {
+    return { users: await this.auth.searchUsers(query, user.id) };
+  }
+
   private setCookie(response: Response, user: AuthUser) {
     const token = this.auth.sign(user);
     response.cookie("geostats_session", token, {
