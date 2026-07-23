@@ -56,6 +56,15 @@ type MysteryCache = {
   sharedWith: AppUser[];
   attempts: CoordinateAttempt[];
   image?: string;
+  sharedBy?: AppUser;
+  sharedWorkspaceId?: string;
+};
+
+type SharedMysteryGrant = {
+  workspaceId: string;
+  mystery: MysteryCache;
+  owner: AppUser;
+  sharedWith: AppUser[];
 };
 
 type BrowserImport = {
@@ -252,6 +261,7 @@ function applyGeocachingSyncReceipt(caches: MysteryCache[], value: GeocachingSyn
 
 export default function MysteriesPage() {
   const initialized = useRef(false);
+  const persistedCaches = useRef<MysteryCache[]>([]);
   const [caches, setCaches] = useState<MysteryCache[]>([]);
   const [selectedId, setSelectedId] = useState("");
   const [ready, setReady] = useState(false);
@@ -267,6 +277,7 @@ export default function MysteriesPage() {
   const [userQuery, setUserQuery] = useState("");
   const [userResults, setUserResults] = useState<AppUser[]>([]);
   const [userSearchState, setUserSearchState] = useState<"idle" | "loading" | "error">("idle");
+  const [sharingUserId, setSharingUserId] = useState("");
   const [userscript, setUserscript] = useState("");
   const [userscriptError, setUserscriptError] = useState("");
   const [scriptCopied, setScriptCopied] = useState(false);
@@ -285,6 +296,7 @@ export default function MysteriesPage() {
         localStorage.removeItem(STORAGE_KEY);
       }
     }
+    const lastStoredCaches = initial;
     const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
     const requestedCacheId = new URLSearchParams(window.location.search).get("cache");
     const encodedImport = hashParams.get("mystery-import");
@@ -324,14 +336,48 @@ export default function MysteriesPage() {
       window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
     }
     setCaches(initial);
+    persistedCaches.current = lastStoredCaches;
     setSelectedId((current) => current || initial.find((cache) => cache.id === requestedCacheId)?.id || initial[0]?.id || "");
     setReady(true);
     if ("serviceWorker" in navigator) void navigator.serviceWorker.register("/mysteries-sw.js").catch(() => undefined);
   }, []);
 
   useEffect(() => {
-    if (ready) localStorage.setItem(STORAGE_KEY, JSON.stringify(caches));
+    if (!ready) return;
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(caches));
+      persistedCaches.current = caches;
+    } catch {
+      setCaches(persistedCaches.current);
+      setNotice("Browser storage is full. Your last change was not saved.");
+    }
   }, [caches, ready]);
+
+  useEffect(() => {
+    if (!ready) return;
+    let active = true;
+    void apiFetch<{ mysteries: SharedMysteryGrant[] }>("/mysteries/shared")
+      .then(({ mysteries }) => {
+        if (!active) return;
+        const sharedCaches = mysteries.flatMap((grant) => {
+          if (!grant?.mystery || !isAppUser(grant.owner) || typeof grant.workspaceId !== "string") return [];
+          return [{
+            ...grant.mystery,
+            id: `shared:${grant.workspaceId}`,
+            sharedWith: Array.isArray(grant.sharedWith) ? grant.sharedWith.filter(isAppUser) : [],
+            sharedBy: grant.owner,
+            sharedWorkspaceId: grant.workspaceId
+          }];
+        });
+        setCaches((current) => [...current.filter((cache) => !cache.sharedWorkspaceId), ...sharedCaches]);
+      })
+      .catch(() => {
+        // Keep the last locally cached shared snapshot while offline.
+      });
+    return () => {
+      active = false;
+    };
+  }, [ready]);
 
   useEffect(() => {
     const receiveStorageUpdate = (event: StorageEvent) => {
@@ -438,7 +484,7 @@ export default function MysteriesPage() {
   }, [caches, filter, query]);
 
   function updateSelected(patch: Partial<MysteryCache>) {
-    if (!selected) return;
+    if (!selected || selected.sharedBy) return;
     setCaches((current) => current.map((cache) => (cache.id === selected.id ? { ...cache, ...patch } : cache)));
   }
 
@@ -586,18 +632,41 @@ export default function MysteriesPage() {
   }
 
   function openShare() {
-    if (!selected) return;
+    if (!selected || selected.sharedBy) return;
     setUserQuery("");
     setUserResults([]);
     setUserSearchState("idle");
     setShowShare(true);
   }
 
-  function addSharedUser(user: AppUser) {
+  async function addSharedUser(user: AppUser) {
     if (!selected || selected.sharedWith.some((person) => person.id === user.id)) return;
-    updateSelected({ sharedWith: [...selected.sharedWith, user] });
-    setShowShare(false);
-    setNotice(`Shared with ${user.username}`);
+    const { sharedBy: _sharedBy, sharedWorkspaceId: _sharedWorkspaceId, ...mystery } = selected;
+    setSharingUserId(user.id);
+    try {
+      const { recipient } = await apiFetch<{ recipient: AppUser }>(`/mysteries/${encodeURIComponent(selected.id)}/shares`, {
+        method: "POST",
+        body: JSON.stringify({ recipientId: user.id, mystery })
+      });
+      updateSelected({ sharedWith: [...selected.sharedWith, recipient] });
+      setShowShare(false);
+      setNotice(`Shared with ${recipient.username}`);
+    } catch {
+      setNotice(`Could not share with ${user.username}`);
+    } finally {
+      setSharingUserId("");
+    }
+  }
+
+  async function removeSharedUser(user: AppUser) {
+    if (!selected || selected.sharedBy) return;
+    try {
+      await apiFetch(`/mysteries/${encodeURIComponent(selected.id)}/shares/${encodeURIComponent(user.id)}`, { method: "DELETE" });
+      updateSelected({ sharedWith: selected.sharedWith.filter((item) => item.id !== user.id) });
+      setNotice(`Stopped sharing with ${user.username}`);
+    } catch {
+      setNotice(`Could not update sharing for ${user.username}`);
+    }
   }
 
   function attachImage(event: ChangeEvent<HTMLInputElement>) {
@@ -708,9 +777,9 @@ export default function MysteriesPage() {
                 <p><MapPin size={15} /> Published at {formatCoordinate(selected.publishedLatitude, selected.publishedLongitude)}</p>
               </div>
               <div className="detail-actions">
-                <button className="secondary-button" type="button" onClick={openShare}><Share2 size={16} /> Share</button>
-                <label className="secondary-button image-button"><ImagePlus size={16} /> Add image<input type="file" accept="image/*" onChange={attachImage} /></label>
-                <button className="secondary-button danger-button" type="button" onClick={() => setCacheToDelete(selected)}><Trash2 size={16} /> Delete</button>
+                {!selected.sharedBy && <button className="secondary-button" type="button" onClick={openShare}><Share2 size={16} /> Share</button>}
+                {!selected.sharedBy && <label className="secondary-button image-button"><ImagePlus size={16} /> Add image<input type="file" accept="image/*" onChange={attachImage} /></label>}
+                {!selected.sharedBy && <button className="secondary-button danger-button" type="button" onClick={() => setCacheToDelete(selected)}><Trash2 size={16} /> Delete</button>}
               </div>
             </div>
 
@@ -762,10 +831,11 @@ export default function MysteriesPage() {
                 <section className="mystery-section shared-section">
                   <div className="section-heading"><div><p className="eyebrow">Team</p><h3>Shared with</h3></div><Users size={18} /></div>
                   <div className="people-list">
-                    {selected.sharedWith.map((person) => <button title={`Remove ${person.username}`} type="button" key={person.id} onClick={() => updateSelected({ sharedWith: selected.sharedWith.filter((item) => item.id !== person.id) })}><span>{person.username.charAt(0).toUpperCase()}</span>{person.username}<X size={12} /></button>)}
+                    {selected.sharedBy && <small>Shared by {selected.sharedBy.username}</small>}
+                    {selected.sharedWith.map((person) => <button title={selected.sharedBy ? person.username : `Remove ${person.username}`} type="button" disabled={Boolean(selected.sharedBy)} key={person.id} onClick={() => void removeSharedUser(person)}><span>{person.username.charAt(0).toUpperCase()}</span>{person.username}{!selected.sharedBy && <X size={12} />}</button>)}
                     {!selected.sharedWith.length && <small>Only you can see this cache.</small>}
                   </div>
-                  <button className="text-button" type="button" onClick={openShare}><Plus size={15} /> Share with a Geostats user</button>
+                  {!selected.sharedBy && <button className="text-button" type="button" onClick={openShare}><Plus size={15} /> Share with a Geostats user</button>}
                 </section>
               </aside>
             </div>
@@ -798,7 +868,8 @@ export default function MysteriesPage() {
               {userSearchState === "idle" && userQuery.trim().length >= 2 && !userResults.length && <small>No registered users found.</small>}
               {userResults.map((user) => {
                 const alreadyShared = selected.sharedWith.some((person) => person.id === user.id);
-                return <button key={user.id} type="button" disabled={alreadyShared} onClick={() => addSharedUser(user)}><span>{user.username.charAt(0).toUpperCase()}</span><strong>{user.username}</strong><small>{alreadyShared ? "Already shared" : "Add user"}</small></button>;
+                const sharing = sharingUserId === user.id;
+                return <button key={user.id} type="button" disabled={alreadyShared || Boolean(sharingUserId)} onClick={() => void addSharedUser(user)}><span>{user.username.charAt(0).toUpperCase()}</span><strong>{user.username}</strong><small>{alreadyShared ? "Already shared" : sharing ? "Sharing…" : "Add user"}</small></button>;
               })}
             </div>
             <div className="modal-actions"><button className="secondary-button" type="button" onClick={() => setShowShare(false)}>Cancel</button></div>
