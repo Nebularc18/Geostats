@@ -184,7 +184,8 @@ function userscript(appOrigin: string) {
       ".CacheLocation",
       ".cache-location",
       "[class*='cacheLocation']",
-      "[class*='CacheLocation']"
+      "[class*='CacheLocation']",
+      "#ctl00_ContentBody_mcd1"
     ].join(","));
     for (const locationNode of locationNodes) {
       const breadcrumb = [...locationNode.querySelectorAll("a")]
