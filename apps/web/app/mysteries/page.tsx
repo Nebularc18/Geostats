@@ -24,6 +24,7 @@ import {
 } from "lucide-react";
 import { AppShell } from "../../components/app-shell";
 import { apiFetch } from "../../lib/api";
+import { normalizeMysteryArea } from "../../lib/mystery-area";
 
 type CheckState = "correct" | "wrong" | "unchecked";
 type MysteryStatus = "solving" | "solved" | "planned";
@@ -204,6 +205,7 @@ function isAppUser(value: unknown): value is AppUser {
 function verifiedStoredShares(caches: MysteryCache[]) {
   return caches.map((cache) => ({
     ...cache,
+    area: normalizeMysteryArea(cache.area),
     sharedWith: Array.isArray(cache.sharedWith) ? cache.sharedWith.filter(isAppUser) : []
   }));
 }
@@ -216,7 +218,7 @@ function shareableMystery(cache: MysteryCache) {
 function importedMystery(value: BrowserImport): MysteryCache | null {
   const gcCode = typeof value.gcCode === "string" ? value.gcCode.trim().toUpperCase() : "";
   const name = typeof value.name === "string" ? value.name.trim() : "";
-  const area = typeof value.area === "string" ? value.area.trim() : "";
+  const area = normalizeMysteryArea(value.area);
   const publishedLatitude = typeof value.latitude === "number" ? value.latitude : Number.NaN;
   const publishedLongitude = typeof value.longitude === "number" ? value.longitude : Number.NaN;
   if (!/^GC[A-Z0-9]+$/.test(gcCode) || !name || !Number.isFinite(publishedLatitude) || !Number.isFinite(publishedLongitude) || Math.abs(publishedLatitude) > 90 || Math.abs(publishedLongitude) > 180) {
@@ -425,6 +427,7 @@ export default function MysteriesPage() {
           if (!grant?.mystery || !isAppUser(grant.owner) || typeof grant.workspaceId !== "string") return [];
           return [{
             ...grant.mystery,
+            area: normalizeMysteryArea(grant.mystery.area),
             id: `shared:${grant.workspaceId}`,
             sharedWith: Array.isArray(grant.sharedWith) ? grant.sharedWith.filter(isAppUser) : [],
             sharedBy: grant.owner,

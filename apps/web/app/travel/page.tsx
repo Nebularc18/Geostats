@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { Check, CircleDot, MapPin, Navigation, Puzzle, Search } from "lucide-react";
 import { AppShell } from "../../components/app-shell";
+import { normalizeMysteryArea } from "../../lib/mystery-area";
 
 type TravelCache = {
   id: string;
@@ -29,7 +30,9 @@ export default function TravelPage() {
   useEffect(() => {
     try {
       const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "[]") as TravelCache[];
-      setCaches(Array.isArray(stored) ? stored : []);
+      setCaches(Array.isArray(stored)
+        ? stored.map((cache) => ({ ...cache, area: normalizeMysteryArea(cache.area) }))
+        : []);
     } catch {
       setCaches([]);
     }
