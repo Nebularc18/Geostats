@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Delete, Get, NotFoundException, Param, Post, UseGuards } from "@nestjs/common";
+import { BadRequestException, Body, Controller, Delete, Get, NotFoundException, Param, Post, Put, UseGuards } from "@nestjs/common";
 import { Prisma } from "@geostats/db";
 import { AuthUser } from "@geostats/shared";
 import { AuthGuard } from "../auth/auth.guard";
@@ -7,6 +7,10 @@ import { PrismaService } from "../common/prisma.service";
 
 type ShareMysteryBody = {
   recipientId?: unknown;
+  mystery?: unknown;
+};
+
+type UpdateMysteryBody = {
   mystery?: unknown;
 };
 
@@ -85,6 +89,29 @@ export class MysteriesController {
     });
 
     return { recipient };
+  }
+
+  @Put(":clientId")
+  async update(
+    @CurrentUser() user: AuthUser,
+    @Param("clientId") clientId: string,
+    @Body() body: UpdateMysteryBody
+  ) {
+    const data = mysteryData(body.mystery, clientId);
+    const result = await this.prisma.mysteryWorkspace.updateMany({
+      where: { ownerId: user.id, clientId },
+      data: { data }
+    });
+    if (result.count === 0) throw new NotFoundException("Shared mystery was not found");
+    return { ok: true };
+  }
+
+  @Delete(":clientId")
+  async delete(@CurrentUser() user: AuthUser, @Param("clientId") clientId: string) {
+    await this.prisma.mysteryWorkspace.deleteMany({
+      where: { ownerId: user.id, clientId }
+    });
+    return { ok: true };
   }
 
   @Delete(":clientId/shares/:recipientId")

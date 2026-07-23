@@ -71,3 +71,53 @@ test("share rejects a snapshot that does not match the requested mystery", async
     BadRequestException
   );
 });
+
+test("update refreshes an owned shared snapshot", async () => {
+  let updateInput: unknown;
+  const prisma = {
+    mysteryWorkspace: {
+      updateMany: async (input: unknown) => {
+        updateInput = input;
+        return { count: 1 };
+      }
+    }
+  };
+  const controller = new MysteriesController(prisma as any);
+  const updatedMystery = { ...mystery, notes: "New solution" };
+
+  const result = await controller.update(owner, mystery.id, { mystery: updatedMystery });
+
+  assert.deepEqual(result, { ok: true });
+  assert.deepEqual((updateInput as any).where, { ownerId: owner.id, clientId: mystery.id });
+  assert.deepEqual((updateInput as any).data, { data: updatedMystery });
+});
+
+test("update cannot modify another owner's shared snapshot", async () => {
+  const prisma = {
+    mysteryWorkspace: { updateMany: async () => ({ count: 0 }) }
+  };
+  const controller = new MysteriesController(prisma as any);
+
+  await assert.rejects(
+    controller.update(owner, mystery.id, { mystery }),
+    /Shared mystery was not found/
+  );
+});
+
+test("delete removes only the owner's workspace so its grants cascade", async () => {
+  let deleteInput: unknown;
+  const prisma = {
+    mysteryWorkspace: {
+      deleteMany: async (input: unknown) => {
+        deleteInput = input;
+        return { count: 1 };
+      }
+    }
+  };
+  const controller = new MysteriesController(prisma as any);
+
+  const result = await controller.delete(owner, mystery.id);
+
+  assert.deepEqual(result, { ok: true });
+  assert.deepEqual((deleteInput as any).where, { ownerId: owner.id, clientId: mystery.id });
+});

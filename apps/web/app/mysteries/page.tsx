@@ -204,6 +204,11 @@ function verifiedStoredShares(caches: MysteryCache[]) {
   }));
 }
 
+function shareableMystery(cache: MysteryCache) {
+  const { sharedBy: _sharedBy, sharedWorkspaceId: _sharedWorkspaceId, ...mystery } = cache;
+  return mystery;
+}
+
 function importedMystery(value: BrowserImport): MysteryCache | null {
   const gcCode = typeof value.gcCode === "string" ? value.gcCode.trim().toUpperCase() : "";
   const name = typeof value.name === "string" ? value.name.trim() : "";
@@ -274,6 +279,7 @@ export default function MysteriesPage() {
   const [showBrowserImport, setShowBrowserImport] = useState(false);
   const [showShare, setShowShare] = useState(false);
   const [cacheToDelete, setCacheToDelete] = useState<MysteryCache | null>(null);
+  const [deletingCache, setDeletingCache] = useState(false);
   const [userQuery, setUserQuery] = useState("");
   const [userResults, setUserResults] = useState<AppUser[]>([]);
   const [userSearchState, setUserSearchState] = useState<"idle" | "loading" | "error">("idle");
@@ -351,6 +357,24 @@ export default function MysteriesPage() {
       setCaches(persistedCaches.current);
       setNotice("Browser storage is full. Your last change was not saved.");
     }
+  }, [caches, ready]);
+
+  useEffect(() => {
+    if (!ready || persistedCaches.current !== caches) return;
+    const sharedCaches = caches.filter((cache) => !cache.sharedBy && cache.sharedWith.length > 0);
+    if (!sharedCaches.length) return;
+
+    const timeout = window.setTimeout(() => {
+      void Promise.all(sharedCaches.map((cache) =>
+        apiFetch(`/mysteries/${encodeURIComponent(cache.id)}`, {
+          method: "PUT",
+          body: JSON.stringify({ mystery: shareableMystery(cache) })
+        })
+      )).catch(() => {
+        setNotice("Saved locally, but shared copies could not be updated.");
+      });
+    }, 400);
+    return () => window.clearTimeout(timeout);
   }, [caches, ready]);
 
   useEffect(() => {
@@ -612,17 +636,30 @@ export default function MysteriesPage() {
     setNotice("Mystery cache added");
   }
 
-  function deleteCache() {
+  async function deleteCache() {
     if (!cacheToDelete) return;
-    const deletedIndex = caches.findIndex((cache) => cache.id === cacheToDelete.id);
-    const remainingCaches = caches.filter((cache) => cache.id !== cacheToDelete.id);
+    const deleting = cacheToDelete;
+    setDeletingCache(true);
+    if (deleting.sharedWith.length > 0) {
+      try {
+        await apiFetch(`/mysteries/${encodeURIComponent(deleting.id)}`, { method: "DELETE" });
+      } catch {
+        setDeletingCache(false);
+        setNotice("Could not revoke shared access. The mystery was not deleted.");
+        return;
+      }
+    }
+
+    const deletedIndex = caches.findIndex((cache) => cache.id === deleting.id);
+    const remainingCaches = caches.filter((cache) => cache.id !== deleting.id);
     const nextCache = remainingCaches[Math.min(Math.max(deletedIndex, 0), remainingCaches.length - 1)];
 
     setCaches(remainingCaches);
     setSelectedId(nextCache?.id ?? "");
     setCacheToDelete(null);
     setShowShare(false);
-    setNotice(`${cacheToDelete.gcCode} deleted`);
+    setDeletingCache(false);
+    setNotice(`${deleting.gcCode} deleted`);
   }
 
   function addClue() {
@@ -641,12 +678,11 @@ export default function MysteriesPage() {
 
   async function addSharedUser(user: AppUser) {
     if (!selected || selected.sharedWith.some((person) => person.id === user.id)) return;
-    const { sharedBy: _sharedBy, sharedWorkspaceId: _sharedWorkspaceId, ...mystery } = selected;
     setSharingUserId(user.id);
     try {
       const { recipient } = await apiFetch<{ recipient: AppUser }>(`/mysteries/${encodeURIComponent(selected.id)}/shares`, {
         method: "POST",
-        body: JSON.stringify({ recipientId: user.id, mystery })
+        body: JSON.stringify({ recipientId: user.id, mystery: shareableMystery(selected) })
       });
       updateSelected({ sharedWith: [...selected.sharedWith, recipient] });
       setShowShare(false);
@@ -886,7 +922,7 @@ export default function MysteriesPage() {
               <h2 id="delete-cache-title">Delete {cacheToDelete.gcCode}?</h2>
             </div>
             <p id="delete-cache-description">This removes <strong>{cacheToDelete.name}</strong>, including its notes, clues, images and coordinate attempts. This cannot be undone.</p>
-            <div className="modal-actions"><button className="secondary-button" type="button" onClick={() => setCacheToDelete(null)}>Cancel</button><button className="primary-button danger-button" type="button" onClick={deleteCache}><Trash2 size={16} /> Delete cache</button></div>
+            <div className="modal-actions"><button className="secondary-button" type="button" disabled={deletingCache} onClick={() => setCacheToDelete(null)}>Cancel</button><button className="primary-button danger-button" type="button" disabled={deletingCache} onClick={() => void deleteCache()}><Trash2 size={16} /> {deletingCache ? "Deleting…" : "Delete cache"}</button></div>
           </div>
         </div>
       )}
