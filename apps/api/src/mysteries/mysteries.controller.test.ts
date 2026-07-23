@@ -63,6 +63,24 @@ test("shared returns the granted snapshot through the recipient lookup", async (
   }]);
 });
 
+test("ownedShares returns the server-authoritative recipient list", async () => {
+  const prisma = {
+    mysteryWorkspace: {
+      findMany: async () => [{
+        clientId: mystery.id,
+        shares: [{ recipient }]
+      }]
+    }
+  };
+  const controller = new MysteriesController(prisma as any);
+
+  const result = await controller.ownedShares(owner);
+
+  assert.deepEqual(result, {
+    mysteries: [{ clientId: mystery.id, sharedWith: [recipient] }]
+  });
+});
+
 test("share rejects a snapshot that does not match the requested mystery", async () => {
   const controller = new MysteriesController({} as any);
 

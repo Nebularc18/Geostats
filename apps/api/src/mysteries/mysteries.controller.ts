@@ -30,6 +30,26 @@ function mysteryData(value: unknown, clientId: string): Prisma.InputJsonValue {
 export class MysteriesController {
   constructor(private readonly prisma: PrismaService) {}
 
+  @Get("owned-shares")
+  async ownedShares(@CurrentUser() user: AuthUser) {
+    const mysteries = await this.prisma.mysteryWorkspace.findMany({
+      where: { ownerId: user.id, shares: { some: {} } },
+      select: {
+        clientId: true,
+        shares: {
+          select: { recipient: { select: { id: true, username: true } } },
+          orderBy: { createdAt: "asc" }
+        }
+      }
+    });
+    return {
+      mysteries: mysteries.map((mystery) => ({
+        clientId: mystery.clientId,
+        sharedWith: mystery.shares.map(({ recipient }) => recipient)
+      }))
+    };
+  }
+
   @Get("shared")
   async shared(@CurrentUser() user: AuthUser) {
     const grants = await this.prisma.mysteryShare.findMany({

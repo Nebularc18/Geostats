@@ -67,6 +67,11 @@ type SharedMysteryGrant = {
   sharedWith: AppUser[];
 };
 
+type OwnedMysteryShares = {
+  clientId: string;
+  sharedWith: AppUser[];
+};
+
 type BrowserImport = {
   gcCode?: unknown;
   name?: unknown;
@@ -350,11 +355,24 @@ export default function MysteriesPage() {
 
   useEffect(() => {
     if (!ready) return;
+    const serialized = JSON.stringify(caches);
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(caches));
+      localStorage.setItem(STORAGE_KEY, serialized);
       persistedCaches.current = caches;
     } catch {
-      setCaches(persistedCaches.current);
+      const currentById = new Map(caches.map((cache) => [cache.id, cache]));
+      const rollback = persistedCaches.current.map((cache) => {
+        const current = currentById.get(cache.id);
+        return current ? {
+          ...cache,
+          sharedWith: current.sharedWith,
+          sharedBy: current.sharedBy,
+          sharedWorkspaceId: current.sharedWorkspaceId
+        } : cache;
+      });
+      const persistedWorkspaceIds = new Set(rollback.map((cache) => cache.sharedWorkspaceId).filter(Boolean));
+      rollback.push(...caches.filter((cache) => cache.sharedWorkspaceId && !persistedWorkspaceIds.has(cache.sharedWorkspaceId)));
+      if (JSON.stringify(rollback) !== serialized) setCaches(rollback);
       setNotice("Browser storage is full. Your last change was not saved.");
     }
   }, [caches, ready]);
@@ -397,6 +415,21 @@ export default function MysteriesPage() {
       })
       .catch(() => {
         // Keep the last locally cached shared snapshot while offline.
+      });
+    void apiFetch<{ mysteries: OwnedMysteryShares[] }>("/mysteries/owned-shares")
+      .then(({ mysteries }) => {
+        if (!active) return;
+        const sharesByClientId = new Map(mysteries.map(({ clientId, sharedWith }) => [
+          clientId,
+          Array.isArray(sharedWith) ? sharedWith.filter(isAppUser) : []
+        ]));
+        setCaches((current) => current.map((cache) => {
+          const sharedWith = sharesByClientId.get(cache.id);
+          return !cache.sharedBy && sharedWith ? { ...cache, sharedWith } : cache;
+        }));
+      })
+      .catch(() => {
+        // Keep the locally cached owner grant list while offline.
       });
     return () => {
       active = false;
@@ -640,14 +673,12 @@ export default function MysteriesPage() {
     if (!cacheToDelete) return;
     const deleting = cacheToDelete;
     setDeletingCache(true);
-    if (deleting.sharedWith.length > 0) {
-      try {
-        await apiFetch(`/mysteries/${encodeURIComponent(deleting.id)}`, { method: "DELETE" });
-      } catch {
-        setDeletingCache(false);
-        setNotice("Could not revoke shared access. The mystery was not deleted.");
-        return;
-      }
+    try {
+      await apiFetch(`/mysteries/${encodeURIComponent(deleting.id)}`, { method: "DELETE" });
+    } catch {
+      setDeletingCache(false);
+      setNotice("Could not revoke shared access. The mystery was not deleted.");
+      return;
     }
 
     const deletedIndex = caches.findIndex((cache) => cache.id === deleting.id);
