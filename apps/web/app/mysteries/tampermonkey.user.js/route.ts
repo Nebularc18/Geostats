@@ -4,7 +4,7 @@ function userscript(appOrigin: string) {
   return `// ==UserScript==
 // @name         Geostats Mystery Importer
 // @namespace    ${appOrigin}
-// @version      2.1.0
+// @version      2.2.0
 // @description  Import mystery caches and automatically sync corrected coordinates from Geostats.
 // @match        https://www.geocaching.com/geocache/*
 // @match        https://www.geocaching.com/seek/cache_details.aspx*
@@ -141,13 +141,62 @@ function userscript(appOrigin: string) {
     return decimal ? { latitude: Number(decimal[1]), longitude: Number(decimal[2]) } : null;
   }
 
+  function pageArea() {
+    const locationNode = document.querySelector([
+      "#ctl00_ContentBody_mcd1",
+      "[data-testid='cache-location']",
+      "[data-testid='cache-region']",
+      ".CacheLocation",
+      ".cache-location",
+      "[class*='cacheLocation']",
+      "[class*='CacheLocation']"
+    ].join(","));
+    if (locationNode) {
+      const breadcrumb = [...locationNode.querySelectorAll("a")]
+        .map((link) => link.textContent?.trim())
+        .filter(Boolean);
+      if (breadcrumb.length) return breadcrumb[breadcrumb.length - 1];
+
+      const text = (locationNode.textContent || "").replace(/\\s+/g, " ").trim();
+      if (text) {
+        const parts = text.split(/\\s*(?:>|›|»|→)\\s*/).filter(Boolean);
+        return (parts[parts.length - 1] || text)
+          .replace(/^(?:located\\s+)?in\\s+/i, "")
+          .trim();
+      }
+    }
+
+    const findAddressRegion = (value) => {
+      if (!value || typeof value !== "object") return "";
+      if (typeof value.addressRegion === "string" && value.addressRegion.trim()) {
+        return value.addressRegion.trim();
+      }
+      for (const nested of Object.values(value)) {
+        const region = findAddressRegion(nested);
+        if (region) return region;
+      }
+      return "";
+    };
+    for (const script of document.querySelectorAll("script[type='application/ld+json']")) {
+      try {
+        const region = findAddressRegion(JSON.parse(script.textContent || "null"));
+        if (region) return region;
+      } catch {
+        // Ignore unrelated or malformed structured data.
+      }
+    }
+
+    const regionMeta = document.querySelector("meta[property='place:region']");
+    return regionMeta?.getAttribute("content")?.trim() || "";
+  }
+
   function pageData() {
     const gcCode = (location.pathname.match(/\\/geocache\\/(GC[A-Z0-9]+)/i)?.[1] || new URLSearchParams(location.search).get("wp") || textFrom([".CoordInfoCode", "[data-testid='gccode']"])).toUpperCase();
     const rawTitle = textFrom(["h1", "#ctl00_ContentBody_CacheName", "[data-testid='cache-name']"]) || document.querySelector("meta[property='og:title']")?.content || document.title;
     const name = rawTitle.replace(/\\s*[-|]\\s*Geocaching.*$/i, "").trim();
     const coordinateText = textFrom(["#uxLatLon", "[data-testid='coordinates']", ".coordinates", "[class*='Coordinates']", "[class*='coordinates']"]);
     const coordinates = parseCoordinates(coordinateText);
-    const area = textFrom([".minorCacheDetails", "[data-testid='cache-location']", ".CacheLocation"]);
+    const area = pageArea();
     return coordinates ? { gcCode, name, area, ...coordinates } : { gcCode, name, area };
   }
 

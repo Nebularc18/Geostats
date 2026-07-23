@@ -10,7 +10,7 @@ type TravelCache = {
   gcCode: string;
   name: string;
   area: string;
-  trip: string;
+  trip?: string;
   status: "solving" | "solved" | "planned";
   attempts: Array<{ state: "correct" | "wrong" | "unchecked"; latitude: number; longitude: number }>;
 };
@@ -40,21 +40,21 @@ export default function TravelPage() {
     return caches.filter((cache) => {
       const ready = Boolean(finalCoordinate(cache));
       const matchesFilter = filter === "all" || (filter === "ready" ? ready : !ready);
-      const matchesQuery = !normalized || `${cache.gcCode} ${cache.name} ${cache.area} ${cache.trip}`.toLowerCase().includes(normalized);
+      const matchesQuery = !normalized || `${cache.gcCode} ${cache.name} ${cache.area} ${cache.trip ?? ""}`.toLowerCase().includes(normalized);
       return matchesFilter && matchesQuery;
     });
   }, [caches, filter, query]);
 
   const groups = useMemo(() => {
     return visibleCaches.reduce<Record<string, TravelCache[]>>((result, cache) => {
-      const group = cache.trip.trim() || cache.area.trim() || "Unassigned";
+      const group = cache.trip?.trim() || cache.area.trim() || "Unassigned";
       (result[group] ??= []).push(cache);
       return result;
     }, {});
   }, [visibleCaches]);
 
   const readyCount = caches.filter((cache) => finalCoordinate(cache)).length;
-  const routeCount = new Set(caches.map((cache) => cache.trip.trim()).filter(Boolean)).size;
+  const routeCount = new Set(caches.map((cache) => cache.trip?.trim()).filter(Boolean)).size;
 
   return (
     <AppShell>
