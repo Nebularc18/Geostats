@@ -47,7 +47,6 @@ type MysteryCache = {
   gcCode: string;
   name: string;
   area: string;
-  trip: string;
   status: MysteryStatus;
   publishedLatitude: number;
   publishedLongitude: number;
@@ -112,7 +111,6 @@ const starterCaches: MysteryCache[] = [
     gcCode: "GC9X7K2",
     name: "The Lighthouse Cipher",
     area: "Vaxholm",
-    trip: "Archipelago weekend",
     status: "solved",
     publishedLatitude: 59.40235,
     publishedLongitude: 18.35371,
@@ -129,7 +127,6 @@ const starterCaches: MysteryCache[] = [
     gcCode: "GCAB4M8",
     name: "Between the Lines",
     area: "Stockholm",
-    trip: "City evening",
     status: "solving",
     publishedLatitude: 59.34312,
     publishedLongitude: 18.07341,
@@ -145,7 +142,6 @@ const starterCaches: MysteryCache[] = [
     gcCode: "GC8P2QF",
     name: "Runes in the Forest",
     area: "Uppsala",
-    trip: "E4 north",
     status: "planned",
     publishedLatitude: 59.85863,
     publishedLongitude: 17.63893,
@@ -231,7 +227,6 @@ function importedMystery(value: BrowserImport): MysteryCache | null {
     gcCode,
     name,
     area,
-    trip: "",
     status: "solving",
     publishedLatitude,
     publishedLongitude,
@@ -611,7 +606,7 @@ export default function MysteriesPage() {
     const normalized = query.trim().toLowerCase();
     return caches.filter((cache) => {
       const matchesFilter = filter === "all" || cache.status === filter;
-      const matchesQuery = !normalized || `${cache.gcCode} ${cache.name} ${cache.area} ${cache.trip}`.toLowerCase().includes(normalized);
+      const matchesQuery = !normalized || `${cache.gcCode} ${cache.name} ${cache.area}`.toLowerCase().includes(normalized);
       return matchesFilter && matchesQuery;
     });
   }, [caches, filter, query]);
@@ -763,7 +758,6 @@ export default function MysteriesPage() {
       gcCode: String(data.get("gcCode") ?? "").trim().toUpperCase(),
       name: String(data.get("name") ?? "").trim(),
       area: String(data.get("area") ?? "").trim(),
-      trip: String(data.get("trip") ?? "").trim(),
       status: "solving",
       publishedLatitude: published.latitude,
       publishedLongitude: published.longitude,
@@ -1045,7 +1039,7 @@ export default function MysteriesPage() {
             <div className="section-heading"><div><p className="eyebrow">New workspace</p><h2>Add a mystery cache</h2></div><button className="row-delete" type="button" onClick={() => setShowAdd(false)}><X /></button></div>
             <div className="two-column"><label>GC code<input name="gcCode" required placeholder="GC12345" pattern="GC[A-Za-z0-9]+" /></label><label>Cache name<input name="name" required placeholder="The hidden message" /></label></div>
             <label>Published coordinates<input name="published" required placeholder="59.34312, 18.07341" /></label>
-            <div className="two-column"><label>Area<input name="area" placeholder="Stockholm" /></label><label>Trip or route<input name="trip" placeholder="City weekend" /></label></div>
+            <label>County / area<input name="area" placeholder="Stockholm County" /></label>
             <div className="modal-actions"><button className="secondary-button" type="button" onClick={() => setShowAdd(false)}>Cancel</button><button className="primary-button" type="submit">Add to workspace</button></div>
           </form>
         </div>
@@ -1091,7 +1085,7 @@ export default function MysteriesPage() {
         <div className="mystery-modal-backdrop" role="presentation" onMouseDown={() => setShowBrowserImport(false)}>
           <div className="mystery-modal browser-import-modal" role="dialog" aria-modal="true" aria-labelledby="browser-import-title" onMouseDown={(event) => event.stopPropagation()}>
             <div className="section-heading"><div><p className="eyebrow">One-click capture</p><h2 id="browser-import-title">Import from geocaching.com</h2></div><button className="row-delete" type="button" aria-label="Close" onClick={() => setShowBrowserImport(false)}><X /></button></div>
-            <p className="browser-import-lead">The helper imports cache pages and automatically saves corrected coordinates using your signed-in Geocaching session. Use the install button to add it or update your existing copy.</p>
+            <p className="browser-import-lead">The helper imports the cache name, published coordinates and county/area, and automatically saves corrected coordinates using your signed-in Geocaching session. Use the install button to add it or update your existing copy.</p>
             <ol className="browser-import-steps">
               <li><span>1</span><div><strong>Install Tampermonkey</strong><small>Available for Chrome, Edge, Firefox and Safari.</small></div></li>
               <li><span>2</span><div><strong>Install or update the helper</strong><small>Use the button below and confirm the installation in Tampermonkey.</small></div></li>
