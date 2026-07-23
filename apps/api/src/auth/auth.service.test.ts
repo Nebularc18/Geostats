@@ -58,6 +58,16 @@ function authServiceWithUsers() {
         users.find((user) =>
           where.email ? user.email === where.email : where.username ? user.username === where.username : user.id === where.id
         ) ?? null,
+      findMany: async ({ where, take }: any) =>
+        users
+          .filter(
+            (user) =>
+              user.id !== where.id.not &&
+              user.username.toLowerCase().includes(where.username.contains.toLowerCase())
+          )
+          .sort((left, right) => left.username.localeCompare(right.username))
+          .slice(0, take)
+          .map(({ id, username }) => ({ id, username })),
       create: async ({ data }: any) => {
         const user = {
           id: `user-${users.length + 1}`,
@@ -109,6 +119,20 @@ test("password auth is the default mode", () => {
     const { service } = authServiceWithUsers();
     assert.equal(service.authMode(), "password");
   });
+});
+
+test("user search returns registered usernames without the current user or email addresses", async () => {
+  const { service, users } = authServiceWithUsers();
+  users.push(
+    { id: "user-1", email: "owner@example.com", username: "CacheOwner", passwordHash: null },
+    { id: "user-2", email: "alex@example.com", username: "AlexCache", passwordHash: null },
+    { id: "user-3", email: "maja@example.com", username: "Maja", passwordHash: null }
+  );
+
+  assert.deepEqual(await service.searchUsers("a", "user-1"), []);
+  assert.deepEqual(await service.searchUsers("CA", "user-1"), [
+    { id: "user-2", username: "AlexCache" }
+  ]);
 });
 
 test("register stores a password hash and login verifies it", async () => {
