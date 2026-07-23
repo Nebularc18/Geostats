@@ -306,12 +306,12 @@ export default function MysteriesPage() {
     if (initialized.current) return;
     initialized.current = true;
     try {
-      const storedDeletionIds = JSON.parse(sessionStorage.getItem(DELETION_STORAGE_KEY) ?? "[]") as unknown;
+      const storedDeletionIds = JSON.parse(localStorage.getItem(DELETION_STORAGE_KEY) ?? "[]") as unknown;
       if (Array.isArray(storedDeletionIds)) {
         deletedCacheIds.current = new Set(storedDeletionIds.filter((cacheId): cacheId is string => typeof cacheId === "string" && cacheId.length > 0));
       }
     } catch {
-      sessionStorage.removeItem(DELETION_STORAGE_KEY);
+      localStorage.removeItem(DELETION_STORAGE_KEY);
     }
     const saved = localStorage.getItem(STORAGE_KEY);
     let initial = starterCaches;
@@ -376,9 +376,6 @@ export default function MysteriesPage() {
       localStorage.setItem(STORAGE_KEY, serialized);
       persistedCaches.current = caches;
       setPersistedForSync(caches);
-      if ([...deletedCacheIds.current].every((cacheId) => !caches.some((cache) => cache.id === cacheId))) {
-        sessionStorage.removeItem(DELETION_STORAGE_KEY);
-      }
     } catch {
       const currentById = new Map(caches.map((cache) => [cache.id, cache]));
       const rollback = persistedCaches.current.filter((cache) => !deletedCacheIds.current.has(cache.id)).map((cache) => {
@@ -489,6 +486,22 @@ export default function MysteriesPage() {
     }
 
     const receiveStorageUpdate = (event: StorageEvent) => {
+      if (event.key === DELETION_STORAGE_KEY && event.newValue) {
+        try {
+          const cacheIds = JSON.parse(event.newValue) as unknown;
+          if (Array.isArray(cacheIds)) {
+            const validCacheIds = cacheIds.filter(
+              (cacheId): cacheId is string => typeof cacheId === "string" && cacheId.length > 0
+            );
+            rememberDeletedCaches(validCacheIds);
+            setCaches((current) => current.filter((cache) => !deletedCacheIds.current.has(cache.id)));
+            setCacheToDelete((current) => current && deletedCacheIds.current.has(current.id) ? null : current);
+          }
+        } catch {
+          // Ignore malformed tombstones from another tab.
+        }
+        return;
+      }
       if (event.key !== STORAGE_KEY || !event.newValue) return;
       try {
         const updated = verifiedStoredShares(JSON.parse(event.newValue) as MysteryCache[])
@@ -604,12 +617,16 @@ export default function MysteriesPage() {
   }
 
   function rememberDeletedCache(cacheId: string) {
-    deletedCacheIds.current.add(cacheId);
-    persistedCaches.current = persistedCaches.current.filter((cache) => cache.id !== cacheId);
+    rememberDeletedCaches([cacheId]);
+  }
+
+  function rememberDeletedCaches(cacheIds: string[]) {
+    cacheIds.forEach((cacheId) => deletedCacheIds.current.add(cacheId));
+    persistedCaches.current = persistedCaches.current.filter((cache) => !deletedCacheIds.current.has(cache.id));
     try {
-      sessionStorage.setItem(DELETION_STORAGE_KEY, JSON.stringify([...deletedCacheIds.current]));
+      localStorage.setItem(DELETION_STORAGE_KEY, JSON.stringify([...deletedCacheIds.current]));
     } catch {
-      // The in-memory tombstone still protects this page and other open tabs.
+      // The in-memory tombstone still protects this page.
     }
   }
 

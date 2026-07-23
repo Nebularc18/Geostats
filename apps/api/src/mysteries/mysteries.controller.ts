@@ -34,6 +34,10 @@ function snapshotRevision(value: unknown): number {
   return value as number;
 }
 
+async function lockMystery(tx: Prisma.TransactionClient, ownerId: string, clientId: string) {
+  await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${ownerId}), hashtext(${clientId}))`;
+}
+
 @Controller("mysteries")
 @UseGuards(AuthGuard)
 export class MysteriesController {
@@ -115,6 +119,7 @@ export class MysteriesController {
     if (!recipient) throw new NotFoundException("Recipient was not found");
 
     const storedRevision = await this.prisma.$transaction(async (tx) => {
+      await lockMystery(tx, user.id, clientId);
       const deletion = await tx.mysteryWorkspaceDeletion.findUnique({
         where: { ownerId_clientId: { ownerId: user.id, clientId } },
         select: { id: true }
@@ -169,6 +174,7 @@ export class MysteriesController {
   @Delete(":clientId")
   async delete(@CurrentUser() user: AuthUser, @Param("clientId") clientId: string) {
     await this.prisma.$transaction(async (tx) => {
+      await lockMystery(tx, user.id, clientId);
       await tx.mysteryWorkspace.deleteMany({
         where: { ownerId: user.id, clientId }
       });

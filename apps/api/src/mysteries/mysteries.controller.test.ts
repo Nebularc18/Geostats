@@ -10,8 +10,15 @@ const mystery = { id: "local-1", gcCode: "GC12345", name: "A mystery", sharedWit
 test("share persists both the owner snapshot and recipient grant", async () => {
   const calls: Array<{ operation: string; input: unknown }> = [];
   const transaction = {
+    $queryRaw: async () => {
+      calls.push({ operation: "lock", input: undefined });
+      return [];
+    },
     mysteryWorkspaceDeletion: {
-      findUnique: async () => null
+      findUnique: async (input: unknown) => {
+        calls.push({ operation: "deletion", input });
+        return null;
+      }
     },
     mysteryWorkspace: {
       upsert: async (input: unknown) => {
@@ -40,11 +47,9 @@ test("share persists both the owner snapshot and recipient grant", async () => {
   const result = await controller.share(owner, "local-1", { recipientId: recipient.id, mystery, revision: 1 });
 
   assert.deepEqual(result, { recipient, revision: 1 });
-  assert.equal(calls[0].operation, "workspace");
-  assert.deepEqual((calls[0].input as any).where, { ownerId_clientId: { ownerId: owner.id, clientId: "local-1" } });
-  assert.equal(calls[1].operation, "snapshot");
-  assert.equal(calls[2].operation, "grant");
-  assert.deepEqual((calls[2].input as any).create, { mysteryId: "workspace-1", recipientId: recipient.id });
+  assert.deepEqual(calls.map(({ operation }) => operation), ["lock", "deletion", "workspace", "snapshot", "grant"]);
+  assert.deepEqual((calls[2].input as any).where, { ownerId_clientId: { ownerId: owner.id, clientId: "local-1" } });
+  assert.deepEqual((calls[4].input as any).create, { mysteryId: "workspace-1", recipientId: recipient.id });
 });
 
 test("shared returns the granted snapshot through the recipient lookup", async () => {
@@ -166,17 +171,24 @@ test("an older in-flight update cannot overwrite a newer snapshot", async () => 
 });
 
 test("delete removes only the owner's workspace so its grants cascade", async () => {
+  const operations: string[] = [];
   let deleteInput: unknown;
   let tombstoneInput: unknown;
   const transaction = {
+    $queryRaw: async () => {
+      operations.push("lock");
+      return [];
+    },
     mysteryWorkspace: {
       deleteMany: async (input: unknown) => {
+        operations.push("delete");
         deleteInput = input;
         return { count: 1 };
       }
     },
     mysteryWorkspaceDeletion: {
       upsert: async (input: unknown) => {
+        operations.push("tombstone");
         tombstoneInput = input;
         return { id: "deletion-1" };
       }
@@ -190,6 +202,7 @@ test("delete removes only the owner's workspace so its grants cascade", async ()
   const result = await controller.delete(owner, mystery.id);
 
   assert.deepEqual(result, { ok: true });
+  assert.deepEqual(operations, ["lock", "delete", "tombstone"]);
   assert.deepEqual((deleteInput as any).where, { ownerId: owner.id, clientId: mystery.id });
   assert.deepEqual((tombstoneInput as any).where, {
     ownerId_clientId: { ownerId: owner.id, clientId: mystery.id }
@@ -198,6 +211,7 @@ test("delete removes only the owner's workspace so its grants cascade", async ()
 
 test("a durable deletion tombstone blocks stale tabs from resharing", async () => {
   const transaction = {
+    $queryRaw: async () => [],
     mysteryWorkspaceDeletion: {
       findUnique: async () => ({ id: "deletion-1" })
     }
