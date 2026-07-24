@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { locationFromCachePageMetadata } from "../../../lib/mystery-area";
+import { locationFromPageSources } from "../../../lib/mystery-page-location";
 import { MYSTERY_USERSCRIPT_VERSION } from "../../../lib/mystery-userscript";
 
 function userscript(appOrigin: string) {
@@ -145,56 +146,15 @@ function userscript(appOrigin: string) {
 
   function pageLocation() {
     const locationFromMetadata = ${locationFromCachePageMetadata.toString()};
-    const cleanArea = (value) => {
-      const area = String(value || "").replace(/\\s+/g, " ").trim();
-      return /^(?:a\\s+)?cache\\s+by\\b/i.test(area) ||
-        /\\bmessage\\s+this\\s+owner\\b/i.test(area) ||
-        /\\bhidden\\s*:\\s*/i.test(area)
-        ? ""
-        : area;
-    };
-
-    const findAddress = (value) => {
-      if (!value || typeof value !== "object") return null;
-      const region = cleanArea(value.addressRegion);
-      const county = cleanArea(value.addressCounty) || region;
-      const locality = cleanArea(value.addressLocality);
-      const rawCountry = typeof value.addressCountry === "object"
-        ? value.addressCountry?.name
-        : value.addressCountry;
-      const country = cleanArea(rawCountry);
-      if (county || country || region || locality) {
-        return {
-          county,
-          country,
-          region,
-          locality,
-          locationHierarchy: [country, region, county, locality]
-            .filter((item, index, items) => item && items.indexOf(item) === index)
-        };
-      }
-      for (const nested of Object.values(value)) {
-        const address = findAddress(nested);
-        if (address) return address;
-      }
-      return null;
-    };
+    const locationFromSources = ${locationFromPageSources.toString()};
+    const jsonLd = [];
     for (const script of document.querySelectorAll("script[type='application/ld+json']")) {
       try {
-        const address = findAddress(JSON.parse(script.textContent || "null"));
-        if (address?.country && (address?.county || address?.region || address?.locality)) return address;
+        jsonLd.push(JSON.parse(script.textContent || "null"));
       } catch {
         // Ignore unrelated or malformed structured data.
       }
     }
-
-    const regionMeta = document.querySelector("meta[property='place:region']");
-    const metaArea = cleanArea(regionMeta?.getAttribute("content"));
-    let county = metaArea;
-    let country = "";
-    let region = metaArea;
-    let locality = "";
-    let locationHierarchy = [];
 
     const locationNodes = document.querySelectorAll([
       "[data-testid='cache-location']",
@@ -205,49 +165,17 @@ function userscript(appOrigin: string) {
       "[class*='CacheLocation']",
       "#ctl00_ContentBody_mcd1"
     ].join(","));
-    for (const locationNode of locationNodes) {
-      const breadcrumb = [...locationNode.querySelectorAll("a")]
-        .map((link) => link.textContent?.trim())
-        .map(cleanArea)
-        .filter(Boolean);
-      if (breadcrumb.length) {
-        if (breadcrumb.length > locationHierarchy.length) locationHierarchy = breadcrumb;
-        if (breadcrumb.length > 1) {
-          country ||= breadcrumb[0];
-          county ||= breadcrumb[breadcrumb.length - 1];
-          if (breadcrumb.length > 2) region ||= breadcrumb[1];
-        } else {
-          country ||= breadcrumb[0];
-        }
-      }
-
-      const text = (locationNode.textContent || "").replace(/\\s+/g, " ").trim();
-      if (text) {
-        const parts = text
-          .replace(/^(?:located\\s+)?in\\s+/i, "")
-          .split(/\\s*(?:>|›|»|→|,)\\s*/)
-          .map(cleanArea)
-          .filter(Boolean);
-        if (parts.length > 1) {
-          county ||= parts[0];
-          country ||= parts[parts.length - 1];
-          if (!locationHierarchy.length) locationHierarchy = [...parts].reverse();
-        }
-      }
-    }
-
     const description = document.querySelector("meta[name='description']")?.getAttribute("content") || "";
     const metadata = locationFromMetadata(document.title, description);
-    return {
-      county: county || cleanArea(metadata.county),
-      country: country || cleanArea(metadata.country),
-      region,
-      locality,
-      locationHierarchy: locationHierarchy.length
-        ? locationHierarchy
-        : [country || cleanArea(metadata.country), region, county || cleanArea(metadata.county), locality]
-          .filter((item, index, items) => item && items.indexOf(item) === index)
-    };
+    return locationFromSources({
+      jsonLd,
+      breadcrumbs: [...locationNodes].map((node) =>
+        [...node.querySelectorAll("a")].map((link) => link.textContent || "")
+      ),
+      locationTexts: [...locationNodes].map((node) => node.textContent || ""),
+      metaRegion: document.querySelector("meta[property='place:region']")?.getAttribute("content") || "",
+      metadata
+    });
   }
 
   function pageData() {
