@@ -80,3 +80,20 @@ test("uses metadata only after structured and visible page sources", () => {
   assert.equal(result.country, "Sweden");
   assert.equal(result.county, "Stockholm County");
 });
+
+test("does not mistake legacy cache-owner controls for a location breadcrumb", () => {
+  const result = locationFromPageSources({
+    jsonLd: [],
+    breadcrumbs: [["spårsyskonen", "Message this owner"]],
+    locationTexts: ["A cache by spårsyskonen Message this owner"],
+    metadata: { country: "Sweden", county: "Östergötland" }
+  });
+
+  assert.deepEqual(result, {
+    country: "Sweden",
+    region: "",
+    county: "Östergötland",
+    locality: "",
+    locationHierarchy: ["Sweden", "Östergötland"]
+  });
+});
