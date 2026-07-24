@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { areaFromCachePageMetadata } from "../../../lib/mystery-area";
+import { locationFromCachePageMetadata } from "../../../lib/mystery-area";
+import { locationFromPageSources } from "../../../lib/mystery-page-location";
 import { MYSTERY_USERSCRIPT_VERSION } from "../../../lib/mystery-userscript";
 
 function userscript(appOrigin: string) {
@@ -143,41 +144,17 @@ function userscript(appOrigin: string) {
     return decimal ? { latitude: Number(decimal[1]), longitude: Number(decimal[2]) } : null;
   }
 
-  function pageArea() {
-    const areaFromMetadata = ${areaFromCachePageMetadata.toString()};
-    const cleanArea = (value) => {
-      const area = String(value || "").replace(/\\s+/g, " ").trim();
-      return /^(?:a\\s+)?cache\\s+by\\b/i.test(area) ||
-        /\\bmessage\\s+this\\s+owner\\b/i.test(area) ||
-        /\\bhidden\\s*:\\s*/i.test(area)
-        ? ""
-        : area;
-    };
-
-    const findAddressRegion = (value) => {
-      if (!value || typeof value !== "object") return "";
-      if (typeof value.addressRegion === "string") {
-        const region = cleanArea(value.addressRegion);
-        if (region) return region;
-      }
-      for (const nested of Object.values(value)) {
-        const region = findAddressRegion(nested);
-        if (region) return region;
-      }
-      return "";
-    };
+  function pageLocation() {
+    const locationFromMetadata = ${locationFromCachePageMetadata.toString()};
+    const locationFromSources = ${locationFromPageSources.toString()};
+    const jsonLd = [];
     for (const script of document.querySelectorAll("script[type='application/ld+json']")) {
       try {
-        const region = findAddressRegion(JSON.parse(script.textContent || "null"));
-        if (region) return region;
+        jsonLd.push(JSON.parse(script.textContent || "null"));
       } catch {
         // Ignore unrelated or malformed structured data.
       }
     }
-
-    const regionMeta = document.querySelector("meta[property='place:region']");
-    const metaArea = cleanArea(regionMeta?.getAttribute("content"));
-    if (metaArea) return metaArea;
 
     const locationNodes = document.querySelectorAll([
       "[data-testid='cache-location']",
@@ -188,27 +165,17 @@ function userscript(appOrigin: string) {
       "[class*='CacheLocation']",
       "#ctl00_ContentBody_mcd1"
     ].join(","));
-    for (const locationNode of locationNodes) {
-      const breadcrumb = [...locationNode.querySelectorAll("a")]
-        .map((link) => link.textContent?.trim())
-        .filter(Boolean);
-      if (breadcrumb.length) {
-        const breadcrumbArea = cleanArea(breadcrumb[breadcrumb.length - 1]);
-        if (breadcrumbArea) return breadcrumbArea;
-      }
-
-      const text = (locationNode.textContent || "").replace(/\\s+/g, " ").trim();
-      if (text) {
-        const parts = text.split(/\\s*(?:>|›|»|→)\\s*/).filter(Boolean);
-        const area = cleanArea((parts[parts.length - 1] || text)
-          .replace(/^(?:located\\s+)?in\\s+/i, "")
-          .trim());
-        if (area) return area;
-      }
-    }
-
     const description = document.querySelector("meta[name='description']")?.getAttribute("content") || "";
-    return cleanArea(areaFromMetadata(document.title, description));
+    const metadata = locationFromMetadata(document.title, description);
+    return locationFromSources({
+      jsonLd,
+      breadcrumbs: [...locationNodes].map((node) =>
+        [...node.querySelectorAll("a")].map((link) => link.textContent || "")
+      ),
+      locationTexts: [...locationNodes].map((node) => node.textContent || ""),
+      metaRegion: document.querySelector("meta[property='place:region']")?.getAttribute("content") || "",
+      metadata
+    });
   }
 
   function pageData() {
@@ -217,8 +184,8 @@ function userscript(appOrigin: string) {
     const name = rawTitle.replace(/\\s*[-|]\\s*Geocaching.*$/i, "").trim();
     const coordinateText = textFrom(["#uxLatLon", "[data-testid='coordinates']", ".coordinates", "[class*='Coordinates']", "[class*='coordinates']"]);
     const coordinates = parseCoordinates(coordinateText);
-    const area = pageArea();
-    return coordinates ? { gcCode, name, area, ...coordinates } : { gcCode, name, area };
+    const pageLocationData = pageLocation();
+    return coordinates ? { gcCode, name, ...pageLocationData, ...coordinates } : { gcCode, name, ...pageLocationData };
   }
 
   function toast(message, error) {

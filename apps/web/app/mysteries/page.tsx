@@ -49,6 +49,10 @@ type MysteryCache = {
   gcCode: string;
   name: string;
   area: string;
+  country: string;
+  region?: string;
+  locality?: string;
+  locationHierarchy?: string[];
   status: MysteryStatus;
   publishedLatitude: number;
   publishedLongitude: number;
@@ -78,6 +82,11 @@ type BrowserImport = {
   gcCode?: unknown;
   name?: unknown;
   area?: unknown;
+  county?: unknown;
+  country?: unknown;
+  region?: unknown;
+  locality?: unknown;
+  locationHierarchy?: unknown;
   latitude?: unknown;
   longitude?: unknown;
 };
@@ -113,6 +122,7 @@ const starterCaches: MysteryCache[] = [
     gcCode: "GC9X7K2",
     name: "The Lighthouse Cipher",
     area: "Vaxholm",
+    country: "Sweden",
     status: "solved",
     publishedLatitude: 59.40235,
     publishedLongitude: 18.35371,
@@ -129,6 +139,7 @@ const starterCaches: MysteryCache[] = [
     gcCode: "GCAB4M8",
     name: "Between the Lines",
     area: "Stockholm",
+    country: "Sweden",
     status: "solving",
     publishedLatitude: 59.34312,
     publishedLongitude: 18.07341,
@@ -144,6 +155,7 @@ const starterCaches: MysteryCache[] = [
     gcCode: "GC8P2QF",
     name: "Runes in the Forest",
     area: "Uppsala",
+    country: "Sweden",
     status: "planned",
     publishedLatitude: 59.85863,
     publishedLongitude: 17.63893,
@@ -193,6 +205,13 @@ function stateLabel(state: CheckState) {
   return "Not checked";
 }
 
+function locationLabel(cache: MysteryCache) {
+  return [cache.locality, cache.area, cache.region, cache.country]
+    .map(normalizeMysteryArea)
+    .filter((value, index, values) => value && values.indexOf(value) === index)
+    .join(", ");
+}
+
 function newId(prefix = "mystery") {
   return globalThis.crypto?.randomUUID?.() ?? `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
@@ -207,6 +226,12 @@ function verifiedStoredShares(caches: MysteryCache[]) {
   return caches.map((cache) => ({
     ...cache,
     area: normalizeMysteryArea(cache.area),
+    country: normalizeMysteryArea(cache.country),
+    region: normalizeMysteryArea(cache.region),
+    locality: normalizeMysteryArea(cache.locality),
+    locationHierarchy: Array.isArray(cache.locationHierarchy)
+      ? cache.locationHierarchy.map(normalizeMysteryArea).filter(Boolean)
+      : [],
     sharedWith: Array.isArray(cache.sharedWith) ? cache.sharedWith.filter(isAppUser) : []
   }));
 }
@@ -219,7 +244,13 @@ function shareableMystery(cache: MysteryCache) {
 function importedMystery(value: BrowserImport): MysteryCache | null {
   const gcCode = typeof value.gcCode === "string" ? value.gcCode.trim().toUpperCase() : "";
   const name = typeof value.name === "string" ? value.name.trim() : "";
-  const area = normalizeMysteryArea(value.area);
+  const area = normalizeMysteryArea(value.county) || normalizeMysteryArea(value.area);
+  const country = normalizeMysteryArea(value.country);
+  const region = normalizeMysteryArea(value.region);
+  const locality = normalizeMysteryArea(value.locality);
+  const locationHierarchy = Array.isArray(value.locationHierarchy)
+    ? value.locationHierarchy.map(normalizeMysteryArea).filter(Boolean)
+    : [];
   const publishedLatitude = typeof value.latitude === "number" ? value.latitude : Number.NaN;
   const publishedLongitude = typeof value.longitude === "number" ? value.longitude : Number.NaN;
   if (!/^GC[A-Z0-9]+$/.test(gcCode) || !name || !Number.isFinite(publishedLatitude) || !Number.isFinite(publishedLongitude) || Math.abs(publishedLatitude) > 90 || Math.abs(publishedLongitude) > 180) {
@@ -230,6 +261,10 @@ function importedMystery(value: BrowserImport): MysteryCache | null {
     gcCode,
     name,
     area,
+    country,
+    region,
+    locality,
+    locationHierarchy,
     status: "solving",
     publishedLatitude,
     publishedLongitude,
@@ -333,8 +368,18 @@ export default function MysteriesPage() {
         if (imported) {
           const existing = initial.find((cache) => cache.gcCode.toUpperCase() === imported.gcCode);
           if (existing) {
+            initial = initial.map((cache) => cache.id === existing.id ? {
+              ...cache,
+              area: imported.area || cache.area,
+              country: imported.country || cache.country,
+              region: imported.region || cache.region,
+              locality: imported.locality || cache.locality,
+              locationHierarchy: imported.locationHierarchy?.length
+                ? imported.locationHierarchy
+                : cache.locationHierarchy
+            } : cache);
             setSelectedId(existing.id);
-            setNotice(`${imported.gcCode} is already in your workspace`);
+            setNotice(`${imported.gcCode} location refreshed`);
           } else {
             initial = [imported, ...initial];
             setSelectedId(imported.id);
@@ -429,6 +474,12 @@ export default function MysteriesPage() {
           return [{
             ...grant.mystery,
             area: normalizeMysteryArea(grant.mystery.area),
+            country: normalizeMysteryArea(grant.mystery.country),
+            region: normalizeMysteryArea(grant.mystery.region),
+            locality: normalizeMysteryArea(grant.mystery.locality),
+            locationHierarchy: Array.isArray(grant.mystery.locationHierarchy)
+              ? grant.mystery.locationHierarchy.map(normalizeMysteryArea).filter(Boolean)
+              : [],
             id: `shared:${grant.workspaceId}`,
             sharedWith: Array.isArray(grant.sharedWith) ? grant.sharedWith.filter(isAppUser) : [],
             sharedBy: grant.owner,
@@ -610,7 +661,15 @@ export default function MysteriesPage() {
     const normalized = query.trim().toLowerCase();
     return caches.filter((cache) => {
       const matchesFilter = filter === "all" || cache.status === filter;
-      const matchesQuery = !normalized || `${cache.gcCode} ${cache.name} ${cache.area}`.toLowerCase().includes(normalized);
+      const matchesQuery = !normalized || [
+        cache.gcCode,
+        cache.name,
+        cache.area,
+        cache.country,
+        cache.region,
+        cache.locality,
+        ...(cache.locationHierarchy ?? [])
+      ].filter(Boolean).join(" ").toLowerCase().includes(normalized);
       return matchesFilter && matchesQuery;
     });
   }, [caches, filter, query]);
@@ -762,6 +821,10 @@ export default function MysteriesPage() {
       gcCode: String(data.get("gcCode") ?? "").trim().toUpperCase(),
       name: String(data.get("name") ?? "").trim(),
       area: String(data.get("area") ?? "").trim(),
+      country: String(data.get("country") ?? "").trim(),
+      region: String(data.get("region") ?? "").trim(),
+      locality: String(data.get("locality") ?? "").trim(),
+      locationHierarchy: [],
       status: "solving",
       publishedLatitude: published.latitude,
       publishedLongitude: published.longitude,
@@ -937,7 +1000,7 @@ export default function MysteriesPage() {
         <aside className="mystery-list-panel">
           <div className="mystery-search">
             <Search size={17} />
-            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search code, name or area" aria-label="Search mysteries" />
+            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search code, name or location" aria-label="Search mysteries" />
           </div>
           <div className="mystery-filter-row">
             {(["all", "solving", "solved", "planned"] as const).map((value) => (
@@ -952,7 +1015,7 @@ export default function MysteriesPage() {
                   return (
                     <button className={`mystery-cache-card ${selected?.id === cache.id ? "active" : ""}`} type="button" key={cache.id} onClick={() => setSelectedId(cache.id)}>
                       <span className={`cache-status-dot ${cache.status}`}><CircleDot size={16} /></span>
-                      <span className="mystery-card-copy"><small>{cache.gcCode} · {cache.area}</small><strong>{cache.name}</strong><em>{final ? formatCoordinate(final.latitude, final.longitude) : `${cache.attempts.length} coordinate ${cache.attempts.length === 1 ? "try" : "tries"}`}</em></span>
+                      <span className="mystery-card-copy"><small>{cache.gcCode}{locationLabel(cache) ? ` · ${locationLabel(cache)}` : ""}</small><strong>{cache.name}</strong><em>{final ? formatCoordinate(final.latitude, final.longitude) : `${cache.attempts.length} coordinate ${cache.attempts.length === 1 ? "try" : "tries"}`}</em></span>
                       <ChevronRight size={17} />
                     </button>
                   );
@@ -966,7 +1029,7 @@ export default function MysteriesPage() {
           <article className="mystery-detail">
             <div className="mystery-detail-hero">
               <div>
-                <div className="detail-kicker"><span className={`status-badge ${selected.status}`}>{selected.status}</span><a href={`https://coord.info/${selected.gcCode}`} target="_blank" rel="noreferrer">{selected.gcCode}</a><span>{selected.area}</span></div>
+                <div className="detail-kicker"><span className={`status-badge ${selected.status}`}>{selected.status}</span><a href={`https://coord.info/${selected.gcCode}`} target="_blank" rel="noreferrer">{selected.gcCode}</a>{locationLabel(selected) && <span>{locationLabel(selected)}</span>}</div>
                 <h2>{selected.name}</h2>
                 <p><MapPin size={15} /> Published at {formatCoordinate(selected.publishedLatitude, selected.publishedLongitude)}</p>
               </div>
@@ -1043,7 +1106,8 @@ export default function MysteriesPage() {
             <div className="section-heading"><div><p className="eyebrow">New workspace</p><h2>Add a mystery cache</h2></div><button className="row-delete" type="button" onClick={() => setShowAdd(false)}><X /></button></div>
             <div className="two-column"><label>GC code<input name="gcCode" required placeholder="GC12345" pattern="GC[A-Za-z0-9]+" /></label><label>Cache name<input name="name" required placeholder="The hidden message" /></label></div>
             <label>Published coordinates<input name="published" required placeholder="59.34312, 18.07341" /></label>
-            <label>County / area<input name="area" placeholder="Stockholm County" /></label>
+            <div className="two-column"><label>Country<input name="country" placeholder="Sweden" /></label><label>Region / state<input name="region" placeholder="Svealand" /></label></div>
+            <div className="two-column"><label>County / area<input name="area" placeholder="Stockholm County" /></label><label>Locality<input name="locality" placeholder="Vaxholm" /></label></div>
             <div className="modal-actions"><button className="secondary-button" type="button" onClick={() => setShowAdd(false)}>Cancel</button><button className="primary-button" type="submit">Add to workspace</button></div>
           </form>
         </div>
@@ -1089,7 +1153,7 @@ export default function MysteriesPage() {
         <div className="mystery-modal-backdrop" role="presentation" onMouseDown={() => setShowBrowserImport(false)}>
           <div className="mystery-modal browser-import-modal" role="dialog" aria-modal="true" aria-labelledby="browser-import-title" onMouseDown={(event) => event.stopPropagation()}>
             <div className="section-heading"><div><p className="eyebrow">One-click capture</p><h2 id="browser-import-title">Import from geocaching.com</h2></div><button className="row-delete" type="button" aria-label="Close" onClick={() => setShowBrowserImport(false)}><X /></button></div>
-            <p className="browser-import-lead">The helper imports the cache name, published coordinates and county/area, and automatically saves corrected coordinates using your signed-in Geocaching session. Use the install button to add it or update your existing copy.</p>
+            <p className="browser-import-lead">The helper imports the cache name, published coordinates and every location level the page exposes—country, region/state, county/area and locality—and automatically saves corrected coordinates using your signed-in Geocaching session. Use the install button to add it or update your existing copy.</p>
             <ol className="browser-import-steps">
               <li><span>1</span><div><strong>Install Tampermonkey</strong><small>Available for Chrome, Edge, Firefox and Safari.</small></div></li>
               <li><span>2</span><div><strong>Install or update the helper</strong><small>Use the button below and confirm the installation in Tampermonkey.</small></div></li>
