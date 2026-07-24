@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { areaFromCachePageMetadata } from "../../../lib/mystery-area";
+import { locationFromCachePageMetadata } from "../../../lib/mystery-area";
 import { MYSTERY_USERSCRIPT_VERSION } from "../../../lib/mystery-userscript";
 
 function userscript(appOrigin: string) {
@@ -143,8 +143,8 @@ function userscript(appOrigin: string) {
     return decimal ? { latitude: Number(decimal[1]), longitude: Number(decimal[2]) } : null;
   }
 
-  function pageArea() {
-    const areaFromMetadata = ${areaFromCachePageMetadata.toString()};
+  function pageLocation() {
+    const locationFromMetadata = ${locationFromCachePageMetadata.toString()};
     const cleanArea = (value) => {
       const area = String(value || "").replace(/\\s+/g, " ").trim();
       return /^(?:a\\s+)?cache\\s+by\\b/i.test(area) ||
@@ -154,22 +154,35 @@ function userscript(appOrigin: string) {
         : area;
     };
 
-    const findAddressRegion = (value) => {
-      if (!value || typeof value !== "object") return "";
-      if (typeof value.addressRegion === "string") {
-        const region = cleanArea(value.addressRegion);
-        if (region) return region;
+    const findAddress = (value) => {
+      if (!value || typeof value !== "object") return null;
+      const region = cleanArea(value.addressRegion);
+      const county = cleanArea(value.addressCounty) || region;
+      const locality = cleanArea(value.addressLocality);
+      const rawCountry = typeof value.addressCountry === "object"
+        ? value.addressCountry?.name
+        : value.addressCountry;
+      const country = cleanArea(rawCountry);
+      if (county || country || region || locality) {
+        return {
+          county,
+          country,
+          region,
+          locality,
+          locationHierarchy: [country, region, county, locality]
+            .filter((item, index, items) => item && items.indexOf(item) === index)
+        };
       }
       for (const nested of Object.values(value)) {
-        const region = findAddressRegion(nested);
-        if (region) return region;
+        const address = findAddress(nested);
+        if (address) return address;
       }
-      return "";
+      return null;
     };
     for (const script of document.querySelectorAll("script[type='application/ld+json']")) {
       try {
-        const region = findAddressRegion(JSON.parse(script.textContent || "null"));
-        if (region) return region;
+        const address = findAddress(JSON.parse(script.textContent || "null"));
+        if (address?.country && (address?.county || address?.region || address?.locality)) return address;
       } catch {
         // Ignore unrelated or malformed structured data.
       }
@@ -177,7 +190,11 @@ function userscript(appOrigin: string) {
 
     const regionMeta = document.querySelector("meta[property='place:region']");
     const metaArea = cleanArea(regionMeta?.getAttribute("content"));
-    if (metaArea) return metaArea;
+    let county = metaArea;
+    let country = "";
+    let region = metaArea;
+    let locality = "";
+    let locationHierarchy = [];
 
     const locationNodes = document.querySelectorAll([
       "[data-testid='cache-location']",
@@ -191,24 +208,46 @@ function userscript(appOrigin: string) {
     for (const locationNode of locationNodes) {
       const breadcrumb = [...locationNode.querySelectorAll("a")]
         .map((link) => link.textContent?.trim())
+        .map(cleanArea)
         .filter(Boolean);
       if (breadcrumb.length) {
-        const breadcrumbArea = cleanArea(breadcrumb[breadcrumb.length - 1]);
-        if (breadcrumbArea) return breadcrumbArea;
+        if (breadcrumb.length > locationHierarchy.length) locationHierarchy = breadcrumb;
+        if (breadcrumb.length > 1) {
+          country ||= breadcrumb[0];
+          county ||= breadcrumb[breadcrumb.length - 1];
+          if (breadcrumb.length > 2) region ||= breadcrumb[1];
+        } else {
+          country ||= breadcrumb[0];
+        }
       }
 
       const text = (locationNode.textContent || "").replace(/\\s+/g, " ").trim();
       if (text) {
-        const parts = text.split(/\\s*(?:>|›|»|→)\\s*/).filter(Boolean);
-        const area = cleanArea((parts[parts.length - 1] || text)
+        const parts = text
           .replace(/^(?:located\\s+)?in\\s+/i, "")
-          .trim());
-        if (area) return area;
+          .split(/\\s*(?:>|›|»|→|,)\\s*/)
+          .map(cleanArea)
+          .filter(Boolean);
+        if (parts.length > 1) {
+          county ||= parts[0];
+          country ||= parts[parts.length - 1];
+          if (!locationHierarchy.length) locationHierarchy = [...parts].reverse();
+        }
       }
     }
 
     const description = document.querySelector("meta[name='description']")?.getAttribute("content") || "";
-    return cleanArea(areaFromMetadata(document.title, description));
+    const metadata = locationFromMetadata(document.title, description);
+    return {
+      county: county || cleanArea(metadata.county),
+      country: country || cleanArea(metadata.country),
+      region,
+      locality,
+      locationHierarchy: locationHierarchy.length
+        ? locationHierarchy
+        : [country || cleanArea(metadata.country), region, county || cleanArea(metadata.county), locality]
+          .filter((item, index, items) => item && items.indexOf(item) === index)
+    };
   }
 
   function pageData() {
@@ -217,8 +256,8 @@ function userscript(appOrigin: string) {
     const name = rawTitle.replace(/\\s*[-|]\\s*Geocaching.*$/i, "").trim();
     const coordinateText = textFrom(["#uxLatLon", "[data-testid='coordinates']", ".coordinates", "[class*='Coordinates']", "[class*='coordinates']"]);
     const coordinates = parseCoordinates(coordinateText);
-    const area = pageArea();
-    return coordinates ? { gcCode, name, area, ...coordinates } : { gcCode, name, area };
+    const pageLocationData = pageLocation();
+    return coordinates ? { gcCode, name, ...pageLocationData, ...coordinates } : { gcCode, name, ...pageLocationData };
   }
 
   function toast(message, error) {

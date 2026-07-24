@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { areaFromCachePageMetadata, normalizeMysteryArea } from "./mystery-area.ts";
+import {
+  areaFromCachePageMetadata,
+  locationFromCachePageMetadata,
+  normalizeMysteryArea
+} from "./mystery-area.ts";
 
 test("reads the cache area from legacy Geocaching description metadata", () => {
   assert.equal(
@@ -19,6 +23,16 @@ test("falls back to the legacy Geocaching page title", () => {
       ""
     ),
     "Östergötland"
+  );
+});
+
+test("reads both county and country from Geocaching metadata", () => {
+  assert.deepEqual(
+    locationFromCachePageMetadata(
+      "GC75P53 NKG #034 (Unknown Cache) in Östergötland, Sweden created by spårsyskonen",
+      ""
+    ),
+    { county: "Östergötland", country: "Sweden" }
   );
 });
 
