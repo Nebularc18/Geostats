@@ -11,6 +11,10 @@ type TravelCache = {
   gcCode: string;
   name: string;
   area: string;
+  county?: string;
+  country?: string;
+  region?: string;
+  locality?: string;
   trip?: string;
   status: "solving" | "solved" | "planned";
   attempts: Array<{ state: "correct" | "wrong" | "unchecked"; latitude: number; longitude: number }>;
@@ -20,6 +24,13 @@ const STORAGE_KEY = "geostats-mysteries-v1";
 
 function finalCoordinate(cache: TravelCache) {
   return cache.attempts.find((attempt) => attempt.state === "correct");
+}
+
+function locationLabel(cache: TravelCache) {
+  return [cache.locality, cache.area, cache.county, cache.region, cache.country]
+    .map(normalizeMysteryArea)
+    .filter((value, index, values) => value && values.indexOf(value) === index)
+    .join(", ");
 }
 
 export default function TravelPage() {
@@ -43,14 +54,14 @@ export default function TravelPage() {
     return caches.filter((cache) => {
       const ready = Boolean(finalCoordinate(cache));
       const matchesFilter = filter === "all" || (filter === "ready" ? ready : !ready);
-      const matchesQuery = !normalized || `${cache.gcCode} ${cache.name} ${cache.area} ${cache.trip ?? ""}`.toLowerCase().includes(normalized);
+      const matchesQuery = !normalized || `${cache.gcCode} ${cache.name} ${locationLabel(cache)} ${cache.trip ?? ""}`.toLowerCase().includes(normalized);
       return matchesFilter && matchesQuery;
     });
   }, [caches, filter, query]);
 
   const groups = useMemo(() => {
     return visibleCaches.reduce<Record<string, TravelCache[]>>((result, cache) => {
-      const group = cache.trip?.trim() || cache.area.trim() || "Unassigned";
+      const group = cache.trip?.trim() || cache.area.trim() || cache.county?.trim() || "Unassigned";
       (result[group] ??= []).push(cache);
       return result;
     }, {});
@@ -96,7 +107,7 @@ export default function TravelPage() {
                     return (
                       <Link href={`/mysteries?cache=${encodeURIComponent(cache.id)}`} className="travel-cache-row" key={cache.id}>
                         <span className={`attempt-state ${coordinate ? "correct" : "unchecked"}`}>{coordinate ? <Check size={15} /> : <CircleDot size={15} />}</span>
-                        <span><small>{cache.gcCode} · {cache.area || "No area"}</small><strong>{cache.name}</strong></span>
+                        <span><small>{cache.gcCode} · {locationLabel(cache) || "No location"}</small><strong>{cache.name}</strong></span>
                         <em>{coordinate ? <><MapPin size={12} /> {coordinate.latitude.toFixed(5)}, {coordinate.longitude.toFixed(5)}</> : "Needs solution"}</em>
                       </Link>
                     );

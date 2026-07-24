@@ -162,8 +162,7 @@ function userscript(appOrigin: string) {
       ".CacheLocation",
       ".cache-location",
       "[class*='cacheLocation']",
-      "[class*='CacheLocation']",
-      "#ctl00_ContentBody_mcd1"
+      "[class*='CacheLocation']"
     ].join(","));
     const description = document.querySelector("meta[name='description']")?.getAttribute("content") || "";
     const metadata = locationFromMetadata(document.title, description);

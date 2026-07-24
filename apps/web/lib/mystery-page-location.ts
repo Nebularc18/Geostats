@@ -17,6 +17,8 @@ type MysteryPageLocationSources = {
 export function locationFromPageSources(sources: MysteryPageLocationSources): MysteryPageLocation {
   const clean = (value: unknown) => String(value || "").replace(/\s+/g, " ").trim();
   const unique = (values: string[]) => values.filter((value, index) => value && values.indexOf(value) === index);
+  const isOwnerMetadata = (values: string[]) =>
+    values.some((value) => /^(?:a\s+)?cache\s+by\b|\bmessage\s+this\s+owner\b|\bhidden\s*:/i.test(value));
   const empty = (): MysteryPageLocation => ({
     country: "",
     region: "",
@@ -82,6 +84,7 @@ export function locationFromPageSources(sources: MysteryPageLocationSources): My
   const result = structuredCandidates[0]?.location ?? empty();
   const breadcrumb = [...sources.breadcrumbs]
     .map((parts) => unique(parts.map(clean)))
+    .filter((parts) => !isOwnerMetadata(parts))
     .sort((first, second) => second.length - first.length)[0] ?? [];
   if (breadcrumb.length) {
     if (breadcrumb.length > result.locationHierarchy.length) result.locationHierarchy = breadcrumb;

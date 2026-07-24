@@ -49,6 +49,7 @@ type MysteryCache = {
   gcCode: string;
   name: string;
   area: string;
+  county?: string;
   country: string;
   region?: string;
   locality?: string;
@@ -206,7 +207,7 @@ function stateLabel(state: CheckState) {
 }
 
 function locationLabel(cache: MysteryCache) {
-  return [cache.locality, cache.area, cache.region, cache.country]
+  return [cache.locality, cache.area, cache.county, cache.region, cache.country]
     .map(normalizeMysteryArea)
     .filter((value, index, values) => value && values.indexOf(value) === index)
     .join(", ");
@@ -226,6 +227,7 @@ function verifiedStoredShares(caches: MysteryCache[]) {
   return caches.map((cache) => ({
     ...cache,
     area: normalizeMysteryArea(cache.area),
+    county: normalizeMysteryArea(cache.county),
     country: normalizeMysteryArea(cache.country),
     region: normalizeMysteryArea(cache.region),
     locality: normalizeMysteryArea(cache.locality),
@@ -244,7 +246,8 @@ function shareableMystery(cache: MysteryCache) {
 function importedMystery(value: BrowserImport): MysteryCache | null {
   const gcCode = typeof value.gcCode === "string" ? value.gcCode.trim().toUpperCase() : "";
   const name = typeof value.name === "string" ? value.name.trim() : "";
-  const area = normalizeMysteryArea(value.county) || normalizeMysteryArea(value.area);
+  const area = normalizeMysteryArea(value.area);
+  const county = normalizeMysteryArea(value.county);
   const country = normalizeMysteryArea(value.country);
   const region = normalizeMysteryArea(value.region);
   const locality = normalizeMysteryArea(value.locality);
@@ -261,6 +264,7 @@ function importedMystery(value: BrowserImport): MysteryCache | null {
     gcCode,
     name,
     area,
+    county,
     country,
     region,
     locality,
@@ -371,6 +375,7 @@ export default function MysteriesPage() {
             initial = initial.map((cache) => cache.id === existing.id ? {
               ...cache,
               area: imported.area || cache.area,
+              county: imported.county || cache.county,
               country: imported.country || cache.country,
               region: imported.region || cache.region,
               locality: imported.locality || cache.locality,
@@ -474,6 +479,7 @@ export default function MysteriesPage() {
           return [{
             ...grant.mystery,
             area: normalizeMysteryArea(grant.mystery.area),
+            county: normalizeMysteryArea(grant.mystery.county),
             country: normalizeMysteryArea(grant.mystery.country),
             region: normalizeMysteryArea(grant.mystery.region),
             locality: normalizeMysteryArea(grant.mystery.locality),
@@ -665,6 +671,7 @@ export default function MysteriesPage() {
         cache.gcCode,
         cache.name,
         cache.area,
+        cache.county,
         cache.country,
         cache.region,
         cache.locality,
@@ -821,6 +828,7 @@ export default function MysteriesPage() {
       gcCode: String(data.get("gcCode") ?? "").trim().toUpperCase(),
       name: String(data.get("name") ?? "").trim(),
       area: String(data.get("area") ?? "").trim(),
+      county: String(data.get("county") ?? "").trim(),
       country: String(data.get("country") ?? "").trim(),
       region: String(data.get("region") ?? "").trim(),
       locality: String(data.get("locality") ?? "").trim(),
@@ -1107,7 +1115,8 @@ export default function MysteriesPage() {
             <div className="two-column"><label>GC code<input name="gcCode" required placeholder="GC12345" pattern="GC[A-Za-z0-9]+" /></label><label>Cache name<input name="name" required placeholder="The hidden message" /></label></div>
             <label>Published coordinates<input name="published" required placeholder="59.34312, 18.07341" /></label>
             <div className="two-column"><label>Country<input name="country" placeholder="Sweden" /></label><label>Region / state<input name="region" placeholder="Svealand" /></label></div>
-            <div className="two-column"><label>County / area<input name="area" placeholder="Stockholm County" /></label><label>Locality<input name="locality" placeholder="Vaxholm" /></label></div>
+            <div className="two-column"><label>County<input name="county" placeholder="Stockholm County" /></label><label>Area / district<input name="area" placeholder="Vaxholm Municipality" /></label></div>
+            <label>Locality<input name="locality" placeholder="Vaxholm" /></label>
             <div className="modal-actions"><button className="secondary-button" type="button" onClick={() => setShowAdd(false)}>Cancel</button><button className="primary-button" type="submit">Add to workspace</button></div>
           </form>
         </div>
