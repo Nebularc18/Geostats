@@ -89,6 +89,99 @@ test("calculateStats uses Geocaching cache milestone ranks", () => {
   );
 });
 
+test("calculateStats orders same-time finds by ordinal numbers in logs", () => {
+  const finds = Array.from({ length: 300 }, (_, index) => {
+    const ordinal = index + 3001;
+    return {
+      foundAt: "2026-07-15T00:00:00.000Z",
+      logText: index % 2 === 0 ? `#${ordinal}\nTFTC` : `Fund ${ordinal}\nTFTC`,
+      cache: {
+        gcCode: `GC${ordinal}`,
+        name: `Cache ${ordinal}`,
+        cacheType: "Traditional Cache",
+        difficulty: 1.5,
+        terrain: 1.5,
+        size: "Regular",
+        country: "Sweden",
+        region: "Blekinge",
+        county: "Karlskrona"
+      }
+    };
+  }).reverse();
+
+  const stats = calculateStats(finds);
+
+  assert.equal(stats.milestones.find((milestone) => milestone.count === 300)?.gcCode, "GC3300");
+});
+
+test("calculateStats orders same-time finds by explicit times when ordinals are unavailable", () => {
+  const finds = Array.from({ length: 5 }, (_, index) => ({
+    foundAt: "2026-07-15T00:00:00.000Z",
+    logText: `Tid ${String(12 - index).padStart(2, "0")}:00\nTFTC`,
+    cache: {
+      gcCode: `GC${index + 1}`,
+      name: `Cache ${index + 1}`,
+      cacheType: "Traditional Cache",
+      difficulty: 1.5,
+      terrain: 1.5,
+      size: "Regular",
+      country: "Sweden",
+      region: "Blekinge",
+      county: "Karlskrona"
+    }
+  }));
+
+  const stats = calculateStats(finds);
+
+  assert.equal(stats.milestones.find((milestone) => milestone.count === 5)?.gcCode, "GC1");
+});
+
+test("calculateStats preserves import order when only some tied logs have sequence hints", () => {
+  const finds = Array.from({ length: 5 }, (_, index) => ({
+    foundAt: "2026-07-15T00:00:00.000Z",
+    logText: index === 0 ? "Fund 9999" : "TFTC",
+    cache: {
+      gcCode: `GC${index + 1}`,
+      name: `Cache ${index + 1}`,
+      cacheType: "Traditional Cache",
+      difficulty: 1.5,
+      terrain: 1.5,
+      size: "Regular",
+      country: "Sweden",
+      region: "Blekinge",
+      county: "Karlskrona"
+    }
+  }));
+
+  const stats = calculateStats(finds);
+
+  assert.equal(stats.milestones.find((milestone) => milestone.count === 5)?.gcCode, "GC5");
+});
+
+test("calculateStats reorders numbered tied logs without guessing positions for unnumbered logs", () => {
+  const logTexts = ["Fund 3002", "TFTC", "#3001", "TFTC", "TFTC"];
+  const finds = logTexts.map((logText, index) => ({
+    foundAt: "2026-07-15T00:00:00.000Z",
+    logText,
+    cache: {
+      gcCode: `GC${index + 1}`,
+      name: `Cache ${index + 1}`,
+      cacheType: "Traditional Cache",
+      difficulty: 1.5,
+      terrain: 1.5,
+      size: "Regular",
+      country: "Sweden",
+      region: "Blekinge",
+      county: "Karlskrona"
+    }
+  }));
+
+  const stats = calculateStats(finds);
+
+  assert.equal(stats.milestoneStats.firstByType[0]?.gcCode, "GC3");
+  assert.equal(stats.milestones.find((milestone) => milestone.count === 5)?.gcCode, "GC5");
+});
+
 test("calculateHideStats derives owner-side log and date buckets", () => {
   const stats = calculateHideStats([
     {
