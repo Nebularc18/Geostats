@@ -1,5 +1,5 @@
 import { StatusBar } from "expo-status-bar";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Alert, Image, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import * as DocumentPicker from "expo-document-picker";
@@ -1481,6 +1481,7 @@ function ProfileHtmlScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: s
 function MysteriesScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; token: string; userId: string }) {
   const [caches, setCaches] = useState<MysteryCache[]>([]);
   const [ready, setReady] = useState(false);
+  const latestMysteries = useRef({ caches, ready });
   const [selectedId, setSelectedId] = useState("");
   const [filter, setFilter] = useState<"all" | MysteryStatus>("all");
   const [query, setQuery] = useState("");
@@ -1496,6 +1497,8 @@ function MysteriesScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; to
   const [shareQuery, setShareQuery] = useState("");
   const [users, setUsers] = useState<AppUser[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
+
+  latestMysteries.current = { caches, ready };
 
   useEffect(() => {
     let active = true;
@@ -1538,6 +1541,22 @@ function MysteriesScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; to
     }, 500);
     return () => clearTimeout(timer);
   }, [apiBaseUrl, caches, ready, token]);
+
+  useEffect(() => () => {
+    const latest = latestMysteries.current;
+    if (!latest.ready) return;
+
+    const owned = latest.caches.filter((cache) => !cache.sharedBy);
+    void writeMysteries(userId, owned);
+
+    const sharedOwned = owned.filter((cache) => cache.sharedWith.length > 0);
+    if (sharedOwned.length) {
+      void Promise.all(sharedOwned.map((cache) => apiFetch(apiBaseUrl, `/mysteries/${encodeURIComponent(cache.id)}`, token, {
+        method: "PUT",
+        body: JSON.stringify({ mystery: shareableMystery(cache), revision: Date.now() })
+      }))).catch(() => undefined);
+    }
+  }, [apiBaseUrl, token, userId]);
 
   useEffect(() => {
     if (shareQuery.trim().length < 2) {
@@ -1653,11 +1672,17 @@ function MysteriesScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; to
     Alert.alert(`Delete ${selected.gcCode}?`, "Notes, clues, and coordinate attempts will be removed from this device.", [
       { text: "Cancel", style: "cancel" },
       {
-        text: "Delete", style: "destructive", onPress: () => {
-          if (selected.sharedWith.length) void apiFetch(apiBaseUrl, `/mysteries/${encodeURIComponent(selected.id)}`, token, { method: "DELETE" }).catch(() => undefined);
-          const remaining = caches.filter((cache) => cache.id !== selected.id);
-          setCaches(remaining);
-          setSelectedId(remaining[0]?.id ?? "");
+        text: "Delete", style: "destructive", onPress: async () => {
+          try {
+            if (selected.sharedWith.length) {
+              await apiFetch(apiBaseUrl, `/mysteries/${encodeURIComponent(selected.id)}`, token, { method: "DELETE" });
+            }
+            const remaining = latestMysteries.current.caches.filter((cache) => cache.id !== selected.id);
+            setCaches(remaining);
+            setSelectedId(remaining[0]?.id ?? "");
+          } catch (error) {
+            setNotice(error instanceof Error ? error.message : "Could not delete this shared mystery.");
+          }
         }
       }
     ]);

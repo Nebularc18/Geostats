@@ -101,7 +101,7 @@ function logTimeMinutes(text: string | null | undefined): number | null {
   }
 
   const match =
-    /(?:^|[\s([{])(?:time|tid|at|kl(?:ockan)?)\s*[:.]?\s*(\d{1,2})[:.](\d{2})\b/im.exec(text) ??
+    /(?:^|\n)\s*(?:time|tid|kl(?:ockan)?)\s*[:.]?\s*(\d{1,2})[:.](\d{2})\b/im.exec(text) ??
     /^\s*(\d{1,2})[:.](\d{2})\b/m.exec(text);
   if (!match) {
     return null;

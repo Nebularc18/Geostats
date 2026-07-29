@@ -136,6 +136,28 @@ test("calculateStats orders same-time finds by explicit times when ordinals are 
   assert.equal(stats.milestones.find((milestone) => milestone.count === 5)?.gcCode, "GC1");
 });
 
+test("calculateStats ignores incidental times in prose when finds have equal timestamps", () => {
+  const finds = Array.from({ length: 5 }, (_, index) => ({
+    foundAt: "2026-07-15T00:00:00.000Z",
+    logText: `We stopped for coffee at ${String(14 - index).padStart(2, "0")}:22 before continuing.`,
+    cache: {
+      gcCode: `GC${index + 1}`,
+      name: `Cache ${index + 1}`,
+      cacheType: "Traditional Cache",
+      difficulty: 1.5,
+      terrain: 1.5,
+      size: "Regular",
+      country: "Sweden",
+      region: "Blekinge",
+      county: "Karlskrona"
+    }
+  }));
+
+  const stats = calculateStats(finds);
+
+  assert.equal(stats.milestones.find((milestone) => milestone.count === 5)?.gcCode, "GC5");
+});
+
 test("calculateStats preserves import order when only some tied logs have sequence hints", () => {
   const finds = Array.from({ length: 5 }, (_, index) => ({
     foundAt: "2026-07-15T00:00:00.000Z",
