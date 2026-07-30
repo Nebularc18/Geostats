@@ -134,7 +134,9 @@ const countryFlagCodeOverrides: Record<string, string> = {
   syria: "SY",
   taiwan: "TW",
   tanzania: "TZ",
+  "the gambia": "GM",
   turkey: "TR",
+  uae: "AE",
   "united states of america": "US",
   venezuela: "VE",
   vietnam: "VN"
@@ -794,14 +796,6 @@ export function AchievementBadges({
     let active = true;
     void apiFetch<ScratchMapData>("/map/scratch")
       .then(async (data) => {
-        if (isDevelopment && data.countries.length === 0) {
-          if (active) {
-            setScratchCountries(developmentCountryBadges);
-            setCountryRegionTotals(new Map(developmentCountryRegionTotals));
-          }
-          return;
-        }
-
         if (active) {
           setScratchCountries(data.countries);
         }

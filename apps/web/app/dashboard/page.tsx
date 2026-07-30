@@ -98,9 +98,7 @@ export default function DashboardPage() {
   useEffect(() => {
     void apiFetch<{ stats: any }>("/stats/summary")
       .then((data) => {
-        if (!isDevelopment || data.stats?.totalFinds > 0) {
-          setStats(data.stats);
-        }
+        setStats(data.stats);
       })
       .catch(() => {
         if (!isDevelopment) {
