@@ -100,6 +100,42 @@ test("ownedShares returns the server-authoritative recipient list", async () => 
   });
 });
 
+test("owned returns every server-backed mystery, including unshared mysteries", async () => {
+  const unsharedMystery = { ...mystery, id: "local-unshared", name: "Private solve" };
+  const prisma = {
+    mysteryWorkspace: {
+      findMany: async () => [
+        {
+          clientId: unsharedMystery.id,
+          data: unsharedMystery,
+          snapshotRevision: 3,
+          shares: []
+        },
+        {
+          clientId: mystery.id,
+          data: mystery,
+          snapshotRevision: 4,
+          shares: [{ recipient }]
+        }
+      ]
+    },
+    mysteryWorkspaceDeletion: {
+      findMany: async () => [{ clientId: "deleted-local-1" }]
+    }
+  };
+  const controller = new MysteriesController(prisma as any);
+
+  const result = await controller.owned(owner);
+
+  assert.deepEqual(result, {
+    mysteries: [
+      { clientId: unsharedMystery.id, mystery: unsharedMystery, revision: 3, sharedWith: [] },
+      { clientId: mystery.id, mystery, revision: 4, sharedWith: [recipient] }
+    ],
+    deletedClientIds: ["deleted-local-1"]
+  });
+});
+
 test("share rejects a snapshot that does not match the requested mystery", async () => {
   const controller = new MysteriesController({} as any);
 
@@ -109,55 +145,86 @@ test("share rejects a snapshot that does not match the requested mystery", async
   );
 });
 
-test("update refreshes an owned shared snapshot", async () => {
-  let updateInput: unknown;
-  const prisma = {
-    mysteryWorkspace: {
-      updateMany: async (input: unknown) => {
-        updateInput = input;
-        return { count: 1 };
+test("update creates an unshared server snapshot", async () => {
+  const operations: string[] = [];
+  let upsertInput: unknown;
+  const transaction = {
+    $queryRaw: async () => {
+      operations.push("lock");
+      return [];
+    },
+    mysteryWorkspaceDeletion: {
+      findUnique: async () => {
+        operations.push("deletion");
+        return null;
       }
+    },
+    mysteryWorkspace: {
+      upsert: async (input: unknown) => {
+        operations.push("upsert");
+        upsertInput = input;
+        return { id: "workspace-1" };
+      },
+      updateMany: async () => {
+        operations.push("update");
+        return { count: 0 };
+      },
+      findUnique: async () => ({ snapshotRevision: 1 })
     }
   };
+  const prisma = {
+    $transaction: async (callback: (tx: typeof transaction) => unknown) => callback(transaction)
+  };
   const controller = new MysteriesController(prisma as any);
-  const updatedMystery = { ...mystery, notes: "New solution" };
 
-  const result = await controller.update(owner, mystery.id, { mystery: updatedMystery, revision: 2 });
+  const result = await controller.update(owner, mystery.id, { mystery, revision: 1 });
 
-  assert.deepEqual(result, { ok: true, revision: 2 });
-  assert.deepEqual((updateInput as any).where, {
+  assert.deepEqual(result, { ok: true, revision: 1 });
+  assert.deepEqual(operations, ["lock", "deletion", "upsert", "update"]);
+  assert.deepEqual((upsertInput as any).create, {
     ownerId: owner.id,
     clientId: mystery.id,
-    snapshotRevision: { lt: 2 }
+    data: mystery,
+    snapshotRevision: 1
   });
-  assert.deepEqual((updateInput as any).data, { data: updatedMystery, snapshotRevision: 2 });
 });
 
-test("update cannot modify another owner's shared snapshot", async () => {
-  const prisma = {
-    mysteryWorkspace: {
-      updateMany: async () => ({ count: 0 }),
-      findUnique: async () => null
+test("update rejects a stale tab after the mystery was deleted", async () => {
+  const transaction = {
+    $queryRaw: async () => [],
+    mysteryWorkspaceDeletion: {
+      findUnique: async () => ({ id: "deletion-1" })
     }
+  };
+  const prisma = {
+    $transaction: async (callback: (tx: typeof transaction) => unknown) => callback(transaction)
   };
   const controller = new MysteriesController(prisma as any);
 
   await assert.rejects(
     controller.update(owner, mystery.id, { mystery, revision: 1 }),
-    /Shared mystery was not found/
+    /Mystery was deleted/
   );
 });
 
 test("an older in-flight update cannot overwrite a newer snapshot", async () => {
   let updateInput: unknown;
-  const prisma = {
+  const transaction = {
+    $queryRaw: async () => [],
+    mysteryWorkspaceDeletion: {
+      findUnique: async () => null
+    },
     mysteryWorkspace: {
+      upsert: async () => ({ id: "workspace-1" }),
       updateMany: async (input: unknown) => {
         updateInput = input;
         return { count: 0 };
       },
       findUnique: async () => ({ snapshotRevision: 2 })
     }
+  };
+  const prisma = {
+    $transaction: async (callback: (tx: typeof transaction) => unknown) => callback(transaction)
   };
   const controller = new MysteriesController(prisma as any);
 

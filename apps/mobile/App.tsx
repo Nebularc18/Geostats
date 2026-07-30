@@ -60,6 +60,12 @@ type SharedMysteryGrant = {
   owner: AppUser;
   sharedWith: AppUser[];
 };
+type OwnedMysterySnapshot = {
+  clientId: string;
+  mystery: MysteryCache;
+  revision: number;
+  sharedWith: AppUser[];
+};
 type Position = [number, number];
 type PolygonCoordinates = Position[][];
 type MultiPolygonCoordinates = PolygonCoordinates[];
@@ -1527,16 +1533,30 @@ function MysteriesScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; to
     let active = true;
     void Promise.all([
       readMysteries(userId),
+      apiFetch<{ mysteries: OwnedMysterySnapshot[]; deletedClientIds: string[] }>(apiBaseUrl, "/mysteries/owned", token)
+        .catch(() => ({ mysteries: [], deletedClientIds: [] })),
       apiFetch<{ mysteries: SharedMysteryGrant[] }>(apiBaseUrl, "/mysteries/shared", token).catch(() => ({ mysteries: [] }))
-    ]).then(([local, shared]) => {
+    ]).then(([local, owned, shared]) => {
       if (!active) return;
+      const deletedIds = new Set(owned.deletedClientIds);
+      const ownedCaches = owned.mysteries
+        .filter(({ clientId, mystery }) => mystery?.id === clientId && !deletedIds.has(clientId))
+        .map(({ clientId, mystery, sharedWith }) => ({
+          ...mystery,
+          id: clientId,
+          sharedWith: Array.isArray(sharedWith) ? sharedWith : []
+        }));
+      const serverIds = new Set(ownedCaches.map((cache) => cache.id));
       const sharedCaches = shared.mysteries.map((grant) => ({
         ...grant.mystery,
         sharedBy: grant.owner,
         sharedWith: grant.sharedWith,
         sharedWorkspaceId: grant.workspaceId
       }));
-      const next = [...local.filter((cache) => !cache.sharedBy), ...sharedCaches];
+      const localOnly = local.filter((cache) =>
+        !cache.sharedBy && !serverIds.has(cache.id) && !deletedIds.has(cache.id)
+      );
+      const next = [...ownedCaches, ...localOnly, ...sharedCaches];
       setCaches(next);
       setSelectedId(next[0]?.id ?? "");
       setReady(true);
@@ -1554,13 +1574,13 @@ function MysteriesScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; to
 
   useEffect(() => {
     if (!ready) return;
-    const sharedOwned = caches.filter((cache) => !cache.sharedBy && cache.sharedWith.length > 0);
-    if (!sharedOwned.length) return;
+    const owned = caches.filter((cache) => !cache.sharedBy);
+    if (!owned.length) return;
     const timer = setTimeout(() => {
-      void Promise.all(sharedOwned.map((cache) => apiFetch(apiBaseUrl, `/mysteries/${encodeURIComponent(cache.id)}`, token, {
+      void Promise.all(owned.map((cache) => apiFetch(apiBaseUrl, `/mysteries/${encodeURIComponent(cache.id)}`, token, {
         method: "PUT",
         body: JSON.stringify({ mystery: shareableMystery(cache), revision: Date.now() })
-      }))).catch(() => setNotice("Saved on this device; shared changes could not reach the server yet."));
+      }))).catch(() => setNotice("Saved on this device; account sync will retry when the app changes or reopens."));
     }, 500);
     return () => clearTimeout(timer);
   }, [apiBaseUrl, caches, ready, token]);
@@ -1572,9 +1592,8 @@ function MysteriesScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; to
     const owned = latest.caches.filter((cache) => !cache.sharedBy);
     void writeMysteries(userId, owned);
 
-    const sharedOwned = owned.filter((cache) => cache.sharedWith.length > 0);
-    if (sharedOwned.length) {
-      void Promise.all(sharedOwned.map((cache) => apiFetch(apiBaseUrl, `/mysteries/${encodeURIComponent(cache.id)}`, token, {
+    if (owned.length) {
+      void Promise.all(owned.map((cache) => apiFetch(apiBaseUrl, `/mysteries/${encodeURIComponent(cache.id)}`, token, {
         method: "PUT",
         body: JSON.stringify({ mystery: shareableMystery(cache), revision: Date.now() })
       }))).catch(() => undefined);
@@ -1692,19 +1711,17 @@ function MysteriesScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; to
 
   function deleteSelected() {
     if (!selected || selected.sharedBy) return;
-    Alert.alert(`Delete ${selected.gcCode}?`, "Notes, clues, and coordinate attempts will be removed from this device.", [
+    Alert.alert(`Delete ${selected.gcCode}?`, "Notes, clues, and coordinate attempts will be removed from your account and synced devices.", [
       { text: "Cancel", style: "cancel" },
       {
         text: "Delete", style: "destructive", onPress: async () => {
           try {
-            if (selected.sharedWith.length) {
-              await apiFetch(apiBaseUrl, `/mysteries/${encodeURIComponent(selected.id)}`, token, { method: "DELETE" });
-            }
+            await apiFetch(apiBaseUrl, `/mysteries/${encodeURIComponent(selected.id)}`, token, { method: "DELETE" });
             const remaining = latestMysteries.current.caches.filter((cache) => cache.id !== selected.id);
             setCaches(remaining);
             setSelectedId(remaining[0]?.id ?? "");
           } catch (error) {
-            setNotice(error instanceof Error ? error.message : "Could not delete this shared mystery.");
+            setNotice(error instanceof Error ? error.message : "Could not delete this mystery.");
           }
         }
       }

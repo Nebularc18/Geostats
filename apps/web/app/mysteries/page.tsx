@@ -73,8 +73,9 @@ type SharedMysteryGrant = {
   sharedWith: AppUser[];
 };
 
-type OwnedMysteryShares = {
+type OwnedMysterySnapshot = {
   clientId: string;
+  mystery: MysteryCache;
   revision: number;
   sharedWith: AppUser[];
 };
@@ -116,56 +117,6 @@ const STORAGE_KEY = "geostats-mysteries-v1";
 const DELETION_STORAGE_KEY = "geostats-mystery-deletions-v1";
 const DELETION_CHANNEL = "geostats-mystery-deletions";
 const MAX_REASONABLE_DISTANCE_KM = 3.2;
-
-const starterCaches: MysteryCache[] = [
-  {
-    id: "mystery-archipelago",
-    gcCode: "GC9X7K2",
-    name: "The Lighthouse Cipher",
-    area: "Vaxholm",
-    country: "Sweden",
-    status: "solved",
-    publishedLatitude: 59.40235,
-    publishedLongitude: 18.35371,
-    notes: "The first letters in each paragraph form the key. Bring a UV light for the final container.",
-    clues: ["Vigenère", "Lighthouse years", "UV light"],
-    sharedWith: [],
-    attempts: [
-      { id: "a1", latitude: 59.40582, longitude: 18.3612, state: "wrong", createdAt: "2026-07-18T19:42:00.000Z" },
-      { id: "a2", latitude: 59.40817, longitude: 18.36743, state: "correct", createdAt: "2026-07-19T08:16:00.000Z" }
-    ]
-  },
-  {
-    id: "mystery-library",
-    gcCode: "GCAB4M8",
-    name: "Between the Lines",
-    area: "Stockholm",
-    country: "Sweden",
-    status: "solving",
-    publishedLatitude: 59.34312,
-    publishedLongitude: 18.07341,
-    notes: "Likely a book cipher. Page numbers are hidden in the gallery captions.",
-    clues: ["Book cipher", "Gallery captions"],
-    sharedWith: [],
-    attempts: [
-      { id: "a3", latitude: 59.33914, longitude: 18.08125, state: "unchecked", createdAt: "2026-07-21T20:04:00.000Z" }
-    ]
-  },
-  {
-    id: "mystery-stones",
-    gcCode: "GC8P2QF",
-    name: "Runes in the Forest",
-    area: "Uppsala",
-    country: "Sweden",
-    status: "planned",
-    publishedLatitude: 59.85863,
-    publishedLongitude: 17.63893,
-    notes: "Photograph the rune stones in order before starting the solve.",
-    clues: ["Younger Futhark"],
-    sharedWith: [],
-    attempts: []
-  }
-];
 
 function distanceKm(lat1: number, lon1: number, lat2: number, lon2: number) {
   const toRad = (value: number) => (value * Math.PI) / 180;
@@ -312,12 +263,15 @@ function applyGeocachingSyncReceipt(caches: MysteryCache[], value: GeocachingSyn
 export default function MysteriesPage() {
   const initialized = useRef(false);
   const persistedCaches = useRef<MysteryCache[]>([]);
+  const serverSnapshots = useRef(new Map<string, string>());
   const snapshotRevisions = useRef(new Map<string, number>());
   const shareMutationRevisions = useRef(new Map<string, number>());
   const deletedCacheIds = useRef(new Set<string>());
   const deletionChannel = useRef<BroadcastChannel | null>(null);
   const [caches, setCaches] = useState<MysteryCache[]>([]);
   const [persistedForSync, setPersistedForSync] = useState<MysteryCache[] | null>(null);
+  const [serverSyncReady, setServerSyncReady] = useState(false);
+  const [serverLoadAttempt, setServerLoadAttempt] = useState(0);
   const [selectedId, setSelectedId] = useState("");
   const [ready, setReady] = useState(false);
   const [query, setQuery] = useState("");
@@ -352,7 +306,7 @@ export default function MysteriesPage() {
       localStorage.removeItem(DELETION_STORAGE_KEY);
     }
     const saved = localStorage.getItem(STORAGE_KEY);
-    let initial = starterCaches;
+    let initial: MysteryCache[] = [];
     if (saved) {
       try {
         initial = verifiedStoredShares(JSON.parse(saved) as MysteryCache[]);
@@ -444,29 +398,40 @@ export default function MysteriesPage() {
   }, [caches, ready]);
 
   useEffect(() => {
-    if (!ready || !persistedForSync) return;
-    const sharedCaches = persistedForSync.filter((cache) =>
-      !cache.sharedBy &&
-      cache.sharedWith.length > 0 &&
-      snapshotRevisions.current.has(cache.id)
-    );
-    if (!sharedCaches.length) return;
+    if (!ready || !serverSyncReady || !persistedForSync) return;
+    const pendingCaches = persistedForSync.flatMap((cache) => {
+      if (cache.sharedBy || deletedCacheIds.current.has(cache.id)) return [];
+      const serialized = JSON.stringify(shareableMystery(cache));
+      return serverSnapshots.current.get(cache.id) === serialized ? [] : [{ cache, serialized }];
+    });
+    if (!pendingCaches.length) return;
 
+    let retryTimeout: number | undefined;
     const timeout = window.setTimeout(() => {
-      void Promise.all(sharedCaches.map((cache) =>
-        apiFetch<{ revision: number }>(`/mysteries/${encodeURIComponent(cache.id)}`, {
+      void Promise.all(pendingCaches.map(({ cache, serialized }) => {
+        const requestedRevision = nextSnapshotRevision(cache.id);
+        return apiFetch<{ revision: number }>(`/mysteries/${encodeURIComponent(cache.id)}`, {
           method: "PUT",
           body: JSON.stringify({
             mystery: shareableMystery(cache),
-            revision: nextSnapshotRevision(cache.id)
+            revision: requestedRevision
           })
-        }).then(({ revision }) => rememberSnapshotRevision(cache.id, revision))
-      )).catch(() => {
-        setNotice("Saved locally, but shared copies could not be updated.");
+        }).then(({ revision }) => {
+          rememberSnapshotRevision(cache.id, revision);
+          if (revision === requestedRevision) serverSnapshots.current.set(cache.id, serialized);
+        });
+      })).catch(() => {
+        setNotice("Saved offline; account sync will retry.");
+        retryTimeout = window.setTimeout(() => {
+          setPersistedForSync([...persistedCaches.current]);
+        }, 3000);
       });
     }, 400);
-    return () => window.clearTimeout(timeout);
-  }, [persistedForSync, ready]);
+    return () => {
+      window.clearTimeout(timeout);
+      if (retryTimeout) window.clearTimeout(retryTimeout);
+    };
+  }, [persistedForSync, ready, serverSyncReady]);
 
   useEffect(() => {
     if (!ready) return;
@@ -497,36 +462,52 @@ export default function MysteriesPage() {
       .catch(() => {
         // Keep the last locally cached shared snapshot while offline.
       });
-    const reconciliationRevisions = new Map(shareMutationRevisions.current);
-    void apiFetch<{ mysteries: OwnedMysteryShares[]; deletedClientIds: string[] }>("/mysteries/owned-shares")
+    void apiFetch<{ mysteries: OwnedMysterySnapshot[]; deletedClientIds: string[] }>("/mysteries/owned")
       .then(({ mysteries, deletedClientIds }) => {
         if (!active) return;
         const serverDeletedIds = Array.isArray(deletedClientIds)
           ? deletedClientIds.filter((cacheId): cacheId is string => typeof cacheId === "string" && cacheId.length > 0)
           : [];
         serverDeletedIds.forEach(rememberDeletedCache);
-        const sharesByClientId = new Map(mysteries.map(({ clientId, revision, sharedWith }) => {
+        const ownedCaches = mysteries.flatMap(({ clientId, mystery, revision, sharedWith }) => {
+          if (!mystery || typeof mystery !== "object" || mystery.id !== clientId || deletedCacheIds.current.has(clientId)) return [];
           rememberSnapshotRevision(clientId, revision);
-          return [
-          clientId,
-          Array.isArray(sharedWith) ? sharedWith.filter(isAppUser) : []
-          ] as const;
-        }));
-        setPersistedForSync((current) => current ? [...current] : current);
-        setCaches((current) => current.filter((cache) => !deletedCacheIds.current.has(cache.id)).map((cache) => {
-          const sharedWith = sharesByClientId.get(cache.id);
-          const unchangedSinceRequest =
-            (shareMutationRevisions.current.get(cache.id) ?? 0) === (reconciliationRevisions.get(cache.id) ?? 0);
-          return !cache.sharedBy && sharedWith && unchangedSinceRequest ? { ...cache, sharedWith } : cache;
-        }));
+          const cache = verifiedStoredShares([{
+            ...mystery,
+            id: clientId,
+            sharedWith: Array.isArray(sharedWith) ? sharedWith.filter(isAppUser) : []
+          }])[0];
+          serverSnapshots.current.set(clientId, JSON.stringify(shareableMystery(cache)));
+          return [cache];
+        });
+        const serverIds = new Set(ownedCaches.map((cache) => cache.id));
+        setCaches((current) => {
+          const localOnly = current.filter((cache) =>
+            !cache.sharedBy &&
+            !serverIds.has(cache.id) &&
+            !deletedCacheIds.current.has(cache.id)
+          );
+          const receivedShares = current.filter((cache) =>
+            cache.sharedBy && !deletedCacheIds.current.has(cache.id)
+          );
+          return [...ownedCaches, ...localOnly, ...receivedShares];
+        });
+        setServerSyncReady(true);
       })
       .catch(() => {
-        // Keep the locally cached owner grant list while offline.
+        setServerSyncReady(false);
+        setNotice("Offline — mysteries will sync with your account when reconnected.");
       });
     return () => {
       active = false;
     };
-  }, [ready]);
+  }, [ready, serverLoadAttempt]);
+
+  useEffect(() => {
+    const retryServerLoad = () => setServerLoadAttempt((attempt) => attempt + 1);
+    window.addEventListener("online", retryServerLoad);
+    return () => window.removeEventListener("online", retryServerLoad);
+  }, []);
 
   useEffect(() => {
     const applyDeletion = (cacheId: string) => {
@@ -746,7 +727,7 @@ export default function MysteriesPage() {
     });
     setCoordinate("");
     setCoordinateError("");
-    setNotice("Coordinate saved offline");
+    setNotice(serverSyncReady ? "Coordinate saved to your account" : "Coordinate saved offline");
   }
 
   function deleteAttempt(attemptId: string) {
@@ -1090,7 +1071,7 @@ export default function MysteriesPage() {
 
               <aside className="mystery-side-column">
                 <section className="mystery-section notes-section">
-                  <div className="section-heading"><div><p className="eyebrow">Working notes</p><h3>Solution & field notes</h3></div><small>Saved locally</small></div>
+                  <div className="section-heading"><div><p className="eyebrow">Working notes</p><h3>Solution & field notes</h3></div><small>{serverSyncReady ? "Account sync on" : "Saved offline"}</small></div>
                   <textarea value={selected.notes} onChange={(event) => updateSelected({ notes: event.target.value })} placeholder="Write down clues, calculations and things to bring…" />
                 </section>
                 <section className="mystery-section shared-section">

@@ -45,6 +45,38 @@ async function lockMystery(tx: Prisma.TransactionClient, ownerId: string, client
 export class MysteriesController {
   constructor(private readonly prisma: PrismaService) {}
 
+  @Get("owned")
+  async owned(@CurrentUser() user: AuthUser) {
+    const [mysteries, deletions] = await Promise.all([
+      this.prisma.mysteryWorkspace.findMany({
+        where: { ownerId: user.id },
+        select: {
+          clientId: true,
+          data: true,
+          snapshotRevision: true,
+          shares: {
+            select: { recipient: { select: { id: true, username: true } } },
+            orderBy: { createdAt: "asc" }
+          }
+        },
+        orderBy: { createdAt: "asc" }
+      }),
+      this.prisma.mysteryWorkspaceDeletion.findMany({
+        where: { ownerId: user.id },
+        select: { clientId: true }
+      })
+    ]);
+    return {
+      mysteries: mysteries.map((mystery) => ({
+        clientId: mystery.clientId,
+        mystery: mystery.data,
+        revision: mystery.snapshotRevision,
+        sharedWith: mystery.shares.map(({ recipient }) => recipient)
+      })),
+      deletedClientIds: deletions.map(({ clientId }) => clientId)
+    };
+  }
+
   @Get("owned-shares")
   async ownedShares(@CurrentUser() user: AuthUser) {
     const [mysteries, deletions] = await Promise.all([
@@ -159,18 +191,30 @@ export class MysteriesController {
   ) {
     const data = mysteryData(body.mystery, clientId);
     const revision = snapshotRevision(body.revision);
-    const result = await this.prisma.mysteryWorkspace.updateMany({
-      where: { ownerId: user.id, clientId, snapshotRevision: { lt: revision } },
-      data: { data, snapshotRevision: revision }
-    });
-    if (result.count > 0) return { ok: true, revision };
+    const storedRevision = await this.prisma.$transaction(async (tx) => {
+      await lockMystery(tx, user.id, clientId);
+      const deletion = await tx.mysteryWorkspaceDeletion.findUnique({
+        where: { ownerId_clientId: { ownerId: user.id, clientId } },
+        select: { id: true }
+      });
+      if (deletion) throw new NotFoundException("Mystery was deleted");
 
-    const existing = await this.prisma.mysteryWorkspace.findUnique({
-      where: { ownerId_clientId: { ownerId: user.id, clientId } },
-      select: { snapshotRevision: true }
+      const mystery = await tx.mysteryWorkspace.upsert({
+        where: { ownerId_clientId: { ownerId: user.id, clientId } },
+        create: { ownerId: user.id, clientId, data, snapshotRevision: revision },
+        update: {}
+      });
+      await tx.mysteryWorkspace.updateMany({
+        where: { id: mystery.id, snapshotRevision: { lt: revision } },
+        data: { data, snapshotRevision: revision }
+      });
+      const stored = await tx.mysteryWorkspace.findUnique({
+        where: { id: mystery.id },
+        select: { snapshotRevision: true }
+      });
+      return stored?.snapshotRevision ?? revision;
     });
-    if (!existing) throw new NotFoundException("Shared mystery was not found");
-    return { ok: true, revision: existing.snapshotRevision };
+    return { ok: true, revision: storedRevision };
   }
 
   @Delete(":clientId")
