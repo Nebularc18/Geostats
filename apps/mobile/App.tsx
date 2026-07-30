@@ -1,14 +1,16 @@
 import { StatusBar } from "expo-status-bar";
-import { useEffect, useState } from "react";
-import { ActivityIndicator, Alert, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ActivityIndicator, Alert, Image, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import * as DocumentPicker from "expo-document-picker";
-import { File } from "expo-file-system";
+import { File, Paths } from "expo-file-system";
 import * as SecureStore from "expo-secure-store";
 import * as Clipboard from "expo-clipboard";
+import * as Sharing from "expo-sharing";
 import MapView, { Callout, Marker, Polygon, PROVIDER_GOOGLE, type Region } from "react-native-maps";
 import * as Linking from "expo-linking";
 import * as WebBrowser from "expo-web-browser";
+import { parseCoordinate } from "@geostats/shared";
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -19,8 +21,45 @@ type CachePoint = { id: string; gcCode: string; name: string; cacheType: string 
 type ImportListItem = { id: string; fileName: string; source: string; status: string; createdAt: string; errorMessage: string | null };
 type AuthConfig = { mode: "dev" | "external" | "password"; providerName: string };
 type ScratchLevel = "countries" | "regions" | "counties";
-type ScreenId = "dashboard" | "stats" | "map" | "scratch" | "milestones" | "ftf" | "hides" | "upload" | "imports" | "profile";
+type ScreenId = "dashboard" | "upload" | "imports" | "stats" | "ftf" | "hides" | "milestones" | "profileHtml" | "map" | "mysteries" | "travel" | "scratch" | "profile";
 type Session = { token: string; user: { id: string; email: string; username: string } };
+type CheckState = "correct" | "wrong" | "unchecked";
+type MysteryStatus = "solving" | "solved" | "planned";
+type AppUser = { id: string; username: string };
+type CoordinateAttempt = {
+  id: string;
+  latitude: number;
+  longitude: number;
+  state: CheckState;
+  createdAt: string;
+};
+type MysteryCache = {
+  id: string;
+  gcCode: string;
+  name: string;
+  area: string;
+  county?: string;
+  country: string;
+  region?: string;
+  locality?: string;
+  trip?: string;
+  status: MysteryStatus;
+  publishedLatitude: number;
+  publishedLongitude: number;
+  notes: string;
+  clues: string[];
+  image?: string;
+  sharedWith: AppUser[];
+  attempts: CoordinateAttempt[];
+  sharedBy?: AppUser;
+  sharedWorkspaceId?: string;
+};
+type SharedMysteryGrant = {
+  workspaceId: string;
+  mystery: MysteryCache;
+  owner: AppUser;
+  sharedWith: AppUser[];
+};
 type Position = [number, number];
 type PolygonCoordinates = Position[][];
 type MultiPolygonCoordinates = PolygonCoordinates[];
@@ -86,14 +125,17 @@ class ApiError extends Error {
 
 const screens: Array<{ id: ScreenId; label: string }> = [
   { id: "dashboard", label: "Home" },
-  { id: "stats", label: "Stats" },
-  { id: "map", label: "Map" },
-  { id: "scratch", label: "Scratch" },
-  { id: "milestones", label: "Marks" },
-  { id: "ftf", label: "FTF" },
-  { id: "hides", label: "Hides" },
   { id: "upload", label: "Upload" },
   { id: "imports", label: "Imports" },
+  { id: "stats", label: "Stats" },
+  { id: "ftf", label: "FTF" },
+  { id: "hides", label: "Hides" },
+  { id: "milestones", label: "Marks" },
+  { id: "profileHtml", label: "HTML" },
+  { id: "map", label: "Map" },
+  { id: "mysteries", label: "Mysteries" },
+  { id: "travel", label: "Travel" },
+  { id: "scratch", label: "Scratch" },
   { id: "profile", label: "Profile" }
 ];
 
@@ -205,6 +247,112 @@ function parseOptionalNumber(value: string) {
 
 function hasActiveImports(imports: ImportListItem[]) {
   return imports.some((item) => ACTIVE_IMPORT_STATUSES.has(item.status));
+}
+
+function newId(prefix = "item") {
+  return globalThis.crypto?.randomUUID?.() ?? `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+function mysteryFile(userId: string) {
+  return new File(Paths.document, `geostats-mysteries-${userId.replace(/[^a-z0-9_-]/gi, "_")}.json`);
+}
+
+async function readMysteries(userId: string) {
+  try {
+    const file = mysteryFile(userId);
+    if (!file.exists) return [];
+    const value = JSON.parse(await file.text());
+    if (!Array.isArray(value)) return [];
+    return value.map((cache: MysteryCache) => ({
+      ...cache,
+      area: cache.area ?? "",
+      country: cache.country ?? "",
+      clues: Array.isArray(cache.clues) ? cache.clues : [],
+      attempts: Array.isArray(cache.attempts) ? cache.attempts : [],
+      sharedWith: Array.isArray(cache.sharedWith) ? cache.sharedWith : []
+    })) as MysteryCache[];
+  } catch {
+    return [];
+  }
+}
+
+async function writeMysteries(userId: string, caches: MysteryCache[]) {
+  mysteryFile(userId).write(JSON.stringify(caches));
+}
+
+function mysteryLocation(cache: MysteryCache) {
+  return [cache.locality, cache.area, cache.county, cache.region, cache.country]
+    .map((value) => value?.replace(/\s+/g, " ").trim() ?? "")
+    .filter((value, index, values) => value && values.indexOf(value) === index)
+    .join(", ");
+}
+
+function finalCoordinate(cache: MysteryCache) {
+  return cache.attempts.find((attempt) => attempt.state === "correct");
+}
+
+function shareableMystery(cache: MysteryCache) {
+  const { sharedBy: _sharedBy, sharedWorkspaceId: _workspace, ...mystery } = cache;
+  return mystery;
+}
+
+function escapeMarkup(value: unknown) {
+  return String(value ?? "").replace(/[<>&"']/g, (character) => (
+    { "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;", "'": "&#39;" }[character] ?? character
+  ));
+}
+
+function profileStatRows(rows: Array<[string, unknown]>) {
+  return `<table border="0" cellpadding="6" cellspacing="1" style="width:740px;max-width:100%;margin:0 auto 14px;background:#c8d6cc;font-size:12px">${rows.map(([label, value]) => `<tr><td style="width:42%;background:#eef4ef;font-weight:bold">${escapeMarkup(label)}</td><td style="background:#fff">${value}</td></tr>`).join("")}</table>`;
+}
+
+function profileSection(title: string, body: string) {
+  return `<div style="margin:18px auto 8px;max-width:740px;background:#426052;color:#fff;border:1px solid #23362d;font-weight:bold;line-height:24px;text-align:center">${escapeMarkup(title)}</div>${body}`;
+}
+
+function profileBucketSection(title: string, buckets: any[] = [], limit = 16) {
+  if (!buckets.length) return "";
+  return profileSection(title, profileStatRows(buckets.slice(0, limit).map((row) => [row.key ?? row.name, Number(row.count ?? 0).toLocaleString()])));
+}
+
+function profileMonthSection(buckets: CountBucket[] = []) {
+  if (!buckets.length) return "";
+  const counts = new Map(buckets.map((bucket) => [bucket.key, bucket.count]));
+  const years = [...new Set(buckets.map((bucket) => bucket.key.slice(0, 4)))].sort((a, b) => b.localeCompare(a));
+  const header = `<tr><td style="background:#eef4ef;font-weight:bold">Year</td>${monthLabels.map((month) => `<td style="background:#eef4ef;font-weight:bold">${month}</td>`).join("")}<td style="background:#eef4ef;font-weight:bold">Total</td></tr>`;
+  const rows = years.map((year) => {
+    const values = monthLabels.map((_, index) => counts.get(`${year}-${String(index + 1).padStart(2, "0")}`) ?? 0);
+    return `<tr><td style="background:#eef4ef;font-weight:bold">${year}</td>${values.map((value) => `<td style="background:#fff">${value || ""}</td>`).join("")}<td style="background:#eef4ef;font-weight:bold">${values.reduce((sum, value) => sum + value, 0)}</td></tr>`;
+  }).join("");
+  return profileSection("Finds by Month", `<table border="0" cellpadding="5" cellspacing="1" style="width:740px;max-width:100%;margin:0 auto 14px;background:#c8d6cc;font-size:11px;text-align:center">${header}${rows}</table>`);
+}
+
+function profileDifficultyTerrainSection(data: Array<{ difficulty: number; terrain: number; count: number }> = []) {
+  if (!data.length) return "";
+  const values = ["1", "1.5", "2", "2.5", "3", "3.5", "4", "4.5", "5"];
+  const counts = new Map(data.map((cell) => [`${cell.difficulty}/${cell.terrain}`, cell.count]));
+  const header = `<tr><td style="background:#eef4ef;font-weight:bold">D/T</td>${values.map((value) => `<td style="background:#eef4ef;font-weight:bold">${value}</td>`).join("")}</tr>`;
+  const rows = values.map((difficulty) => `<tr><td style="background:#eef4ef;font-weight:bold">${difficulty}</td>${values.map((terrain) => { const count = counts.get(`${Number(difficulty)}/${Number(terrain)}`) ?? 0; return `<td style="background:${count ? "#dff0e4" : "#fff"}">${count || ""}</td>`; }).join("")}</tr>`).join("");
+  return profileSection("Difficulty / Terrain", `<table border="0" cellpadding="4" cellspacing="1" style="width:540px;max-width:100%;margin:0 auto 14px;background:#c8d6cc;font-size:11px;text-align:center">${header}${rows}</table>`);
+}
+
+function buildMobileProfileHtml(stats: any, profile: any, options: { ftf: boolean; hides: boolean; milestones: boolean }) {
+  const summary = stats?.summaryNumbers ?? {};
+  const ftf = stats?.ftfStats;
+  const hides = stats?.hideStats;
+  const milestoneRows = stats?.milestoneStats?.countMilestones ?? stats?.milestones ?? [];
+  const optional = [
+    options.milestones && milestoneRows.length
+      ? profileSection("Milestones", profileStatRows(milestoneRows.slice(-12).map((row: any) => [row.count, `${escapeMarkup(row.gcCode)} ${escapeMarkup(row.name)} · ${escapeMarkup(dateText(row.date))}`])))
+      : "",
+    options.ftf && ftf
+      ? profileSection("FTF Statistics", profileStatRows([["FTF finds", Number(ftf.total ?? 0).toLocaleString()], ["Percent of finds", `${Number(ftf.percentOfFinds ?? 0).toFixed(1)}%`], ["Average interval", ftf.averageIntervalDays == null ? "-" : `${Number(ftf.averageIntervalDays).toFixed(1)} days`]]))
+      : "",
+    options.hides && hides?.totalHides
+      ? profileSection("Owned Caches", profileStatRows([["Owned caches", hides.totalHides], ["Active / archived", `${hides.activeHides ?? 0} / ${hides.archivedHides ?? 0}`], ["Received logs", hides.totalReceivedLogs ?? 0], ["Unique finders", hides.totalUniqueFinders ?? 0]]))
+      : ""
+  ].join("");
+  return `<div id="geostats-profile" align="center" style="background:#e4ece6;font-family:Verdana,Arial,sans-serif;font-size:12px;color:#111;margin:1px;padding:12px;border:1px solid #8fa398"><div style="font-size:18px;font-weight:bold;color:#1f3329">${escapeMarkup(profile?.gcUsername || "Geocacher")} has ${Number(stats?.totalFinds ?? 0).toLocaleString()} finds</div><div style="margin:6px 0 18px;color:#42534a"><i>Statistics generated by Geostats on ${new Date().toLocaleDateString()}</i></div>${profileSection("Overview", profileStatRows([["Total finds", `<strong>${Number(stats?.totalFinds ?? 0).toLocaleString()}</strong>`], ["Countries cached in", stats?.countries?.length ?? 0], ["Caching days", summary.cachingDays ?? 0], ["Finds per caching day", Number(summary.findsPerCachingDay ?? 0).toFixed(2)], ["Best day", summary.bestDay ? `${summary.bestDay.count} on ${escapeMarkup(summary.bestDay.key)}` : "-"], ["Longest streak", `${stats?.streaks?.longest ?? 0} days`]]))}${profileMonthSection(stats?.findsByMonth)}${profileBucketSection("Countries", stats?.countries)}${profileBucketSection("Cache Types", stats?.cacheTypes, 12)}${profileBucketSection("Regions", stats?.regions)}${profileBucketSection("Counties / Municipalities", stats?.counties)}${profileDifficultyTerrainSection(stats?.difficultyTerrain)}${optional}<div style="max-width:740px;margin:18px auto 0;padding-top:10px;border-top:1px solid #b9c9bf;color:#42534a;font-size:11px">Generated with Geostats</div></div>`;
 }
 
 function powerShellString(value: string) {
@@ -762,7 +910,7 @@ export default function App() {
           </ScrollView>
         </View>
         <ScrollView style={styles.content} contentContainerStyle={styles.contentInner}>
-          <ScreenSwitch apiBaseUrl={apiBaseUrl} screen={screen} token={session.token} />
+          <ScreenSwitch apiBaseUrl={apiBaseUrl} screen={screen} token={session.token} userId={session.user.id} onNavigate={setScreen} />
         </ScrollView>
       </SafeAreaView>
     );
@@ -770,14 +918,17 @@ export default function App() {
   return <SafeAreaProvider>{content}</SafeAreaProvider>;
 }
 
-function ScreenSwitch({ apiBaseUrl, screen, token }: { apiBaseUrl: string; screen: ScreenId; token: string }) {
-  if (screen === "dashboard") return <DashboardScreen apiBaseUrl={apiBaseUrl} token={token} />;
+function ScreenSwitch({ apiBaseUrl, screen, token, userId, onNavigate }: { apiBaseUrl: string; screen: ScreenId; token: string; userId: string; onNavigate: (screen: ScreenId) => void }) {
+  if (screen === "dashboard") return <DashboardScreen apiBaseUrl={apiBaseUrl} token={token} onNavigate={onNavigate} />;
   if (screen === "stats") return <StatsScreen apiBaseUrl={apiBaseUrl} token={token} />;
   if (screen === "map") return <MapScreen apiBaseUrl={apiBaseUrl} token={token} />;
   if (screen === "scratch") return <ScratchScreen apiBaseUrl={apiBaseUrl} token={token} />;
   if (screen === "milestones") return <MilestonesScreen apiBaseUrl={apiBaseUrl} token={token} />;
   if (screen === "ftf") return <FtfScreen apiBaseUrl={apiBaseUrl} token={token} />;
   if (screen === "hides") return <HidesScreen apiBaseUrl={apiBaseUrl} token={token} />;
+  if (screen === "profileHtml") return <ProfileHtmlScreen apiBaseUrl={apiBaseUrl} token={token} />;
+  if (screen === "mysteries") return <MysteriesScreen apiBaseUrl={apiBaseUrl} token={token} userId={userId} />;
+  if (screen === "travel") return <TravelScreen userId={userId} />;
   if (screen === "upload") return <UploadScreen apiBaseUrl={apiBaseUrl} token={token} />;
   if (screen === "imports") return <ImportsScreen apiBaseUrl={apiBaseUrl} token={token} />;
   return <ProfileScreen apiBaseUrl={apiBaseUrl} token={token} />;
@@ -829,7 +980,7 @@ function OnboardingScreen({ apiBaseUrl, token, onComplete, onLogout }: { apiBase
   );
 }
 
-function DashboardScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
+function DashboardScreen({ apiBaseUrl, token, onNavigate }: { apiBaseUrl: string; token: string; onNavigate: (screen: ScreenId) => void }) {
   const stats = useApi<{ stats: any }>(apiBaseUrl, token, "/stats/summary", { stats: {} });
   const imports = useApi<{ imports: ImportListItem[] }>(apiBaseUrl, token, "/imports", { imports: [] });
   const s = stats.data.stats;
@@ -840,6 +991,12 @@ function DashboardScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: str
       <Panel title="At a glance" subtitle={`Last import: ${dateText(imports.data.imports[0]?.createdAt)}`}>
         <Bars data={latestTwelveMonths(s.findsByMonth ?? [])} />
         <KeyValue rows={[["Best day", s.summaryNumbers?.bestDay ? `${s.summaryNumbers.bestDay.count} on ${s.summaryNumbers.bestDay.key}` : "-"], ["Best month", s.summaryNumbers?.bestMonth ? `${s.summaryNumbers.bestMonth.count} in ${s.summaryNumbers.bestMonth.key}` : "-"], ["Cache days", s.summaryNumbers?.cachingDays ?? 0], ["Average/day", s.summaryNumbers?.findsPerDay?.toFixed(2) ?? "0.00"], ["Average distance", s.distanceStats?.averageDistanceKm == null ? "-" : `${Math.round(s.distanceStats.averageDistanceKm)} km`]]} />
+      </Panel>
+      <Panel title="Your Geostats workflow" subtitle="Pick up at the step that matches what you want to do.">
+        <WorkflowStep number="1" title="Import cache data" detail="Choose a My Finds GPX, My Hides GPX, or Pocket Query ZIP." done={imports.data.imports.length > 0} onPress={() => onNavigate("upload")} />
+        <WorkflowStep number="2" title="Watch processing" detail="Imports refresh automatically while the server parses and recalculates." done={imports.data.imports.some((item) => item.status === "COMPLETED")} onPress={() => onNavigate("imports")} />
+        <WorkflowStep number="3" title="Explore your archive" detail="Review statistics, maps, milestones, FTFs, and hides." done={(s.totalFinds ?? 0) > 0} onPress={() => onNavigate("stats")} />
+        <WorkflowStep number="4" title="Plan the next trip" detail="Solve mystery caches, group them into trips, and open directions." done={false} onPress={() => onNavigate("mysteries")} />
       </Panel>
       <BadgesPanel apiBaseUrl={apiBaseUrl} stats={s} token={token} />
       <LoadState loading={stats.loading || imports.loading} error={stats.error || imports.error} />
@@ -855,15 +1012,16 @@ function StatsScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string 
       <PageTitle eyebrow="Reusable stats package" title="Statistics" />
       <StatGrid rows={[["Total finds", s.totalFinds ?? 0], ["Longest streak", `${s.streaks?.longest ?? 0} days`], ["Current streak", `${s.streaks?.current ?? 0} days`], ["Milestones", s.milestoneStats?.countMilestones?.length ?? 0]]} />
       <Panel title="Finds by month" subtitle="Rolling latest 12 months"><Bars data={latestTwelveMonths(s.findsByMonth ?? [])} /></Panel>
-      <BreakdownPanel title="Core breakdowns" groups={[["Cache types", s.cacheTypes ?? []], ["Sizes", s.sizes ?? []], ["Countries", s.countries ?? []], ["Finds by calendar month", s.findsByCalendarMonth ?? []], ["Finds by weekday", s.findsByWeekday ?? []], ["Top hiders", (s.ownerBuckets ?? []).slice(0, 20)]]} />
+      <BreakdownPanel title="Core breakdowns" groups={[["Cache types", s.cacheTypes ?? []], ["Sizes", s.sizes ?? []], ["Countries", s.countries ?? []], ["Regions", s.regions ?? []], ["Counties / municipalities", s.counties ?? []], ["Finds by difficulty", s.findsByDifficulty ?? []], ["Finds by terrain", s.findsByTerrain ?? []], ["Finds by calendar month", s.findsByCalendarMonth ?? []], ["Finds by weekday", s.findsByWeekday ?? []], ["Finds by year placed", s.findsByPlacedYear ?? []], ["Finds to today for each year", s.findsToTodayByYear ?? []], ["Average difficulty per year", s.averageDifficultyByYear ?? []], ["Average terrain per year", s.averageTerrainByYear ?? []], ["Top hiders", (s.ownerBuckets ?? []).slice(0, 20)]]} />
       <Panel title="Difficulty / Terrain"><DifficultyGrid data={s.difficultyTerrain ?? []} /></Panel>
       <Panel title="Summary numbers"><KeyValue rows={[["Total days", s.summaryNumbers?.totalDays ?? 0], ["Finds/caching day", s.summaryNumbers?.findsPerCachingDay?.toFixed(2) ?? "0.00"], ["Finds/week", s.summaryNumbers?.findsPerWeek?.toFixed(2) ?? "0.00"], ["Last 365 finds", s.summaryNumbers?.last365Finds ?? 0]]} /></Panel>
-      <Panel title="Home distance">{s.distanceStats ? <KeyValue rows={[["Average distance", s.distanceStats.averageDistanceKm == null ? "-" : `${Math.round(s.distanceStats.averageDistanceKm)} km`], ["Distance buckets", s.distanceStats.distanceBuckets?.length ?? 0], ["Bearing degrees", s.distanceStats.bearingBuckets?.filter((x: PercentBucket) => x.count > 0).length ?? 0]]} /> : <Text style={styles.muted}>Set home coordinates in Profile to show distance and bearing stats.</Text>}</Panel>
+      <Panel title="Home distance">{s.distanceStats ? <><KeyValue rows={[["Average distance", s.distanceStats.averageDistanceKm == null ? "-" : `${Math.round(s.distanceStats.averageDistanceKm)} km`], ["Maximum distance", s.distanceStats.maxDistanceKm == null ? "-" : `${Math.round(s.distanceStats.maxDistanceKm)} km`], ["Bearing degrees", s.distanceStats.bearingBuckets?.filter((x: PercentBucket) => x.count > 0).length ?? 0]]} /><Text style={styles.sectionLabel}>Distance buckets</Text><Bars data={s.distanceStats.distanceBuckets ?? []} /><Text style={styles.sectionLabel}>Bearings from home</Text><Bars data={s.distanceStats.bearingBuckets ?? []} /></> : <Text style={styles.muted}>Set home coordinates in Profile to show distance and bearing stats.</Text>}</Panel>
       <Panel title="Way to 81"><Rows rows={(s.wayTo81 ?? []).map((entry: any) => [String(entry.index), `${entry.gcCode} ${entry.name}`, `${entry.difficulty}/${entry.terrain}`])} /></Panel>
       <Panel title="Finds by found date"><CalendarHeatmap data={s.foundDateMatrix ?? []} /></Panel>
       <Panel title="Finds by hidden date"><CalendarHeatmap data={s.hiddenDateMatrix ?? []} /></Panel>
       <Panel title="Finds by hidden month"><MonthMatrix data={s.hiddenMonthMatrix ?? []} /></Panel>
       <Panel title="Elevation chart"><Bars data={s.elevationBuckets ?? []} /></Panel>
+      <Panel title="Finds per month and year"><MonthMatrix data={s.findsByMonth ?? []} /></Panel>
       <LoadState loading={loading} error={error} />
     </>
   );
@@ -1047,23 +1205,50 @@ function MilestonesScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: st
 function FtfScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
   const summary = useApi<{ stats: any }>(apiBaseUrl, token, "/stats/summary", { stats: {} });
   const finds = useApi<{ finds: any[]; nextCursor: string | null }>(apiBaseUrl, token, "/stats/ftf/finds?limit=100", { finds: [], nextCursor: null });
+  const [extraFinds, setExtraFinds] = useState<any[]>([]);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [loadingMore, setLoadingMore] = useState(false);
   const s = summary.data.stats.ftfStats ?? {};
+  const allFinds = [...finds.data.finds, ...extraFinds].filter((find, index, rows) => rows.findIndex((row) => row.id === find.id) === index);
+  const visibleFinds = allFinds.filter((find) => !query.trim() || `${find.cache.gcCode} ${find.cache.name}`.toLowerCase().includes(query.trim().toLowerCase()));
+  useEffect(() => {
+    setNextCursor(finds.data.nextCursor);
+    setExtraFinds([]);
+  }, [finds.data.finds]);
   async function toggle(find: any) {
     await apiFetch(apiBaseUrl, `/stats/ftf/finds/${find.id}`, token, { method: "PATCH", body: JSON.stringify({ isFtf: !find.isFtf }) });
     await Promise.all([summary.refresh(), finds.refresh()]);
+  }
+  async function loadMore() {
+    if (!nextCursor || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const page = await apiFetch<{ finds: any[]; nextCursor: string | null }>(apiBaseUrl, `/stats/ftf/finds?limit=100&cursor=${encodeURIComponent(nextCursor)}`, token);
+      setExtraFinds((current) => [...current, ...page.finds]);
+      setNextCursor(page.nextCursor);
+    } finally {
+      setLoadingMore(false);
+    }
   }
   return (
     <>
       <PageTitle eyebrow="First to find" title="FTF" />
       <StatGrid rows={[["FTF finds", s.total ?? 0], ["Percent", s.percentOfFinds == null ? "-" : `${s.percentOfFinds.toFixed(2)}%`], ["Average interval", s.averageIntervalDays == null ? "-" : `${s.averageIntervalDays.toFixed(1)} days`], ["Archived", s.archivedCount ?? 0]]} />
       <Panel title="Some numbers"><KeyValue rows={[["First", s.first ? `${s.first.gcCode} ${dateText(s.first.dateTime)}` : "-"], ["Latest", s.latest ? `${s.latest.gcCode} ${dateText(s.latest.dateTime)}` : "-"], ["Best day", s.bestDay ? `${s.bestDay.count} on ${s.bestDay.key}` : "-"], ["Best month", s.bestMonth ? `${s.bestMonth.count} in ${s.bestMonth.key}` : "-"], ["Average distance", s.averageDistanceKm == null ? "-" : `${Math.round(s.averageDistanceKm)} km`]]} /></Panel>
-      <BreakdownPanel title="FTF breakdowns" groups={[["FTF by year", s.byYear ?? []], ["FTF by month", s.byMonth ?? []], ["FTFs by type", s.byType ?? []], ["FTFs by size", s.bySize ?? []], ["FTFs by difficulty", s.byDifficulty ?? []], ["FTFs by terrain", s.byTerrain ?? []], ["FTFs by country", s.byCountry ?? []], ["FTFs by weekday", s.byWeekday ?? []]]} />
+      <BreakdownPanel title="FTF breakdowns" groups={[["FTF by year", s.byYear ?? []], ["FTF by month", s.byMonth ?? []], ["FTFs by calendar month", s.byCalendarMonth ?? []], ["FTFs by type", s.byType ?? []], ["FTFs by size", s.bySize ?? []], ["FTFs by difficulty", s.byDifficulty ?? []], ["FTFs by terrain", s.byTerrain ?? []], ["FTFs by country", s.byCountry ?? []], ["FTFs by region", s.byRegion ?? []], ["FTFs by weekday", s.byWeekday ?? []]]} />
+      <Panel title="First FTF by location"><Rows rows={(s.firstByLocation ?? []).map((row: any) => [row.label, row.gcCode, row.name, dateText(row.date)])} /></Panel>
+      <Panel title="First FTF by type"><Rows rows={(s.firstByType ?? []).map((row: any) => [row.label, row.gcCode, row.name, dateText(row.date)])} /></Panel>
       <Panel title="FTFs by found date"><CalendarHeatmap data={s.foundDateMatrix ?? []} /></Panel>
       <Panel title="FTF D/T chart"><DifficultyGrid data={s.byDifficultyTerrain ?? []} /></Panel>
       <Panel title="Way to 81 (FTF)"><Rows rows={(s.wayTo81 ?? []).map((row: any) => [String(row.index), row.gcCode, `${row.difficulty}/${row.terrain}`])} /></Panel>
       <Panel title="FTF map"><NativeMap points={(s.rows ?? []).map((row: any) => ({ id: `${row.gcCode}-${row.dateTime}`, gcCode: row.gcCode, name: row.name, cacheType: row.cacheType, latitude: row.latitude ?? Number.NaN, longitude: row.longitude ?? Number.NaN, foundAt: row.dateTime }))} /></Panel>
       <Panel title="FTF list">{(s.rows ?? []).map((row: any) => <CacheRow key={`${row.gcCode}-${row.dateTime}`} point={{ id: row.gcCode, gcCode: row.gcCode, name: row.name, cacheType: row.cacheType, latitude: row.latitude ?? 0, longitude: row.longitude ?? 0, foundAt: row.dateTime }} />)}</Panel>
-      <Panel title="Mark FTF finds">{finds.data.finds.map((find) => <Pressable key={find.id} onPress={() => toggle(find)} style={[styles.toggleRow, find.isFtf && styles.toggleRowActive]}><Text style={styles.rowTitle}>{find.cache.gcCode} - {find.cache.name}</Text><Text style={styles.muted}>{find.isFtf ? "Marked FTF" : "Tap to mark"} - {dateText(find.foundAt)}</Text></Pressable>)}</Panel>
+      <Panel title="Mark FTF finds" subtitle={`${allFinds.length} loaded`}>
+        <Field label="Search loaded finds" value={query} onChangeText={setQuery} autoCapitalize="none" />
+        {visibleFinds.map((find) => <Pressable key={find.id} onPress={() => toggle(find)} style={[styles.toggleRow, find.isFtf && styles.toggleRowActive]}><Text style={styles.rowTitle}>{find.cache.gcCode} - {find.cache.name}</Text><Text style={styles.muted}>{find.isFtf ? "Marked FTF" : "Tap to mark"} - {dateText(find.foundAt)}</Text></Pressable>)}
+        {nextCursor ? <SecondaryButton label={loadingMore ? "Loading..." : "Load 100 more"} onPress={loadMore} /> : null}
+      </Panel>
       <LoadState loading={summary.loading || finds.loading} error={summary.error || finds.error} />
     </>
   );
@@ -1081,10 +1266,15 @@ function HidesScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string 
     ownerGroups.push(["Finders by country", h.finderCountryBuckets ?? []]);
   }
   ownerGroups.push(
+    ["Placed by year", h.hidesByYear ?? []],
+    ["Placed by month", h.hidesByMonth ?? []],
     ["Placed by country", h.hidesByCountry ?? []],
+    ["Placed by region", h.hidesByRegion ?? []],
     ["Top finders of my caches", h.finderBuckets ?? []],
     ["Placed by type", h.hidesByType ?? []],
     ["Placed by size", h.hidesBySize ?? []],
+    ["Placed by difficulty", h.hidesByDifficulty ?? []],
+    ["Placed by terrain", h.hidesByTerrain ?? []],
     ["Placed by found month", h.receivedLogsByCalendarMonth ?? []],
     ["Placed by found weekday", h.receivedLogsByWeekday ?? []]
   );
@@ -1239,6 +1429,365 @@ function ProfileScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: strin
   );
 }
 
+function ProfileHtmlScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
+  const stats = useApi<{ stats: any }>(apiBaseUrl, token, "/stats/summary", { stats: {} });
+  const profile = useApi<{ profile: any }>(apiBaseUrl, token, "/profile", { profile: null });
+  const [includeFtf, setIncludeFtf] = useState(true);
+  const [includeHides, setIncludeHides] = useState(true);
+  const [includeMilestones, setIncludeMilestones] = useState(true);
+  const [message, setMessage] = useState<string | null>(null);
+  const html = useMemo(
+    () => buildMobileProfileHtml(stats.data.stats, profile.data.profile, { ftf: includeFtf, hides: includeHides, milestones: includeMilestones }),
+    [includeFtf, includeHides, includeMilestones, profile.data.profile, stats.data.stats]
+  );
+  const username = profile.data.profile?.gcUsername;
+  const publicUrl = username ? `${apiBaseUrl}/public/profile-stats/${encodeURIComponent(username)}` : "";
+  const embed = username
+    ? `<a href="${publicUrl}" target="_top"><img src="${apiBaseUrl}/public/profile-stats-image/${encodeURIComponent(username)}" width="750"><br><img src="${apiBaseUrl}/public/profile-scratch-map-image/${encodeURIComponent(username)}" width="750"></a>`
+    : "";
+  async function copy(value: string, label: string) {
+    await Clipboard.setStringAsync(value);
+    setMessage(`${label} copied.`);
+  }
+  async function shareHtml() {
+    const file = new File(Paths.cache, "geostats-profile.html");
+    file.write(`<!doctype html><html><head><meta charset="utf-8"><title>Geostats profile</title></head><body>${html}</body></html>`);
+    await Sharing.shareAsync(file.uri, { dialogTitle: "Share Geostats profile HTML", mimeType: "text/html", UTI: "public.html" });
+  }
+  return (
+    <>
+      <PageTitle eyebrow="Geocaching profile export" title="Profile HTML" />
+      <Panel title="Include sections">
+        <ToggleOption label="Milestones" active={includeMilestones} onPress={() => setIncludeMilestones((value) => !value)} />
+        <ToggleOption label="FTF summary" active={includeFtf} onPress={() => setIncludeFtf((value) => !value)} />
+        <ToggleOption label="Owned cache summary" active={includeHides} onPress={() => setIncludeHides((value) => !value)} />
+      </Panel>
+      <Panel title="Dynamic profile snippet" subtitle="Updates whenever Geostats recalculates your statistics.">
+        <Text style={styles.codeText} selectable>{embed || "Set your geocaching username in Profile first."}</Text>
+        <PrimaryButton label="Copy dynamic snippet" onPress={() => copy(embed, "Dynamic snippet")} />
+        {publicUrl ? <Pressable onPress={() => Linking.openURL(publicUrl)}><Text style={styles.linkText}>Open public profile</Text></Pressable> : null}
+      </Panel>
+      <Panel title="Copyable HTML" subtitle={`${html.length.toLocaleString()} characters`}>
+        <Text style={styles.codePreview} selectable numberOfLines={12}>{html}</Text>
+        <PrimaryButton label="Copy HTML" onPress={() => copy(html, "Profile HTML")} />
+        <SecondaryButton label="Share HTML file" onPress={shareHtml} />
+      </Panel>
+      {message ? <Text style={styles.note}>{message}</Text> : null}
+      <LoadState loading={stats.loading || profile.loading} error={stats.error || profile.error} />
+    </>
+  );
+}
+
+function MysteriesScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; token: string; userId: string }) {
+  const [caches, setCaches] = useState<MysteryCache[]>([]);
+  const [ready, setReady] = useState(false);
+  const latestMysteries = useRef({ caches, ready });
+  const [selectedId, setSelectedId] = useState("");
+  const [filter, setFilter] = useState<"all" | MysteryStatus>("all");
+  const [query, setQuery] = useState("");
+  const [showAdd, setShowAdd] = useState(false);
+  const [gcCode, setGcCode] = useState("");
+  const [name, setName] = useState("");
+  const [location, setLocation] = useState("");
+  const [country, setCountry] = useState("");
+  const [published, setPublished] = useState("");
+  const [attemptText, setAttemptText] = useState("");
+  const [attemptState, setAttemptState] = useState<CheckState>("unchecked");
+  const [clue, setClue] = useState("");
+  const [shareQuery, setShareQuery] = useState("");
+  const [users, setUsers] = useState<AppUser[]>([]);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  latestMysteries.current = { caches, ready };
+
+  useEffect(() => {
+    let active = true;
+    void Promise.all([
+      readMysteries(userId),
+      apiFetch<{ mysteries: SharedMysteryGrant[] }>(apiBaseUrl, "/mysteries/shared", token).catch(() => ({ mysteries: [] }))
+    ]).then(([local, shared]) => {
+      if (!active) return;
+      const sharedCaches = shared.mysteries.map((grant) => ({
+        ...grant.mystery,
+        sharedBy: grant.owner,
+        sharedWith: grant.sharedWith,
+        sharedWorkspaceId: grant.workspaceId
+      }));
+      const next = [...local.filter((cache) => !cache.sharedBy), ...sharedCaches];
+      setCaches(next);
+      setSelectedId(next[0]?.id ?? "");
+      setReady(true);
+    });
+    return () => { active = false; };
+  }, [apiBaseUrl, token, userId]);
+
+  useEffect(() => {
+    if (!ready) return;
+    const timer = setTimeout(() => {
+      void writeMysteries(userId, caches.filter((cache) => !cache.sharedBy));
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [caches, ready, userId]);
+
+  useEffect(() => {
+    if (!ready) return;
+    const sharedOwned = caches.filter((cache) => !cache.sharedBy && cache.sharedWith.length > 0);
+    if (!sharedOwned.length) return;
+    const timer = setTimeout(() => {
+      void Promise.all(sharedOwned.map((cache) => apiFetch(apiBaseUrl, `/mysteries/${encodeURIComponent(cache.id)}`, token, {
+        method: "PUT",
+        body: JSON.stringify({ mystery: shareableMystery(cache), revision: Date.now() })
+      }))).catch(() => setNotice("Saved on this device; shared changes could not reach the server yet."));
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [apiBaseUrl, caches, ready, token]);
+
+  useEffect(() => () => {
+    const latest = latestMysteries.current;
+    if (!latest.ready) return;
+
+    const owned = latest.caches.filter((cache) => !cache.sharedBy);
+    void writeMysteries(userId, owned);
+
+    const sharedOwned = owned.filter((cache) => cache.sharedWith.length > 0);
+    if (sharedOwned.length) {
+      void Promise.all(sharedOwned.map((cache) => apiFetch(apiBaseUrl, `/mysteries/${encodeURIComponent(cache.id)}`, token, {
+        method: "PUT",
+        body: JSON.stringify({ mystery: shareableMystery(cache), revision: Date.now() })
+      }))).catch(() => undefined);
+    }
+  }, [apiBaseUrl, token, userId]);
+
+  useEffect(() => {
+    if (shareQuery.trim().length < 2) {
+      setUsers([]);
+      return;
+    }
+    const timer = setTimeout(() => {
+      void apiFetch<{ users: AppUser[] }>(apiBaseUrl, `/auth/users?query=${encodeURIComponent(shareQuery.trim())}`, token)
+        .then((result) => setUsers(result.users))
+        .catch(() => setUsers([]));
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [apiBaseUrl, shareQuery, token]);
+
+  const visible = caches.filter((cache) => {
+    const matchesFilter = filter === "all" || cache.status === filter;
+    const normalized = query.trim().toLowerCase();
+    return matchesFilter && (!normalized || `${cache.gcCode} ${cache.name} ${mysteryLocation(cache)} ${cache.trip ?? ""}`.toLowerCase().includes(normalized));
+  });
+  const selected = caches.find((cache) => cache.id === selectedId) ?? visible[0];
+
+  function updateSelected(patch: Partial<MysteryCache>) {
+    if (!selected || selected.sharedBy) return;
+    const next = { ...selected, ...patch };
+    setCaches((current) => current.map((cache) => cache.id === selected.id ? next : cache));
+  }
+
+  function addCache() {
+    const coordinate = parseCoordinate(published);
+    if (!/^GC[A-Z0-9]+$/i.test(gcCode.trim()) || !name.trim() || !coordinate) {
+      setNotice("Enter a GC code, name, and valid decimal or geocaching coordinate.");
+      return;
+    }
+    const cache: MysteryCache = {
+      id: newId("mystery"),
+      gcCode: gcCode.trim().toUpperCase(),
+      name: name.trim(),
+      area: location.trim(),
+      country: country.trim(),
+      status: "solving",
+      publishedLatitude: coordinate.latitude,
+      publishedLongitude: coordinate.longitude,
+      notes: "",
+      clues: [],
+      sharedWith: [],
+      attempts: []
+    };
+    setCaches((current) => [cache, ...current]);
+    setSelectedId(cache.id);
+    setGcCode(""); setName(""); setLocation(""); setCountry(""); setPublished(""); setShowAdd(false);
+    setNotice("Mystery cache added.");
+  }
+
+  function addAttempt() {
+    if (!selected || selected.sharedBy) return;
+    const coordinate = parseCoordinate(attemptText);
+    if (!coordinate) {
+      setNotice("Use decimal coordinates or N 59° 20.123' E 018° 04.321'.");
+      return;
+    }
+    if (selected.attempts.some((item) => Math.abs(item.latitude - coordinate.latitude) < 0.000001 && Math.abs(item.longitude - coordinate.longitude) < 0.000001)) {
+      setNotice("Those coordinates are already in the attempt history.");
+      return;
+    }
+    updateSelected({
+      attempts: [{ id: newId("attempt"), ...coordinate, state: attemptState, createdAt: new Date().toISOString() }, ...selected.attempts],
+      status: attemptState === "correct" ? "solved" : selected.status
+    });
+    setAttemptText("");
+    setNotice("Coordinate saved.");
+  }
+
+  async function shareWith(user: AppUser) {
+    if (!selected || selected.sharedBy || selected.sharedWith.some((person) => person.id === user.id)) return;
+    try {
+      const result = await apiFetch<{ recipient: AppUser }>(apiBaseUrl, `/mysteries/${encodeURIComponent(selected.id)}/shares`, token, {
+        method: "POST",
+        body: JSON.stringify({ recipientId: user.id, mystery: shareableMystery(selected), revision: Date.now() })
+      });
+      updateSelected({ sharedWith: [...selected.sharedWith, result.recipient] });
+      setShareQuery(""); setUsers([]); setNotice(`Shared with ${result.recipient.username}.`);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not share this mystery.");
+    }
+  }
+
+  async function removeShare(user: AppUser) {
+    if (!selected || selected.sharedBy) return;
+    try {
+      await apiFetch(apiBaseUrl, `/mysteries/${encodeURIComponent(selected.id)}/shares/${encodeURIComponent(user.id)}`, token, { method: "DELETE" });
+      updateSelected({ sharedWith: selected.sharedWith.filter((person) => person.id !== user.id) });
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not stop sharing.");
+    }
+  }
+
+  async function attachImage() {
+    if (!selected || selected.sharedBy) return;
+    const result = await DocumentPicker.getDocumentAsync({ type: "image/*", copyToCacheDirectory: true });
+    if (result.canceled) return;
+    const asset = result.assets[0];
+    if ((asset.size ?? 0) > 1_500_000) {
+      setNotice("Choose an image smaller than 1.5 MB.");
+      return;
+    }
+    const base64 = await new File(asset.uri).base64();
+    updateSelected({ image: `data:${asset.mimeType ?? "image/jpeg"};base64,${base64}` });
+    setNotice("Reference image attached.");
+  }
+
+  function deleteSelected() {
+    if (!selected || selected.sharedBy) return;
+    Alert.alert(`Delete ${selected.gcCode}?`, "Notes, clues, and coordinate attempts will be removed from this device.", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Delete", style: "destructive", onPress: async () => {
+          try {
+            if (selected.sharedWith.length) {
+              await apiFetch(apiBaseUrl, `/mysteries/${encodeURIComponent(selected.id)}`, token, { method: "DELETE" });
+            }
+            const remaining = latestMysteries.current.caches.filter((cache) => cache.id !== selected.id);
+            setCaches(remaining);
+            setSelectedId(remaining[0]?.id ?? "");
+          } catch (error) {
+            setNotice(error instanceof Error ? error.message : "Could not delete this shared mystery.");
+          }
+        }
+      }
+    ]);
+  }
+
+  async function exportSolved() {
+    const solved = caches.flatMap((cache) => {
+      const coordinate = finalCoordinate(cache);
+      return coordinate ? [{ cache, coordinate }] : [];
+    });
+    const points = solved.map(({ cache, coordinate }) => `  <wpt lat="${coordinate.latitude}" lon="${coordinate.longitude}"><name>${escapeMarkup(cache.gcCode)}</name><desc>${escapeMarkup(cache.name)}</desc><type>Geocache|Unknown Cache</type></wpt>`).join("\n");
+    const file = new File(Paths.cache, "geostats-solved-mysteries.gpx");
+    file.write(`<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="Geostats" xmlns="http://www.topografix.com/GPX/1/1">\n${points}\n</gpx>`);
+    await Sharing.shareAsync(file.uri, { dialogTitle: `Share ${solved.length} solved mysteries`, mimeType: "application/gpx+xml", UTI: "com.topografix.gpx" });
+  }
+
+  return (
+    <>
+      <PageTitle eyebrow="Offline solving workspace" title="Mysteries" />
+      <StatGrid rows={[["Caches", caches.length], ["Solved", caches.filter((cache) => cache.status === "solved").length], ["Planned", caches.filter((cache) => cache.status === "planned").length], ["Shared", caches.filter((cache) => cache.sharedBy || cache.sharedWith.length).length]]} />
+      <View style={styles.actionRow}>
+        <View style={styles.flex}><PrimaryButton label={showAdd ? "Close add form" : "Add mystery"} onPress={() => setShowAdd((value) => !value)} /></View>
+        <View style={styles.flex}><SecondaryButton label="Export solved GPX" onPress={exportSolved} /></View>
+      </View>
+      {showAdd ? <Panel title="Add a mystery cache">
+        <Field label="GC code" value={gcCode} onChangeText={setGcCode} autoCapitalize="characters" />
+        <Field label="Name" value={name} onChangeText={setName} />
+        <Field label="Area" value={location} onChangeText={setLocation} />
+        <Field label="Country" value={country} onChangeText={setCountry} />
+        <Field label="Published coordinate" value={published} onChangeText={setPublished} placeholder="59.34312, 18.07341" />
+        <PrimaryButton label="Add cache" onPress={addCache} />
+      </Panel> : null}
+      <Panel title="Mystery list">
+        <Field label="Search" value={query} onChangeText={setQuery} placeholder="Code, name, trip, or area" />
+        <Segmented values={["all", "solving", "solved", "planned"]} active={filter} onPress={(value) => setFilter(value as typeof filter)} />
+        {visible.map((cache) => <Pressable key={`${cache.sharedBy?.id ?? "own"}-${cache.id}`} onPress={() => setSelectedId(cache.id)} style={[styles.cacheRow, selected?.id === cache.id && styles.selectedRow]}><Text style={styles.rowTitle}>{cache.gcCode} · {cache.name}</Text><Text style={styles.muted}>{cache.status} · {mysteryLocation(cache) || "No location"}{cache.sharedBy ? ` · from ${cache.sharedBy.username}` : ""}</Text></Pressable>)}
+        {!visible.length ? <Text style={styles.muted}>No mysteries match this view.</Text> : null}
+      </Panel>
+      {selected ? <Panel title={`${selected.gcCode} · ${selected.name}`} subtitle={selected.sharedBy ? `Read-only shared workspace from ${selected.sharedBy.username}` : mysteryLocation(selected)}>
+        <Segmented values={["solving", "solved", "planned"]} active={selected.status} disabled={Boolean(selected.sharedBy)} onPress={(value) => updateSelected({ status: value as MysteryStatus })} />
+        <Field label="Trip / route" value={selected.trip ?? ""} editable={!selected.sharedBy} onChangeText={(value) => updateSelected({ trip: value })} />
+        <Field label="Notes" value={selected.notes} editable={!selected.sharedBy} multiline style={styles.textArea} onChangeText={(value) => updateSelected({ notes: value })} />
+        <Text style={styles.sectionLabel}>Reference image</Text>
+        {selected.image ? <Image source={{ uri: selected.image }} resizeMode="cover" style={styles.mysteryImage} /> : <Text style={styles.muted}>No image attached.</Text>}
+        {!selected.sharedBy ? <View style={styles.actionRow}><View style={styles.flex}><SecondaryButton label="Choose image" onPress={attachImage} /></View>{selected.image ? <View style={styles.flex}><SecondaryButton label="Remove image" danger onPress={() => updateSelected({ image: undefined })} /></View> : null}</View> : null}
+        <Text style={styles.sectionLabel}>Clues</Text>
+        {selected.clues.map((item) => <Pressable disabled={Boolean(selected.sharedBy)} key={item} onPress={() => updateSelected({ clues: selected.clues.filter((value) => value !== item) })}><Text style={styles.chip}>× {item}</Text></Pressable>)}
+        {!selected.sharedBy ? <View style={styles.inlineForm}><TextInput style={[styles.input, styles.flex]} value={clue} onChangeText={setClue} placeholder="Add a clue" placeholderTextColor="#668074" /><Pressable style={styles.smallButton} onPress={() => { if (clue.trim()) updateSelected({ clues: [...selected.clues, clue.trim()] }); setClue(""); }}><Text style={styles.smallButtonText}>Add</Text></Pressable></View> : null}
+        <Text style={styles.sectionLabel}>Coordinate attempts</Text>
+        {!selected.sharedBy ? <>
+          <Field label="Coordinate" value={attemptText} onChangeText={setAttemptText} placeholder="N 59° 20.123' E 018° 04.321'" />
+          <Segmented values={["unchecked", "wrong", "correct"]} active={attemptState} onPress={(value) => setAttemptState(value as CheckState)} />
+          <PrimaryButton label="Save coordinate" onPress={addAttempt} />
+        </> : null}
+        {selected.attempts.map((attempt) => <View key={attempt.id} style={styles.attemptRow}><View style={styles.flex}><Text style={styles.rowTitle}>{attempt.latitude.toFixed(5)}, {attempt.longitude.toFixed(5)}</Text><Text style={styles.muted}>{attempt.state} · {dateText(attempt.createdAt)}</Text></View>{!selected.sharedBy ? <Pressable onPress={() => updateSelected({ attempts: selected.attempts.filter((item) => item.id !== attempt.id) })}><Text style={styles.danger}>Remove</Text></Pressable> : null}</View>)}
+        {!selected.sharedBy ? <>
+          <Text style={styles.sectionLabel}>Share with a Geostats user</Text>
+          {selected.sharedWith.map((person) => <View key={person.id} style={styles.attemptRow}><Text style={styles.rowTitle}>{person.username}</Text><Pressable onPress={() => removeShare(person)}><Text style={styles.danger}>Remove</Text></Pressable></View>)}
+          <Field label="Find user" value={shareQuery} onChangeText={setShareQuery} autoCapitalize="none" />
+          {users.filter((user) => !selected.sharedWith.some((person) => person.id === user.id)).map((user) => <Pressable key={user.id} onPress={() => shareWith(user)} style={styles.cacheRow}><Text style={styles.linkText}>Share with {user.username}</Text></Pressable>)}
+          <SecondaryButton label="Delete mystery" danger onPress={deleteSelected} />
+        </> : null}
+      </Panel> : null}
+      {notice ? <Text style={styles.note}>{notice}</Text> : null}
+      <LoadState loading={!ready} error={null} />
+    </>
+  );
+}
+
+function TravelScreen({ userId }: { userId: string }) {
+  const [caches, setCaches] = useState<MysteryCache[]>([]);
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<"all" | "ready" | "unsolved">("all");
+  useEffect(() => { void readMysteries(userId).then(setCaches); }, [userId]);
+  const visible = caches.filter((cache) => {
+    const isReady = Boolean(finalCoordinate(cache));
+    const matchesFilter = filter === "all" || (filter === "ready" ? isReady : !isReady);
+    const normalized = query.trim().toLowerCase();
+    return matchesFilter && (!normalized || `${cache.gcCode} ${cache.name} ${cache.trip ?? ""} ${mysteryLocation(cache)}`.toLowerCase().includes(normalized));
+  });
+  const groups = visible.reduce<Record<string, MysteryCache[]>>((result, cache) => {
+    const key = cache.trip?.trim() || cache.area.trim() || cache.county?.trim() || "Unassigned";
+    (result[key] ??= []).push(cache);
+    return result;
+  }, {});
+  const readyCount = caches.filter(finalCoordinate).length;
+  const tripCount = new Set(caches.map((cache) => cache.trip?.trim()).filter(Boolean)).size;
+  return (
+    <>
+      <PageTitle eyebrow="Routes and areas" title="Travel" />
+      <Text style={styles.muted}>Collect solved coordinates into trips before you head out. Assign trips from Mysteries.</Text>
+      <StatGrid rows={[["Trips", tripCount], ["Ready to find", readyCount], ["Still solving", Math.max(0, caches.length - readyCount)], ["Total caches", caches.length]]} />
+      <Panel title="Travel plan">
+        <Field label="Search" value={query} onChangeText={setQuery} placeholder="Trip, area, or cache" />
+        <Segmented values={["all", "ready", "unsolved"]} active={filter} onPress={(value) => setFilter(value as typeof filter)} />
+        {Object.entries(groups).map(([group, groupCaches]) => <View key={group} style={styles.routeGroup}><Text style={styles.panelTitle}>{group}</Text><Text style={styles.muted}>{groupCaches.filter(finalCoordinate).length}/{groupCaches.length} ready</Text>{groupCaches.map((cache) => {
+          const coordinate = finalCoordinate(cache);
+          return <Pressable key={cache.id} onPress={() => coordinate ? Linking.openURL(`https://maps.google.com/?q=${coordinate.latitude},${coordinate.longitude}`) : Linking.openURL(`https://coord.info/${cache.gcCode}`)} style={styles.cacheRow}><Text style={styles.rowTitle}>{coordinate ? "✓" : "○"} {cache.gcCode} · {cache.name}</Text><Text style={styles.muted}>{coordinate ? `${coordinate.latitude.toFixed(5)}, ${coordinate.longitude.toFixed(5)} · tap for directions` : "Needs solution"} · {mysteryLocation(cache) || "No location"}</Text></Pressable>;
+        })}</View>)}
+        {!Object.keys(groups).length ? <Text style={styles.muted}>No caches for this view.</Text> : null}
+      </Panel>
+    </>
+  );
+}
+
 function PageTitle({ eyebrow, title }: { eyebrow: string; title: string }) {
   return <View style={styles.pageTitle}><Text style={styles.eyebrow}>{eyebrow}</Text><Text style={styles.title}>{title}</Text></View>;
 }
@@ -1250,6 +1799,22 @@ function Field(props: React.ComponentProps<typeof TextInput> & { label: string }
 
 function PrimaryButton({ label, onPress }: { label: string; onPress: () => void }) {
   return <Pressable onPress={onPress} style={styles.primaryButton}><Text style={styles.primaryButtonText}>{label}</Text></Pressable>;
+}
+
+function SecondaryButton({ label, onPress, danger = false }: { label: string; onPress: () => void; danger?: boolean }) {
+  return <Pressable onPress={onPress} style={[styles.secondaryButton, danger && styles.secondaryButtonDanger]}><Text style={[styles.secondaryButtonText, danger && styles.danger]}>{label}</Text></Pressable>;
+}
+
+function ToggleOption({ label, active, onPress }: { label: string; active: boolean; onPress: () => void }) {
+  return <Pressable onPress={onPress} style={styles.optionRow}><Text style={[styles.optionMark, active && styles.optionMarkActive]}>{active ? "✓" : ""}</Text><Text style={styles.rowTitle}>{label}</Text></Pressable>;
+}
+
+function Segmented({ values, active, onPress, disabled = false }: { values: readonly string[]; active: string; onPress: (value: string) => void; disabled?: boolean }) {
+  return <View style={styles.segmented}>{values.map((value) => <Pressable disabled={disabled} key={value} onPress={() => onPress(value)} style={[styles.segmentButton, active === value && styles.segmentButtonActive]}><Text style={[styles.segmentText, active === value && styles.segmentTextActive]}>{value}</Text></Pressable>)}</View>;
+}
+
+function WorkflowStep({ number, title, detail, done, onPress }: { number: string; title: string; detail: string; done: boolean; onPress: () => void }) {
+  return <Pressable onPress={onPress} style={styles.workflowStep}><Text style={[styles.workflowNumber, done && styles.workflowNumberDone]}>{done ? "✓" : number}</Text><View style={styles.flex}><Text style={styles.rowTitle}>{title}</Text><Text style={styles.muted}>{detail}</Text></View><Text style={styles.linkText}>Open</Text></Pressable>;
 }
 
 function CommandCard({ label, command, copied, onCopy }: { label: string; command: string; copied: boolean; onCopy: () => void }) {
@@ -1590,6 +2155,9 @@ const styles = StyleSheet.create({
   textArea: { minHeight: 110, textAlignVertical: "top" },
   primaryButton: { backgroundColor: "#f3b34d", borderRadius: 8, paddingVertical: 13, alignItems: "center", marginTop: 4 },
   primaryButtonText: { color: "#172016", fontWeight: "900" },
+  secondaryButton: { borderColor: "#365346", borderWidth: 1, borderRadius: 8, paddingVertical: 12, paddingHorizontal: 12, alignItems: "center", marginTop: 4 },
+  secondaryButtonDanger: { borderColor: "#8d4339" },
+  secondaryButtonText: { color: "#dce8df", fontWeight: "900" },
   textButton: { padding: 8, alignItems: "center" },
   textButtonText: { color: "#f3b34d", fontWeight: "800" },
   panel: { backgroundColor: "#0d1f17", borderColor: "#1d3a2c", borderWidth: 1, borderRadius: 8, padding: 14, gap: 12 },
@@ -1615,6 +2183,24 @@ const styles = StyleSheet.create({
   segmentButtonActive: { backgroundColor: "#f3b34d" },
   segmentText: { color: "#b9c8bf", fontWeight: "800", textTransform: "capitalize" },
   segmentTextActive: { color: "#172016" },
+  actionRow: { flexDirection: "row", gap: 10, alignItems: "stretch" },
+  workflowStep: { flexDirection: "row", alignItems: "center", gap: 10, borderTopWidth: 1, borderColor: "#1b3729", paddingVertical: 11 },
+  workflowNumber: { width: 28, height: 28, borderRadius: 14, backgroundColor: "#244535", color: "#dce8df", textAlign: "center", lineHeight: 28, fontWeight: "900" },
+  workflowNumberDone: { backgroundColor: "#f3b34d", color: "#172016" },
+  inlineForm: { flexDirection: "row", gap: 8, alignItems: "center" },
+  smallButton: { backgroundColor: "#f3b34d", borderRadius: 8, paddingHorizontal: 15, paddingVertical: 12 },
+  smallButtonText: { color: "#172016", fontWeight: "900" },
+  selectedRow: { backgroundColor: "#173326", paddingHorizontal: 8, borderRadius: 6 },
+  chip: { color: "#dce8df", backgroundColor: "#173326", alignSelf: "flex-start", paddingHorizontal: 9, paddingVertical: 6, borderRadius: 14, marginBottom: 4 },
+  attemptRow: { flexDirection: "row", gap: 10, alignItems: "center", borderTopWidth: 1, borderColor: "#1b3729", paddingVertical: 10 },
+  routeGroup: { borderTopWidth: 1, borderColor: "#294839", paddingTop: 14, marginTop: 6, gap: 3 },
+  mysteryImage: { width: "100%", height: 210, borderRadius: 8, backgroundColor: "#14271d" },
+  optionRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 5 },
+  optionMark: { width: 22, height: 22, borderWidth: 1, borderColor: "#668074", borderRadius: 5, color: "#172016", textAlign: "center", lineHeight: 20, fontWeight: "900" },
+  optionMarkActive: { backgroundColor: "#f3b34d", borderColor: "#f3b34d" },
+  codeText: { color: "#dce8df", backgroundColor: "#07110d", padding: 10, borderRadius: 6, fontFamily: Platform.select({ ios: "Menlo", android: "monospace", default: "monospace" }), fontSize: 11, lineHeight: 16 },
+  codePreview: { color: "#b9c8bf", backgroundColor: "#07110d", padding: 10, minHeight: 150, borderRadius: 6, fontFamily: Platform.select({ ios: "Menlo", android: "monospace", default: "monospace" }), fontSize: 10, lineHeight: 14 },
+  linkText: { color: "#f3b34d", fontWeight: "800" },
   dtGrid: { flexDirection: "row", flexWrap: "wrap", gap: 4 },
   dtCell: { width: "10.5%", aspectRatio: 1, borderRadius: 4, backgroundColor: "#f3b34d", alignItems: "center", justifyContent: "center" },
   dtText: { color: "#162016", fontSize: 10, fontWeight: "900" },

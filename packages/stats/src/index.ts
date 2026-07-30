@@ -77,6 +77,88 @@ const monthLabels = [
 const weekdayLabels = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const ratingValues = ["1.0", "1.5", "2.0", "2.5", "3.0", "3.5", "4.0", "4.5", "5.0"];
 
+function logFindOrdinal(text: string | null | undefined): number | null {
+  if (!text) {
+    return null;
+  }
+
+  const patterns = [
+    /(?:^|[\s([{])#\s*(\d{1,7})\b/m,
+    /(?:^|[\s([{])(?:fund|find|found|fynd|hittad|hittade|funn|funnit)\s*(?:(?:nr|no)\.?\s*|number\s*)?#?\s*(\d{1,7})\b/im
+  ];
+  for (const pattern of patterns) {
+    const value = Number(pattern.exec(text)?.[1]);
+    if (Number.isSafeInteger(value) && value > 0) {
+      return value;
+    }
+  }
+  return null;
+}
+
+function logTimeMinutes(text: string | null | undefined): number | null {
+  if (!text) {
+    return null;
+  }
+
+  const match =
+    /(?:^|\n)\s*(?:time|tid|kl(?:ockan)?)\s*[:.]?\s*(\d{1,2})[:.](\d{2})\b/im.exec(text) ??
+    /^\s*(\d{1,2})[:.](\d{2})\b/m.exec(text);
+  if (!match) {
+    return null;
+  }
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  return hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59 ? hour * 60 + minute : null;
+}
+
+function sortFindsChronologically(finds: StatsFind[]): StatsFind[] {
+  const sorted = finds
+    .map((find, inputIndex) => ({
+      find,
+      inputIndex,
+      ordinal: logFindOrdinal(find.logText),
+      logTime: logTimeMinutes(find.logText)
+    }))
+    .sort(
+      (a, b) =>
+        toDate(a.find.foundAt).getTime() - toDate(b.find.foundAt).getTime() ||
+        a.inputIndex - b.inputIndex
+    );
+
+  for (let start = 0; start < sorted.length; ) {
+    const timestamp = toDate(sorted[start]!.find.foundAt).getTime();
+    let end = start + 1;
+    while (end < sorted.length && toDate(sorted[end]!.find.foundAt).getTime() === timestamp) {
+      end += 1;
+    }
+
+    const tied = sorted.slice(start, end);
+    const reorderKnownSlots = (key: "ordinal" | "logTime"): boolean => {
+      const knownSlots = tied
+        .map((item, index) => ({ item, index }))
+        .filter(({ item }) => item[key] !== null);
+      if (knownSlots.length < 2) {
+        return false;
+      }
+      const ordered = knownSlots
+        .map(({ item }) => item)
+        .sort((a, b) => a[key]! - b[key]! || a.inputIndex - b.inputIndex);
+      knownSlots.forEach(({ index }, orderedIndex) => {
+        tied[index] = ordered[orderedIndex]!;
+      });
+      return true;
+    };
+
+    if (!reorderKnownSlots("ordinal")) {
+      reorderKnownSlots("logTime");
+    }
+    sorted.splice(start, tied.length, ...tied);
+    start = end;
+  }
+
+  return sorted.map(({ find }) => find);
+}
+
 function monthName(monthIndex: number): string {
   return monthLabels[monthIndex] ?? "Unknown";
 }
@@ -1174,7 +1256,7 @@ function calculateDistanceStats(finds: StatsFind[], options: StatsOptions): Dist
 }
 
 export function calculateStats(finds: StatsFind[], options: StatsOptions = {}): StatsSnapshot {
-  const sorted = [...finds].sort((a, b) => toDate(a.foundAt).getTime() - toDate(b.foundAt).getTime());
+  const sorted = sortFindsChronologically(finds);
   const byYear = new Map<string, number>();
   const byMonth = new Map<string, number>();
   const byDay = new Map<string, number>();
@@ -1320,7 +1402,7 @@ export function calculateStats(finds: StatsFind[], options: StatsOptions = {}): 
   const milestoneStats = calculateMilestoneStats(sorted);
 
   return {
-    statsVersion: 18,
+    statsVersion: 19,
     totalFinds,
     findsByYear: buckets(byYear).sort((a, b) => a.key.localeCompare(b.key)),
     findsByMonth: sortedMonths,

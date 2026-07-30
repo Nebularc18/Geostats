@@ -412,6 +412,7 @@ export class ImportProcessor {
       finds.map((find) => ({
         foundAt: find.foundAt,
         isFtf: find.isFtf,
+        logText: find.logText,
         cache: {
           latitude: Number(find.cache.corrections[0]?.latitude ?? find.cache.latitude),
           longitude: Number(find.cache.corrections[0]?.longitude ?? find.cache.longitude),
