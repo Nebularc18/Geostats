@@ -18,13 +18,16 @@ import { AuthService } from "./auth.service";
 import { AuthGuard } from "./auth.guard";
 import { CurrentUser } from "./current-user.decorator";
 import { envOrDefault } from "../common/env";
+import { MobileExchangeCodeService } from "./mobile-exchange-code.service";
 
 @Controller("auth")
 export class AuthController {
   private readonly logger = new Logger(AuthController.name);
-  private readonly mobileExchangeCodes = new Map<string, { codeChallenge: string; expiresAt: number; token: string; user: AuthUser }>();
 
-  constructor(private readonly auth: AuthService) {}
+  constructor(
+    private readonly auth: AuthService,
+    private readonly mobileExchangeCodes: MobileExchangeCodeService
+  ) {}
 
   @Post("register")
   async register(
@@ -149,17 +152,16 @@ export class AuthController {
     if (typeof body.code !== "string" || typeof body.codeVerifier !== "string") {
       throw new BadRequestException("Mobile auth code and verifier are required");
     }
-    const record = this.mobileExchangeCodes.get(body.code);
-    if (!record || record.expiresAt < Date.now()) {
-      if (record) {
-        this.mobileExchangeCodes.delete(body.code);
-      }
+    const record = await this.mobileExchangeCodes.get(body.code);
+    if (!record) {
       throw new UnauthorizedException("Invalid or expired mobile auth code");
     }
     if (!this.isValidCodeVerifier(body.codeVerifier) || !this.safeEqual(record.codeChallenge, body.codeVerifier)) {
       throw new UnauthorizedException("Invalid mobile auth verifier");
     }
-    this.mobileExchangeCodes.delete(body.code);
+    if (!await this.mobileExchangeCodes.consume(body.code, record.serialized)) {
+      throw new UnauthorizedException("Invalid or expired mobile auth code");
+    }
     return { user: record.user, token: record.token };
   }
 
@@ -198,7 +200,7 @@ export class AuthController {
           response.redirect(this.mobileLoginUrl(mobileRedirectUri, "external"));
           return;
         }
-        const mobileCode = this.createMobileExchangeCode(token, user, mobileCodeChallenge);
+        const mobileCode = await this.mobileExchangeCodes.create(token, user, mobileCodeChallenge);
         response.redirect(this.mobileLoginUrl(mobileRedirectUri, undefined, mobileCode));
         return;
       }
@@ -292,27 +294,6 @@ export class AuthController {
     if (code) params.set("code", code);
     url.hash = params.toString();
     return url.toString();
-  }
-
-  private createMobileExchangeCode(token: string, user: AuthUser, codeChallenge: string) {
-    this.pruneMobileExchangeCodes();
-    const code = this.base64Url(randomBytes(32));
-    this.mobileExchangeCodes.set(code, {
-      codeChallenge,
-      expiresAt: Date.now() + 2 * 60 * 1000,
-      token,
-      user
-    });
-    return code;
-  }
-
-  private pruneMobileExchangeCodes() {
-    const now = Date.now();
-    for (const [code, record] of this.mobileExchangeCodes) {
-      if (record.expiresAt < now) {
-        this.mobileExchangeCodes.delete(code);
-      }
-    }
   }
 
   private isValidCodeVerifier(value: unknown): value is string {
