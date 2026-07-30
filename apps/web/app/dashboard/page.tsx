@@ -9,6 +9,52 @@ import { StatCard } from "../../components/stat-card";
 import { apiFetch } from "../../lib/api";
 
 const monthLabels = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const isDevelopment = process.env.NODE_ENV === "development";
+const developmentGpxStats = {
+  totalFinds: 5,
+  cacheTypes: [{ key: "Traditional Cache", count: 5 }],
+  sizes: [
+    { key: "Micro", count: 2 },
+    { key: "Small", count: 3 }
+  ],
+  countries: [
+    { key: "Sweden", count: 3 },
+    { key: "Iceland", count: 2 }
+  ],
+  regions: [
+    { key: "Blekinge", count: 3 },
+    { key: "Capital Region", count: 1 },
+    { key: "Southern Region", count: 1 }
+  ],
+  findsByMonth: [
+    { key: "2025-11", count: 2 },
+    { key: "2026-03", count: 1 },
+    { key: "2026-04", count: 2 }
+  ],
+  difficultyTerrain: [
+    { difficulty: 1.5, terrain: 1.5, count: 2 },
+    { difficulty: 2, terrain: 3, count: 1 },
+    { difficulty: 3.5, terrain: 1.5, count: 1 },
+    { difficulty: 2, terrain: 1.5, count: 1 }
+  ],
+  streaks: { longest: 1, current: 0 },
+  summaryNumbers: {
+    bestDay: { key: "2026-04-02", count: 1 },
+    bestMonth: { key: "2026-04", count: 2 },
+    cachingDays: 5,
+    findsPerDay: 1
+  },
+  achievementStats: {
+    distinctAttributes: 11,
+    maxCacheTypesInDay: 1,
+    maxDistanceKm: null,
+    longLogsWritten: 0,
+    hostedEventCaches: 0
+  },
+  distanceStats: { averageDistanceKm: null, maxDistanceKm: null, bearingBuckets: [] },
+  ftfStats: { total: 0 },
+  hideStats: { totalHides: 0, totalFavoritePoints: 0, hostedEventCaches: 0 }
+};
 
 function monthKey(date: Date) {
   return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
@@ -46,11 +92,21 @@ function formatImportDate(value?: string) {
 }
 
 export default function DashboardPage() {
-  const [stats, setStats] = useState<any>(null);
+  const [stats, setStats] = useState<any>(isDevelopment ? developmentGpxStats : null);
   const [imports, setImports] = useState<any[]>([]);
 
   useEffect(() => {
-    void apiFetch<{ stats: any }>("/stats/summary").then((data) => setStats(data.stats)).catch(() => setStats({}));
+    void apiFetch<{ stats: any }>("/stats/summary")
+      .then((data) => {
+        if (!isDevelopment || data.stats?.totalFinds > 0) {
+          setStats(data.stats);
+        }
+      })
+      .catch(() => {
+        if (!isDevelopment) {
+          setStats({});
+        }
+      });
     void apiFetch<{ imports: any[] }>("/imports").then((data) => setImports(data.imports)).catch(() => setImports([]));
   }, []);
 

@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import "flag-icons/css/flag-icons.min.css";
 import "maplibre-gl/dist/maplibre-gl.css";
 import "./globals.css";
 

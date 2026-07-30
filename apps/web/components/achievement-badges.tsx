@@ -2,19 +2,48 @@
 
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import {
-  Award,
+  BadgeCheck,
+  Brain,
+  Box,
+  CalendarCheck,
   CalendarDays,
-  Compass,
-  Crown,
+  Camera,
+  CircleHelp,
+  Earth,
+  Flame,
+  Footprints,
+  Gamepad2,
   Gem,
+  Ghost,
   Globe2,
   Grid3X3,
+  Heart,
+  History,
+  KeyRound,
+  Leaf,
+  Luggage,
+  Mailbox,
   MapPin,
+  Medal,
+  Mic2,
   Mountain,
+  Network,
+  NotebookPen,
+  Package,
+  PackageOpen,
+  PackageSearch,
   PartyPopper,
+  Pickaxe,
+  Plane,
+  Radar,
+  RadioTower,
   Route,
-  Star,
+  ScanLine,
+  Shapes,
+  Tags,
   Trophy,
+  Users,
+  Zap,
   type LucideIcon
 } from "lucide-react";
 import type { CacheMapPoint } from "./cache-map";
@@ -84,10 +113,160 @@ type ScratchMapData = {
   countries: ScratchCountryBucket[];
 };
 
+const isDevelopment = process.env.NODE_ENV === "development";
 const tiers = ["Bronze", "Silver", "Gold", "Platinum", "Ruby", "Sapphire", "Emerald", "Diamond"];
 const tierClasses = ["bronze", "silver", "gold", "platinum", "ruby", "sapphire", "emerald", "diamond"];
 const countryRegionPercentThresholds = [1, 15, 20, 30, 40, 50, 75, 100];
 const countryRegionCountThresholds = [1, 5, 10, 25, 50, 100, 200, 500];
+const countryFlagCodeOverrides: Record<string, string> = {
+  bolivia: "BO",
+  "cape verde": "CV",
+  "czech republic": "CZ",
+  "ivory coast": "CI",
+  iran: "IR",
+  kosovo: "XK",
+  laos: "LA",
+  moldova: "MD",
+  "north korea": "KP",
+  palestine: "PS",
+  russia: "RU",
+  "south korea": "KR",
+  syria: "SY",
+  taiwan: "TW",
+  tanzania: "TZ",
+  turkey: "TR",
+  "united states of america": "US",
+  venezuela: "VE",
+  vietnam: "VN"
+};
+let countryFlagCodesByName: Map<string, string> | null = null;
+
+function demoCountry(
+  name: string,
+  continent: string,
+  completedRegions: number,
+  options: { cacheCount?: number; regionNames?: string[] } = {}
+): ScratchCountryBucket {
+  const cacheCount = options.cacheCount ?? completedRegions;
+  return {
+    name,
+    continent,
+    count: cacheCount,
+    regions: Array.from({ length: completedRegions }, (_, index) => ({
+      name: options.regionNames?.[index] ?? `${name} region ${index + 1}`,
+      count: index === 0 ? Math.max(1, cacheCount - completedRegions + 1) : 1
+    })),
+    counties: []
+  };
+}
+
+const developmentCountryBadges = [
+  demoCountry("Sweden", "Europe", 1, { cacheCount: 3, regionNames: ["Blekinge"] }),
+  demoCountry("Iceland", "Europe", 2, {
+    cacheCount: 2,
+    regionNames: ["Capital Region", "Southern Region"]
+  }),
+  demoCountry("Norway", "Europe", 2),
+  demoCountry("Denmark", "Europe", 1),
+  demoCountry("Greece", "Europe", 3),
+  demoCountry("Portugal", "Europe", 8),
+  demoCountry("Finland", "Europe", 10),
+  demoCountry("Netherlands", "Europe", 9),
+  demoCountry("Luxembourg", "Europe", 3)
+];
+
+const developmentCountryRegionTotals = new Map<string, number>([
+  ["Sweden", 21],
+  ["Iceland", 8],
+  ["Norway", 11],
+  ["Denmark", 5],
+  ["Greece", 8],
+  ["Portugal", 20],
+  ["Finland", 19],
+  ["Netherlands", 12],
+  ["Luxembourg", 3]
+]);
+
+const achievementEmblemMarks: Record<string, string> = {
+  "long-distance": "10K",
+  attribute: "ATTR",
+  large: "XL",
+  matrix: "81",
+  jasmer: "MONTHS",
+  diverse: "11×",
+  brainiac: "D5",
+  adventurous: "5/5",
+  "all-around": "360°",
+  traveling: "WORLD",
+  veteran: "10Y",
+  traditional: "TRAD",
+  multi: "MULTI",
+  mystery: "?",
+  letterboxer: "LETTER",
+  earth: "EARTH",
+  wherigo: "PLAY",
+  virtual: "VIRTUAL",
+  photogenic: "CAM",
+  social: "EVENT",
+  environmental: "CITO",
+  "mega-social": "MEGA",
+  "giga-social": "GIGA",
+  "gps-maze": "MAZE",
+  "odd-sized": "?",
+  micro: "XS",
+  small: "S",
+  regular: "M",
+  rugged: "T5",
+  ftf: "FTF",
+  geocacher: "FINDS",
+  calendar: "366",
+  daily: "365×",
+  busy: "1 DAY",
+  achiever: "CHLG",
+  trackable: "TB",
+  author: "LOG",
+  owner: "OWNER",
+  "favorited-owner": "FAV",
+  "event-host": "HOST"
+};
+
+function normalizedCountryName(value: string) {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[’']/g, "")
+    .replace(/&/g, "and")
+    .trim()
+    .toLowerCase();
+}
+
+function countryFlagCode(countryName: string) {
+  const normalizedName = normalizedCountryName(countryName);
+  const override = countryFlagCodeOverrides[normalizedName];
+  if (override) {
+    return override;
+  }
+
+  if (typeof Intl.DisplayNames !== "function") {
+    return null;
+  }
+
+  if (!countryFlagCodesByName) {
+    countryFlagCodesByName = new Map();
+    const displayNames = new Intl.DisplayNames(["en"], { type: "region" });
+    for (let first = 65; first <= 90; first += 1) {
+      for (let second = 65; second <= 90; second += 1) {
+        const code = String.fromCharCode(first, second);
+        const displayName = displayNames.of(code);
+        if (displayName && displayName !== code) {
+          countryFlagCodesByName.set(normalizedCountryName(displayName), code);
+        }
+      }
+    }
+  }
+
+  return countryFlagCodesByName.get(normalizedName) ?? null;
+}
 
 const cacheTypeAliases: Record<string, string[]> = {
   traditional: ["traditional cache"],
@@ -142,7 +321,7 @@ function buildBadges(stats: StatsSummary | null): BadgeDefinition[] {
       metric: "Farthest cache from home",
       current: achievementStats?.maxDistanceKm ?? stats?.distanceStats?.maxDistanceKm ?? null,
       thresholds: [1000, 1200, 1500, 2000, 2900, 4200, 6400, 10000],
-      icon: Globe2
+      icon: Plane
     },
     {
       id: "attribute",
@@ -150,7 +329,7 @@ function buildBadges(stats: StatsSummary | null): BadgeDefinition[] {
       metric: "Distinct attributes",
       current: achievementStats?.distinctAttributes ?? null,
       thresholds: [50, 70, 82, 88, 94, 100, 105, 108],
-      icon: Award
+      icon: Tags
     },
     {
       id: "large",
@@ -158,7 +337,7 @@ function buildBadges(stats: StatsSummary | null): BadgeDefinition[] {
       metric: "Large caches",
       current: countForBucket(sizeBuckets, ["large"]),
       thresholds: [3, 10, 20, 40, 60, 80, 120, 180],
-      icon: Award
+      icon: PackageOpen
     },
     {
       id: "matrix",
@@ -182,7 +361,7 @@ function buildBadges(stats: StatsSummary | null): BadgeDefinition[] {
       metric: "Distinct cache types in a day",
       current: achievementStats?.maxCacheTypesInDay ?? null,
       thresholds: [3, 4, 6, 7, 8, 9, 10, 11],
-      icon: PartyPopper
+      icon: Shapes
     },
     {
       id: "brainiac",
@@ -190,7 +369,7 @@ function buildBadges(stats: StatsSummary | null): BadgeDefinition[] {
       metric: "D5 finds",
       current: countDifficultyTerrain(stats?.difficultyTerrain, 5),
       thresholds: [2, 4, 6, 10, 15, 30, 50, 100],
-      icon: Crown
+      icon: Brain
     },
     {
       id: "adventurous",
@@ -206,7 +385,7 @@ function buildBadges(stats: StatsSummary | null): BadgeDefinition[] {
       metric: "Bearing degrees",
       current: coveredBearingSectors(stats?.distanceStats?.bearingBuckets),
       thresholds: [90, 120, 180, 270, 300, 330, 350, 360],
-      icon: Compass
+      icon: Radar
     },
     {
       id: "traveling",
@@ -214,7 +393,7 @@ function buildBadges(stats: StatsSummary | null): BadgeDefinition[] {
       metric: "Countries",
       current: stats?.countries?.length ?? 0,
       thresholds: [2, 3, 5, 8, 12, 18, 25, 35],
-      icon: Globe2
+      icon: Luggage
     },
     {
       id: "veteran",
@@ -222,7 +401,7 @@ function buildBadges(stats: StatsSummary | null): BadgeDefinition[] {
       metric: "Caching years",
       current: stats?.findsByYear?.length ?? 0,
       thresholds: [2, 3, 4, 5, 6, 7, 8, 10],
-      icon: Award
+      icon: History
     },
     {
       id: "traditional",
@@ -246,7 +425,7 @@ function buildBadges(stats: StatsSummary | null): BadgeDefinition[] {
       metric: "Mystery caches",
       current: countForBucket(typeBuckets, cacheTypeAliases.mystery),
       thresholds: [50, 100, 200, 300, 500, 800, 1200, 1800],
-      icon: Gem
+      icon: CircleHelp
     },
     {
       id: "letterboxer",
@@ -254,7 +433,7 @@ function buildBadges(stats: StatsSummary | null): BadgeDefinition[] {
       metric: "Letterbox Hybrid caches",
       current: countForBucket(typeBuckets, cacheTypeAliases.letterbox),
       thresholds: [5, 6, 7, 8, 10, 15, 25, 50],
-      icon: Award
+      icon: Mailbox
     },
     {
       id: "earth",
@@ -262,7 +441,7 @@ function buildBadges(stats: StatsSummary | null): BadgeDefinition[] {
       metric: "EarthCaches",
       current: countForBucket(typeBuckets, cacheTypeAliases.earth),
       thresholds: [5, 10, 20, 30, 50, 80, 120, 180],
-      icon: Globe2
+      icon: Earth
     },
     {
       id: "wherigo",
@@ -270,7 +449,7 @@ function buildBadges(stats: StatsSummary | null): BadgeDefinition[] {
       metric: "Wherigo caches",
       current: countForBucket(typeBuckets, cacheTypeAliases.wherigo),
       thresholds: [2, 3, 5, 10, 15, 25, 40, 60],
-      icon: Compass
+      icon: Gamepad2
     },
     {
       id: "virtual",
@@ -278,7 +457,7 @@ function buildBadges(stats: StatsSummary | null): BadgeDefinition[] {
       metric: "Virtual caches",
       current: countForBucket(typeBuckets, cacheTypeAliases.virtual),
       thresholds: [5, 10, 20, 30, 50, 80, 120, 180],
-      icon: Globe2
+      icon: Ghost
     },
     {
       id: "photogenic",
@@ -286,7 +465,7 @@ function buildBadges(stats: StatsSummary | null): BadgeDefinition[] {
       metric: "Webcam caches",
       current: countForBucket(typeBuckets, cacheTypeAliases.webcam),
       thresholds: [2, 3, 5, 8, 12, 18, 25, 40],
-      icon: Star
+      icon: Camera
     },
     {
       id: "social",
@@ -294,7 +473,7 @@ function buildBadges(stats: StatsSummary | null): BadgeDefinition[] {
       metric: "Event caches",
       current: countForBucket(typeBuckets, cacheTypeAliases.event),
       thresholds: [5, 10, 20, 30, 50, 80, 120, 180],
-      icon: PartyPopper
+      icon: Users
     },
     {
       id: "environmental",
@@ -302,7 +481,7 @@ function buildBadges(stats: StatsSummary | null): BadgeDefinition[] {
       metric: "CITO events",
       current: countForBucket(typeBuckets, cacheTypeAliases.cito),
       thresholds: [2, 3, 4, 5, 6, 8, 10, 12],
-      icon: Globe2
+      icon: Leaf
     },
     {
       id: "mega-social",
@@ -310,7 +489,7 @@ function buildBadges(stats: StatsSummary | null): BadgeDefinition[] {
       metric: "Mega Event caches",
       current: countForBucket(typeBuckets, cacheTypeAliases.mega),
       thresholds: [1, 2, 3, 4, 5, 6, 8, 10],
-      icon: PartyPopper
+      icon: RadioTower
     },
     {
       id: "giga-social",
@@ -326,7 +505,7 @@ function buildBadges(stats: StatsSummary | null): BadgeDefinition[] {
       metric: "GPS Maze caches",
       current: countForBucket(typeBuckets, cacheTypeAliases.gpsMaze),
       thresholds: [1, 2, 3, 4, 5, 6, 7, 8],
-      icon: Compass
+      icon: Network
     },
     {
       id: "odd-sized",
@@ -334,7 +513,7 @@ function buildBadges(stats: StatsSummary | null): BadgeDefinition[] {
       metric: "Other/Unknown size caches",
       current: countForBucket(sizeBuckets, ["other", "not chosen", "unknown", "other/unknown"]),
       thresholds: [75, 125, 200, 300, 450, 600, 800, 1200],
-      icon: Award
+      icon: PackageSearch
     },
     {
       id: "micro",
@@ -342,7 +521,7 @@ function buildBadges(stats: StatsSummary | null): BadgeDefinition[] {
       metric: "Micro caches",
       current: countForBucket(sizeBuckets, ["micro"]),
       thresholds: [200, 300, 500, 800, 1200, 1800, 3000, 4500],
-      icon: Award
+      icon: ScanLine
     },
     {
       id: "small",
@@ -350,7 +529,7 @@ function buildBadges(stats: StatsSummary | null): BadgeDefinition[] {
       metric: "Small caches",
       current: countForBucket(sizeBuckets, ["small"]),
       thresholds: [150, 200, 300, 500, 800, 1200, 1800, 3000],
-      icon: Award
+      icon: Box
     },
     {
       id: "regular",
@@ -358,7 +537,7 @@ function buildBadges(stats: StatsSummary | null): BadgeDefinition[] {
       metric: "Regular caches",
       current: countForBucket(sizeBuckets, ["regular"]),
       thresholds: [100, 150, 225, 350, 550, 800, 1200, 1600],
-      icon: Award
+      icon: Package
     },
     {
       id: "rugged",
@@ -366,7 +545,7 @@ function buildBadges(stats: StatsSummary | null): BadgeDefinition[] {
       metric: "T5 finds",
       current: countDifficultyTerrain(stats?.difficultyTerrain, undefined, 5),
       thresholds: [5, 10, 20, 30, 50, 70, 100, 150],
-      icon: Mountain
+      icon: Pickaxe
     },
     {
       id: "ftf",
@@ -374,7 +553,7 @@ function buildBadges(stats: StatsSummary | null): BadgeDefinition[] {
       metric: "First-to-Finds",
       current: stats?.ftfStats?.total ?? 0,
       thresholds: [15, 20, 30, 50, 80, 120, 180, 300],
-      icon: Star
+      icon: Medal
     },
     {
       id: "geocacher",
@@ -390,7 +569,7 @@ function buildBadges(stats: StatsSummary | null): BadgeDefinition[] {
       metric: "Calendar days",
       current: stats?.foundDateMatrix?.length ?? 0,
       thresholds: [90, 150, 220, 280, 330, 350, 365, 366],
-      icon: CalendarDays
+      icon: CalendarCheck
     },
     {
       id: "daily",
@@ -398,7 +577,7 @@ function buildBadges(stats: StatsSummary | null): BadgeDefinition[] {
       metric: "Longest streak",
       current: stats?.streaks?.longest ?? 0,
       thresholds: [7, 14, 30, 60, 122, 183, 274, 365],
-      icon: Route
+      icon: Flame
     },
     {
       id: "busy",
@@ -406,7 +585,7 @@ function buildBadges(stats: StatsSummary | null): BadgeDefinition[] {
       metric: "Best day",
       current: stats?.summaryNumbers?.bestDay?.count ?? 0,
       thresholds: [20, 30, 50, 80, 120, 180, 270, 400],
-      icon: Star
+      icon: Zap
     },
     {
       id: "achiever",
@@ -414,7 +593,7 @@ function buildBadges(stats: StatsSummary | null): BadgeDefinition[] {
       metric: "Challenge caches",
       current: countForBucket(typeBuckets, cacheTypeAliases.challenge),
       thresholds: [5, 20, 40, 80, 150, 225, 350, 500],
-      icon: Trophy
+      icon: BadgeCheck
     },
     {
       id: "trackable",
@@ -422,7 +601,7 @@ function buildBadges(stats: StatsSummary | null): BadgeDefinition[] {
       metric: "Discovered Trackables",
       current: null,
       thresholds: [50, 100, 200, 300, 500, 800, 1200, 1800],
-      icon: Award
+      icon: Footprints
     },
     {
       id: "author",
@@ -430,7 +609,7 @@ function buildBadges(stats: StatsSummary | null): BadgeDefinition[] {
       metric: "Long logs written",
       current: achievementStats?.longLogsWritten ?? null,
       thresholds: [30, 40, 50, 60, 70, 80, 90, 100],
-      icon: Award
+      icon: NotebookPen
     },
     {
       id: "owner",
@@ -438,7 +617,7 @@ function buildBadges(stats: StatsSummary | null): BadgeDefinition[] {
       metric: "Hidden caches",
       current: hideStats?.totalHides ?? 0,
       thresholds: [10, 15, 20, 30, 50, 80, 120, 200],
-      icon: Crown
+      icon: KeyRound
     },
     {
       id: "favorited-owner",
@@ -446,7 +625,7 @@ function buildBadges(stats: StatsSummary | null): BadgeDefinition[] {
       metric: "Favorite points received",
       current: hideStats?.totalFavoritePoints ?? 0,
       thresholds: [25, 40, 60, 90, 150, 210, 320, 500],
-      icon: Star
+      icon: Heart
     },
     {
       id: "event-host",
@@ -454,7 +633,7 @@ function buildBadges(stats: StatsSummary | null): BadgeDefinition[] {
       metric: "Hosted event caches",
       current: achievementStats?.hostedEventCaches ?? hideStats?.hostedEventCaches ?? null,
       thresholds: [1, 2, 3, 5, 8, 12, 18, 30],
-      icon: PartyPopper
+      icon: Mic2
     }
   ];
 }
@@ -573,8 +752,12 @@ export function AchievementBadges({
   variant?: "sidebar" | "dashboard";
 }) {
   const [stats, setStats] = useState<StatsSummary | null>(providedStats);
-  const [scratchCountries, setScratchCountries] = useState<ScratchCountryBucket[]>([]);
-  const [countryRegionTotals, setCountryRegionTotals] = useState<Map<string, number>>(() => new Map());
+  const [scratchCountries, setScratchCountries] = useState<ScratchCountryBucket[]>(() =>
+    isDevelopment ? developmentCountryBadges : []
+  );
+  const [countryRegionTotals, setCountryRegionTotals] = useState<Map<string, number>>(() =>
+    isDevelopment ? new Map(developmentCountryRegionTotals) : new Map()
+  );
   const [error, setError] = useState(false);
   const [sortMode, setSortMode] = useState<BadgeSortMode>("level");
   const [sortReversed, setSortReversed] = useState(false);
@@ -594,7 +777,12 @@ export function AchievementBadges({
       })
       .catch(() => {
         if (active) {
-          setError(true);
+          if (isDevelopment) {
+            setStats({});
+            setError(false);
+          } else {
+            setError(true);
+          }
         }
       });
     return () => {
@@ -606,6 +794,14 @@ export function AchievementBadges({
     let active = true;
     void apiFetch<ScratchMapData>("/map/scratch")
       .then(async (data) => {
+        if (isDevelopment && data.countries.length === 0) {
+          if (active) {
+            setScratchCountries(developmentCountryBadges);
+            setCountryRegionTotals(new Map(developmentCountryRegionTotals));
+          }
+          return;
+        }
+
         if (active) {
           setScratchCountries(data.countries);
         }
@@ -658,7 +854,12 @@ export function AchievementBadges({
       })
       .catch(() => {
         if (active) {
-          setScratchCountries([]);
+          if (isDevelopment) {
+            setScratchCountries(developmentCountryBadges);
+            setCountryRegionTotals(new Map(developmentCountryRegionTotals));
+          } else {
+            setScratchCountries([]);
+          }
         }
       });
     return () => {
@@ -735,20 +936,45 @@ export function AchievementBadges({
           const index = achievedIndex(badge);
           const tier = index >= 0 ? tiers[index] : "Locked";
           const tierClass = index >= 0 ? tierClasses[index] : "locked";
+          const regionCompletion = badge.totalRegions
+            ? Math.min(1, badge.completedRegions / badge.totalRegions)
+            : Math.max(0, index + 1) / tiers.length;
+          const flagCode = countryFlagCode(badge.name)?.toLowerCase() ?? "xx";
           return (
-            <article key={badge.name} className="country-badge-row" style={{ "--badge-progress": Math.max(0, index + 1) / tiers.length } as CSSProperties}>
-              <span className={`badge-icon ${tierClass}`} aria-hidden="true">
-                <Globe2 size={16} />
-              </span>
-              <span>
-                <strong>{badge.name}</strong>
-                <small>
-                  {tier} -{" "}
+            <article
+              key={badge.name}
+              className={`country-badge-row ${tierClass}`}
+              style={{ "--country-completion": regionCompletion } as CSSProperties}
+            >
+              <div className="country-badge-topline">
+                <span className="country-badge-tier">{tier}</span>
+                <span>
                   {badge.totalRegions
-                    ? `${badge.completedRegions.toLocaleString()}/${badge.totalRegions.toLocaleString()} regions`
-                    : `${badge.completedRegions.toLocaleString()} regions`}
-                </small>
-              </span>
+                    ? `${Math.round(regionCompletion * 100)}%`
+                    : `${badge.completedRegions.toLocaleString()} found`}
+                </span>
+              </div>
+              <div className="country-badge-medal" aria-hidden="true">
+                <span className={`country-badge-flag fi fi-${flagCode}`} />
+              </div>
+              <div className="country-badge-ribbon">
+                <strong>{badge.name}</strong>
+              </div>
+              <small className="country-badge-regions">
+                {badge.totalRegions
+                  ? `${badge.completedRegions.toLocaleString()} of ${badge.totalRegions.toLocaleString()} regions`
+                  : `${badge.completedRegions.toLocaleString()} regions completed`}
+              </small>
+              <div
+                className="country-badge-progress"
+                role="progressbar"
+                aria-label={`${badge.name} region progress`}
+                aria-valuemin={0}
+                aria-valuemax={badge.totalRegions ?? badge.completedRegions}
+                aria-valuenow={badge.completedRegions}
+              >
+                <span />
+              </div>
             </article>
           );
         })}
@@ -779,8 +1005,9 @@ export function AchievementBadges({
           return (
             <article key={badge.id} className="badge-row" style={{ "--badge-progress": Math.max(0, index + 1) / tiers.length } as CSSProperties}>
               <div className="badge-row-main">
-                <span className={`badge-icon ${tierClass}`} aria-hidden="true">
-                  <Icon size={16} />
+                <span className={`achievement-emblem ${tierClass} emblem-${badge.id}`} aria-hidden="true">
+                  <Icon size={30} strokeWidth={1.8} />
+                  <em>{achievementEmblemMarks[badge.id]}</em>
                 </span>
                 <span>
                   <strong>{badge.name}</strong>
