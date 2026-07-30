@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@geostats/shared": "workspace:*",
+    "flag-icons": "^7.5.0",
     "lucide-react": "^0.468.0",
     "maplibre-gl": "^5.24.0",
     "next": "^15.1.2",

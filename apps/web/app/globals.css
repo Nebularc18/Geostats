@@ -233,7 +233,7 @@ nav a:hover {
 
 .country-badge-list {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
   gap: 12px;
 }
 
@@ -249,16 +249,283 @@ nav a:hover {
 }
 
 .country-badge-row {
+  --country-tier: #b97545;
+  --country-tier-light: #e3a373;
+  --country-tier-dark: #754225;
+  position: relative;
+  display: grid;
+  justify-items: center;
+  min-width: 0;
+  min-height: 205px;
+  padding: 12px 14px 14px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--country-tier) 44%, rgba(237, 244, 232, 0.1));
+  border-radius: 12px;
+  background:
+    radial-gradient(circle at 50% 36%, color-mix(in srgb, var(--country-tier) 15%, transparent), transparent 48%),
+    linear-gradient(160deg, rgba(237, 244, 232, 0.055), rgba(237, 244, 232, 0.018));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.country-badge-row::before {
+  position: absolute;
+  inset: 0;
+  border-top: 2px solid color-mix(in srgb, var(--country-tier) 56%, transparent);
+  border-radius: inherit;
+  content: "";
+  pointer-events: none;
+}
+
+.country-badge-row.silver {
+  --country-tier: #c6ced0;
+  --country-tier-light: #f3f6f5;
+  --country-tier-dark: #778284;
+}
+
+.country-badge-row.gold {
+  --country-tier: #e5b946;
+  --country-tier-light: #ffe58b;
+  --country-tier-dark: #8d6419;
+}
+
+.country-badge-row.platinum {
+  --country-tier: #dce5df;
+  --country-tier-light: #ffffff;
+  --country-tier-dark: #76847c;
+}
+
+.country-badge-row.ruby {
+  --country-tier: #c94b62;
+  --country-tier-light: #f58da0;
+  --country-tier-dark: #762334;
+}
+
+.country-badge-row.sapphire {
+  --country-tier: #4d8dc7;
+  --country-tier-light: #8fc9fa;
+  --country-tier-dark: #24547d;
+}
+
+.country-badge-row.emerald {
+  --country-tier: #44b884;
+  --country-tier-light: #8be0b6;
+  --country-tier-dark: #1f6949;
+}
+
+.country-badge-row.diamond {
+  --country-tier: #ccecff;
+  --country-tier-light: #ffffff;
+  --country-tier-dark: #5e91aa;
+}
+
+.country-badge-row.locked {
+  --country-tier: #68746c;
+  --country-tier-light: #9aa59e;
+  --country-tier-dark: #364039;
+  filter: saturate(0.45);
+}
+
+.country-badge-topline {
   display: flex;
   align-items: center;
-  gap: 10px;
-  min-height: 68px;
-  padding: 12px;
-  border: 1px solid rgba(237, 244, 232, 0.1);
-  border-radius: 8px;
+  align-self: start;
+  justify-content: space-between;
+  width: 100%;
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.country-badge-tier {
+  padding: 3px 7px;
+  border: 1px solid color-mix(in srgb, var(--country-tier) 52%, transparent);
+  border-radius: 999px;
+  color: color-mix(in srgb, var(--country-tier-light) 82%, var(--ink));
+  background: color-mix(in srgb, var(--country-tier) 13%, transparent);
+  font-size: 0.63rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.country-badge-medal {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 82px;
+  height: 82px;
+  margin: -1px 0 -5px;
+  border: 5px solid var(--country-tier);
+  border-radius: 50%;
   background:
-    linear-gradient(90deg, rgba(95, 191, 133, 0.18) calc(var(--badge-progress) * 100%), transparent 0),
-    rgba(237, 244, 232, 0.035);
+    linear-gradient(135deg, var(--country-tier-light), var(--country-tier) 42%, var(--country-tier-dark));
+  box-shadow:
+    0 0 0 2px var(--country-tier-dark),
+    0 0 0 4px color-mix(in srgb, var(--country-tier-light) 42%, transparent),
+    0 10px 24px rgba(0, 0, 0, 0.28),
+    inset 0 0 0 2px rgba(255, 255, 255, 0.38);
+}
+
+.country-badge-medal::before,
+.country-badge-medal::after {
+  position: absolute;
+  top: -8px;
+  width: 12px;
+  height: 20px;
+  border: 1px solid var(--country-tier-dark);
+  background: linear-gradient(90deg, var(--country-tier-dark), var(--country-tier), var(--country-tier-light));
+  content: "";
+  z-index: -1;
+}
+
+.country-badge-medal::before {
+  left: 7px;
+  transform: rotate(-28deg);
+}
+
+.country-badge-medal::after {
+  right: 7px;
+  transform: rotate(28deg);
+}
+
+.country-badge-row:is(.ruby, .sapphire, .emerald, .diamond) .country-badge-medal {
+  width: 88px;
+  height: 88px;
+  margin-top: -4px;
+  border: 3px solid var(--country-tier-light);
+  border-radius: 0;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.5) 0 8%, transparent 8% 40%, rgba(7, 17, 11, 0.2) 40% 52%, transparent 52%),
+    conic-gradient(
+      from 22.5deg,
+      var(--country-tier-light) 0deg 45deg,
+      var(--country-tier) 45deg 90deg,
+      var(--country-tier-dark) 90deg 135deg,
+      var(--country-tier) 135deg 180deg,
+      var(--country-tier-light) 180deg 225deg,
+      var(--country-tier) 225deg 270deg,
+      var(--country-tier-dark) 270deg 315deg,
+      var(--country-tier) 315deg 360deg
+    );
+  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.28);
+  clip-path: polygon(30% 0, 70% 0, 100% 30%, 100% 70%, 70% 100%, 30% 100%, 0 70%, 0 30%);
+  filter:
+    drop-shadow(0 0 2px var(--country-tier-light))
+    drop-shadow(0 9px 10px rgba(0, 0, 0, 0.34));
+}
+
+.country-badge-row:is(.ruby, .sapphire, .emerald, .diamond) .country-badge-medal::before {
+  inset: 5px;
+  width: auto;
+  height: auto;
+  border: 1px solid color-mix(in srgb, var(--country-tier-light) 72%, transparent);
+  background: transparent;
+  clip-path: polygon(30% 0, 70% 0, 100% 30%, 100% 70%, 70% 100%, 30% 100%, 0 70%, 0 30%);
+  transform: none;
+  z-index: 0;
+}
+
+.country-badge-row:is(.ruby, .sapphire, .emerald, .diamond) .country-badge-medal::after {
+  top: 8px;
+  right: 10px;
+  width: 13px;
+  height: 13px;
+  border: 0;
+  background: rgba(255, 255, 255, 0.88);
+  clip-path: polygon(50% 0, 61% 38%, 100% 50%, 61% 62%, 50% 100%, 39% 62%, 0 50%, 39% 38%);
+  filter: drop-shadow(0 0 4px rgba(255, 255, 255, 0.8));
+  transform: none;
+  z-index: 2;
+}
+
+.country-badge-flag {
+  position: relative;
+  display: block;
+  width: 62px;
+  height: 62px;
+  overflow: hidden;
+  border: 2px solid rgba(7, 17, 11, 0.68);
+  border-radius: 50%;
+  background-color: #e8eee9;
+  background-position: center;
+  background-size: cover;
+  box-shadow: inset 0 0 10px rgba(7, 17, 11, 0.34);
+  z-index: 1;
+}
+
+.country-badge-ribbon {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: calc(100% - 14px);
+  min-height: 27px;
+  padding: 4px 12px;
+  color: #10150f;
+  background: linear-gradient(180deg, var(--country-tier-light), var(--country-tier));
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.28);
+  isolation: isolate;
+}
+
+.country-badge-ribbon::before,
+.country-badge-ribbon::after {
+  position: absolute;
+  top: 5px;
+  width: 17px;
+  height: 24px;
+  background: var(--country-tier-dark);
+  content: "";
+  clip-path: polygon(0 0, 100% 0, 72% 50%, 100% 100%, 0 100%);
+  z-index: -1;
+}
+
+.country-badge-ribbon::before {
+  left: -11px;
+}
+
+.country-badge-ribbon::after {
+  right: -11px;
+  transform: scaleX(-1);
+}
+
+.country-badge-ribbon strong {
+  width: 100%;
+  overflow: hidden;
+  font-size: 0.83rem;
+  line-height: 1.1;
+  text-align: center;
+  text-overflow: ellipsis;
+  text-shadow: 0 1px rgba(255, 255, 255, 0.28);
+  white-space: nowrap;
+}
+
+.country-badge-regions {
+  align-self: end;
+  width: 100%;
+  margin-top: 7px;
+  overflow: hidden;
+  font-size: 0.68rem;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.country-badge-progress {
+  align-self: end;
+  width: 100%;
+  height: 4px;
+  margin-top: 7px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(237, 244, 232, 0.09);
+}
+
+.country-badge-progress span {
+  display: block;
+  width: calc(var(--country-completion) * 100%);
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--country-tier-dark), var(--country-tier-light));
+  box-shadow: 0 0 8px color-mix(in srgb, var(--country-tier) 44%, transparent);
 }
 
 .badge-row-main {
@@ -287,23 +554,6 @@ nav a:hover {
   line-height: 1.2;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.country-badge-row > span:last-child {
-  min-width: 0;
-}
-
-.country-badge-row strong,
-.country-badge-row small {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.country-badge-row small {
-  margin-top: 2px;
-  font-size: 0.72rem;
 }
 
 .badge-icon {
@@ -360,6 +610,149 @@ nav a:hover {
   --badge-tier: #ccecff;
 }
 
+.achievement-emblem {
+  --badge-tier: color-mix(in srgb, var(--ochre) 78%, var(--green));
+  --badge-tier-light: color-mix(in srgb, var(--badge-tier) 52%, white);
+  --badge-tier-dark: color-mix(in srgb, var(--badge-tier) 65%, #07110b);
+  --badge-tier-ink: #07110b;
+  position: relative;
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 66px;
+  height: 66px;
+  margin-right: 2px;
+  border: 3px solid var(--badge-tier-light);
+  border-radius: 50%;
+  color: var(--badge-tier-ink);
+  background:
+    radial-gradient(circle at 38% 30%, rgba(255, 255, 255, 0.62), transparent 19%),
+    conic-gradient(
+      from 30deg,
+      var(--badge-tier-light),
+      var(--badge-tier) 28%,
+      var(--badge-tier-dark) 48%,
+      var(--badge-tier) 72%,
+      var(--badge-tier-light)
+    );
+  box-shadow:
+    0 0 0 2px var(--badge-tier-dark),
+    0 8px 18px rgba(0, 0, 0, 0.28),
+    inset 0 0 0 2px rgba(255, 255, 255, 0.32);
+  isolation: isolate;
+}
+
+.achievement-emblem::before {
+  position: absolute;
+  inset: 8px;
+  border: 1px solid color-mix(in srgb, var(--badge-tier-dark) 62%, transparent);
+  border-radius: inherit;
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.22), transparent 46%),
+    color-mix(in srgb, var(--badge-tier) 76%, #152019);
+  box-shadow: inset 0 0 12px color-mix(in srgb, var(--badge-tier-dark) 58%, transparent);
+  content: "";
+  z-index: -1;
+}
+
+.achievement-emblem svg {
+  margin-top: -5px;
+  filter: drop-shadow(0 1px rgba(255, 255, 255, 0.24));
+}
+
+.achievement-emblem em {
+  position: absolute;
+  right: 3px;
+  bottom: 2px;
+  left: 3px;
+  overflow: hidden;
+  padding: 2px 3px;
+  border: 1px solid color-mix(in srgb, var(--badge-tier-dark) 60%, transparent);
+  border-radius: 999px;
+  color: var(--badge-tier-ink);
+  background: color-mix(in srgb, var(--badge-tier-light) 88%, white);
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 0.48rem;
+  font-style: normal;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  text-align: center;
+  text-overflow: ellipsis;
+  text-shadow: none;
+  white-space: nowrap;
+}
+
+.achievement-emblem.locked {
+  --badge-tier: #5e6961;
+  --badge-tier-light: #929c95;
+  --badge-tier-dark: #303a33;
+  --badge-tier-ink: #142019;
+  filter: saturate(0.38);
+  opacity: 0.78;
+}
+
+.achievement-emblem.bronze {
+  --badge-tier: #b97545;
+  --badge-tier-light: #e4a374;
+  --badge-tier-dark: #704024;
+}
+
+.achievement-emblem.silver {
+  --badge-tier: #c6ced0;
+  --badge-tier-light: #f2f5f4;
+  --badge-tier-dark: #758083;
+}
+
+.achievement-emblem.gold {
+  --badge-tier: #e5b946;
+  --badge-tier-light: #ffe58b;
+  --badge-tier-dark: #896116;
+}
+
+.achievement-emblem.platinum {
+  --badge-tier: #dce5df;
+  --badge-tier-light: #ffffff;
+  --badge-tier-dark: #74827a;
+}
+
+.achievement-emblem.ruby {
+  --badge-tier: #c94b62;
+  --badge-tier-light: #f58da0;
+  --badge-tier-dark: #762334;
+  --badge-tier-ink: #fff7f8;
+}
+
+.achievement-emblem.sapphire {
+  --badge-tier: #4d8dc7;
+  --badge-tier-light: #8fc9fa;
+  --badge-tier-dark: #24547d;
+  --badge-tier-ink: #f3f9ff;
+}
+
+.achievement-emblem.emerald {
+  --badge-tier: #44b884;
+  --badge-tier-light: #8be0b6;
+  --badge-tier-dark: #1f6949;
+}
+
+.achievement-emblem.diamond {
+  --badge-tier: #ccecff;
+  --badge-tier-light: #ffffff;
+  --badge-tier-dark: #5e91aa;
+}
+
+.achievement-emblem:is(.ruby, .sapphire, .emerald, .diamond) {
+  border-radius: 0;
+  clip-path: polygon(30% 0, 70% 0, 100% 30%, 100% 70%, 70% 100%, 30% 100%, 0 70%, 0 30%);
+  filter: drop-shadow(0 7px 9px rgba(0, 0, 0, 0.3));
+}
+
+.achievement-emblem:is(.ruby, .sapphire, .emerald, .diamond)::before {
+  border-radius: 0;
+  clip-path: inherit;
+}
+
 .badge-cell-grid {
   display: grid;
   grid-template-columns: repeat(8, minmax(0, 1fr));
@@ -406,8 +799,12 @@ nav a:hover {
 }
 
 .dashboard-badges .badge-row {
-  min-height: 132px;
+  min-height: 168px;
   padding: 12px;
+}
+
+.dashboard-badges .badge-row-main {
+  align-items: center;
 }
 
 .dashboard-badges .badge-row-main strong {
