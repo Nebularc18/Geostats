@@ -1,7 +1,19 @@
-import { BadRequestException, Body, Controller, Get, Logger, Post, Query, Res, ServiceUnavailableException, UseGuards } from "@nestjs/common";
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Get,
+  Logger,
+  Post,
+  Query,
+  Res,
+  ServiceUnavailableException,
+  UnauthorizedException,
+  UseGuards
+} from "@nestjs/common";
 import { Response } from "express";
 import { AuthUser } from "@geostats/shared";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { AuthService } from "./auth.service";
 import { AuthGuard } from "./auth.guard";
 import { CurrentUser } from "./current-user.decorator";
@@ -10,6 +22,7 @@ import { envOrDefault } from "../common/env";
 @Controller("auth")
 export class AuthController {
   private readonly logger = new Logger(AuthController.name);
+  private readonly mobileExchangeCodes = new Map<string, { codeChallenge: string; expiresAt: number; token: string; user: AuthUser }>();
 
   constructor(private readonly auth: AuthService) {}
 
@@ -71,9 +84,16 @@ export class AuthController {
   }
 
   @Get("mobile/external")
-  mobileExternal(@Query("redirectUri") redirectUri: string | undefined, @Res({ passthrough: true }) response: Response) {
+  mobileExternal(
+    @Query("redirectUri") redirectUri: string | undefined,
+    @Query("codeChallenge") mobileCodeChallenge: string | undefined,
+    @Res({ passthrough: true }) response: Response
+  ) {
     if (!redirectUri || !this.isAllowedMobileRedirectUri(redirectUri)) {
       throw new BadRequestException("Invalid mobile redirect URI");
+    }
+    if (!mobileCodeChallenge || !this.isValidCodeVerifier(mobileCodeChallenge)) {
+      throw new BadRequestException("Invalid mobile code challenge");
     }
 
     const state = randomBytes(32).toString("hex");
@@ -92,6 +112,12 @@ export class AuthController {
       maxAge: 10 * 60 * 1000
     });
     response.cookie("geostats_mobile_redirect_uri", redirectUri, {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: process.env.NODE_ENV === "production",
+      maxAge: 10 * 60 * 1000
+    });
+    response.cookie("geostats_mobile_code_challenge", mobileCodeChallenge, {
       httpOnly: true,
       sameSite: "lax",
       secure: process.env.NODE_ENV === "production",
@@ -118,6 +144,25 @@ export class AuthController {
     return { user, token: this.auth.sign(user) };
   }
 
+  @Post("mobile/exchange")
+  async mobileExchange(@Body() body: { code?: unknown; codeVerifier?: unknown }) {
+    if (typeof body.code !== "string" || typeof body.codeVerifier !== "string") {
+      throw new BadRequestException("Mobile auth code and verifier are required");
+    }
+    const record = this.mobileExchangeCodes.get(body.code);
+    if (!record || record.expiresAt < Date.now()) {
+      if (record) {
+        this.mobileExchangeCodes.delete(body.code);
+      }
+      throw new UnauthorizedException("Invalid or expired mobile auth code");
+    }
+    if (!this.isValidCodeVerifier(body.codeVerifier) || !this.safeEqual(record.codeChallenge, body.codeVerifier)) {
+      throw new UnauthorizedException("Invalid mobile auth verifier");
+    }
+    this.mobileExchangeCodes.delete(body.code);
+    return { user: record.user, token: record.token };
+  }
+
   @Get("external/callback")
   async externalCallback(
     @Query("code") code: string | undefined,
@@ -127,10 +172,14 @@ export class AuthController {
     const expectedState = response.req.cookies?.geostats_oauth_state;
     const codeVerifier = response.req.cookies?.geostats_oauth_code_verifier;
     const mobileRedirectUri = response.req.cookies?.geostats_mobile_redirect_uri;
+    const mobileCodeChallenge = response.req.cookies?.geostats_mobile_code_challenge;
     response.clearCookie("geostats_oauth_state");
     response.clearCookie("geostats_oauth_code_verifier");
     if (mobileRedirectUri) {
       response.clearCookie("geostats_mobile_redirect_uri");
+    }
+    if (mobileCodeChallenge) {
+      response.clearCookie("geostats_mobile_code_challenge");
     }
     if (!code || !state || !expectedState || state !== expectedState || !codeVerifier) {
       if (mobileRedirectUri && this.isAllowedMobileRedirectUri(mobileRedirectUri)) {
@@ -145,7 +194,12 @@ export class AuthController {
       const user = await this.auth.loginWithExternalProvider(code, codeVerifier);
       const token = this.setCookie(response, user);
       if (mobileRedirectUri && this.isAllowedMobileRedirectUri(mobileRedirectUri)) {
-        response.redirect(this.mobileLoginUrl(mobileRedirectUri, undefined, token));
+        if (!this.isValidCodeVerifier(mobileCodeChallenge)) {
+          response.redirect(this.mobileLoginUrl(mobileRedirectUri, "external"));
+          return;
+        }
+        const mobileCode = this.createMobileExchangeCode(token, user, mobileCodeChallenge);
+        response.redirect(this.mobileLoginUrl(mobileRedirectUri, undefined, mobileCode));
         return;
       }
       response.redirect(`${envOrDefault("WEB_ORIGIN", "http://localhost:3000")}/dashboard`);
@@ -231,13 +285,44 @@ export class AuthController {
     return new URL("/dashboard", envOrDefault("WEB_ORIGIN", "http://localhost:3000")).toString();
   }
 
-  private mobileLoginUrl(redirectUri: string, authError?: string, token?: string): string {
+  private mobileLoginUrl(redirectUri: string, authError?: string, code?: string): string {
     const url = new URL(redirectUri);
     const params = new URLSearchParams();
     if (authError) params.set("authError", authError);
-    if (token) params.set("token", token);
+    if (code) params.set("code", code);
     url.hash = params.toString();
     return url.toString();
+  }
+
+  private createMobileExchangeCode(token: string, user: AuthUser, codeChallenge: string) {
+    this.pruneMobileExchangeCodes();
+    const code = this.base64Url(randomBytes(32));
+    this.mobileExchangeCodes.set(code, {
+      codeChallenge,
+      expiresAt: Date.now() + 2 * 60 * 1000,
+      token,
+      user
+    });
+    return code;
+  }
+
+  private pruneMobileExchangeCodes() {
+    const now = Date.now();
+    for (const [code, record] of this.mobileExchangeCodes) {
+      if (record.expiresAt < now) {
+        this.mobileExchangeCodes.delete(code);
+      }
+    }
+  }
+
+  private isValidCodeVerifier(value: unknown): value is string {
+    return typeof value === "string" && /^[A-Za-z0-9._~-]{43,128}$/.test(value);
+  }
+
+  private safeEqual(left: string, right: string) {
+    const leftBuffer = Buffer.from(left);
+    const rightBuffer = Buffer.from(right);
+    return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
   }
 
   private isAllowedMobileRedirectUri(redirectUri: string): boolean {

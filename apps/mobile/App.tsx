@@ -194,6 +194,25 @@ function requireServerUrl(value: string) {
   return normalized;
 }
 
+function randomBase64Url(length: number) {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
+  const bytes = new Uint8Array(length);
+  if (globalThis.crypto?.getRandomValues) {
+    globalThis.crypto.getRandomValues(bytes);
+    return Array.from(bytes, (byte) => alphabet[byte % alphabet.length]).join("");
+  }
+  if (globalThis.crypto?.randomUUID) {
+    return Array.from({ length: Math.ceil(length / 32) }, () => globalThis.crypto.randomUUID().replace(/-/g, ""))
+      .join("")
+      .slice(0, length);
+  }
+  throw new Error("Secure random values are unavailable on this device.");
+}
+
+function mobileCodeVerifier() {
+  return randomBase64Url(86);
+}
+
 async function apiFetch<T>(baseUrl: string, path: string, token: string | null, options: RequestInit = {}): Promise<T> {
   const headers = new Headers(options.headers);
   if (!(options.body instanceof FormData) && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
@@ -797,7 +816,8 @@ function AuthScreen({ apiBaseUrl, onApiBaseUrlChange, onSession }: { apiBaseUrl:
       const baseUrl = await saveServerUrl();
       if (!baseUrl) return;
       const redirectUri = process.env.EXPO_PUBLIC_MOBILE_AUTH_REDIRECT_URI ?? Linking.createURL("auth", { scheme: "geostats" });
-      const authUrl = `${baseUrl}/auth/mobile/external?redirectUri=${encodeURIComponent(redirectUri)}`;
+      const codeVerifier = mobileCodeVerifier();
+      const authUrl = `${baseUrl}/auth/mobile/external?redirectUri=${encodeURIComponent(redirectUri)}&codeChallenge=${encodeURIComponent(codeVerifier)}`;
       const result = await WebBrowser.openAuthSessionAsync(authUrl, redirectUri);
       if (result.type !== "success") {
         setMessage("Sign in was cancelled.");
@@ -806,18 +826,21 @@ function AuthScreen({ apiBaseUrl, onApiBaseUrlChange, onSession }: { apiBaseUrl:
       const parsed = new URL(result.url);
       const params = new URLSearchParams(parsed.hash.replace(/^#/, "") || parsed.search.replace(/^\?/, ""));
       const authError = params.get("authError");
-      const token = params.get("token");
+      const code = params.get("code");
       if (authError) {
         setMessage("External sign in failed.");
         return;
       }
-      if (!token) {
+      if (!code) {
         setMessage("External sign in did not return a session.");
         return;
       }
-      const data = await apiFetch<{ user: Session["user"] }>(baseUrl, "/auth/me", token);
-      await SecureStore.setItemAsync(TOKEN_KEY, token);
-      onSession({ token, user: data.user }, baseUrl);
+      const data = await apiFetch<Session>(baseUrl, "/auth/mobile/exchange", null, {
+        method: "POST",
+        body: JSON.stringify({ code, codeVerifier })
+      });
+      await SecureStore.setItemAsync(TOKEN_KEY, data.token);
+      onSession(data, baseUrl);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Could not sign in");
     }

@@ -754,12 +754,9 @@ export function AchievementBadges({
   variant?: "sidebar" | "dashboard";
 }) {
   const [stats, setStats] = useState<StatsSummary | null>(providedStats);
-  const [scratchCountries, setScratchCountries] = useState<ScratchCountryBucket[]>(() =>
-    isDevelopment ? developmentCountryBadges : []
-  );
-  const [countryRegionTotals, setCountryRegionTotals] = useState<Map<string, number>>(() =>
-    isDevelopment ? new Map(developmentCountryRegionTotals) : new Map()
-  );
+  const [scratchCountries, setScratchCountries] = useState<ScratchCountryBucket[]>([]);
+  const [countryRegionTotals, setCountryRegionTotals] = useState<Map<string, number>>(new Map());
+  const [countryBadgesLoading, setCountryBadgesLoading] = useState(true);
   const [error, setError] = useState(false);
   const [sortMode, setSortMode] = useState<BadgeSortMode>("level");
   const [sortReversed, setSortReversed] = useState(false);
@@ -796,9 +793,6 @@ export function AchievementBadges({
     let active = true;
     void apiFetch<ScratchMapData>("/map/scratch")
       .then(async (data) => {
-        if (active) {
-          setScratchCountries(data.countries);
-        }
         const detailCountries = await Promise.all(
           data.countries
             .filter((country) => !isUnknownLocationName(country.name))
@@ -811,7 +805,9 @@ export function AchievementBadges({
 
         if (supportedDetailCountries.length === 0) {
           if (active) {
+            setScratchCountries(data.countries);
             setCountryRegionTotals(new Map());
+            setCountryBadgesLoading(false);
           }
           return;
         }
@@ -838,11 +834,13 @@ export function AchievementBadges({
               )
             );
             setCountryRegionTotals(new Map(regionTotals));
+            setCountryBadgesLoading(false);
           }
         } catch {
           if (active) {
             setScratchCountries(data.countries);
             setCountryRegionTotals(new Map());
+            setCountryBadgesLoading(false);
           }
         }
       })
@@ -854,6 +852,7 @@ export function AchievementBadges({
           } else {
             setScratchCountries([]);
           }
+          setCountryBadgesLoading(false);
         }
       });
     return () => {
@@ -918,61 +917,69 @@ export function AchievementBadges({
         </span>
         <Globe2 size={16} />
       </div>
-      <div className="badge-summary-strip">
-        {countryTierSummary.map(({ tier, count }) => (
-          <span key={tier}>
-            {count} {tier.toLowerCase()}
-          </span>
-        ))}
-      </div>
-      <div className="country-badge-list">
-        {sortedCountryBadges.map((badge) => {
-          const index = achievedIndex(badge);
-          const tier = index >= 0 ? tiers[index] : "Locked";
-          const tierClass = index >= 0 ? tierClasses[index] : "locked";
-          const regionCompletion = badge.totalRegions
-            ? Math.min(1, badge.completedRegions / badge.totalRegions)
-            : Math.max(0, index + 1) / tiers.length;
-          const flagCode = countryFlagCode(badge.name)?.toLowerCase() ?? "xx";
-          return (
-            <article
-              key={badge.name}
-              className={`country-badge-row ${tierClass}`}
-              style={{ "--country-completion": regionCompletion } as CSSProperties}
-            >
-              <div className="country-badge-topline">
-                <span className="country-badge-tier">{tier}</span>
-                <span>
-                  {badge.totalRegions
-                    ? `${Math.round(regionCompletion * 100)}%`
-                    : `${badge.completedRegions.toLocaleString()} found`}
-                </span>
-              </div>
-              <div className="country-badge-medal" aria-hidden="true">
-                <span className={`country-badge-flag fi fi-${flagCode}`} />
-              </div>
-              <div className="country-badge-ribbon">
-                <strong>{badge.name}</strong>
-              </div>
-              <small className="country-badge-regions">
-                {badge.totalRegions
-                  ? `${badge.completedRegions.toLocaleString()} of ${badge.totalRegions.toLocaleString()} regions`
-                  : `${badge.completedRegions.toLocaleString()} regions completed`}
-              </small>
-              <div
-                className="country-badge-progress"
-                role="progressbar"
-                aria-label={`${badge.name} region progress`}
-                aria-valuemin={0}
-                aria-valuemax={badge.totalRegions ?? badge.completedRegions}
-                aria-valuenow={badge.completedRegions}
-              >
-                <span />
-              </div>
-            </article>
-          );
-        })}
-      </div>
+      {countryBadgesLoading ? (
+        <small className="muted" role="status">
+          Loading country badges…
+        </small>
+      ) : (
+        <>
+          <div className="badge-summary-strip">
+            {countryTierSummary.map(({ tier, count }) => (
+              <span key={tier}>
+                {count} {tier.toLowerCase()}
+              </span>
+            ))}
+          </div>
+          <div className="country-badge-list">
+            {sortedCountryBadges.map((badge) => {
+              const index = achievedIndex(badge);
+              const tier = index >= 0 ? tiers[index] : "Locked";
+              const tierClass = index >= 0 ? tierClasses[index] : "locked";
+              const regionCompletion = badge.totalRegions
+                ? Math.min(1, badge.completedRegions / badge.totalRegions)
+                : Math.max(0, index + 1) / tiers.length;
+              const flagCode = countryFlagCode(badge.name)?.toLowerCase() ?? "xx";
+              return (
+                <article
+                  key={badge.name}
+                  className={`country-badge-row ${tierClass}`}
+                  style={{ "--country-completion": regionCompletion } as CSSProperties}
+                >
+                  <div className="country-badge-topline">
+                    <span className="country-badge-tier">{tier}</span>
+                    <span>
+                      {badge.totalRegions
+                        ? `${Math.round(regionCompletion * 100)}%`
+                        : `${badge.completedRegions.toLocaleString()} found`}
+                    </span>
+                  </div>
+                  <div className="country-badge-medal" aria-hidden="true">
+                    <span className={`country-badge-flag fi fi-${flagCode}`} />
+                  </div>
+                  <div className="country-badge-ribbon">
+                    <strong>{badge.name}</strong>
+                  </div>
+                  <small className="country-badge-regions">
+                    {badge.totalRegions
+                      ? `${badge.completedRegions.toLocaleString()} of ${badge.totalRegions.toLocaleString()} regions`
+                      : `${badge.completedRegions.toLocaleString()} regions completed`}
+                  </small>
+                  <div
+                    className="country-badge-progress"
+                    role="progressbar"
+                    aria-label={`${badge.name} region progress`}
+                    aria-valuemin={0}
+                    aria-valuemax={badge.totalRegions ?? badge.completedRegions}
+                    aria-valuenow={badge.completedRegions}
+                  >
+                    <span />
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        </>
+      )}
       <div className="achievement-badges-heading">
         <span>
           <small>Achievement badges</small>

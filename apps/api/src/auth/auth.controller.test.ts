@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { UnauthorizedException } from "@nestjs/common";
+import { BadRequestException, UnauthorizedException } from "@nestjs/common";
 import { AuthController } from "./auth.controller";
 
 function withEnv<T>(values: Record<string, string | undefined>, fn: () => T | Promise<T>): Promise<T> | T {
@@ -177,21 +177,27 @@ test("development browser login redirects only to web app paths", async () => {
   });
 });
 
-test("mobile external callback redirects bearer token in URL fragment", async () => {
+const mobileCodeVerifier = "A".repeat(43);
+
+test("mobile external callback redirects a verifier-bound one-time code instead of a bearer token", async () => {
   const auth = {
     loginWithExternalProvider: async () => ({ id: "user-1", email: "a@example.com", username: "a" }),
     sign: () => "jwt-token"
   };
   const redirects: string[] = [];
+  const clearedCookies: string[] = [];
   const response = {
     req: {
       cookies: {
         geostats_oauth_state: "state",
         geostats_oauth_code_verifier: "verifier",
-        geostats_mobile_redirect_uri: "geostats://auth"
+        geostats_mobile_redirect_uri: "geostats://auth",
+        geostats_mobile_code_challenge: mobileCodeVerifier
       }
     },
-    clearCookie: () => {},
+    clearCookie: (name: string) => {
+      clearedCookies.push(name);
+    },
     cookie: () => {},
     redirect: (url: string) => {
       redirects.push(url);
@@ -201,7 +207,46 @@ test("mobile external callback redirects bearer token in URL fragment", async ()
 
   await controller.externalCallback("code", "state", response as any);
 
-  assert.deepEqual(redirects, ["geostats://auth#token=jwt-token"]);
+  assert.equal(redirects.length, 1);
+  const redirectUrl = new URL(redirects[0]);
+  const params = new URLSearchParams(redirectUrl.hash.slice(1));
+  const exchangeCode = params.get("code");
+  assert.equal(redirectUrl.protocol, "geostats:");
+  assert.equal(params.has("token"), false);
+  assert.match(exchangeCode ?? "", /^[A-Za-z0-9_-]+$/);
+  assert.deepEqual(clearedCookies, [
+    "geostats_oauth_state",
+    "geostats_oauth_code_verifier",
+    "geostats_mobile_redirect_uri",
+    "geostats_mobile_code_challenge"
+  ]);
+
+  await assert.rejects(
+    () => controller.mobileExchange({ code: exchangeCode, codeVerifier: "B".repeat(43) }),
+    UnauthorizedException
+  );
+
+  assert.deepEqual(await controller.mobileExchange({ code: exchangeCode, codeVerifier: mobileCodeVerifier }), {
+    user: { id: "user-1", email: "a@example.com", username: "a" },
+    token: "jwt-token"
+  });
+  await assert.rejects(
+    () => controller.mobileExchange({ code: exchangeCode, codeVerifier: mobileCodeVerifier }),
+    UnauthorizedException
+  );
+});
+
+test("mobile external start requires a verifier challenge", () => {
+  const controller = new AuthController({ externalAuthorizationUrl: () => "https://auth.example/start" } as any);
+  const response = {
+    cookie: () => {},
+    redirect: () => {}
+  };
+
+  assert.throws(
+    () => controller.mobileExternal("geostats://auth", undefined, response as any),
+    BadRequestException
+  );
 });
 
 test("development mobile redirect validation accepts app and Expo auth URLs", () => {
