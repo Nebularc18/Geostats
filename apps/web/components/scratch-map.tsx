@@ -193,6 +193,77 @@ function polygonAreaAndCentroid(ring: Position[]) {
   };
 }
 
+function longitudeNear(longitude: number, reference: number) {
+  let adjusted = longitude;
+  while (adjusted - reference > 180) {
+    adjusted -= 360;
+  }
+  while (adjusted - reference < -180) {
+    adjusted += 360;
+  }
+  return adjusted;
+}
+
+function unwrapRing(ring: Position[]) {
+  if (ring.length === 0) {
+    return ring;
+  }
+
+  const unwrapped: Position[] = [[ring[0]![0], ring[0]![1]]];
+  ring.slice(1).forEach(([longitude, latitude]) => {
+    const previousLongitude = unwrapped.at(-1)?.[0] ?? longitude;
+    unwrapped.push([longitudeNear(longitude, previousLongitude), latitude]);
+  });
+  return unwrapped;
+}
+
+function outerRingsFromFeatures(features: GeoJsonFeature[]) {
+  return features.flatMap((feature) => {
+    const polygons =
+      feature.geometry.type === "Polygon"
+        ? [feature.geometry.coordinates]
+        : feature.geometry.type === "MultiPolygon"
+          ? feature.geometry.coordinates
+          : [];
+
+    return polygons
+      .map((polygon) => polygon[0] as Position[] | undefined)
+      .filter((ring): ring is Position[] => Boolean(ring && ring.length > 2))
+      .map(unwrapRing);
+  });
+}
+
+function focusedBoundsFromFeatures(features: GeoJsonFeature[]) {
+  const bounds = new maplibregl.LngLatBounds();
+  const polygons = outerRingsFromFeatures(features)
+    .map((ring) => ({ ring, centroid: polygonAreaAndCentroid(ring) }))
+    .filter(
+      (polygon): polygon is { ring: Position[]; centroid: { area: number; center: [number, number] } } =>
+        polygon.centroid !== null
+    );
+  const largest = polygons.reduce<(typeof polygons)[number] | null>(
+    (current, polygon) => (!current || polygon.centroid.area > current.centroid.area ? polygon : current),
+    null
+  );
+
+  if (!largest) {
+    return bounds;
+  }
+
+  // Tiny overseas territories can make a country appear world-wide. Keep the
+  // meaningful landmasses and unwrap nearby islands around the largest one.
+  const minimumArea = largest.centroid.area * 0.005;
+  polygons
+    .filter((polygon) => polygon.centroid.area >= minimumArea)
+    .forEach(({ ring }) => {
+      ring.forEach(([longitude, latitude]) => {
+        bounds.extend([longitudeNear(longitude, largest.centroid.center[0]), latitude]);
+      });
+    });
+
+  return bounds;
+}
+
 function centerFromFeatureGeometry(features: GeoJsonFeature[]) {
   let bestArea = 0;
   let bestCenter: [number, number] | null = null;
@@ -263,24 +334,6 @@ function loadGeoJson(url: string) {
     });
   geoJsonCache.set(url, request);
   return request;
-}
-
-function boundsFromFeatureGeometry(feature: { geometry: GeoJSON.Geometry }) {
-  const bounds = new maplibregl.LngLatBounds();
-  const coordinates =
-    feature.geometry.type === "Polygon"
-      ? feature.geometry.coordinates
-      : feature.geometry.type === "MultiPolygon"
-        ? feature.geometry.coordinates.flat()
-        : [];
-
-  coordinates.flat(1).forEach((coordinate) => {
-    if (Array.isArray(coordinate) && coordinate.length >= 2) {
-      bounds.extend([Number(coordinate[0]), Number(coordinate[1])]);
-    }
-  });
-
-  return bounds;
 }
 
 export function ScratchMap({
@@ -502,14 +555,7 @@ export function ScratchMap({
           return;
         }
 
-        const bounds = boundsFromFeatureGeometry(geoJson.features[0]!);
-        geoJson.features.slice(1).forEach((feature) => {
-          const featureBounds = boundsFromFeatureGeometry(feature);
-          if (!featureBounds.isEmpty()) {
-            bounds.extend(featureBounds.getSouthWest());
-            bounds.extend(featureBounds.getNorthEast());
-          }
-        });
+        const bounds = focusedBoundsFromFeatures(geoJson.features);
 
         if (!bounds.isEmpty()) {
           activeMap.fitBounds(bounds, { padding: 42, maxZoom: 6.1, duration: 600 });
@@ -617,14 +663,7 @@ export function ScratchMap({
           return;
         }
 
-        const bounds = boundsFromFeatureGeometry(geoJson.features[0]!);
-        geoJson.features.slice(1).forEach((feature) => {
-          const featureBounds = boundsFromFeatureGeometry(feature);
-          if (!featureBounds.isEmpty()) {
-            bounds.extend(featureBounds.getSouthWest());
-            bounds.extend(featureBounds.getNorthEast());
-          }
-        });
+        const bounds = focusedBoundsFromFeatures(geoJson.features);
 
         if (!bounds.isEmpty()) {
           activeMap.fitBounds(bounds, { padding: 42, maxZoom: 6.1, duration: 600 });
@@ -650,14 +689,7 @@ export function ScratchMap({
         return;
       }
 
-      const bounds = boundsFromFeatureGeometry(features[0]!);
-      features.forEach((feature) => {
-        const featureBounds = boundsFromFeatureGeometry(feature);
-        if (!featureBounds.isEmpty()) {
-          bounds.extend(featureBounds.getSouthWest());
-          bounds.extend(featureBounds.getNorthEast());
-        }
-      });
+      const bounds = focusedBoundsFromFeatures(features);
 
       if (!bounds.isEmpty()) {
         activeMap.fitBounds(bounds, { padding: 46, maxZoom: 5.4, duration: 600 });
