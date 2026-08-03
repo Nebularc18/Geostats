@@ -80,6 +80,11 @@ type OwnedMysterySnapshot = {
   sharedWith: AppUser[];
 };
 
+type MysterySyncMetadata = {
+  revision: number;
+  fingerprint: string;
+};
+
 type BrowserImport = {
   gcCode?: unknown;
   name?: unknown;
@@ -114,9 +119,21 @@ type GeocachingSyncPayload = {
 };
 
 const STORAGE_KEY = "geostats-mysteries-v1";
+const SYNC_METADATA_STORAGE_KEY = "geostats-mystery-sync-metadata-v1";
 const DELETION_STORAGE_KEY = "geostats-mystery-deletions-v1";
 const DELETION_CHANNEL = "geostats-mystery-deletions";
 const MAX_REASONABLE_DISTANCE_KM = 3.2;
+
+function snapshotFingerprint(value: string) {
+  let first = 2166136261;
+  let second = 0x9e3779b9;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    first = Math.imul(first ^ code, 16777619);
+    second = Math.imul(second ^ code, 2246822519);
+  }
+  return `${value.length}:${(first >>> 0).toString(36)}:${(second >>> 0).toString(36)}`;
+}
 
 function distanceKm(lat1: number, lon1: number, lat2: number, lon2: number) {
   const toRad = (value: number) => (value * Math.PI) / 180;
@@ -263,8 +280,10 @@ function applyGeocachingSyncReceipt(caches: MysteryCache[], value: GeocachingSyn
 export default function MysteriesPage() {
   const initialized = useRef(false);
   const persistedCaches = useRef<MysteryCache[]>([]);
+  const latestCaches = useRef<MysteryCache[]>([]);
   const serverSnapshots = useRef(new Map<string, string>());
   const snapshotRevisions = useRef(new Map<string, number>());
+  const syncMetadata = useRef(new Map<string, MysterySyncMetadata>());
   const shareMutationRevisions = useRef(new Map<string, number>());
   const deletedCacheIds = useRef(new Set<string>());
   const deletionChannel = useRef<BroadcastChannel | null>(null);
@@ -294,9 +313,35 @@ export default function MysteriesPage() {
   const [notice, setNotice] = useState("");
   const scriptTextRef = useRef<HTMLTextAreaElement>(null);
 
+  latestCaches.current = caches;
+
+  function persistSyncMetadata() {
+    try {
+      localStorage.setItem(SYNC_METADATA_STORAGE_KEY, JSON.stringify(Object.fromEntries(syncMetadata.current)));
+    } catch {
+      // Mystery data remains the primary offline copy when metadata cannot be persisted.
+    }
+  }
+
+  function rememberServerSnapshot(cacheId: string, revision: number, serialized: string) {
+    rememberSnapshotRevision(cacheId, revision);
+    serverSnapshots.current.set(cacheId, serialized);
+    syncMetadata.current.set(cacheId, { revision, fingerprint: snapshotFingerprint(serialized) });
+    persistSyncMetadata();
+  }
+
   useEffect(() => {
     if (initialized.current) return;
     initialized.current = true;
+    try {
+      const storedMetadata = JSON.parse(localStorage.getItem(SYNC_METADATA_STORAGE_KEY) ?? "{}") as Record<string, MysterySyncMetadata>;
+      syncMetadata.current = new Map(Object.entries(storedMetadata).filter((entry): entry is [string, MysterySyncMetadata] => {
+        const [cacheId, metadata] = entry;
+        return Boolean(cacheId) && Number.isSafeInteger(metadata?.revision) && metadata.revision >= 0 && typeof metadata.fingerprint === "string";
+      }));
+    } catch {
+      localStorage.removeItem(SYNC_METADATA_STORAGE_KEY);
+    }
     try {
       const storedDeletionIds = JSON.parse(localStorage.getItem(DELETION_STORAGE_KEY) ?? "[]") as unknown;
       if (Array.isArray(storedDeletionIds)) {
@@ -417,11 +462,17 @@ export default function MysteriesPage() {
             revision: requestedRevision
           })
         }).then(({ revision, mystery }) => {
-          rememberSnapshotRevision(cache.id, revision);
           const storedSerialized = JSON.stringify(mystery);
-          serverSnapshots.current.set(cache.id, storedSerialized);
+          rememberServerSnapshot(cache.id, revision, storedSerialized);
           if (storedSerialized !== serialized) {
-            setPersistedForSync([...persistedCaches.current]);
+            const authoritative = verifiedStoredShares([{ ...mystery, sharedWith: cache.sharedWith }])[0];
+            setCaches((current) => current.flatMap((item) => item.id === cache.id
+              ? [
+                  authoritative,
+                  { ...shareableMystery(item), id: newId(), name: `${item.name} (device edits)`, sharedWith: [] }
+                ]
+              : [item]));
+            setNotice(`A newer ${cache.gcCode} was already on the server. Your device edits were preserved as a separate copy.`);
           }
         });
       })).catch(() => {
@@ -444,7 +495,7 @@ export default function MysteriesPage() {
       cache.id,
       JSON.stringify(shareableMystery(cache))
     ]));
-    const knownServerSnapshots = new Map(serverSnapshots.current);
+    const knownSyncMetadata = new Map(syncMetadata.current);
     void apiFetch<{ mysteries: SharedMysteryGrant[] }>("/mysteries/shared")
       .then(({ mysteries }) => {
         if (!active) return;
@@ -478,40 +529,57 @@ export default function MysteriesPage() {
           ? deletedClientIds.filter((cacheId): cacheId is string => typeof cacheId === "string" && cacheId.length > 0)
           : [];
         serverDeletedIds.forEach(rememberDeletedCache);
-        const ownedCaches = mysteries.flatMap(({ clientId, mystery, revision, sharedWith }) => {
+        const ownedEntries = mysteries.flatMap(({ clientId, mystery, revision, sharedWith }) => {
           if (!mystery || typeof mystery !== "object" || mystery.id !== clientId || deletedCacheIds.current.has(clientId)) return [];
-          rememberSnapshotRevision(clientId, revision);
           const cache = verifiedStoredShares([{
             ...mystery,
             id: clientId,
             sharedWith: Array.isArray(sharedWith) ? sharedWith.filter(isAppUser) : []
           }])[0];
-          serverSnapshots.current.set(clientId, JSON.stringify(shareableMystery(cache)));
-          return [cache];
+          const serialized = JSON.stringify(shareableMystery(cache));
+          return [{ cache, revision, serialized }];
         });
-        const serverIds = new Set(ownedCaches.map((cache) => cache.id));
-        setCaches((current) => {
-          const currentById = new Map(current.filter((cache) => !cache.sharedBy).map((cache) => [cache.id, cache]));
-          const reconciledOwned = ownedCaches.map((serverCache) => {
-            const currentCache = currentById.get(serverCache.id);
-            if (!currentCache) return serverCache;
-            const currentSerialized = JSON.stringify(shareableMystery(currentCache));
-            const changedDuringRequest = currentSerialized !== ownedAtRequest.get(serverCache.id);
-            const knownServerSnapshot = knownServerSnapshots.get(serverCache.id);
-            const hadPendingOfflineEdits =
-              knownServerSnapshot !== undefined && currentSerialized !== knownServerSnapshot;
-            return changedDuringRequest || hadPendingOfflineEdits ? currentCache : serverCache;
-          });
-          const localOnly = current.filter((cache) =>
-            !cache.sharedBy &&
-            !serverIds.has(cache.id) &&
-            !deletedCacheIds.current.has(cache.id)
-          );
-          const receivedShares = current.filter((cache) =>
-            cache.sharedBy && !deletedCacheIds.current.has(cache.id)
-          );
-          return [...reconciledOwned, ...localOnly, ...receivedShares];
+        const serverIds = new Set(ownedEntries.map(({ cache }) => cache.id));
+        const current = latestCaches.current;
+        const currentById = new Map(current.filter((cache) => !cache.sharedBy).map((cache) => [cache.id, cache]));
+        const conflictCopies: MysteryCache[] = [];
+        const reconciledOwned = ownedEntries.map(({ cache: serverCache, revision, serialized: serverSerialized }) => {
+          const currentCache = currentById.get(serverCache.id);
+          if (!currentCache) return serverCache;
+          const currentSerialized = JSON.stringify(shareableMystery(currentCache));
+          const requestSerialized = ownedAtRequest.get(serverCache.id);
+          const metadata = knownSyncMetadata.get(serverCache.id);
+          const localChanged = metadata
+            ? snapshotFingerprint(currentSerialized) !== metadata.fingerprint
+            : currentSerialized !== serverSerialized;
+          const serverChanged = metadata
+            ? revision !== metadata.revision
+            : requestSerialized !== undefined && requestSerialized !== serverSerialized;
+          const changedDuringRequest = requestSerialized !== undefined && currentSerialized !== requestSerialized;
+          if ((localChanged || changedDuringRequest) && !serverChanged) return currentCache;
+          if (localChanged || changedDuringRequest) {
+            conflictCopies.push({
+              ...shareableMystery(currentCache),
+              id: newId(),
+              name: `${currentCache.name} (device edits)`,
+              sharedWith: []
+            });
+          }
+          return serverCache;
         });
+        ownedEntries.forEach(({ cache, revision, serialized }) => rememberServerSnapshot(cache.id, revision, serialized));
+        const localOnly = current.filter((cache) =>
+          !cache.sharedBy &&
+          !serverIds.has(cache.id) &&
+          !deletedCacheIds.current.has(cache.id)
+        );
+        const receivedShares = current.filter((cache) =>
+          cache.sharedBy && !deletedCacheIds.current.has(cache.id)
+        );
+        setCaches([...reconciledOwned, ...conflictCopies, ...localOnly, ...receivedShares]);
+        if (conflictCopies.length) {
+          setNotice(`${conflictCopies.length} local ${conflictCopies.length === 1 ? "edit was" : "edits were"} preserved as a separate device copy because the server also changed.`);
+        }
         setServerSyncReady(true);
       })
       .catch(() => {
@@ -692,7 +760,13 @@ export default function MysteriesPage() {
   }
 
   function rememberDeletedCaches(cacheIds: string[]) {
-    cacheIds.forEach((cacheId) => deletedCacheIds.current.add(cacheId));
+    cacheIds.forEach((cacheId) => {
+      deletedCacheIds.current.add(cacheId);
+      serverSnapshots.current.delete(cacheId);
+      snapshotRevisions.current.delete(cacheId);
+      syncMetadata.current.delete(cacheId);
+    });
+    persistSyncMetadata();
     persistedCaches.current = persistedCaches.current.filter((cache) => !deletedCacheIds.current.has(cache.id));
     try {
       localStorage.setItem(DELETION_STORAGE_KEY, JSON.stringify([...deletedCacheIds.current]));
