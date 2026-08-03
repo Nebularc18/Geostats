@@ -60,6 +60,13 @@ type SharedMysteryGrant = {
   owner: AppUser;
   sharedWith: AppUser[];
 };
+type OwnedMysterySnapshot = {
+  clientId: string;
+  mystery: MysteryCache;
+  revision: number;
+  sharedWith: AppUser[];
+};
+type MysterySyncMetadata = { revision: number; fingerprint: string };
 type Position = [number, number];
 type PolygonCoordinates = Position[][];
 type MultiPolygonCoordinates = PolygonCoordinates[];
@@ -276,6 +283,21 @@ function mysteryFile(userId: string) {
   return new File(Paths.document, `geostats-mysteries-${userId.replace(/[^a-z0-9_-]/gi, "_")}.json`);
 }
 
+function mysterySyncFile(userId: string) {
+  return new File(Paths.document, `geostats-mystery-sync-${userId.replace(/[^a-z0-9_-]/gi, "_")}.json`);
+}
+
+function snapshotFingerprint(value: string) {
+  let first = 2166136261;
+  let second = 0x9e3779b9;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    first = Math.imul(first ^ code, 16777619);
+    second = Math.imul(second ^ code, 2246822519);
+  }
+  return `${value.length}:${(first >>> 0).toString(36)}:${(second >>> 0).toString(36)}`;
+}
+
 async function readMysteries(userId: string) {
   try {
     const file = mysteryFile(userId);
@@ -297,6 +319,24 @@ async function readMysteries(userId: string) {
 
 async function writeMysteries(userId: string, caches: MysteryCache[]) {
   mysteryFile(userId).write(JSON.stringify(caches));
+}
+
+async function readMysterySyncMetadata(userId: string) {
+  try {
+    const file = mysterySyncFile(userId);
+    if (!file.exists) return new Map<string, MysterySyncMetadata>();
+    const value = JSON.parse(await file.text()) as Record<string, MysterySyncMetadata>;
+    return new Map(Object.entries(value).filter((entry): entry is [string, MysterySyncMetadata] => {
+      const [cacheId, metadata] = entry;
+      return Boolean(cacheId) && Number.isSafeInteger(metadata?.revision) && metadata.revision >= 0 && typeof metadata.fingerprint === "string";
+    }));
+  } catch {
+    return new Map<string, MysterySyncMetadata>();
+  }
+}
+
+async function writeMysterySyncMetadata(userId: string, metadata: Map<string, MysterySyncMetadata>) {
+  mysterySyncFile(userId).write(JSON.stringify(Object.fromEntries(metadata)));
 }
 
 function mysteryLocation(cache: MysteryCache) {
@@ -1505,6 +1545,12 @@ function MysteriesScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; to
   const [caches, setCaches] = useState<MysteryCache[]>([]);
   const [ready, setReady] = useState(false);
   const latestMysteries = useRef({ caches, ready });
+  const serverSnapshots = useRef(new Map<string, string>());
+  const snapshotRevisions = useRef(new Map<string, number>());
+  const syncMetadata = useRef(new Map<string, MysterySyncMetadata>());
+  const [accountLoaded, setAccountLoaded] = useState(false);
+  const [ownedLoadAttempt, setOwnedLoadAttempt] = useState(0);
+  const [syncAttempt, setSyncAttempt] = useState(0);
   const [selectedId, setSelectedId] = useState("");
   const [filter, setFilter] = useState<"all" | MysteryStatus>("all");
   const [query, setQuery] = useState("");
@@ -1523,26 +1569,126 @@ function MysteriesScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; to
 
   latestMysteries.current = { caches, ready };
 
+  function rememberSnapshotRevision(cacheId: string, revision: number) {
+    if (!Number.isSafeInteger(revision) || revision < 0) return;
+    snapshotRevisions.current.set(cacheId, Math.max(snapshotRevisions.current.get(cacheId) ?? 0, revision));
+  }
+
+  function nextSnapshotRevision(cacheId: string) {
+    const revision = (snapshotRevisions.current.get(cacheId) ?? 0) + 1;
+    snapshotRevisions.current.set(cacheId, revision);
+    return revision;
+  }
+
+  function rememberServerSnapshot(cacheId: string, revision: number, serialized: string) {
+    rememberSnapshotRevision(cacheId, revision);
+    serverSnapshots.current.set(cacheId, serialized);
+    syncMetadata.current.set(cacheId, { revision, fingerprint: snapshotFingerprint(serialized) });
+    void writeMysterySyncMetadata(userId, syncMetadata.current);
+  }
+
   useEffect(() => {
     let active = true;
-    void Promise.all([
-      readMysteries(userId),
-      apiFetch<{ mysteries: SharedMysteryGrant[] }>(apiBaseUrl, "/mysteries/shared", token).catch(() => ({ mysteries: [] }))
-    ]).then(([local, shared]) => {
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    void (async () => {
+      const [local, storedMetadata] = await Promise.all([
+        readMysteries(userId),
+        readMysterySyncMetadata(userId)
+      ]);
       if (!active) return;
-      const sharedCaches = shared.mysteries.map((grant) => ({
-        ...grant.mystery,
-        sharedBy: grant.owner,
-        sharedWith: grant.sharedWith,
-        sharedWorkspaceId: grant.workspaceId
-      }));
-      const next = [...local.filter((cache) => !cache.sharedBy), ...sharedCaches];
-      setCaches(next);
-      setSelectedId(next[0]?.id ?? "");
-      setReady(true);
-    });
-    return () => { active = false; };
-  }, [apiBaseUrl, token, userId]);
+      if (!syncMetadata.current.size) {
+        syncMetadata.current = storedMetadata;
+        storedMetadata.forEach(({ revision }, cacheId) => rememberSnapshotRevision(cacheId, revision));
+      }
+      if (!latestMysteries.current.ready) {
+        setCaches(local);
+        setSelectedId(local[0]?.id ?? "");
+        setReady(true);
+      }
+      const startingCaches = latestMysteries.current.ready ? latestMysteries.current.caches : local;
+      const ownedAtRequest = new Map(startingCaches.filter((cache) => !cache.sharedBy).map((cache) => [
+        cache.id,
+        JSON.stringify(shareableMystery(cache))
+      ]));
+      const knownSyncMetadata = new Map(syncMetadata.current);
+
+      try {
+        const [owned, shared] = await Promise.all([
+          apiFetch<{ mysteries: OwnedMysterySnapshot[]; deletedClientIds: string[] }>(apiBaseUrl, "/mysteries/owned", token),
+          apiFetch<{ mysteries: SharedMysteryGrant[] }>(apiBaseUrl, "/mysteries/shared", token).catch(() => null)
+        ]);
+        if (!active) return;
+        const deletedIds = new Set(owned.deletedClientIds);
+        const ownedEntries = owned.mysteries
+          .filter(({ clientId, mystery }) => mystery?.id === clientId && !deletedIds.has(clientId))
+          .map(({ clientId, mystery, revision, sharedWith }) => {
+            const cache = {
+              ...mystery,
+              id: clientId,
+              sharedWith: Array.isArray(sharedWith) ? sharedWith : []
+            };
+            return { cache, revision, serialized: JSON.stringify(shareableMystery(cache)) };
+          });
+        const serverIds = new Set(ownedEntries.map(({ cache }) => cache.id));
+        const available = latestMysteries.current.caches;
+        const availableById = new Map(available.filter((cache) => !cache.sharedBy).map((cache) => [cache.id, cache]));
+        const conflictCopies: MysteryCache[] = [];
+        const reconciledOwned = ownedEntries.map(({ cache: serverCache, revision, serialized: serverSerialized }) => {
+          const currentCache = availableById.get(serverCache.id);
+          if (!currentCache) return serverCache;
+          const currentSerialized = JSON.stringify(shareableMystery(currentCache));
+          const requestSerialized = ownedAtRequest.get(serverCache.id);
+          const metadata = knownSyncMetadata.get(serverCache.id);
+          const localChanged = metadata
+            ? snapshotFingerprint(currentSerialized) !== metadata.fingerprint
+            : currentSerialized !== serverSerialized;
+          const serverChanged = metadata
+            ? revision !== metadata.revision
+            : requestSerialized !== undefined && requestSerialized !== serverSerialized;
+          const changedDuringRequest = requestSerialized !== undefined && currentSerialized !== requestSerialized;
+          if ((localChanged || changedDuringRequest) && !serverChanged) return currentCache;
+          if (localChanged || changedDuringRequest) {
+            conflictCopies.push({
+              ...shareableMystery(currentCache),
+              id: newId("mystery"),
+              name: `${currentCache.name} (device edits)`,
+              sharedWith: []
+            });
+          }
+          return serverCache;
+        });
+        ownedEntries.forEach(({ cache, revision, serialized }) => rememberServerSnapshot(cache.id, revision, serialized));
+        const localOnly = available.filter((cache) =>
+          !cache.sharedBy && !serverIds.has(cache.id) && !deletedIds.has(cache.id)
+        );
+        const sharedCaches = shared
+          ? shared.mysteries.map((grant) => ({
+              ...grant.mystery,
+              sharedBy: grant.owner,
+              sharedWith: grant.sharedWith,
+              sharedWorkspaceId: grant.workspaceId
+            }))
+          : available.filter((cache) => cache.sharedBy);
+        const next = [...reconciledOwned, ...conflictCopies, ...localOnly, ...sharedCaches];
+        setCaches(next);
+        setSelectedId((selected) => next.some((cache) => cache.id === selected) ? selected : (next[0]?.id ?? ""));
+        if (conflictCopies.length) {
+          setNotice(`${conflictCopies.length} local ${conflictCopies.length === 1 ? "edit was" : "edits were"} preserved as a separate device copy because the server also changed.`);
+        }
+        setAccountLoaded(true);
+        setReady(true);
+      } catch {
+        if (!active) return;
+        setAccountLoaded(false);
+        setNotice("Could not load account mysteries. Showing device data and retrying…");
+        retryTimer = setTimeout(() => setOwnedLoadAttempt((attempt) => attempt + 1), 3000);
+      }
+    })();
+    return () => {
+      active = false;
+      if (retryTimer) clearTimeout(retryTimer);
+    };
+  }, [apiBaseUrl, ownedLoadAttempt, token, userId]);
 
   useEffect(() => {
     if (!ready) return;
@@ -1553,17 +1699,49 @@ function MysteriesScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; to
   }, [caches, ready, userId]);
 
   useEffect(() => {
-    if (!ready) return;
-    const sharedOwned = caches.filter((cache) => !cache.sharedBy && cache.sharedWith.length > 0);
-    if (!sharedOwned.length) return;
+    if (!ready || !accountLoaded) return;
+    const pending = caches.flatMap((cache) => {
+      if (cache.sharedBy) return [];
+      const serialized = JSON.stringify(shareableMystery(cache));
+      return serverSnapshots.current.get(cache.id) === serialized ? [] : [{ cache, serialized }];
+    });
+    if (!pending.length) return;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
     const timer = setTimeout(() => {
-      void Promise.all(sharedOwned.map((cache) => apiFetch(apiBaseUrl, `/mysteries/${encodeURIComponent(cache.id)}`, token, {
-        method: "PUT",
-        body: JSON.stringify({ mystery: shareableMystery(cache), revision: Date.now() })
-      }))).catch(() => setNotice("Saved on this device; shared changes could not reach the server yet."));
+      void Promise.all(pending.map(({ cache, serialized }) => {
+        const requestedRevision = nextSnapshotRevision(cache.id);
+        return apiFetch<{ revision: number; mystery: MysteryCache }>(
+          apiBaseUrl,
+          `/mysteries/${encodeURIComponent(cache.id)}`,
+          token,
+          {
+            method: "PUT",
+            body: JSON.stringify({ mystery: shareableMystery(cache), revision: requestedRevision })
+          }
+        ).then(({ revision, mystery }) => {
+          const storedSerialized = JSON.stringify(mystery);
+          rememberServerSnapshot(cache.id, revision, storedSerialized);
+          if (storedSerialized !== serialized) {
+            const authoritative = { ...mystery, sharedWith: cache.sharedWith };
+            setCaches((current) => current.flatMap((item) => item.id === cache.id
+              ? [
+                  authoritative,
+                  { ...shareableMystery(item), id: newId("mystery"), name: `${item.name} (device edits)`, sharedWith: [] }
+                ]
+              : [item]));
+            setNotice(`A newer ${cache.gcCode} was already on the server. Your device edits were preserved as a separate copy.`);
+          }
+        });
+      })).catch(() => {
+        setNotice("Saved on this device; account sync will retry.");
+        retryTimer = setTimeout(() => setSyncAttempt((attempt) => attempt + 1), 3000);
+      });
     }, 500);
-    return () => clearTimeout(timer);
-  }, [apiBaseUrl, caches, ready, token]);
+    return () => {
+      clearTimeout(timer);
+      if (retryTimer) clearTimeout(retryTimer);
+    };
+  }, [accountLoaded, apiBaseUrl, caches, ready, syncAttempt, token]);
 
   useEffect(() => () => {
     const latest = latestMysteries.current;
@@ -1571,15 +1749,7 @@ function MysteriesScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; to
 
     const owned = latest.caches.filter((cache) => !cache.sharedBy);
     void writeMysteries(userId, owned);
-
-    const sharedOwned = owned.filter((cache) => cache.sharedWith.length > 0);
-    if (sharedOwned.length) {
-      void Promise.all(sharedOwned.map((cache) => apiFetch(apiBaseUrl, `/mysteries/${encodeURIComponent(cache.id)}`, token, {
-        method: "PUT",
-        body: JSON.stringify({ mystery: shareableMystery(cache), revision: Date.now() })
-      }))).catch(() => undefined);
-    }
-  }, [apiBaseUrl, token, userId]);
+  }, [userId]);
 
   useEffect(() => {
     if (shareQuery.trim().length < 2) {
@@ -1655,10 +1825,15 @@ function MysteriesScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; to
   async function shareWith(user: AppUser) {
     if (!selected || selected.sharedBy || selected.sharedWith.some((person) => person.id === user.id)) return;
     try {
-      const result = await apiFetch<{ recipient: AppUser }>(apiBaseUrl, `/mysteries/${encodeURIComponent(selected.id)}/shares`, token, {
+      const result = await apiFetch<{ recipient: AppUser; revision: number }>(apiBaseUrl, `/mysteries/${encodeURIComponent(selected.id)}/shares`, token, {
         method: "POST",
-        body: JSON.stringify({ recipientId: user.id, mystery: shareableMystery(selected), revision: Date.now() })
+        body: JSON.stringify({
+          recipientId: user.id,
+          mystery: shareableMystery(selected),
+          revision: nextSnapshotRevision(selected.id)
+        })
       });
+      rememberSnapshotRevision(selected.id, result.revision);
       updateSelected({ sharedWith: [...selected.sharedWith, result.recipient] });
       setShareQuery(""); setUsers([]); setNotice(`Shared with ${result.recipient.username}.`);
     } catch (error) {
@@ -1692,19 +1867,21 @@ function MysteriesScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; to
 
   function deleteSelected() {
     if (!selected || selected.sharedBy) return;
-    Alert.alert(`Delete ${selected.gcCode}?`, "Notes, clues, and coordinate attempts will be removed from this device.", [
+    Alert.alert(`Delete ${selected.gcCode}?`, "Notes, clues, and coordinate attempts will be removed from your account and synced devices.", [
       { text: "Cancel", style: "cancel" },
       {
         text: "Delete", style: "destructive", onPress: async () => {
           try {
-            if (selected.sharedWith.length) {
-              await apiFetch(apiBaseUrl, `/mysteries/${encodeURIComponent(selected.id)}`, token, { method: "DELETE" });
-            }
+            await apiFetch(apiBaseUrl, `/mysteries/${encodeURIComponent(selected.id)}`, token, { method: "DELETE" });
+            serverSnapshots.current.delete(selected.id);
+            snapshotRevisions.current.delete(selected.id);
+            syncMetadata.current.delete(selected.id);
+            void writeMysterySyncMetadata(userId, syncMetadata.current);
             const remaining = latestMysteries.current.caches.filter((cache) => cache.id !== selected.id);
             setCaches(remaining);
             setSelectedId(remaining[0]?.id ?? "");
           } catch (error) {
-            setNotice(error instanceof Error ? error.message : "Could not delete this shared mystery.");
+            setNotice(error instanceof Error ? error.message : "Could not delete this mystery.");
           }
         }
       }
