@@ -210,11 +210,14 @@ export class MysteriesController {
       });
       const stored = await tx.mysteryWorkspace.findUnique({
         where: { id: mystery.id },
-        select: { snapshotRevision: true }
+        select: { snapshotRevision: true, data: true }
       });
-      return stored?.snapshotRevision ?? revision;
+      return {
+        revision: stored?.snapshotRevision ?? revision,
+        mystery: stored?.data ?? data
+      };
     });
-    return { ok: true, revision: storedRevision };
+    return { ok: true, ...storedRevision };
   }
 
   @Delete(":clientId")

@@ -29,7 +29,7 @@ test("share persists both the owner snapshot and recipient grant", async () => {
         calls.push({ operation: "snapshot", input });
         return { count: 0 };
       },
-      findUnique: async () => ({ snapshotRevision: 1 })
+      findUnique: async () => ({ snapshotRevision: 1, data: mystery })
     },
     mysteryShare: {
       upsert: async (input: unknown) => {
@@ -179,7 +179,7 @@ test("update creates an unshared server snapshot", async () => {
 
   const result = await controller.update(owner, mystery.id, { mystery, revision: 1 });
 
-  assert.deepEqual(result, { ok: true, revision: 1 });
+  assert.deepEqual(result, { ok: true, revision: 1, mystery });
   assert.deepEqual(operations, ["lock", "deletion", "upsert", "update"]);
   assert.deepEqual((upsertInput as any).create, {
     ownerId: owner.id,
@@ -220,7 +220,7 @@ test("an older in-flight update cannot overwrite a newer snapshot", async () => 
         updateInput = input;
         return { count: 0 };
       },
-      findUnique: async () => ({ snapshotRevision: 2 })
+      findUnique: async () => ({ snapshotRevision: 2, data: { ...mystery, notes: "Newer notes" } })
     }
   };
   const prisma = {
@@ -233,7 +233,11 @@ test("an older in-flight update cannot overwrite a newer snapshot", async () => 
     revision: 1
   });
 
-  assert.deepEqual(result, { ok: true, revision: 2 });
+  assert.deepEqual(result, {
+    ok: true,
+    revision: 2,
+    mystery: { ...mystery, notes: "Newer notes" }
+  });
   assert.deepEqual((updateInput as any).where.snapshotRevision, { lt: 1 });
 });
 

@@ -410,15 +410,19 @@ export default function MysteriesPage() {
     const timeout = window.setTimeout(() => {
       void Promise.all(pendingCaches.map(({ cache, serialized }) => {
         const requestedRevision = nextSnapshotRevision(cache.id);
-        return apiFetch<{ revision: number }>(`/mysteries/${encodeURIComponent(cache.id)}`, {
+        return apiFetch<{ revision: number; mystery: MysteryCache }>(`/mysteries/${encodeURIComponent(cache.id)}`, {
           method: "PUT",
           body: JSON.stringify({
             mystery: shareableMystery(cache),
             revision: requestedRevision
           })
-        }).then(({ revision }) => {
+        }).then(({ revision, mystery }) => {
           rememberSnapshotRevision(cache.id, revision);
-          if (revision === requestedRevision) serverSnapshots.current.set(cache.id, serialized);
+          const storedSerialized = JSON.stringify(mystery);
+          serverSnapshots.current.set(cache.id, storedSerialized);
+          if (storedSerialized !== serialized) {
+            setPersistedForSync([...persistedCaches.current]);
+          }
         });
       })).catch(() => {
         setNotice("Saved offline; account sync will retry.");
@@ -436,6 +440,11 @@ export default function MysteriesPage() {
   useEffect(() => {
     if (!ready) return;
     let active = true;
+    const ownedAtRequest = new Map(caches.filter((cache) => !cache.sharedBy).map((cache) => [
+      cache.id,
+      JSON.stringify(shareableMystery(cache))
+    ]));
+    const knownServerSnapshots = new Map(serverSnapshots.current);
     void apiFetch<{ mysteries: SharedMysteryGrant[] }>("/mysteries/shared")
       .then(({ mysteries }) => {
         if (!active) return;
@@ -482,6 +491,17 @@ export default function MysteriesPage() {
         });
         const serverIds = new Set(ownedCaches.map((cache) => cache.id));
         setCaches((current) => {
+          const currentById = new Map(current.filter((cache) => !cache.sharedBy).map((cache) => [cache.id, cache]));
+          const reconciledOwned = ownedCaches.map((serverCache) => {
+            const currentCache = currentById.get(serverCache.id);
+            if (!currentCache) return serverCache;
+            const currentSerialized = JSON.stringify(shareableMystery(currentCache));
+            const changedDuringRequest = currentSerialized !== ownedAtRequest.get(serverCache.id);
+            const knownServerSnapshot = knownServerSnapshots.get(serverCache.id);
+            const hadPendingOfflineEdits =
+              knownServerSnapshot !== undefined && currentSerialized !== knownServerSnapshot;
+            return changedDuringRequest || hadPendingOfflineEdits ? currentCache : serverCache;
+          });
           const localOnly = current.filter((cache) =>
             !cache.sharedBy &&
             !serverIds.has(cache.id) &&
@@ -490,7 +510,7 @@ export default function MysteriesPage() {
           const receivedShares = current.filter((cache) =>
             cache.sharedBy && !deletedCacheIds.current.has(cache.id)
           );
-          return [...ownedCaches, ...localOnly, ...receivedShares];
+          return [...reconciledOwned, ...localOnly, ...receivedShares];
         });
         setServerSyncReady(true);
       })
