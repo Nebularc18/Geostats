@@ -47,10 +47,12 @@ function snapshotRevision(value: unknown): number {
   return value as number;
 }
 
-async function lockMystery(tx: Prisma.TransactionClient, ownerId: string, key: string) {
-  await tx.$queryRaw`
-    SELECT pg_advisory_xact_lock(hashtext(${ownerId}), hashtext(${key}))::text AS lock_result
-  `;
+async function lockMystery(tx: Prisma.TransactionClient, ownerId: string, ...keys: string[]) {
+  for (const key of [...new Set(keys)].sort()) {
+    await tx.$queryRaw`
+      SELECT pg_advisory_xact_lock(hashtext(${ownerId}), hashtext(${key}))::text AS lock_result
+    `;
+  }
 }
 
 @Controller("mysteries")
@@ -166,7 +168,7 @@ export class MysteriesController {
     if (!recipient) throw new NotFoundException("Recipient was not found");
 
     const storedRevision = await this.prisma.$transaction(async (tx) => {
-      await lockMystery(tx, user.id, gcCode);
+      await lockMystery(tx, user.id, clientId, gcCode);
       const deletion = await tx.mysteryWorkspaceDeletion.findUnique({
         where: { ownerId_clientId: { ownerId: user.id, clientId } },
         select: { id: true }
@@ -224,7 +226,7 @@ export class MysteriesController {
     const { data, gcCode } = mysteryData(body.mystery, clientId);
     const revision = snapshotRevision(body.revision);
     const storedRevision = await this.prisma.$transaction(async (tx) => {
-      await lockMystery(tx, user.id, gcCode);
+      await lockMystery(tx, user.id, clientId, gcCode);
       const deletion = await tx.mysteryWorkspaceDeletion.findUnique({
         where: { ownerId_clientId: { ownerId: user.id, clientId } },
         select: { id: true }

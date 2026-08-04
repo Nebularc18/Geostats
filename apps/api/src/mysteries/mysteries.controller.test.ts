@@ -62,10 +62,10 @@ test("share persists both the owner snapshot and recipient grant", async () => {
   const result = await controller.share(owner, "local-1", { recipientId: recipient.id, mystery, revision: 1 });
 
   assert.deepEqual(result, { recipient, revision: 1 });
-  assert.deepEqual(calls.map(({ operation }) => operation), ["lock", "deletion", "duplicate", "existing", "count", "workspace", "snapshot", "grant", "readback"]);
-  assert.deepEqual((calls[5].input as any).where, { ownerId_clientId: { ownerId: owner.id, clientId: "local-1" } });
-  assert.equal((calls[5].input as any).create.gcCode, mystery.gcCode);
-  assert.deepEqual((calls[7].input as any).create, { mysteryId: "workspace-1", recipientId: recipient.id });
+  assert.deepEqual(calls.map(({ operation }) => operation), ["lock", "lock", "deletion", "duplicate", "existing", "count", "workspace", "snapshot", "grant", "readback"]);
+  assert.deepEqual((calls[6].input as any).where, { ownerId_clientId: { ownerId: owner.id, clientId: "local-1" } });
+  assert.equal((calls[6].input as any).create.gcCode, mystery.gcCode);
+  assert.deepEqual((calls[8].input as any).create, { mysteryId: "workspace-1", recipientId: recipient.id });
 });
 
 test("shared returns the granted snapshot through the recipient lookup", async () => {
@@ -244,7 +244,7 @@ test("update creates an unshared server snapshot", async () => {
   const result = await controller.update(owner, mystery.id, { mystery, revision: 1 });
 
   assert.deepEqual(result, { ok: true, revision: 1, mystery });
-  assert.deepEqual(operations, ["lock", "deletion", "duplicate", "existing", "count", "upsert", "update", "readback"]);
+  assert.deepEqual(operations, ["lock", "lock", "deletion", "duplicate", "existing", "count", "upsert", "update", "readback"]);
   assert.deepEqual((upsertInput as any).create, {
     ownerId: owner.id,
     clientId: mystery.id,
@@ -270,6 +270,29 @@ test("update rejects a stale tab after the mystery was deleted", async () => {
     controller.update(owner, mystery.id, { mystery, revision: 1 }),
     /Mystery was deleted/
   );
+});
+
+test("update locks both the GC code and client identity before checking tombstones", async () => {
+  const lockedKeys: string[] = [];
+  const transaction = {
+    $queryRaw: async (_query: TemplateStringsArray, _ownerId: string, key: string) => {
+      lockedKeys.push(key);
+      return [];
+    },
+    mysteryWorkspaceDeletion: {
+      findUnique: async () => ({ id: "deletion-1" })
+    }
+  };
+  const prisma = {
+    $transaction: async (callback: (tx: typeof transaction) => unknown) => callback(transaction)
+  };
+  const controller = new MysteriesController(prisma as any);
+
+  await assert.rejects(
+    controller.update(owner, mystery.id, { mystery, revision: 1 }),
+    /Mystery was deleted/
+  );
+  assert.deepEqual(lockedKeys, [mystery.gcCode, mystery.id]);
 });
 
 test("an older in-flight update cannot overwrite a newer snapshot", async () => {

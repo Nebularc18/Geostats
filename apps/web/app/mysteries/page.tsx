@@ -592,12 +592,25 @@ export default function MysteriesPage() {
           return [{ cache, revision, serialized }];
         });
         const serverIds = new Set(ownedEntries.map(({ cache }) => cache.id));
+        const serverGcCodes = new Set(ownedEntries.map(({ cache }) => cache.gcCode));
         const current = latestCaches.current;
         const currentById = new Map(current.filter((cache) => !cache.sharedBy).map((cache) => [cache.id, cache]));
+        const currentByGcCode = new Map(current.filter((cache) => !cache.sharedBy).map((cache) => [cache.gcCode.trim().toUpperCase(), cache]));
         const conflictCopies: MysteryCache[] = [];
         const reconciledOwned = ownedEntries.map(({ cache: serverCache, revision, serialized: serverSerialized }) => {
-          const currentCache = currentById.get(serverCache.id);
+          const currentCache = currentById.get(serverCache.id) ?? currentByGcCode.get(serverCache.gcCode);
           if (!currentCache) return serverCache;
+          if (currentCache.id !== serverCache.id) {
+            serverSnapshots.current.delete(currentCache.id);
+            snapshotRevisions.current.delete(currentCache.id);
+            syncMetadata.current.delete(currentCache.id);
+            shareMutationRevisions.current.delete(currentCache.id);
+            return {
+              ...currentCache,
+              id: serverCache.id,
+              sharedWith: serverCache.sharedWith
+            };
+          }
           const currentSerialized = JSON.stringify(shareableMystery(currentCache));
           const requestSerialized = ownedAtRequest.get(serverCache.id);
           const metadata = knownSyncMetadata.get(serverCache.id);
@@ -623,6 +636,7 @@ export default function MysteriesPage() {
         const localOnly = current.filter((cache) =>
           !cache.sharedBy &&
           !serverIds.has(cache.id) &&
+          !serverGcCodes.has(cache.gcCode.trim().toUpperCase()) &&
           !deletedCacheIds.current.has(cache.id)
         );
         const receivedShares = current.filter((cache) =>

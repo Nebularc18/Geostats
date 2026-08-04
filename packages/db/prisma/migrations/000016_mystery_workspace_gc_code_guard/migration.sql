@@ -2,8 +2,8 @@ ALTER TABLE "mystery_workspaces"
   ADD COLUMN "gc_code" TEXT;
 
 UPDATE "mystery_workspaces"
-SET "gc_code" = UPPER("data" ->> 'gcCode')
-WHERE "data" ->> 'gcCode' ~* '^GC[A-Z0-9]+$';
+SET "gc_code" = UPPER(BTRIM("data" ->> 'gcCode'))
+WHERE BTRIM("data" ->> 'gcCode') ~* '^GC[A-Z0-9]+$';
 
 CREATE TEMP TABLE "_mystery_workspace_dedup" AS
 SELECT
