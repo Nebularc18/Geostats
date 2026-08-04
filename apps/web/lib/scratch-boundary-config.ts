@@ -43,6 +43,7 @@ const COUNTRY_NAME_ALIASES: Record<string, string[]> = {
   "Russia": ["Russian Federation"],
   "South Korea": ["Republic of Korea"],
   "North Korea": ["Democratic People's Republic of Korea"],
+  "Serbia": ["Republic of Serbia"],
   "Czech Republic": ["Czechia"],
   "Czechia": ["Czech Republic"],
   "United Kingdom": ["United Kingdom of Great Britain and Northern Ireland"],
@@ -53,6 +54,14 @@ const COUNTRY_NAME_ALIASES: Record<string, string[]> = {
   "Syria": ["Syrian Arab Republic"],
   "Bolivia": ["Bolivia (Plurinational State of)"],
   "Venezuela": ["Venezuela (Bolivarian Republic of)"]
+};
+
+// The Natural Earth-derived country file uses "-99" when an ISO code is
+// missing, including for these countries with geoBoundaries coverage.
+const COUNTRY_CODE_OVERRIDES: Record<string, string> = {
+  France: "FRA",
+  Kosovo: "XKX",
+  Norway: "NOR"
 };
 
 export function countryNamesForBoundary(countryName: string) {
@@ -115,11 +124,17 @@ async function loadCountryCode(countryName: string) {
 
   const request = loadCountryGeoJson(COUNTRY_GEOJSON_URL)
     .then((geoJson) => {
+      const override = COUNTRY_CODE_OVERRIDES[countryName];
+      if (override) {
+        return override;
+      }
+
       const names = new Set(countryNamesForBoundary(countryName).map((name) => name.toLowerCase()));
       const feature = geoJson.features.find((candidate) =>
         names.has(String(candidate.properties?.name ?? "").trim().toLowerCase())
       );
-      return String(feature?.properties?.["ISO3166-1-Alpha-3"] ?? "").trim() || null;
+      const countryCode = String(feature?.properties?.["ISO3166-1-Alpha-3"] ?? "").trim();
+      return /^[A-Z]{3}$/.test(countryCode) ? countryCode : null;
     })
     .catch(() => null);
 

@@ -186,6 +186,65 @@ function gsakMapColor(count: number) {
   return "#f7f1d0";
 }
 
+function staticMapLegend() {
+  const steps = [
+    ["#fff1a8", "1"],
+    ["#a7e163", "2-9"],
+    ["#41c86a", "10-24"],
+    ["#22b8a6", "25-49"],
+    ["#1693c7", "50-74"],
+    ["#2563eb", "75-99"],
+    ["#7c3aed", "100-249"],
+    ["#db2777", "250-499"],
+    ["#ea580c", "500-999"],
+    ["#b91c1c", "1000+"]
+  ];
+
+  return steps
+    .map(([color, label], index) => {
+      const x = 18 + index * 72;
+      return `<rect x="${x}" y="428" width="12" height="12" fill="${color}" stroke="#333" stroke-width="0.5"/><text x="${x + 16}" y="438" font-size="10" fill="#111">${label}</text>`;
+    })
+    .join("");
+}
+
+export function renderPublicScratchMapSvg(
+  profile: { gcUsername: string },
+  stats: any,
+  worldMapTemplate: string
+) {
+  const countries = (stats?.countries ?? []) as CountBucket[];
+  const countsByBoundaryName = new Map<string, number>();
+  for (const country of countries) {
+    for (const name of countryNamesForBoundary(country.key)) {
+      countsByBoundaryName.set(name.toLowerCase(), country.count);
+    }
+  }
+
+  const coloredTemplate = worldMapTemplate.replace(
+    /(<path\b[^>]*\bfill=")[^"]*("[^>]*><title>)([^<:]+):\s*\d+(<\/title><\/path>)/g,
+    (_match, pathStart: string, titleStart: string, boundaryName: string, pathEnd: string) => {
+      const count = countsByBoundaryName.get(boundaryName.toLowerCase()) ?? 0;
+      return `${pathStart}${gsakMapColor(count)}${titleStart}${escapeHtml(boundaryName)}: ${count}${pathEnd}`;
+    }
+  );
+  const svgOpenTag = /<svg\b[^>]*>/i.exec(coloredTemplate);
+  const svgCloseIndex = coloredTemplate.lastIndexOf("</svg>");
+  if (!svgOpenTag || svgCloseIndex < svgOpenTag.index + svgOpenTag[0].length) {
+    throw new Error("Invalid world map SVG template");
+  }
+  const mapContents = coloredTemplate.slice(svgOpenTag.index + svgOpenTag[0].length, svgCloseIndex);
+  const username = profile.gcUsername;
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="750" height="455" viewBox="0 0 750 455" role="img" aria-label="${escapeHtml(username)} scratch map">
+  <rect width="750" height="455" fill="#dedeee"/>
+  <text x="375" y="28" text-anchor="middle" font-family="Verdana,Arial,sans-serif" font-size="20" font-weight="bold" fill="#000">${escapeHtml(username)} Scratch Map</text>
+  <text x="375" y="47" text-anchor="middle" font-family="Verdana,Arial,sans-serif" font-size="11" font-style="italic" fill="#222">${formatNumber(stats?.totalFinds)} finds in ${formatNumber(countries.length)} countries</text>
+  <svg x="15" y="55" width="720" height="360" viewBox="0 0 720 360">${mapContents}</svg>
+  <g font-family="Verdana,Arial,sans-serif">${staticMapLegend()}</g>
+</svg>`;
+}
+
 function mapLegend() {
   const steps = [
     ["#fff1a8", "1"],

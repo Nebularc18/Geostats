@@ -10,6 +10,7 @@ coverage
 .env.*
 !.env.example
 !.env.dockhand.example
+!.env.agent.example
 .env.local
 .env.*.local
 

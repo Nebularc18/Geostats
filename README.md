@@ -16,6 +16,18 @@ Local-first, cloud-ready geocaching statistics for GPX and Pocket Query imports.
 
 ## Local Setup
 
+### Agent/dev quick start
+
+For a disposable local instance that boots without asking the user for auth or secret values:
+
+```powershell
+corepack pnpm agent:up
+```
+
+That command creates `.env` from `.env.agent.example` if needed, builds the Docker services, runs database migrations inside Compose, and starts the web app at `http://localhost:3000`. Protected pages auto-login as `dev@local.geostats`.
+
+Use `.env.agent.example` only for local development. Its secrets are intentionally fixed so automation can launch the app without extra prompts.
+
 1. Copy the environment file:
 
    ```powershell
@@ -98,11 +110,7 @@ Copy-Item .env.example .env
 docker compose up --build
 ```
 
-Run migrations before using a fresh database:
-
-```powershell
-pnpm db:migrate
-```
+The local Compose file includes a one-shot `migrate` service, so fresh databases run Prisma migrations before `api`, `worker`, and `web` start.
 
 ## Dockhand
 

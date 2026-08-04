@@ -282,7 +282,10 @@ export default function ProfileHtmlPage() {
   const publicUsername = profile?.gcUsername ? encodeURIComponent(profile.gcUsername) : "";
   const dynamicHtmlUrl = publicUsername ? `${API_URL}/public/profile-stats/${publicUsername}` : "";
   const dynamicImageUrl = publicUsername ? `${API_URL}/public/profile-stats-image/${publicUsername}` : "";
-  const embedHtml = dynamicHtmlUrl && dynamicImageUrl ? `<a href="${dynamicHtmlUrl}" target="_top"><img src="${dynamicImageUrl}" width="750"></a>` : "";
+  const dynamicScratchMapImageUrl = publicUsername ? `${API_URL}/public/profile-scratch-map-image/${publicUsername}` : "";
+  const embedHtml = dynamicHtmlUrl && dynamicImageUrl && dynamicScratchMapImageUrl
+    ? `<a href="${dynamicHtmlUrl}" target="_top"><img src="${dynamicImageUrl}" width="750"><br><img src="${dynamicScratchMapImageUrl}" width="750"></a>`
+    : "";
 
   async function copyHtml() {
     await navigator.clipboard.writeText(html);
@@ -353,7 +356,7 @@ export default function ProfileHtmlPage() {
             {copiedEmbed ? "Copied" : "Copy snippet"}
           </button>
         </div>
-        <textarea readOnly rows={3} value={embedHtml || "Set your geocaching username in Profile first."} aria-label="Dynamic geocaching profile image snippet" />
+        <textarea readOnly rows={5} value={embedHtml || "Set your geocaching username in Profile first."} aria-label="Dynamic geocaching profile image snippet" />
         {dynamicHtmlUrl ? (
           <p className="muted">
             Public page: <a href={dynamicHtmlUrl} target="_blank" rel="noreferrer">{dynamicHtmlUrl}</a>

@@ -19,9 +19,14 @@ import {
   filterKnownLocationBuckets,
   isUnknownLocationName
 } from "../../lib/scratch-boundary-config";
+import {
+  developmentScratchMapData,
+  developmentScratchMapPoints
+} from "../../lib/development-scratch-data";
 
 const ALL_CONTINENTS = "All continents";
 const WORLD_VIEW = "world";
+const isDevelopment = process.env.NODE_ENV === "development";
 const MAP_LEVELS: { value: ScratchMapLevel; label: string }[] = [
   { value: "countries", label: "Countries" },
   { value: "regions", label: "Regions" },
@@ -37,6 +42,25 @@ function findPercent(count: number, total: number) {
 
 function completedLocationCount(buckets: ScratchLocationBucket[]) {
   return buckets.filter((bucket) => !isUnknownLocationName(bucket.name) && bucket.count > 0).length;
+}
+
+function normalizeScratchMapData(data: Partial<ScratchMapData> | null | undefined): ScratchMapData {
+  const countries = Array.isArray(data?.countries)
+    ? data.countries.map((country) => ({
+        ...country,
+        regions: Array.isArray(country.regions) ? country.regions : [],
+        counties: Array.isArray(country.counties) ? country.counties : []
+      }))
+    : [];
+
+  return {
+    totalFinds: typeof data?.totalFinds === "number" ? data.totalFinds : 0,
+    truncated: data?.truncated === true,
+    limit: typeof data?.limit === "number" ? data.limit : 0,
+    continents: Array.isArray(data?.continents) ? data.continents : [],
+    countries,
+    maxCountryCount: typeof data?.maxCountryCount === "number" ? data.maxCountryCount : 0
+  };
 }
 
 function LocationTile({
@@ -59,8 +83,12 @@ function LocationTile({
 }
 
 export default function ScratchPage() {
-  const [scratch, setScratch] = useState<ScratchMapData | null>(null);
-  const [points, setPoints] = useState<CacheMapPoint[]>([]);
+  const [scratch, setScratch] = useState<ScratchMapData | null>(
+    isDevelopment ? developmentScratchMapData : null
+  );
+  const [points, setPoints] = useState<CacheMapPoint[]>(
+    isDevelopment ? developmentScratchMapPoints : []
+  );
   const [detailBuckets, setDetailBuckets] = useState<DetailBuckets>({});
   const [detailTotals, setDetailTotals] = useState<DetailTotals>({});
   const [detailLoaded, setDetailLoaded] = useState(false);
@@ -73,14 +101,32 @@ export default function ScratchPage() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    void apiFetch<ScratchMapData>("/map/scratch")
+    const scratchRequest = apiFetch<Partial<ScratchMapData>>("/map/scratch");
+    const pointsRequest = apiFetch<{ points: CacheMapPoint[] }>("/map/caches");
+
+    if (isDevelopment) {
+      void Promise.all([scratchRequest, pointsRequest])
+        .then(([data, pointData]) => {
+          const normalized = normalizeScratchMapData(data);
+          setScratch(normalized);
+          setPoints(Array.isArray(pointData.points) ? pointData.points : []);
+          setSelectedCountry(normalized.countries[0]?.name ?? null);
+        })
+        .catch(() => {
+          // Keep the internally consistent development fixture when either live request is unavailable.
+        });
+      return;
+    }
+
+    void scratchRequest
       .then((data) => {
-        setScratch(data);
-        setSelectedCountry(data.countries[0]?.name ?? null);
+        const normalized = normalizeScratchMapData(data);
+        setScratch(normalized);
+        setSelectedCountry(normalized.countries[0]?.name ?? null);
       })
       .catch(() => setError("Could not load scratch map coverage."));
-    void apiFetch<{ points: CacheMapPoint[] }>("/map/caches")
-      .then((data) => setPoints(data.points))
+    void pointsRequest
+      .then((data) => setPoints(Array.isArray(data.points) ? data.points : []))
       .catch(() => setError("Could not load scratch map points."));
   }, []);
 

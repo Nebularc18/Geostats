@@ -111,6 +111,26 @@ export class AuthService {
     return this.toAuthUser(user);
   }
 
+  async searchUsers(query: string, currentUserId: string): Promise<Array<{ id: string; username: string }>> {
+    const normalizedQuery = query.trim();
+    if (normalizedQuery.length < 2) {
+      return [];
+    }
+    if (normalizedQuery.length > 40) {
+      throw new BadRequestException("User search must be 40 characters or fewer");
+    }
+
+    return this.prisma.user.findMany({
+      where: {
+        id: { not: currentUserId },
+        username: { contains: normalizedQuery, mode: "insensitive" }
+      },
+      select: { id: true, username: true },
+      orderBy: { username: "asc" },
+      take: 10
+    });
+  }
+
   externalAuthorizationUrl(state: string, codeChallenge: string): string {
     this.assertExternalAuthMode();
     if (this.isShooProvider()) {
@@ -168,6 +188,7 @@ export class AuthService {
       email,
       username
     });
+    await this.ensureDevProfile(user.id, username);
     return this.toAuthUser(user);
   }
 
@@ -464,6 +485,33 @@ export class AuthService {
         throw new ConflictException("Email or username is already registered");
       }
       throw error;
+    }
+  }
+
+  private async ensureDevProfile(userId: string, username: string) {
+    if (process.env.DEV_AUTH_CREATE_PROFILE === "false") {
+      return;
+    }
+    await this.prisma.geocachingProfile.upsert({
+      where: { userId },
+      create: {
+        userId,
+        gcUsername: envOrDefault("DEV_AUTH_GC_USERNAME", username),
+        homeLatitude: null,
+        homeLongitude: null,
+        timeZone: this.devProfileTimeZone()
+      },
+      update: {}
+    });
+  }
+
+  private devProfileTimeZone(): string {
+    const timeZone = envOrDefault("DEV_AUTH_TIME_ZONE", "Europe/Stockholm");
+    try {
+      new Intl.DateTimeFormat("en-US", { timeZone }).format(new Date());
+      return timeZone;
+    } catch {
+      return "Europe/Stockholm";
     }
   }
 

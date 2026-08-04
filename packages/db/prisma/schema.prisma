@@ -29,24 +29,71 @@ enum ImportFileType {
 }
 
 model User {
-  id           String              @id @default(cuid())
-  email        String              @unique
-  username     String              @unique
-  passwordHash String?             @map("password_hash")
-  createdAt    DateTime            @default(now()) @map("created_at")
-  updatedAt    DateTime            @updatedAt @map("updated_at")
+  id           String   @id @default(cuid())
+  email        String   @unique
+  username     String   @unique
+  passwordHash String?  @map("password_hash")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
 
-  profile      GeocachingProfile?
-  imports      Import[]
-  finds        Find[]
-  hides        Hide[]
-  corrections  CorrectedCoordinate[]
-  snapshots    StatSnapshot[]
-  collectorTokens CollectorToken[]
-  oauthAccounts OAuthAccount[]
+  profile                 GeocachingProfile?
+  imports                 Import[]
+  finds                   Find[]
+  hides                   Hide[]
+  corrections             CorrectedCoordinate[]
+  snapshots               StatSnapshot[]
+  collectorTokens         CollectorToken[]
+  oauthAccounts           OAuthAccount[]
   ownerFinderCountryStats OwnerFinderCountryStat[]
+  mysteryWorkspaces       MysteryWorkspace[]       @relation("MysteryOwner")
+  mysteryShares           MysteryShare[]           @relation("MysteryRecipient")
+  mysteryDeletions        MysteryWorkspaceDeletion[]
 
   @@map("users")
+}
+
+model MysteryWorkspace {
+  id        String   @id @default(cuid())
+  ownerId   String   @map("owner_id")
+  clientId  String   @map("client_id")
+  data      Json
+  snapshotRevision Int @default(0) @map("snapshot_revision")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  owner  User           @relation("MysteryOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  shares MysteryShare[]
+
+  @@unique([ownerId, clientId])
+  @@index([ownerId])
+  @@map("mystery_workspaces")
+}
+
+model MysteryShare {
+  id          String   @id @default(cuid())
+  mysteryId   String   @map("mystery_id")
+  recipientId String   @map("recipient_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  mystery   MysteryWorkspace @relation(fields: [mysteryId], references: [id], onDelete: Cascade)
+  recipient User             @relation("MysteryRecipient", fields: [recipientId], references: [id], onDelete: Cascade)
+
+  @@unique([mysteryId, recipientId])
+  @@index([recipientId, createdAt])
+  @@map("mystery_shares")
+}
+
+model MysteryWorkspaceDeletion {
+  id        String   @id @default(cuid())
+  ownerId   String   @map("owner_id")
+  clientId  String   @map("client_id")
+  deletedAt DateTime @default(now()) @map("deleted_at")
+
+  owner User @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  @@unique([ownerId, clientId])
+  @@index([ownerId])
+  @@map("mystery_workspace_deletions")
 }
 
 model OwnerFinderCountryStat {
@@ -57,7 +104,7 @@ model OwnerFinderCountryStat {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([userId, country])
   @@index([userId])
@@ -73,7 +120,7 @@ model OAuthAccount {
   createdAt         DateTime @default(now()) @map("created_at")
   updatedAt         DateTime @updatedAt @map("updated_at")
 
-  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([provider, providerAccountId])
   @@index([userId])
@@ -81,33 +128,33 @@ model OAuthAccount {
 }
 
 model CollectorToken {
-  id          String   @id @default(cuid())
-  userId      String   @map("user_id")
-  name        String
-  tokenPrefix String   @map("token_prefix")
-  tokenHash   String   @unique @map("token_hash")
-  tokenCiphertext String? @map("token_ciphertext")
-  lastUsedAt  DateTime? @map("last_used_at")
-  createdAt   DateTime @default(now()) @map("created_at")
+  id              String    @id @default(cuid())
+  userId          String    @map("user_id")
+  name            String
+  tokenPrefix     String    @map("token_prefix")
+  tokenHash       String    @unique @map("token_hash")
+  tokenCiphertext String?   @map("token_ciphertext")
+  lastUsedAt      DateTime? @map("last_used_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
 
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, createdAt])
   @@map("collector_tokens")
 }
 
 model GeocachingProfile {
-  id            String   @id @default(cuid())
-  userId        String   @unique @map("user_id")
-  gcUsername    String   @map("gc_username")
-  homeLatitude  Decimal? @map("home_latitude") @db.Decimal(9, 6)
-  homeLongitude Decimal? @map("home_longitude") @db.Decimal(9, 6)
-  timeZone      String   @default("Europe/Stockholm") @map("time_zone")
+  id                String   @id @default(cuid())
+  userId            String   @unique @map("user_id")
+  gcUsername        String   @map("gc_username")
+  homeLatitude      Decimal? @map("home_latitude") @db.Decimal(9, 6)
+  homeLongitude     Decimal? @map("home_longitude") @db.Decimal(9, 6)
+  timeZone          String   @default("Europe/Stockholm") @map("time_zone")
   ftfDetectionTerms String[] @default(["FTF", "first to find"]) @map("ftf_detection_terms")
-  createdAt     DateTime @default(now()) @map("created_at")
-  updatedAt     DateTime @updatedAt @map("updated_at")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
 
-  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("geocaching_profiles")
 }
@@ -124,32 +171,32 @@ model Import {
   createdAt    DateTime       @default(now()) @map("created_at")
   updatedAt    DateTime       @updatedAt @map("updated_at")
 
-  user         User           @relation(fields: [userId], references: [id], onDelete: Cascade)
-  finds        Find[]
-  hides        Hide[]
+  user  User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  finds Find[]
+  hides Hide[]
 
   @@index([userId, createdAt])
   @@map("imports")
 }
 
 model Cache {
-  id          String   @id @default(cuid())
-  gcCode      String   @unique @map("gc_code")
-  name        String
-  cacheType   String?  @map("cache_type")
-  difficulty  Decimal? @db.Decimal(2, 1)
-  terrain     Decimal? @db.Decimal(2, 1)
-  size        String?
-  latitude    Decimal  @db.Decimal(9, 6)
-  longitude   Decimal  @db.Decimal(9, 6)
-  country     String?
-  region      String?
-  county      String?
-  hiddenDate  DateTime? @map("hidden_date") @db.Date
-  ownerName   String?   @map("owner_name")
-  raw         Json?
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
+  id         String    @id @default(cuid())
+  gcCode     String    @unique @map("gc_code")
+  name       String
+  cacheType  String?   @map("cache_type")
+  difficulty Decimal?  @db.Decimal(2, 1)
+  terrain    Decimal?  @db.Decimal(2, 1)
+  size       String?
+  latitude   Decimal   @db.Decimal(9, 6)
+  longitude  Decimal   @db.Decimal(9, 6)
+  country    String?
+  region     String?
+  county     String?
+  hiddenDate DateTime? @map("hidden_date") @db.Date
+  ownerName  String?   @map("owner_name")
+  raw        Json?
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
 
   finds       Find[]
   hides       Hide[]
@@ -172,9 +219,9 @@ model Find {
   createdAt    DateTime     @default(now()) @map("created_at")
   updatedAt    DateTime     @updatedAt @map("updated_at")
 
-  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  cache        Cache        @relation(fields: [cacheId], references: [id], onDelete: Cascade)
-  import       Import?      @relation(fields: [importId], references: [id], onDelete: SetNull)
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  cache  Cache   @relation(fields: [cacheId], references: [id], onDelete: Cascade)
+  import Import? @relation(fields: [importId], references: [id], onDelete: SetNull)
 
   @@unique([userId, cacheId, foundAt])
   @@index([userId, foundAt])
@@ -182,19 +229,19 @@ model Find {
 }
 
 model Hide {
-  id               String   @id @default(cuid())
-  userId           String   @map("user_id")
-  cacheId          String   @map("cache_id")
-  importId         String?  @map("import_id")
+  id               String    @id @default(cuid())
+  userId           String    @map("user_id")
+  cacheId          String    @map("cache_id")
+  importId         String?   @map("import_id")
   placedAt         DateTime? @map("placed_at") @db.Date
-  receivedLogCount Int      @default(0) @map("received_log_count")
-  receivedLogsRaw  Json?    @map("received_logs_raw")
-  createdAt        DateTime @default(now()) @map("created_at")
-  updatedAt        DateTime @updatedAt @map("updated_at")
+  receivedLogCount Int       @default(0) @map("received_log_count")
+  receivedLogsRaw  Json?     @map("received_logs_raw")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
 
-  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  cache            Cache    @relation(fields: [cacheId], references: [id], onDelete: Cascade)
-  import           Import?  @relation(fields: [importId], references: [id], onDelete: SetNull)
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  cache  Cache   @relation(fields: [cacheId], references: [id], onDelete: Cascade)
+  import Import? @relation(fields: [importId], references: [id], onDelete: SetNull)
 
   @@unique([userId, cacheId])
   @@index([userId, placedAt])
@@ -211,8 +258,8 @@ model CorrectedCoordinate {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  cache     Cache    @relation(fields: [cacheId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  cache Cache @relation(fields: [cacheId], references: [id], onDelete: Cascade)
 
   @@unique([userId, cacheId])
   @@map("corrected_coordinates")
@@ -224,7 +271,7 @@ model StatSnapshot {
   statsJson   Json     @map("stats_json")
   generatedAt DateTime @default(now()) @map("generated_at")
 
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, generatedAt])
   @@map("stat_snapshots")

@@ -1,7 +1,36 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { UnauthorizedException } from "@nestjs/common";
+import { BadRequestException, UnauthorizedException } from "@nestjs/common";
 import { AuthController } from "./auth.controller";
+
+class TestMobileExchangeCodeService {
+  private nextCode = 0;
+  private readonly records = new Map<string, { codeChallenge: string; serialized: string; token: string; user: any }>();
+
+  async create(token: string, user: any, codeChallenge: string) {
+    const code = `mobile-code-${this.nextCode += 1}`;
+    const serialized = JSON.stringify({ codeChallenge, token, user });
+    this.records.set(code, { codeChallenge, serialized, token, user });
+    return code;
+  }
+
+  async get(code: string) {
+    return this.records.get(code) ?? null;
+  }
+
+  async consume(code: string, serialized: string) {
+    const record = this.records.get(code);
+    if (!record || record.serialized !== serialized) {
+      return false;
+    }
+    this.records.delete(code);
+    return true;
+  }
+}
+
+function testController(auth: any, mobileCodes = new TestMobileExchangeCodeService()) {
+  return new AuthController(auth, mobileCodes as any);
+}
 
 function withEnv<T>(values: Record<string, string | undefined>, fn: () => T | Promise<T>): Promise<T> | T {
   const previous = new Map<string, string | undefined>();
@@ -62,7 +91,7 @@ test("external callback redirects to login when provider login fails", async () 
         redirects.push(url);
       }
     };
-    const controller = new AuthController(auth as any);
+    const controller = testController(auth);
     (controller as any).logger = {
       error: () => {
         loggedError = true;
@@ -97,7 +126,7 @@ test("external callback redirects to login with auth error when code or state is
         redirects.push(url);
       }
     };
-    const controller = new AuthController(auth as any);
+    const controller = testController(auth);
 
     await controller.externalCallback(undefined, "state", response as any);
 
@@ -117,7 +146,7 @@ test("browser login and register do not expose bearer tokens in response bodies"
       cookies.push({ name, value });
     }
   };
-  const controller = new AuthController(auth as any);
+  const controller = testController(auth);
 
   const registered = await controller.register({ email: "a@example.com", username: "a", password: "password" }, response as any);
   const loggedIn = await controller.login({ email: "a@example.com", password: "password" }, response as any);
@@ -135,7 +164,7 @@ test("mobile login returns a bearer token through the mobile endpoint only", asy
     login: async () => ({ id: "user-1", email: "a@example.com", username: "a" }),
     sign: () => "jwt-token"
   };
-  const controller = new AuthController(auth as any);
+  const controller = testController(auth);
 
   const loggedIn = await controller.mobileLogin({ email: "a@example.com", password: "password" });
 
@@ -158,7 +187,7 @@ test("development browser login redirects only to web app paths", async () => {
         redirects.push(url);
       }
     };
-    const controller = new AuthController(auth as any);
+    const controller = testController(auth);
 
     await controller.dev("/scratch?country=SE", response as any);
     await controller.dev("https://example.com/steal", response as any);
@@ -177,36 +206,83 @@ test("development browser login redirects only to web app paths", async () => {
   });
 });
 
-test("mobile external callback redirects bearer token in URL fragment", async () => {
+const mobileCodeVerifier = "A".repeat(43);
+
+test("mobile external callback redirects a verifier-bound one-time code instead of a bearer token", async () => {
   const auth = {
     loginWithExternalProvider: async () => ({ id: "user-1", email: "a@example.com", username: "a" }),
     sign: () => "jwt-token"
   };
   const redirects: string[] = [];
+  const clearedCookies: string[] = [];
   const response = {
     req: {
       cookies: {
         geostats_oauth_state: "state",
         geostats_oauth_code_verifier: "verifier",
-        geostats_mobile_redirect_uri: "geostats://auth"
+        geostats_mobile_redirect_uri: "geostats://auth",
+        geostats_mobile_code_challenge: mobileCodeVerifier
       }
     },
-    clearCookie: () => {},
+    clearCookie: (name: string) => {
+      clearedCookies.push(name);
+    },
     cookie: () => {},
     redirect: (url: string) => {
       redirects.push(url);
     }
   };
-  const controller = new AuthController(auth as any);
+  const mobileCodes = new TestMobileExchangeCodeService();
+  const callbackController = testController(auth, mobileCodes);
 
-  await controller.externalCallback("code", "state", response as any);
+  await callbackController.externalCallback("code", "state", response as any);
 
-  assert.deepEqual(redirects, ["geostats://auth#token=jwt-token"]);
+  assert.equal(redirects.length, 1);
+  const redirectUrl = new URL(redirects[0]);
+  const params = new URLSearchParams(redirectUrl.hash.slice(1));
+  const exchangeCode = params.get("code");
+  assert.equal(redirectUrl.protocol, "geostats:");
+  assert.equal(params.has("token"), false);
+  assert.match(exchangeCode ?? "", /^[A-Za-z0-9_-]+$/);
+  assert.deepEqual(clearedCookies, [
+    "geostats_oauth_state",
+    "geostats_oauth_code_verifier",
+    "geostats_mobile_redirect_uri",
+    "geostats_mobile_code_challenge"
+  ]);
+
+  const exchangeController = testController(auth, mobileCodes);
+  await assert.rejects(
+    () => exchangeController.mobileExchange({ code: exchangeCode, codeVerifier: "B".repeat(43) }),
+    UnauthorizedException
+  );
+
+  assert.deepEqual(await exchangeController.mobileExchange({ code: exchangeCode, codeVerifier: mobileCodeVerifier }), {
+    user: { id: "user-1", email: "a@example.com", username: "a" },
+    token: "jwt-token"
+  });
+  await assert.rejects(
+    () => exchangeController.mobileExchange({ code: exchangeCode, codeVerifier: mobileCodeVerifier }),
+    UnauthorizedException
+  );
+});
+
+test("mobile external start requires a verifier challenge", () => {
+  const controller = testController({ externalAuthorizationUrl: () => "https://auth.example/start" });
+  const response = {
+    cookie: () => {},
+    redirect: () => {}
+  };
+
+  assert.throws(
+    () => controller.mobileExternal("geostats://auth", undefined, response as any),
+    BadRequestException
+  );
 });
 
 test("development mobile redirect validation accepts app and Expo auth URLs", () => {
   withEnv({ MOBILE_AUTH_REDIRECT_URI: undefined, NODE_ENV: "development" }, () => {
-    const controller = new AuthController({} as any);
+    const controller = testController({});
 
     assert.equal((controller as any).isAllowedMobileRedirectUri("geostats://auth"), true);
     assert.equal((controller as any).isAllowedMobileRedirectUri("geostats://auth/"), true);
@@ -224,13 +300,13 @@ test("development mobile redirect validation accepts app and Expo auth URLs", ()
 
 test("production mobile redirect validation requires an exact configured URI", () => {
   withEnv({ MOBILE_AUTH_REDIRECT_URI: undefined, NODE_ENV: "production" }, () => {
-    const controller = new AuthController({} as any);
+    const controller = testController({});
 
     assert.equal((controller as any).isAllowedMobileRedirectUri("geostats://auth"), false);
     assert.equal((controller as any).isAllowedMobileRedirectUri("exp://10.11.18.75:8081/--/auth"), false);
   });
   withEnv({ MOBILE_AUTH_REDIRECT_URI: "geostats://auth", NODE_ENV: "production" }, () => {
-    const controller = new AuthController({} as any);
+    const controller = testController({});
 
     assert.equal((controller as any).isAllowedMobileRedirectUri("geostats://auth"), true);
     assert.equal((controller as any).isAllowedMobileRedirectUri("geostats://auth/"), false);

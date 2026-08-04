@@ -26,96 +26,93 @@ jobs:
         shell: bash
         run: echo "tag=release-$(date -u +%Y%m%d-%H%M%S)-utc" >> "$GITHUB_OUTPUT"
 
-  build-and-push:
-    name: Build and push ${{ matrix.image }}
+  build-api:
+    name: Build and push api
     needs: release-tag
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - image: api
-            dockerfile: apps/api/Dockerfile
-          - image: worker
-            dockerfile: apps/worker/Dockerfile
-          - image: web
-            dockerfile: apps/web/Dockerfile
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-        with:
-          registry: ghcr.io
+    uses: docker/github-builder/.github/workflows/build.yml@3415a188caae9a0da7fba83bc06985776e0b1790 # v1
+    permissions:
+      contents: read
+      packages: write
+    with:
+      job-name-prefix: Build and push api
+      output: image
+      push: true
+      sign: "false"
+      context: .
+      file: apps/api/Dockerfile
+      platforms: linux/amd64,linux/arm64
+      cache: true
+      cache-scope: api
+      cache-mode: max
+      meta-images: ghcr.io/${{ github.repository }}/api
+      meta-tags: |
+        type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+        type=raw,value=${{ needs.release-tag.outputs.tag }},enable=${{ github.ref == 'refs/heads/main' }}
+        type=sha,prefix=sha-
+    secrets:
+      registry-auths: |
+        - registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Resolve image namespace
-        id: image
-        shell: bash
-        run: echo "namespace=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+  build-worker:
+    name: Build and push worker
+    needs: release-tag
+    uses: docker/github-builder/.github/workflows/build.yml@3415a188caae9a0da7fba83bc06985776e0b1790 # v1
+    permissions:
+      contents: read
+      packages: write
+    with:
+      job-name-prefix: Build and push worker
+      output: image
+      push: true
+      sign: "false"
+      context: .
+      file: apps/worker/Dockerfile
+      platforms: linux/amd64,linux/arm64
+      cache: true
+      cache-scope: worker
+      cache-mode: max
+      meta-images: ghcr.io/${{ github.repository }}/worker
+      meta-tags: |
+        type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+        type=raw,value=${{ needs.release-tag.outputs.tag }},enable=${{ github.ref == 'refs/heads/main' }}
+        type=sha,prefix=sha-
+    secrets:
+      registry-auths: |
+        - registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract Docker metadata
-        id: meta
-        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
-        with:
-          images: ${{ steps.image.outputs.namespace }}/${{ matrix.image }}
-          tags: |
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
-            type=raw,value=${{ needs.release-tag.outputs.tag }},enable=${{ github.ref == 'refs/heads/main' }}
-            type=sha,prefix=sha-
-
-      - name: Resolve web build variables
-        if: matrix.image == 'web'
-        id: web-env
-        shell: bash
-        env:
-          NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL }}
-          NEXT_PUBLIC_AUTH_MODE: ${{ vars.NEXT_PUBLIC_AUTH_MODE }}
-          NEXT_PUBLIC_AUTH_PROVIDER_NAME: ${{ vars.NEXT_PUBLIC_AUTH_PROVIDER_NAME }}
-        run: |
-          api_url="${NEXT_PUBLIC_API_URL:-http://localhost:3001}"
-          auth_mode="${NEXT_PUBLIC_AUTH_MODE:-password}"
-          provider_name="${NEXT_PUBLIC_AUTH_PROVIDER_NAME:-Home Auth}"
-
-          echo "api-url=$api_url" >> "$GITHUB_OUTPUT"
-          echo "auth-mode=$auth_mode" >> "$GITHUB_OUTPUT"
-          echo "provider-name=$provider_name" >> "$GITHUB_OUTPUT"
-
-      - name: Build and push image
-        if: matrix.image != 'web'
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
-        with:
-          context: .
-          file: ${{ matrix.dockerfile }}
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=${{ matrix.image }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
-
-      - name: Build and push web image
-        if: matrix.image == 'web'
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
-        with:
-          context: .
-          file: ${{ matrix.dockerfile }}
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            NEXT_PUBLIC_API_URL=${{ steps.web-env.outputs.api-url }}
-            NEXT_PUBLIC_AUTH_MODE=${{ steps.web-env.outputs.auth-mode }}
-            NEXT_PUBLIC_AUTH_PROVIDER_NAME=${{ steps.web-env.outputs.provider-name }}
-          cache-from: type=gha,scope=${{ matrix.image }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+  build-web:
+    name: Build and push web
+    needs: release-tag
+    uses: docker/github-builder/.github/workflows/build.yml@3415a188caae9a0da7fba83bc06985776e0b1790 # v1
+    permissions:
+      contents: read
+      packages: write
+    with:
+      job-name-prefix: Build and push web
+      output: image
+      push: true
+      sign: "false"
+      context: .
+      file: apps/web/Dockerfile
+      platforms: linux/amd64,linux/arm64
+      cache: true
+      cache-scope: web
+      cache-mode: max
+      meta-images: ghcr.io/${{ github.repository }}/web
+      meta-tags: |
+        type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+        type=raw,value=${{ needs.release-tag.outputs.tag }},enable=${{ github.ref == 'refs/heads/main' }}
+        type=sha,prefix=sha-
+      build-args: |
+        NEXT_PUBLIC_API_URL=${{ vars.NEXT_PUBLIC_API_URL || 'http://localhost:3001' }}
+        NEXT_PUBLIC_AUTH_MODE=${{ vars.NEXT_PUBLIC_AUTH_MODE || 'password' }}
+        NEXT_PUBLIC_AUTH_PROVIDER_NAME=${{ vars.NEXT_PUBLIC_AUTH_PROVIDER_NAME || 'Home Auth' }}
+    secrets:
+      registry-auths: |
+        - registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
