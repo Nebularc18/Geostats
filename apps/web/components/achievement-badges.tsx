@@ -52,7 +52,8 @@ import { boundaryNames, deriveBucketsFromBoundaries } from "../lib/scratch-bound
 import {
   boundaryConfigForLevel,
   filterKnownLocationBuckets,
-  isUnknownLocationName
+  isUnknownLocationName,
+  loadCountryFlagCode
 } from "../lib/scratch-boundary-config";
 
 type CountBucket = { key: string; count: number };
@@ -112,37 +113,58 @@ type ScratchCountryBucket = ScratchLocationBucket & {
 type ScratchMapData = {
   countries: ScratchCountryBucket[];
 };
+type BadgeArt = {
+  mark: string;
+  tone: string;
+};
 
 const isDevelopment = process.env.NODE_ENV === "development";
 const tiers = ["Bronze", "Silver", "Gold", "Platinum", "Ruby", "Sapphire", "Emerald", "Diamond"];
 const tierClasses = ["bronze", "silver", "gold", "platinum", "ruby", "sapphire", "emerald", "diamond"];
 const countryRegionPercentThresholds = [1, 15, 20, 30, 40, 50, 75, 100];
 const countryRegionCountThresholds = [1, 5, 10, 25, 50, 100, 200, 500];
-const countryFlagCodeOverrides: Record<string, string> = {
-  bolivia: "BO",
-  "cape verde": "CV",
-  "czech republic": "CZ",
-  "ivory coast": "CI",
-  iran: "IR",
-  kosovo: "XK",
-  laos: "LA",
-  moldova: "MD",
-  "north korea": "KP",
-  palestine: "PS",
-  russia: "RU",
-  "south korea": "KR",
-  syria: "SY",
-  taiwan: "TW",
-  tanzania: "TZ",
-  "the gambia": "GM",
-  turkey: "TR",
-  uae: "AE",
-  "united states of america": "US",
-  venezuela: "VE",
-  vietnam: "VN"
+const badgeArtById: Record<string, BadgeArt> = {
+  "long-distance": { mark: "🌍", tone: "aqua" },
+  attribute: { mark: "🎒", tone: "green" },
+  large: { mark: "🧰", tone: "green" },
+  matrix: { mark: "▦", tone: "paper" },
+  jasmer: { mark: "🗓️", tone: "paper" },
+  diverse: { mark: "🧩", tone: "coral" },
+  brainiac: { mark: "💡", tone: "gold" },
+  adventurous: { mark: "△", tone: "rose" },
+  "all-around": { mark: "✦", tone: "silver" },
+  traveling: { mark: "🛂", tone: "blue" },
+  veteran: { mark: "🎂", tone: "pink" },
+  traditional: { mark: "📍", tone: "green" },
+  multi: { mark: "⌁", tone: "aqua" },
+  mystery: { mark: "?", tone: "purple" },
+  letterboxer: { mark: "✉", tone: "gold" },
+  earth: { mark: "🌐", tone: "aqua" },
+  wherigo: { mark: "◉", tone: "blue" },
+  virtual: { mark: "👻", tone: "coral" },
+  photogenic: { mark: "📷", tone: "paper" },
+  social: { mark: "☻", tone: "coral" },
+  environmental: { mark: "♻", tone: "green" },
+  "mega-social": { mark: "🎉", tone: "coral" },
+  "giga-social": { mark: "★", tone: "gold" },
+  "gps-maze": { mark: "◈", tone: "blue" },
+  "odd-sized": { mark: "◇", tone: "purple" },
+  micro: { mark: "•", tone: "paper" },
+  small: { mark: "▪", tone: "green" },
+  regular: { mark: "■", tone: "gold" },
+  rugged: { mark: "⛰", tone: "rose" },
+  ftf: { mark: "1st", tone: "gold" },
+  geocacher: { mark: "🏆", tone: "gold" },
+  calendar: { mark: "📅", tone: "paper" },
+  daily: { mark: "✓", tone: "green" },
+  busy: { mark: "⚡", tone: "gold" },
+  achiever: { mark: "🏅", tone: "gold" },
+  trackable: { mark: "🔎", tone: "blue" },
+  author: { mark: "✒", tone: "paper" },
+  owner: { mark: "👑", tone: "gold" },
+  "favorited-owner": { mark: "★", tone: "rose" },
+  "event-host": { mark: "🎤", tone: "coral" }
 };
-let countryFlagCodesByName: Map<string, string> | null = null;
-
 function demoCountry(
   name: string,
   continent: string,
@@ -188,87 +210,6 @@ const developmentCountryRegionTotals = new Map<string, number>([
   ["Netherlands", 12],
   ["Luxembourg", 3]
 ]);
-
-const achievementEmblemMarks: Record<string, string> = {
-  "long-distance": "10K",
-  attribute: "ATTR",
-  large: "XL",
-  matrix: "81",
-  jasmer: "MONTHS",
-  diverse: "11×",
-  brainiac: "D5",
-  adventurous: "5/5",
-  "all-around": "360°",
-  traveling: "WORLD",
-  veteran: "10Y",
-  traditional: "TRAD",
-  multi: "MULTI",
-  mystery: "?",
-  letterboxer: "LETTER",
-  earth: "EARTH",
-  wherigo: "PLAY",
-  virtual: "VIRTUAL",
-  photogenic: "CAM",
-  social: "EVENT",
-  environmental: "CITO",
-  "mega-social": "MEGA",
-  "giga-social": "GIGA",
-  "gps-maze": "MAZE",
-  "odd-sized": "?",
-  micro: "XS",
-  small: "S",
-  regular: "M",
-  rugged: "T5",
-  ftf: "FTF",
-  geocacher: "FINDS",
-  calendar: "366",
-  daily: "365×",
-  busy: "1 DAY",
-  achiever: "CHLG",
-  trackable: "TB",
-  author: "LOG",
-  owner: "OWNER",
-  "favorited-owner": "FAV",
-  "event-host": "HOST"
-};
-
-function normalizedCountryName(value: string) {
-  return value
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[’']/g, "")
-    .replace(/&/g, "and")
-    .trim()
-    .toLowerCase();
-}
-
-function countryFlagCode(countryName: string) {
-  const normalizedName = normalizedCountryName(countryName);
-  const override = countryFlagCodeOverrides[normalizedName];
-  if (override) {
-    return override;
-  }
-
-  if (typeof Intl.DisplayNames !== "function") {
-    return null;
-  }
-
-  if (!countryFlagCodesByName) {
-    countryFlagCodesByName = new Map();
-    const displayNames = new Intl.DisplayNames(["en"], { type: "region" });
-    for (let first = 65; first <= 90; first += 1) {
-      for (let second = 65; second <= 90; second += 1) {
-        const code = String.fromCharCode(first, second);
-        const displayName = displayNames.of(code);
-        if (displayName && displayName !== code) {
-          countryFlagCodesByName.set(normalizedCountryName(displayName), code);
-        }
-      }
-    }
-  }
-
-  return countryFlagCodesByName.get(normalizedName) ?? null;
-}
 
 const cacheTypeAliases: Record<string, string[]> = {
   traditional: ["traditional cache"],
@@ -744,6 +685,15 @@ function tierSummary(items: { current: number | null; thresholds: number[]; lowe
     .map((tier) => ({ tier, count: counts.get(tier) ?? 0 }));
 }
 
+function BadgePicture({ badgeId, tierClass }: { badgeId: string; tierClass: string }) {
+  const art = badgeArtById[badgeId] ?? { mark: "★", tone: "gold" };
+  return (
+    <span className={`badge-picture ${tierClass} badge-picture-${art.tone}`}>
+      <span className="badge-picture-mark">{art.mark}</span>
+    </span>
+  );
+}
+
 export function AchievementBadges({
   id,
   stats: providedStats = null,
@@ -755,7 +705,9 @@ export function AchievementBadges({
 }) {
   const [stats, setStats] = useState<StatsSummary | null>(providedStats);
   const [scratchCountries, setScratchCountries] = useState<ScratchCountryBucket[]>([]);
-  const [countryRegionTotals, setCountryRegionTotals] = useState<Map<string, number>>(new Map());
+  const [countryRegionTotals, setCountryRegionTotals] = useState<Map<string, number>>(() => new Map());
+  const [countryFlagCodes, setCountryFlagCodes] = useState<Map<string, string>>(() => new Map());
+  const [failedCountryFlags, setFailedCountryFlags] = useState<Set<string>>(() => new Set());
   const [countryBadgesLoading, setCountryBadgesLoading] = useState(true);
   const [error, setError] = useState(false);
   const [sortMode, setSortMode] = useState<BadgeSortMode>("level");
@@ -860,6 +812,30 @@ export function AchievementBadges({
     };
   }, []);
 
+  useEffect(() => {
+    let active = true;
+    const countries = scratchCountries.filter((country) => !isUnknownLocationName(country.name));
+    if (countries.length === 0) {
+      setCountryFlagCodes(new Map());
+      return () => {
+        active = false;
+      };
+    }
+
+    void Promise.all(
+      countries.map(async (country) => [country.name, await loadCountryFlagCode(country.name)] as const)
+    ).then((entries) => {
+      if (!active) {
+        return;
+      }
+      setCountryFlagCodes(new Map(entries.filter((entry): entry is [string, string] => Boolean(entry[1]))));
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [scratchCountries]);
+
   const badges = useMemo(() => buildBadges(stats), [stats]);
   const countryBadges = useMemo(
     () => buildCountryBadges(scratchCountries, countryRegionTotals),
@@ -938,7 +914,7 @@ export function AchievementBadges({
               const regionCompletion = badge.totalRegions
                 ? Math.min(1, badge.completedRegions / badge.totalRegions)
                 : Math.max(0, index + 1) / tiers.length;
-              const flagCode = countryFlagCode(badge.name)?.toLowerCase() ?? "xx";
+              const flagCode = countryFlagCodes.get(badge.name);
               return (
                 <article
                   key={badge.name}
@@ -954,7 +930,24 @@ export function AchievementBadges({
                     </span>
                   </div>
                   <div className="country-badge-medal" aria-hidden="true">
-                    <span className={`country-badge-flag fi fi-${flagCode}`} />
+                    {flagCode && !failedCountryFlags.has(badge.name) ? (
+                      <img
+                        className="country-badge-flag"
+                        src={`https://flagcdn.com/${flagCode}.svg`}
+                        alt=""
+                        loading="lazy"
+                        onError={() => {
+                          setFailedCountryFlags((current) => {
+                            if (current.has(badge.name)) {
+                              return current;
+                            }
+                            return new Set(current).add(badge.name);
+                          });
+                        }}
+                      />
+                    ) : (
+                      <Globe2 size={32} />
+                    )}
                   </div>
                   <div className="country-badge-ribbon">
                     <strong>{badge.name}</strong>
@@ -998,7 +991,6 @@ export function AchievementBadges({
       </div>
       <div className="badge-list">
         {sortedBadges.map((badge) => {
-          const Icon = badge.icon;
           const index = achievedIndex(badge);
           const tier = index >= 0 ? tiers[index] : "Locked";
           const tierClass = index >= 0 ? tierClasses[index] : "locked";
@@ -1006,9 +998,9 @@ export function AchievementBadges({
           return (
             <article key={badge.id} className="badge-row" style={{ "--badge-progress": Math.max(0, index + 1) / tiers.length } as CSSProperties}>
               <div className="badge-row-main">
-                <span className={`achievement-emblem ${tierClass} emblem-${badge.id}`} aria-hidden="true">
-                  <Icon size={30} strokeWidth={1.8} />
-                  <em>{achievementEmblemMarks[badge.id]}</em>
+                <span className="badge-portrait" aria-hidden="true">
+                  <BadgePicture badgeId={badge.id} tierClass={tierClass} />
+                  <span className="badge-ribbon">{badge.name.replace(/^The /, "")}</span>
                 </span>
                 <span>
                   <strong>{badge.name}</strong>

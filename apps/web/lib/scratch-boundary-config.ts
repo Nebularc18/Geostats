@@ -27,6 +27,7 @@ type CountryFeatureCollection = {
 const UNKNOWN_LOCATION_NAMES = new Set(["", "none", "unknown", "not chosen"]);
 const countryGeoJsonCache = new Map<string, Promise<CountryFeatureCollection>>();
 const countryCodeCache = new Map<string, Promise<string | null>>();
+const countryFlagCodeCache = new Map<string, Promise<string | null>>();
 const boundarySupportCache = new Map<string, Promise<boolean>>();
 
 const countryConfig: ScratchBoundaryConfig = {
@@ -138,6 +139,27 @@ async function loadCountryCode(countryName: string) {
     .catch(() => null);
 
   countryCodeCache.set(key, request);
+  return request;
+}
+
+export async function loadCountryFlagCode(countryName: string) {
+  const key = countryName.trim().toLowerCase();
+  const existing = countryFlagCodeCache.get(key);
+  if (existing) {
+    return existing;
+  }
+
+  const request = loadCountryGeoJson(COUNTRY_GEOJSON_URL)
+    .then((geoJson) => {
+      const names = new Set(countryNamesForBoundary(countryName).map((name) => name.toLowerCase()));
+      const feature = geoJson.features.find((candidate) =>
+        names.has(String(candidate.properties?.name ?? "").trim().toLowerCase())
+      );
+      return String(feature?.properties?.["ISO3166-1-Alpha-2"] ?? "").trim().toLowerCase() || null;
+    })
+    .catch(() => null);
+
+  countryFlagCodeCache.set(key, request);
   return request;
 }
 
