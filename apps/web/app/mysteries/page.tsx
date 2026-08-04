@@ -120,6 +120,7 @@ type GeocachingSyncPayload = {
 
 const STORAGE_KEY = "geostats-mysteries-v1";
 const SYNC_METADATA_STORAGE_KEY = "geostats-mystery-sync-metadata-v1";
+const DEDUP_BACKUP_KEY = "geostats-mysteries-backup-before-dedup-v1";
 const DELETION_STORAGE_KEY = "geostats-mystery-deletions-v1";
 const DELETION_CHANNEL = "geostats-mystery-deletions";
 const MAX_REASONABLE_DISTANCE_KM = 3.2;
@@ -192,8 +193,12 @@ function isAppUser(value: unknown): value is AppUser {
 }
 
 function verifiedStoredShares(caches: MysteryCache[]) {
-  return caches.map((cache) => ({
+  const normalized = caches.map((cache) => ({
     ...cache,
+    gcCode: typeof cache.gcCode === "string" ? cache.gcCode.trim().toUpperCase() : "",
+    name: typeof cache.name === "string"
+      ? cache.name.replace(/(?:\s*\(device edits\))+$/gi, "").trim()
+      : "",
     area: normalizeMysteryArea(cache.area),
     county: normalizeMysteryArea(cache.county),
     country: normalizeMysteryArea(cache.country),
@@ -202,8 +207,51 @@ function verifiedStoredShares(caches: MysteryCache[]) {
     locationHierarchy: Array.isArray(cache.locationHierarchy)
       ? cache.locationHierarchy.map(normalizeMysteryArea).filter(Boolean)
       : [],
+    clues: Array.isArray(cache.clues) ? cache.clues.filter((clue): clue is string => typeof clue === "string") : [],
+    attempts: Array.isArray(cache.attempts) ? cache.attempts : [],
     sharedWith: Array.isArray(cache.sharedWith) ? cache.sharedWith.filter(isAppUser) : []
   }));
+
+  const merged = new Map<string, MysteryCache>();
+  for (const cache of normalized) {
+    const key = cache.sharedWorkspaceId
+      ? `shared:${cache.sharedWorkspaceId}`
+      : cache.gcCode
+        ? `owned:${cache.gcCode}`
+        : `id:${cache.id}`;
+    const existing = merged.get(key);
+    if (!existing) {
+      merged.set(key, cache);
+      continue;
+    }
+
+    const attempts = new Map<string, CoordinateAttempt>();
+    for (const attempt of [...existing.attempts, ...cache.attempts]) {
+      const attemptKey = `${Number(attempt.latitude).toFixed(7)}:${Number(attempt.longitude).toFixed(7)}:${attempt.state}`;
+      const previous = attempts.get(attemptKey);
+      attempts.set(attemptKey, previous?.geocachingSyncedAt ? previous : attempt);
+    }
+    const sharedWith = new Map([...existing.sharedWith, ...cache.sharedWith].map((user) => [user.id, user]));
+    const statusRank: Record<MysteryStatus, number> = { solving: 0, planned: 1, solved: 2 };
+
+    merged.set(key, {
+      ...existing,
+      name: existing.name || cache.name,
+      area: existing.area || cache.area,
+      county: existing.county || cache.county,
+      country: existing.country || cache.country,
+      region: existing.region || cache.region,
+      locality: existing.locality || cache.locality,
+      locationHierarchy: existing.locationHierarchy?.length ? existing.locationHierarchy : cache.locationHierarchy,
+      status: statusRank[cache.status] > statusRank[existing.status] ? cache.status : existing.status,
+      notes: (cache.notes?.length ?? 0) > (existing.notes?.length ?? 0) ? cache.notes : existing.notes,
+      clues: [...new Set([...existing.clues, ...cache.clues])],
+      attempts: [...attempts.values()],
+      sharedWith: [...sharedWith.values()],
+      image: existing.image || cache.image
+    });
+  }
+  return [...merged.values()];
 }
 
 function shareableMystery(cache: MysteryCache) {
@@ -354,7 +402,11 @@ export default function MysteriesPage() {
     let initial: MysteryCache[] = [];
     if (saved) {
       try {
-        initial = verifiedStoredShares(JSON.parse(saved) as MysteryCache[]);
+        const storedCaches = JSON.parse(saved) as MysteryCache[];
+        initial = verifiedStoredShares(storedCaches);
+        if (initial.length < storedCaches.length && !localStorage.getItem(DEDUP_BACKUP_KEY)) {
+          localStorage.setItem(DEDUP_BACKUP_KEY, saved);
+        }
       } catch {
         localStorage.removeItem(STORAGE_KEY);
       }
