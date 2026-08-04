@@ -632,6 +632,7 @@ export function AchievementBadges({
   const [scratchCountries, setScratchCountries] = useState<ScratchCountryBucket[]>([]);
   const [countryRegionTotals, setCountryRegionTotals] = useState<Map<string, number>>(() => new Map());
   const [countryFlagCodes, setCountryFlagCodes] = useState<Map<string, string>>(() => new Map());
+  const [failedCountryFlags, setFailedCountryFlags] = useState<Set<string>>(() => new Set());
   const [error, setError] = useState(false);
   const [sortMode, setSortMode] = useState<BadgeSortMode>("level");
   const [sortReversed, setSortReversed] = useState(false);
@@ -820,12 +821,20 @@ export function AchievementBadges({
           return (
             <article key={badge.name} className="country-badge-row" style={{ "--badge-progress": Math.max(0, index + 1) / tiers.length } as CSSProperties}>
               <span className={`country-badge-medal ${tierClass}`} aria-hidden="true">
-                {flagCode ? (
+                {flagCode && !failedCountryFlags.has(badge.name) ? (
                   <img
                     className="country-badge-flag"
                     src={`https://flagcdn.com/${flagCode}.svg`}
                     alt=""
                     loading="lazy"
+                    onError={() => {
+                      setFailedCountryFlags((current) => {
+                        if (current.has(badge.name)) {
+                          return current;
+                        }
+                        return new Set(current).add(badge.name);
+                      });
+                    }}
                   />
                 ) : (
                   <Globe2 size={18} />
