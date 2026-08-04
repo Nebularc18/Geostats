@@ -123,7 +123,6 @@ const tiers = ["Bronze", "Silver", "Gold", "Platinum", "Ruby", "Sapphire", "Emer
 const tierClasses = ["bronze", "silver", "gold", "platinum", "ruby", "sapphire", "emerald", "diamond"];
 const countryRegionPercentThresholds = [1, 15, 20, 30, 40, 50, 75, 100];
 const countryRegionCountThresholds = [1, 5, 10, 25, 50, 100, 200, 500];
-<<<<<<< HEAD
 const badgeArtById: Record<string, BadgeArt> = {
   "long-distance": { mark: "🌍", tone: "aqua" },
   attribute: { mark: "🎒", tone: "green" },
@@ -166,32 +165,6 @@ const badgeArtById: Record<string, BadgeArt> = {
   "favorited-owner": { mark: "★", tone: "rose" },
   "event-host": { mark: "🎤", tone: "coral" }
 };
-=======
-const countryFlagCodeOverrides: Record<string, string> = {
-  bolivia: "BO",
-  "cape verde": "CV",
-  "czech republic": "CZ",
-  "ivory coast": "CI",
-  iran: "IR",
-  kosovo: "XK",
-  laos: "LA",
-  moldova: "MD",
-  "north korea": "KP",
-  palestine: "PS",
-  russia: "RU",
-  "south korea": "KR",
-  syria: "SY",
-  taiwan: "TW",
-  tanzania: "TZ",
-  "the gambia": "GM",
-  turkey: "TR",
-  uae: "AE",
-  "united states of america": "US",
-  venezuela: "VE",
-  vietnam: "VN"
-};
-let countryFlagCodesByName: Map<string, string> | null = null;
-
 function demoCountry(
   name: string,
   continent: string,
@@ -237,88 +210,6 @@ const developmentCountryRegionTotals = new Map<string, number>([
   ["Netherlands", 12],
   ["Luxembourg", 3]
 ]);
-
-const achievementEmblemMarks: Record<string, string> = {
-  "long-distance": "10K",
-  attribute: "ATTR",
-  large: "XL",
-  matrix: "81",
-  jasmer: "MONTHS",
-  diverse: "11×",
-  brainiac: "D5",
-  adventurous: "5/5",
-  "all-around": "360°",
-  traveling: "WORLD",
-  veteran: "10Y",
-  traditional: "TRAD",
-  multi: "MULTI",
-  mystery: "?",
-  letterboxer: "LETTER",
-  earth: "EARTH",
-  wherigo: "PLAY",
-  virtual: "VIRTUAL",
-  photogenic: "CAM",
-  social: "EVENT",
-  environmental: "CITO",
-  "mega-social": "MEGA",
-  "giga-social": "GIGA",
-  "gps-maze": "MAZE",
-  "odd-sized": "?",
-  micro: "XS",
-  small: "S",
-  regular: "M",
-  rugged: "T5",
-  ftf: "FTF",
-  geocacher: "FINDS",
-  calendar: "366",
-  daily: "365×",
-  busy: "1 DAY",
-  achiever: "CHLG",
-  trackable: "TB",
-  author: "LOG",
-  owner: "OWNER",
-  "favorited-owner": "FAV",
-  "event-host": "HOST"
-};
-
-function normalizedCountryName(value: string) {
-  return value
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[’']/g, "")
-    .replace(/&/g, "and")
-    .trim()
-    .toLowerCase();
-}
-
-function countryFlagCode(countryName: string) {
-  const normalizedName = normalizedCountryName(countryName);
-  const override = countryFlagCodeOverrides[normalizedName];
-  if (override) {
-    return override;
-  }
-
-  if (typeof Intl.DisplayNames !== "function") {
-    return null;
-  }
-
-  if (!countryFlagCodesByName) {
-    countryFlagCodesByName = new Map();
-    const displayNames = new Intl.DisplayNames(["en"], { type: "region" });
-    for (let first = 65; first <= 90; first += 1) {
-      for (let second = 65; second <= 90; second += 1) {
-        const code = String.fromCharCode(first, second);
-        const displayName = displayNames.of(code);
-        if (displayName && displayName !== code) {
-          countryFlagCodesByName.set(normalizedCountryName(displayName), code);
-        }
-      }
-    }
-  }
-
-  return countryFlagCodesByName.get(normalizedName) ?? null;
-}
->>>>>>> origin/main
 
 const cacheTypeAliases: Record<string, string[]> = {
   traditional: ["traditional cache"],
@@ -814,14 +705,10 @@ export function AchievementBadges({
 }) {
   const [stats, setStats] = useState<StatsSummary | null>(providedStats);
   const [scratchCountries, setScratchCountries] = useState<ScratchCountryBucket[]>([]);
-<<<<<<< HEAD
   const [countryRegionTotals, setCountryRegionTotals] = useState<Map<string, number>>(() => new Map());
   const [countryFlagCodes, setCountryFlagCodes] = useState<Map<string, string>>(() => new Map());
   const [failedCountryFlags, setFailedCountryFlags] = useState<Set<string>>(() => new Set());
-=======
-  const [countryRegionTotals, setCountryRegionTotals] = useState<Map<string, number>>(new Map());
   const [countryBadgesLoading, setCountryBadgesLoading] = useState(true);
->>>>>>> origin/main
   const [error, setError] = useState(false);
   const [sortMode, setSortMode] = useState<BadgeSortMode>("level");
   const [sortReversed, setSortReversed] = useState(false);
@@ -1006,42 +893,6 @@ export function AchievementBadges({
         </span>
         <Globe2 size={16} />
       </div>
-<<<<<<< HEAD
-      <div className="badge-summary-strip">
-        {countryTierSummary.map(({ tier, count }) => (
-          <span key={tier}>
-            {count} {tier.toLowerCase()}
-          </span>
-        ))}
-      </div>
-      <div className="country-badge-list">
-        {sortedCountryBadges.map((badge) => {
-          const index = achievedIndex(badge);
-          const tier = index >= 0 ? tiers[index] : "Locked";
-          const tierClass = index >= 0 ? tierClasses[index] : "locked";
-          const flagCode = countryFlagCodes.get(badge.name);
-          return (
-            <article key={badge.name} className="country-badge-row" style={{ "--badge-progress": Math.max(0, index + 1) / tiers.length } as CSSProperties}>
-              <span className={`country-badge-medal ${tierClass}`} aria-hidden="true">
-                {flagCode && !failedCountryFlags.has(badge.name) ? (
-                  <img
-                    className="country-badge-flag"
-                    src={`https://flagcdn.com/${flagCode}.svg`}
-                    alt=""
-                    loading="lazy"
-                    onError={() => {
-                      setFailedCountryFlags((current) => {
-                        if (current.has(badge.name)) {
-                          return current;
-                        }
-                        return new Set(current).add(badge.name);
-                      });
-                    }}
-                  />
-                ) : (
-                  <Globe2 size={18} />
-                )}
-=======
       {countryBadgesLoading ? (
         <small className="muted" role="status">
           Loading country badges…
@@ -1052,7 +903,6 @@ export function AchievementBadges({
             {countryTierSummary.map(({ tier, count }) => (
               <span key={tier}>
                 {count} {tier.toLowerCase()}
->>>>>>> origin/main
               </span>
             ))}
           </div>
@@ -1064,7 +914,7 @@ export function AchievementBadges({
               const regionCompletion = badge.totalRegions
                 ? Math.min(1, badge.completedRegions / badge.totalRegions)
                 : Math.max(0, index + 1) / tiers.length;
-              const flagCode = countryFlagCode(badge.name)?.toLowerCase() ?? "xx";
+              const flagCode = countryFlagCodes.get(badge.name);
               return (
                 <article
                   key={badge.name}
@@ -1080,7 +930,24 @@ export function AchievementBadges({
                     </span>
                   </div>
                   <div className="country-badge-medal" aria-hidden="true">
-                    <span className={`country-badge-flag fi fi-${flagCode}`} />
+                    {flagCode && !failedCountryFlags.has(badge.name) ? (
+                      <img
+                        className="country-badge-flag"
+                        src={`https://flagcdn.com/${flagCode}.svg`}
+                        alt=""
+                        loading="lazy"
+                        onError={() => {
+                          setFailedCountryFlags((current) => {
+                            if (current.has(badge.name)) {
+                              return current;
+                            }
+                            return new Set(current).add(badge.name);
+                          });
+                        }}
+                      />
+                    ) : (
+                      <Globe2 size={32} />
+                    )}
                   </div>
                   <div className="country-badge-ribbon">
                     <strong>{badge.name}</strong>
@@ -1131,15 +998,9 @@ export function AchievementBadges({
           return (
             <article key={badge.id} className="badge-row" style={{ "--badge-progress": Math.max(0, index + 1) / tiers.length } as CSSProperties}>
               <div className="badge-row-main">
-<<<<<<< HEAD
                 <span className="badge-portrait" aria-hidden="true">
                   <BadgePicture badgeId={badge.id} tierClass={tierClass} />
                   <span className="badge-ribbon">{badge.name.replace(/^The /, "")}</span>
-=======
-                <span className={`achievement-emblem ${tierClass} emblem-${badge.id}`} aria-hidden="true">
-                  <Icon size={30} strokeWidth={1.8} />
-                  <em>{achievementEmblemMarks[badge.id]}</em>
->>>>>>> origin/main
                 </span>
                 <span>
                   <strong>{badge.name}</strong>

@@ -450,6 +450,7 @@ nav a:hover {
   background-position: center;
   background-size: cover;
   box-shadow: inset 0 0 10px rgba(7, 17, 11, 0.34);
+  object-fit: cover;
   z-index: 1;
 }
 
@@ -555,24 +556,6 @@ nav a:hover {
   line-height: 1.2;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-<<<<<<< HEAD
-.country-badge-row > span:last-child {
-  min-width: 0;
-}
-
-.country-badge-row strong,
-.country-badge-row small {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.country-badge-row small {
-  margin-top: 2px;
-  font-size: 0.72rem;
 }
 
 .badge-picture {
@@ -792,225 +775,6 @@ nav a:hover {
   --badge-tier: #ccecff;
 }
 
-.country-badge-medal {
-=======
-.badge-icon {
->>>>>>> origin/main
-  --badge-tier: color-mix(in srgb, var(--ochre) 78%, var(--green));
-  --badge-tier-ink: #07110b;
-  display: grid;
-  flex: 0 0 auto;
-  place-items: center;
-  width: 46px;
-  height: 46px;
-  padding: 6px;
-  border: 1px solid rgba(7, 17, 11, 0.65);
-  border-radius: 999px;
-  color: var(--badge-tier-ink);
-  background:
-    radial-gradient(circle at 34% 25%, rgba(255, 255, 255, 0.5), transparent 26%),
-    linear-gradient(145deg, rgba(255, 255, 255, 0.25), rgba(7, 17, 11, 0.14)),
-    var(--badge-tier);
-  box-shadow:
-    inset 0 0 0 2px rgba(237, 244, 232, 0.22),
-    inset 0 0 0 6px rgba(7, 17, 11, 0.2),
-    0 1px 0 rgba(237, 244, 232, 0.18);
-}
-
-.country-badge-medal.locked {
-  --badge-tier: #3c473e;
-  --badge-tier-ink: var(--muted);
-  border-color: rgba(237, 244, 232, 0.12);
-}
-
-.country-badge-medal.bronze {
-  --badge-tier: #b97545;
-}
-
-.country-badge-medal.silver {
-  --badge-tier: #c6ced0;
-}
-
-.country-badge-medal.gold {
-  --badge-tier: #e5b946;
-}
-
-.country-badge-medal.platinum {
-  --badge-tier: #e1e7dd;
-}
-
-.country-badge-medal.ruby {
-  --badge-tier: #c94b62;
-  --badge-tier-ink: #fff7f8;
-}
-
-.country-badge-medal.sapphire {
-  --badge-tier: #4d8dc7;
-  --badge-tier-ink: #f3f9ff;
-}
-
-.country-badge-medal.emerald {
-  --badge-tier: #44b884;
-}
-
-.country-badge-medal.diamond {
-  --badge-tier: #ccecff;
-}
-
-<<<<<<< HEAD
-.country-badge-flag {
-  width: 100%;
-  height: 100%;
-  border: 2px solid rgba(237, 244, 232, 0.72);
-  border-radius: 999px;
-  background: rgba(237, 244, 232, 0.9);
-  box-shadow: 0 0 0 1px rgba(7, 17, 11, 0.45);
-  object-fit: cover;
-=======
-.achievement-emblem {
-  --badge-tier: color-mix(in srgb, var(--ochre) 78%, var(--green));
-  --badge-tier-light: color-mix(in srgb, var(--badge-tier) 52%, white);
-  --badge-tier-dark: color-mix(in srgb, var(--badge-tier) 65%, #07110b);
-  --badge-tier-ink: #07110b;
-  position: relative;
-  display: grid;
-  flex: 0 0 auto;
-  place-items: center;
-  width: 66px;
-  height: 66px;
-  margin-right: 2px;
-  border: 3px solid var(--badge-tier-light);
-  border-radius: 50%;
-  color: var(--badge-tier-ink);
-  background:
-    radial-gradient(circle at 38% 30%, rgba(255, 255, 255, 0.62), transparent 19%),
-    conic-gradient(
-      from 30deg,
-      var(--badge-tier-light),
-      var(--badge-tier) 28%,
-      var(--badge-tier-dark) 48%,
-      var(--badge-tier) 72%,
-      var(--badge-tier-light)
-    );
-  box-shadow:
-    0 0 0 2px var(--badge-tier-dark),
-    0 8px 18px rgba(0, 0, 0, 0.28),
-    inset 0 0 0 2px rgba(255, 255, 255, 0.32);
-  isolation: isolate;
-}
-
-.achievement-emblem::before {
-  position: absolute;
-  inset: 8px;
-  border: 1px solid color-mix(in srgb, var(--badge-tier-dark) 62%, transparent);
-  border-radius: inherit;
-  background:
-    linear-gradient(145deg, rgba(255, 255, 255, 0.22), transparent 46%),
-    color-mix(in srgb, var(--badge-tier) 76%, #152019);
-  box-shadow: inset 0 0 12px color-mix(in srgb, var(--badge-tier-dark) 58%, transparent);
-  content: "";
-  z-index: -1;
-}
-
-.achievement-emblem svg {
-  margin-top: -5px;
-  filter: drop-shadow(0 1px rgba(255, 255, 255, 0.24));
-}
-
-.achievement-emblem em {
-  position: absolute;
-  right: 3px;
-  bottom: 2px;
-  left: 3px;
-  overflow: hidden;
-  padding: 2px 3px;
-  border: 1px solid color-mix(in srgb, var(--badge-tier-dark) 60%, transparent);
-  border-radius: 999px;
-  color: var(--badge-tier-ink);
-  background: color-mix(in srgb, var(--badge-tier-light) 88%, white);
-  font-family: Georgia, "Times New Roman", serif;
-  font-size: 0.48rem;
-  font-style: normal;
-  font-weight: 800;
-  letter-spacing: 0.04em;
-  line-height: 1;
-  text-align: center;
-  text-overflow: ellipsis;
-  text-shadow: none;
-  white-space: nowrap;
-}
-
-.achievement-emblem.locked {
-  --badge-tier: #5e6961;
-  --badge-tier-light: #929c95;
-  --badge-tier-dark: #303a33;
-  --badge-tier-ink: #142019;
-  filter: saturate(0.38);
-  opacity: 0.78;
-}
-
-.achievement-emblem.bronze {
-  --badge-tier: #b97545;
-  --badge-tier-light: #e4a374;
-  --badge-tier-dark: #704024;
-}
-
-.achievement-emblem.silver {
-  --badge-tier: #c6ced0;
-  --badge-tier-light: #f2f5f4;
-  --badge-tier-dark: #758083;
-}
-
-.achievement-emblem.gold {
-  --badge-tier: #e5b946;
-  --badge-tier-light: #ffe58b;
-  --badge-tier-dark: #896116;
-}
-
-.achievement-emblem.platinum {
-  --badge-tier: #dce5df;
-  --badge-tier-light: #ffffff;
-  --badge-tier-dark: #74827a;
-}
-
-.achievement-emblem.ruby {
-  --badge-tier: #c94b62;
-  --badge-tier-light: #f58da0;
-  --badge-tier-dark: #762334;
-  --badge-tier-ink: #fff7f8;
-}
-
-.achievement-emblem.sapphire {
-  --badge-tier: #4d8dc7;
-  --badge-tier-light: #8fc9fa;
-  --badge-tier-dark: #24547d;
-  --badge-tier-ink: #f3f9ff;
-}
-
-.achievement-emblem.emerald {
-  --badge-tier: #44b884;
-  --badge-tier-light: #8be0b6;
-  --badge-tier-dark: #1f6949;
-}
-
-.achievement-emblem.diamond {
-  --badge-tier: #ccecff;
-  --badge-tier-light: #ffffff;
-  --badge-tier-dark: #5e91aa;
-}
-
-.achievement-emblem:is(.ruby, .sapphire, .emerald, .diamond) {
-  border-radius: 0;
-  clip-path: polygon(30% 0, 70% 0, 100% 30%, 100% 70%, 70% 100%, 30% 100%, 0 70%, 0 30%);
-  filter: drop-shadow(0 7px 9px rgba(0, 0, 0, 0.3));
-}
-
-.achievement-emblem:is(.ruby, .sapphire, .emerald, .diamond)::before {
-  border-radius: 0;
-  clip-path: inherit;
->>>>>>> origin/main
-}
-
 .badge-cell-grid {
   display: grid;
   grid-template-columns: repeat(8, minmax(0, 1fr));
@@ -1058,11 +822,7 @@ nav a:hover {
 
 .dashboard-badges .badge-row {
   min-height: 168px;
-<<<<<<< HEAD
   padding: 14px;
-=======
-  padding: 12px;
->>>>>>> origin/main
 }
 
 .dashboard-badges .badge-row-main {
