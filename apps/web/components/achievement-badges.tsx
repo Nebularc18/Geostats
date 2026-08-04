@@ -23,7 +23,8 @@ import { boundaryNames, deriveBucketsFromBoundaries } from "../lib/scratch-bound
 import {
   boundaryConfigForLevel,
   filterKnownLocationBuckets,
-  isUnknownLocationName
+  isUnknownLocationName,
+  loadCountryFlagCode
 } from "../lib/scratch-boundary-config";
 
 type CountBucket = { key: string; count: number };
@@ -83,11 +84,57 @@ type ScratchCountryBucket = ScratchLocationBucket & {
 type ScratchMapData = {
   countries: ScratchCountryBucket[];
 };
+type BadgeArt = {
+  mark: string;
+  tone: string;
+};
 
 const tiers = ["Bronze", "Silver", "Gold", "Platinum", "Ruby", "Sapphire", "Emerald", "Diamond"];
 const tierClasses = ["bronze", "silver", "gold", "platinum", "ruby", "sapphire", "emerald", "diamond"];
 const countryRegionPercentThresholds = [1, 15, 20, 30, 40, 50, 75, 100];
 const countryRegionCountThresholds = [1, 5, 10, 25, 50, 100, 200, 500];
+const badgeArtById: Record<string, BadgeArt> = {
+  "long-distance": { mark: "🌍", tone: "aqua" },
+  attribute: { mark: "🎒", tone: "green" },
+  large: { mark: "🧰", tone: "green" },
+  matrix: { mark: "▦", tone: "paper" },
+  jasmer: { mark: "🗓️", tone: "paper" },
+  diverse: { mark: "🧩", tone: "coral" },
+  brainiac: { mark: "💡", tone: "gold" },
+  adventurous: { mark: "△", tone: "rose" },
+  "all-around": { mark: "✦", tone: "silver" },
+  traveling: { mark: "🛂", tone: "blue" },
+  veteran: { mark: "🎂", tone: "pink" },
+  traditional: { mark: "📍", tone: "green" },
+  multi: { mark: "⌁", tone: "aqua" },
+  mystery: { mark: "?", tone: "purple" },
+  letterboxer: { mark: "✉", tone: "gold" },
+  earth: { mark: "🌐", tone: "aqua" },
+  wherigo: { mark: "◉", tone: "blue" },
+  virtual: { mark: "👻", tone: "coral" },
+  photogenic: { mark: "📷", tone: "paper" },
+  social: { mark: "☻", tone: "coral" },
+  environmental: { mark: "♻", tone: "green" },
+  "mega-social": { mark: "🎉", tone: "coral" },
+  "giga-social": { mark: "★", tone: "gold" },
+  "gps-maze": { mark: "◈", tone: "blue" },
+  "odd-sized": { mark: "◇", tone: "purple" },
+  micro: { mark: "•", tone: "paper" },
+  small: { mark: "▪", tone: "green" },
+  regular: { mark: "■", tone: "gold" },
+  rugged: { mark: "⛰", tone: "rose" },
+  ftf: { mark: "1st", tone: "gold" },
+  geocacher: { mark: "🏆", tone: "gold" },
+  calendar: { mark: "📅", tone: "paper" },
+  daily: { mark: "✓", tone: "green" },
+  busy: { mark: "⚡", tone: "gold" },
+  achiever: { mark: "🏅", tone: "gold" },
+  trackable: { mark: "🔎", tone: "blue" },
+  author: { mark: "✒", tone: "paper" },
+  owner: { mark: "👑", tone: "gold" },
+  "favorited-owner": { mark: "★", tone: "rose" },
+  "event-host": { mark: "🎤", tone: "coral" }
+};
 
 const cacheTypeAliases: Record<string, string[]> = {
   traditional: ["traditional cache"],
@@ -563,6 +610,15 @@ function tierSummary(items: { current: number | null; thresholds: number[]; lowe
     .map((tier) => ({ tier, count: counts.get(tier) ?? 0 }));
 }
 
+function BadgePicture({ badgeId, tierClass }: { badgeId: string; tierClass: string }) {
+  const art = badgeArtById[badgeId] ?? { mark: "★", tone: "gold" };
+  return (
+    <span className={`badge-picture ${tierClass} badge-picture-${art.tone}`}>
+      <span className="badge-picture-mark">{art.mark}</span>
+    </span>
+  );
+}
+
 export function AchievementBadges({
   id,
   stats: providedStats = null,
@@ -575,6 +631,7 @@ export function AchievementBadges({
   const [stats, setStats] = useState<StatsSummary | null>(providedStats);
   const [scratchCountries, setScratchCountries] = useState<ScratchCountryBucket[]>([]);
   const [countryRegionTotals, setCountryRegionTotals] = useState<Map<string, number>>(() => new Map());
+  const [countryFlagCodes, setCountryFlagCodes] = useState<Map<string, string>>(() => new Map());
   const [error, setError] = useState(false);
   const [sortMode, setSortMode] = useState<BadgeSortMode>("level");
   const [sortReversed, setSortReversed] = useState(false);
@@ -666,6 +723,30 @@ export function AchievementBadges({
     };
   }, []);
 
+  useEffect(() => {
+    let active = true;
+    const countries = scratchCountries.filter((country) => !isUnknownLocationName(country.name));
+    if (countries.length === 0) {
+      setCountryFlagCodes(new Map());
+      return () => {
+        active = false;
+      };
+    }
+
+    void Promise.all(
+      countries.map(async (country) => [country.name, await loadCountryFlagCode(country.name)] as const)
+    ).then((entries) => {
+      if (!active) {
+        return;
+      }
+      setCountryFlagCodes(new Map(entries.filter((entry): entry is [string, string] => Boolean(entry[1]))));
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [scratchCountries]);
+
   const badges = useMemo(() => buildBadges(stats), [stats]);
   const countryBadges = useMemo(
     () => buildCountryBadges(scratchCountries, countryRegionTotals),
@@ -735,10 +816,20 @@ export function AchievementBadges({
           const index = achievedIndex(badge);
           const tier = index >= 0 ? tiers[index] : "Locked";
           const tierClass = index >= 0 ? tierClasses[index] : "locked";
+          const flagCode = countryFlagCodes.get(badge.name);
           return (
             <article key={badge.name} className="country-badge-row" style={{ "--badge-progress": Math.max(0, index + 1) / tiers.length } as CSSProperties}>
-              <span className={`badge-icon ${tierClass}`} aria-hidden="true">
-                <Globe2 size={16} />
+              <span className={`country-badge-medal ${tierClass}`} aria-hidden="true">
+                {flagCode ? (
+                  <img
+                    className="country-badge-flag"
+                    src={`https://flagcdn.com/${flagCode}.svg`}
+                    alt=""
+                    loading="lazy"
+                  />
+                ) : (
+                  <Globe2 size={18} />
+                )}
               </span>
               <span>
                 <strong>{badge.name}</strong>
@@ -771,7 +862,6 @@ export function AchievementBadges({
       </div>
       <div className="badge-list">
         {sortedBadges.map((badge) => {
-          const Icon = badge.icon;
           const index = achievedIndex(badge);
           const tier = index >= 0 ? tiers[index] : "Locked";
           const tierClass = index >= 0 ? tierClasses[index] : "locked";
@@ -779,8 +869,9 @@ export function AchievementBadges({
           return (
             <article key={badge.id} className="badge-row" style={{ "--badge-progress": Math.max(0, index + 1) / tiers.length } as CSSProperties}>
               <div className="badge-row-main">
-                <span className={`badge-icon ${tierClass}`} aria-hidden="true">
-                  <Icon size={16} />
+                <span className="badge-portrait" aria-hidden="true">
+                  <BadgePicture badgeId={badge.id} tierClass={tierClass} />
+                  <span className="badge-ribbon">{badge.name.replace(/^The /, "")}</span>
                 </span>
                 <span>
                   <strong>{badge.name}</strong>
