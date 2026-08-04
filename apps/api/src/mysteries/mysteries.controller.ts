@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Delete, Get, NotFoundException, Param, Post, Put, UseGuards } from "@nestjs/common";
+import { BadRequestException, Body, ConflictException, Controller, Delete, Get, NotFoundException, Param, Post, Put, UseGuards } from "@nestjs/common";
 import { Prisma } from "@geostats/db";
 import { AuthUser } from "@geostats/shared";
 import { AuthGuard } from "../auth/auth.guard";
@@ -16,15 +16,28 @@ type UpdateMysteryBody = {
   revision?: unknown;
 };
 
-function mysteryData(value: unknown, clientId: string): Prisma.InputJsonValue {
+const MAX_MYSTERY_NAME_LENGTH = 300;
+const MAX_MYSTERY_SNAPSHOT_BYTES = 256 * 1024;
+const MAX_MYSTERY_WORKSPACES_PER_OWNER = 500;
+
+function mysteryData(value: unknown, clientId: string): { data: Prisma.InputJsonValue; gcCode: string } {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new BadRequestException("Mystery data is required");
   }
   const mystery = value as Record<string, unknown>;
-  if (mystery.id !== clientId || typeof mystery.gcCode !== "string" || typeof mystery.name !== "string") {
+  const gcCode = typeof mystery.gcCode === "string" ? mystery.gcCode.trim().toUpperCase() : "";
+  const name = typeof mystery.name === "string" ? mystery.name.trim() : "";
+  if (mystery.id !== clientId || !/^GC[A-Z0-9]+$/.test(gcCode) || !name) {
     throw new BadRequestException("Mystery data does not match the requested mystery");
   }
-  return mystery as Prisma.InputJsonObject;
+  if (name.length > MAX_MYSTERY_NAME_LENGTH) {
+    throw new BadRequestException(`Mystery names cannot exceed ${MAX_MYSTERY_NAME_LENGTH} characters`);
+  }
+  const normalized = { ...mystery, gcCode, name } as Prisma.InputJsonObject;
+  if (Buffer.byteLength(JSON.stringify(normalized), "utf8") > MAX_MYSTERY_SNAPSHOT_BYTES) {
+    throw new BadRequestException("Mystery data is too large to share");
+  }
+  return { data: normalized, gcCode };
 }
 
 function snapshotRevision(value: unknown): number {
@@ -34,10 +47,12 @@ function snapshotRevision(value: unknown): number {
   return value as number;
 }
 
-async function lockMystery(tx: Prisma.TransactionClient, ownerId: string, clientId: string) {
-  await tx.$queryRaw`
-    SELECT pg_advisory_xact_lock(hashtext(${ownerId}), hashtext(${clientId}))::text AS lock_result
-  `;
+async function lockMystery(tx: Prisma.TransactionClient, ownerId: string, ...keys: string[]) {
+  for (const key of [...new Set(keys)].sort()) {
+    await tx.$queryRaw`
+      SELECT pg_advisory_xact_lock(hashtext(${ownerId}), hashtext(${key}))::text AS lock_result
+    `;
+  }
 }
 
 @Controller("mysteries")
@@ -143,7 +158,7 @@ export class MysteriesController {
     if (typeof body.recipientId !== "string" || body.recipientId === user.id) {
       throw new BadRequestException("Choose another registered user");
     }
-    const data = mysteryData(body.mystery, clientId);
+    const { data, gcCode } = mysteryData(body.mystery, clientId);
     const revision = snapshotRevision(body.revision);
 
     const recipient = await this.prisma.user.findUnique({
@@ -153,15 +168,34 @@ export class MysteriesController {
     if (!recipient) throw new NotFoundException("Recipient was not found");
 
     const storedRevision = await this.prisma.$transaction(async (tx) => {
-      await lockMystery(tx, user.id, clientId);
+      await lockMystery(tx, user.id, clientId, gcCode);
       const deletion = await tx.mysteryWorkspaceDeletion.findUnique({
         where: { ownerId_clientId: { ownerId: user.id, clientId } },
         select: { id: true }
       });
       if (deletion) throw new NotFoundException("Mystery was deleted");
+
+      const duplicate = await tx.mysteryWorkspace.findUnique({
+        where: { ownerId_gcCode: { ownerId: user.id, gcCode } },
+        select: { clientId: true }
+      });
+      if (duplicate && duplicate.clientId !== clientId) {
+        throw new ConflictException(`${gcCode} already has a shared workspace`);
+      }
+
+      const existing = duplicate ?? await tx.mysteryWorkspace.findUnique({
+        where: { ownerId_clientId: { ownerId: user.id, clientId } },
+        select: { clientId: true }
+      });
+      if (!existing) {
+        const workspaceCount = await tx.mysteryWorkspace.count({ where: { ownerId: user.id } });
+        if (workspaceCount >= MAX_MYSTERY_WORKSPACES_PER_OWNER) {
+          throw new BadRequestException("Too many shared Mystery workspaces");
+        }
+      }
       const mystery = await tx.mysteryWorkspace.upsert({
         where: { ownerId_clientId: { ownerId: user.id, clientId } },
-        create: { ownerId: user.id, clientId, data, snapshotRevision: revision },
+        create: { ownerId: user.id, clientId, gcCode, data, snapshotRevision: revision },
         update: {}
       });
       await tx.mysteryWorkspace.updateMany({
@@ -189,19 +223,38 @@ export class MysteriesController {
     @Param("clientId") clientId: string,
     @Body() body: UpdateMysteryBody
   ) {
-    const data = mysteryData(body.mystery, clientId);
+    const { data, gcCode } = mysteryData(body.mystery, clientId);
     const revision = snapshotRevision(body.revision);
     const storedRevision = await this.prisma.$transaction(async (tx) => {
-      await lockMystery(tx, user.id, clientId);
+      await lockMystery(tx, user.id, clientId, gcCode);
       const deletion = await tx.mysteryWorkspaceDeletion.findUnique({
         where: { ownerId_clientId: { ownerId: user.id, clientId } },
         select: { id: true }
       });
       if (deletion) throw new NotFoundException("Mystery was deleted");
 
+      const duplicate = await tx.mysteryWorkspace.findUnique({
+        where: { ownerId_gcCode: { ownerId: user.id, gcCode } },
+        select: { clientId: true }
+      });
+      if (duplicate && duplicate.clientId !== clientId) {
+        throw new ConflictException(`${gcCode} already has a workspace`);
+      }
+
+      const existing = duplicate ?? await tx.mysteryWorkspace.findUnique({
+        where: { ownerId_clientId: { ownerId: user.id, clientId } },
+        select: { clientId: true }
+      });
+      if (!existing) {
+        const workspaceCount = await tx.mysteryWorkspace.count({ where: { ownerId: user.id } });
+        if (workspaceCount >= MAX_MYSTERY_WORKSPACES_PER_OWNER) {
+          throw new BadRequestException("Too many Mystery workspaces");
+        }
+      }
+
       const mystery = await tx.mysteryWorkspace.upsert({
         where: { ownerId_clientId: { ownerId: user.id, clientId } },
-        create: { ownerId: user.id, clientId, data, snapshotRevision: revision },
+        create: { ownerId: user.id, clientId, gcCode, data, snapshotRevision: revision },
         update: {}
       });
       await tx.mysteryWorkspace.updateMany({
