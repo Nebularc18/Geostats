@@ -29,14 +29,25 @@ import { MYSTERY_USERSCRIPT_VERSION } from "../../lib/mystery-userscript";
 
 type CheckState = "correct" | "wrong" | "unchecked";
 type MysteryStatus = "solving" | "solved" | "planned";
+type AttemptKind = "coordinate" | "keyword";
 
 type CoordinateAttempt = {
   id: string;
-  latitude: number;
-  longitude: number;
+  kind?: AttemptKind;
+  latitude?: number;
+  longitude?: number;
+  answer?: string;
+  finalLatitude?: number;
+  finalLongitude?: number;
   state: CheckState;
   createdAt: string;
   geocachingSyncedAt?: string;
+};
+
+type SolvedCoordinate = {
+  attempt: CoordinateAttempt;
+  latitude: number;
+  longitude: number;
 };
 
 type AppUser = {
@@ -175,6 +186,45 @@ function stateLabel(state: CheckState) {
   return "Not checked";
 }
 
+function inputCoordinate(attempt: CoordinateAttempt) {
+  return Number.isFinite(attempt.latitude) && Number.isFinite(attempt.longitude)
+    ? { latitude: attempt.latitude!, longitude: attempt.longitude! }
+    : null;
+}
+
+function revealedCoordinate(attempt: CoordinateAttempt) {
+  return Number.isFinite(attempt.finalLatitude) && Number.isFinite(attempt.finalLongitude)
+    ? { latitude: attempt.finalLatitude!, longitude: attempt.finalLongitude! }
+    : null;
+}
+
+function solvedCoordinateForAttempt(attempt: CoordinateAttempt): SolvedCoordinate | null {
+  if (attempt.state !== "correct") return null;
+  const coordinate = revealedCoordinate(attempt) ?? (attempt.kind !== "keyword" ? inputCoordinate(attempt) : null);
+  return coordinate ? { attempt, ...coordinate } : null;
+}
+
+function finalCoordinate(cache: MysteryCache) {
+  for (const attempt of cache.attempts) {
+    const solved = solvedCoordinateForAttempt(attempt);
+    if (solved) return solved;
+  }
+  return null;
+}
+
+function attemptKind(attempt: CoordinateAttempt): AttemptKind {
+  return attempt.kind === "keyword" ? "keyword" : "coordinate";
+}
+
+function attemptInputLabel(attempt: CoordinateAttempt) {
+  const coordinate = inputCoordinate(attempt);
+  return attemptKind(attempt) === "keyword"
+    ? attempt.answer || "Keyword"
+    : coordinate
+      ? formatCoordinate(coordinate.latitude, coordinate.longitude)
+      : "Coordinate";
+}
+
 function locationLabel(cache: MysteryCache) {
   return [cache.locality, cache.area, cache.county, cache.region, cache.country]
     .map(normalizeMysteryArea)
@@ -227,7 +277,11 @@ function verifiedStoredShares(caches: MysteryCache[]) {
 
     const attempts = new Map<string, CoordinateAttempt>();
     for (const attempt of [...existing.attempts, ...cache.attempts]) {
-      const attemptKey = `${Number(attempt.latitude).toFixed(7)}:${Number(attempt.longitude).toFixed(7)}:${attempt.state}`;
+      const submitted = inputCoordinate(attempt);
+      const revealed = revealedCoordinate(attempt);
+      const attemptKey = attemptKind(attempt) === "keyword"
+        ? `keyword:${attempt.answer?.trim().toLocaleLowerCase()}:${attempt.state}:${revealed?.latitude}:${revealed?.longitude}`
+        : `coordinate:${submitted?.latitude}:${submitted?.longitude}:${attempt.state}:${revealed?.latitude}:${revealed?.longitude}`;
       const previous = attempts.get(attemptKey);
       attempts.set(attemptKey, previous?.geocachingSyncedAt ? previous : attempt);
     }
@@ -307,11 +361,12 @@ function applyGeocachingSyncReceipt(caches: MysteryCache[], value: GeocachingSyn
   const next = caches.map((cache) => {
     if (cache.id !== cacheId || cache.gcCode.toUpperCase() !== gcCode) return cache;
     const attempts = cache.attempts.map((attempt) => {
+      const solved = solvedCoordinateForAttempt(attempt);
       if (
         attempt.id !== attemptId ||
-        attempt.state !== "correct" ||
-        Math.abs(attempt.latitude - latitude) >= 0.000001 ||
-        Math.abs(attempt.longitude - longitude) >= 0.000001 ||
+        !solved ||
+        Math.abs(solved.latitude - latitude) >= 0.000001 ||
+        Math.abs(solved.longitude - longitude) >= 0.000001 ||
         !syncedAt
       ) {
         return attempt;
@@ -343,8 +398,10 @@ export default function MysteriesPage() {
   const [ready, setReady] = useState(false);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<"all" | MysteryStatus>("all");
+  const [attemptType, setAttemptType] = useState<AttemptKind>("coordinate");
   const [coordinate, setCoordinate] = useState("");
   const [coordinateState, setCoordinateState] = useState<CheckState>("unchecked");
+  const [finalCoordinateText, setFinalCoordinateText] = useState("");
   const [coordinateError, setCoordinateError] = useState("");
   const [showAdd, setShowAdd] = useState(false);
   const [showBrowserImport, setShowBrowserImport] = useState(false);
@@ -795,8 +852,8 @@ export default function MysteriesPage() {
   const selected = caches.find((cache) => cache.id === selectedId) ?? caches[0];
   const syncableCaches = useMemo(() => caches.flatMap((cache) => {
     if (cache.status !== "solved") return [];
-    const attempt = cache.attempts.find((item) => item.state === "correct");
-    return attempt && !attempt.geocachingSyncedAt ? [{ cache, attempt }] : [];
+    const solved = finalCoordinate(cache);
+    return solved && !solved.attempt.geocachingSyncedAt ? [{ cache, ...solved }] : [];
   }), [caches]);
   const filteredCaches = useMemo(() => {
     const normalized = query.trim().toLowerCase();
@@ -863,31 +920,53 @@ export default function MysteriesPage() {
   function addAttempt(event: FormEvent) {
     event.preventDefault();
     if (!selected) return;
-    const parsed = parseCoordinate(coordinate);
-    if (!parsed) {
+    const answer = coordinate.trim();
+    const parsed = attemptType === "coordinate" ? parseCoordinate(answer) : null;
+    if (attemptType === "coordinate" && !parsed) {
       setCoordinateError("Use decimal coordinates or N 59° 20.123' E 018° 04.321'.");
       return;
     }
-    const duplicate = selected.attempts.some(
-      (attempt) => Math.abs(attempt.latitude - parsed.latitude) < 0.000001 && Math.abs(attempt.longitude - parsed.longitude) < 0.000001
-    );
+    if (attemptType === "keyword" && !answer) {
+      setCoordinateError("Enter the keyword you tried.");
+      return;
+    }
+    const revealed = finalCoordinateText.trim() ? parseCoordinate(finalCoordinateText) : null;
+    if (finalCoordinateText.trim() && !revealed) {
+      setCoordinateError("Use valid final coordinates, for example 59.40582, 18.36120.");
+      return;
+    }
+    if (attemptType === "keyword" && coordinateState === "correct" && !revealed) {
+      setCoordinateError("Enter the final coordinates revealed by the checker.");
+      return;
+    }
+    const duplicate = selected.attempts.some((attempt) => {
+      if (attemptKind(attempt) !== attemptType) return false;
+      if (attemptType === "keyword") return attempt.answer?.trim().toLocaleLowerCase() === answer.toLocaleLowerCase();
+      const previous = inputCoordinate(attempt);
+      return previous && parsed && Math.abs(previous.latitude - parsed.latitude) < 0.000001 && Math.abs(previous.longitude - parsed.longitude) < 0.000001;
+    });
     if (duplicate) {
-      setCoordinateError("You have already tried these coordinates.");
+      setCoordinateError(`You have already tried this ${attemptType}.`);
       return;
     }
     const nextAttempt: CoordinateAttempt = {
       id: newId("attempt"),
-      ...parsed,
+      kind: attemptType,
+      ...(parsed ?? {}),
+      ...(attemptType === "keyword" ? { answer } : {}),
+      ...(revealed ? { finalLatitude: revealed.latitude, finalLongitude: revealed.longitude } : {}),
       state: coordinateState,
       createdAt: new Date().toISOString()
     };
+    const solved = Boolean(solvedCoordinateForAttempt(nextAttempt));
     updateSelected({
       attempts: [nextAttempt, ...selected.attempts],
-      status: coordinateState === "correct" ? "solved" : selected.status
+      status: solved ? "solved" : selected.status
     });
     setCoordinate("");
+    setFinalCoordinateText("");
     setCoordinateError("");
-    setNotice(serverSyncReady ? "Coordinate saved to your account" : "Coordinate saved offline");
+    setNotice(serverSyncReady ? "Checker try saved to your account" : "Checker try saved offline");
   }
 
   function deleteAttempt(attemptId: string) {
@@ -895,16 +974,16 @@ export default function MysteriesPage() {
     const remainingAttempts = selected.attempts.filter((attempt) => attempt.id !== attemptId);
     updateSelected({
       attempts: remainingAttempts,
-      status: selected.status === "solved" && !remainingAttempts.some((attempt) => attempt.state === "correct") ? "solving" : selected.status
+      status: selected.status === "solved" && !remainingAttempts.some((attempt) => solvedCoordinateForAttempt(attempt)) ? "solving" : selected.status
     });
   }
 
-  function syncAttempts(items: Array<{ cache: MysteryCache; attempt: CoordinateAttempt }>) {
+  function syncAttempts(items: Array<{ cache: MysteryCache } & SolvedCoordinate>) {
     const eligible = items.filter(({ cache, attempt }) =>
       cache.status === "solved" &&
       attempt.state === "correct" &&
       !attempt.geocachingSyncedAt &&
-      cache.attempts.find((item) => item.state === "correct")?.id === attempt.id
+      finalCoordinate(cache)?.attempt.id === attempt.id
     );
     if (!eligible.length) {
       setNotice("Only solved, unsynced caches can be synced");
@@ -912,13 +991,13 @@ export default function MysteriesPage() {
     }
 
     const issuedAt = Date.now();
-    const payloads: GeocachingSyncPayload[] = eligible.map(({ cache, attempt }) => ({
+    const payloads: GeocachingSyncPayload[] = eligible.map(({ cache, attempt, latitude, longitude }) => ({
       cacheId: cache.id,
       attemptId: attempt.id,
       gcCode: cache.gcCode,
-      latitude: attempt.latitude,
-      longitude: attempt.longitude,
-      coordinateText: formatCoordinate(attempt.latitude, attempt.longitude),
+      latitude,
+      longitude,
+      coordinateText: formatCoordinate(latitude, longitude),
       solved: true,
       issuedAt
     }));
@@ -956,7 +1035,8 @@ export default function MysteriesPage() {
   }
 
   function syncAttempt(cache: MysteryCache, attempt: CoordinateAttempt) {
-    syncAttempts([{ cache, attempt }]);
+    const solved = solvedCoordinateForAttempt(attempt);
+    if (solved) syncAttempts([{ cache, ...solved }]);
   }
 
   function addCache(event: FormEvent<HTMLFormElement>) {
@@ -1089,7 +1169,7 @@ export default function MysteriesPage() {
 
   function exportGpx() {
     const solved = caches.flatMap((cache) => {
-      const final = cache.attempts.find((attempt) => attempt.state === "correct");
+      const final = finalCoordinate(cache);
       return final ? [{ cache, final }] : [];
     });
     const points = solved
@@ -1142,7 +1222,7 @@ export default function MysteriesPage() {
       <section className="mystery-overview" aria-label="Mystery overview">
         <div><span>In your workspace</span><strong>{caches.length}</strong><small>mystery caches</small></div>
         <div><span>Solved</span><strong>{solvedCount}</strong><small>{caches.length ? Math.round((solvedCount / caches.length) * 100) : 0}% complete</small></div>
-        <div><span>Coordinates tried</span><strong>{attemptCount}</strong><small>duplicates blocked</small></div>
+        <div><span>Checker tries</span><strong>{attemptCount}</strong><small>keywords & coordinates</small></div>
       </section>
 
       <section className="mystery-workspace">
@@ -1160,11 +1240,11 @@ export default function MysteriesPage() {
               <div className="mystery-cache-group">
                 <p>Mystery caches<span>{filteredCaches.length}</span></p>
                 {filteredCaches.map((cache) => {
-                  const final = cache.attempts.find((attempt) => attempt.state === "correct");
+                  const final = finalCoordinate(cache);
                   return (
                     <button className={`mystery-cache-card ${selected?.id === cache.id ? "active" : ""}`} type="button" key={cache.id} onClick={() => setSelectedId(cache.id)}>
                       <span className={`cache-status-dot ${cache.status}`}><CircleDot size={16} /></span>
-                      <span className="mystery-card-copy"><small>{cache.gcCode}{locationLabel(cache) ? ` · ${locationLabel(cache)}` : ""}</small><strong>{cache.name}</strong><em>{final ? formatCoordinate(final.latitude, final.longitude) : `${cache.attempts.length} coordinate ${cache.attempts.length === 1 ? "try" : "tries"}`}</em></span>
+                      <span className="mystery-card-copy"><small>{cache.gcCode}{locationLabel(cache) ? ` · ${locationLabel(cache)}` : ""}</small><strong>{cache.name}</strong><em>{final ? formatCoordinate(final.latitude, final.longitude) : `${cache.attempts.length} checker ${cache.attempts.length === 1 ? "try" : "tries"}`}</em></span>
                       <ChevronRight size={17} />
                     </button>
                   );
@@ -1199,33 +1279,38 @@ export default function MysteriesPage() {
 
             <div className="mystery-detail-grid">
               <section className="mystery-section coordinate-section">
-                <div className="section-heading"><div><p className="eyebrow">Coordinate lab</p><h3>Tested coordinates</h3></div><small>{selected.attempts.length} saved</small></div>
+                <div className="section-heading"><div><p className="eyebrow">Checker lab</p><h3>Tested answers</h3></div><small>{selected.attempts.length} saved</small></div>
                 <form className="coordinate-form" onSubmit={addAttempt}>
-                  <label><span>New coordinate</span><input value={coordinate} onChange={(event) => setCoordinate(event.target.value)} placeholder="59.40582, 18.36120" /></label>
-                  <label><span>Checker result</span><select value={coordinateState} onChange={(event) => setCoordinateState(event.target.value as CheckState)}><option value="unchecked">Not checked</option><option value="wrong">Not correct</option><option value="correct">Correct</option></select></label>
+                  <label className="attempt-type-field"><span>Try type</span><select value={attemptType} onChange={(event) => { setAttemptType(event.target.value as AttemptKind); setCoordinate(""); setCoordinateError(""); }}><option value="coordinate">Coordinate</option><option value="keyword">Keyword</option></select></label>
+                  <label className="attempt-answer-field"><span>{attemptType === "keyword" ? "Keyword" : "Coordinate tried"}</span><input value={coordinate} onChange={(event) => setCoordinate(event.target.value)} placeholder={attemptType === "keyword" ? "Enter checker keyword" : "59.40582, 18.36120"} /></label>
+                  <label className="checker-result-field"><span>Checker result</span><select value={coordinateState} onChange={(event) => setCoordinateState(event.target.value as CheckState)}><option value="unchecked">Not checked</option><option value="wrong">Not correct</option><option value="correct">Correct</option></select></label>
+                  <label className="final-coordinate-field"><span>Final coordinates <small>{coordinateState === "correct" && attemptType === "keyword" ? "(required)" : "(if revealed)"}</small></span><input value={finalCoordinateText} onChange={(event) => setFinalCoordinateText(event.target.value)} placeholder="Coordinates returned by checker" /></label>
                   <button className="primary-button" type="submit"><Plus size={17} /> Save try</button>
                 </form>
                 {coordinateError && <p className="coordinate-error"><AlertTriangle size={15} /> {coordinateError}</p>}
                 <div className="attempt-list">
                   {selected.attempts.map((attempt) => {
-                    const distance = distanceKm(selected.publishedLatitude, selected.publishedLongitude, attempt.latitude, attempt.longitude);
+                    const final = solvedCoordinateForAttempt(attempt);
+                    const submitted = inputCoordinate(attempt);
+                    const distanceCoordinate = final ?? submitted;
+                    const distance = distanceCoordinate ? distanceKm(selected.publishedLatitude, selected.publishedLongitude, distanceCoordinate.latitude, distanceCoordinate.longitude) : null;
                     return (
                       <div className="attempt-row" key={attempt.id}>
                         <span className={`attempt-state ${attempt.state}`}>{attempt.state === "correct" ? <Check size={16} /> : attempt.state === "wrong" ? <X size={16} /> : <CircleDot size={16} />}</span>
-                        <span><strong>{formatCoordinate(attempt.latitude, attempt.longitude)}</strong><small>{new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(attempt.createdAt))}</small></span>
-                        <span className={`distance-badge ${distance > MAX_REASONABLE_DISTANCE_KM ? "warning" : ""}`}>{distance > MAX_REASONABLE_DISTANCE_KM && <AlertTriangle size={13} />}{distance < 1 ? `${Math.round(distance * 1000)} m` : `${distance.toFixed(1)} km`} away</span>
-                        {selected.status === "solved" && attempt.state === "correct" && selected.attempts.find((item) => item.state === "correct")?.id === attempt.id ? (
+                        <span><strong>{attemptInputLabel(attempt)}</strong>{revealedCoordinate(attempt) && <em>Final: {formatCoordinate(attempt.finalLatitude!, attempt.finalLongitude!)}</em>}<small>{attemptKind(attempt) === "keyword" ? "Keyword" : "Coordinate"} · {new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(attempt.createdAt))}</small></span>
+                        {distance !== null && <span className={`distance-badge ${distance > MAX_REASONABLE_DISTANCE_KM ? "warning" : ""}`}>{distance > MAX_REASONABLE_DISTANCE_KM && <AlertTriangle size={13} />}{distance < 1 ? `${Math.round(distance * 1000)} m` : `${distance.toFixed(1)} km`} away</span>}
+                        {selected.status === "solved" && final && finalCoordinate(selected)?.attempt.id === attempt.id ? (
                           attempt.geocachingSyncedAt ? (
                             <span className="coordinate-sync-status" title={`Synced ${new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(attempt.geocachingSyncedAt))}`}><Check size={13} /> Synced</span>
                           ) : (
                             <button className="coordinate-sync-button" type="button" onClick={() => syncAttempt(selected, attempt)}><ExternalLink size={13} /> Sync</button>
                           )
                         ) : <span className={`checker-label ${attempt.state}`}>{stateLabel(attempt.state)}</span>}
-                        <button className="row-delete" aria-label="Delete coordinate" type="button" onClick={() => deleteAttempt(attempt.id)}><Trash2 size={15} /></button>
+                        <button className="row-delete" aria-label="Delete checker try" type="button" onClick={() => deleteAttempt(attempt.id)}><Trash2 size={15} /></button>
                       </div>
                     );
                   })}
-                  {!selected.attempts.length && <div className="attempt-empty"><MapPin size={24} /><strong>No coordinate tries yet</strong><small>Add one above; distance is checked automatically.</small></div>}
+                  {!selected.attempts.length && <div className="attempt-empty"><MapPin size={24} /><strong>No checker tries yet</strong><small>Add a coordinate or keyword above. Save any final coordinates the checker reveals.</small></div>}
                 </div>
               </section>
 

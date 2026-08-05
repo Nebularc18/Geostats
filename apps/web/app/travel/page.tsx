@@ -17,13 +17,29 @@ type TravelCache = {
   locality?: string;
   trip?: string;
   status: "solving" | "solved" | "planned";
-  attempts: Array<{ state: "correct" | "wrong" | "unchecked"; latitude: number; longitude: number }>;
+  attempts: Array<{
+    state: "correct" | "wrong" | "unchecked";
+    kind?: "coordinate" | "keyword";
+    latitude?: number;
+    longitude?: number;
+    finalLatitude?: number;
+    finalLongitude?: number;
+  }>;
 };
 
 const STORAGE_KEY = "geostats-mysteries-v1";
 
 function finalCoordinate(cache: TravelCache) {
-  return cache.attempts.find((attempt) => attempt.state === "correct");
+  for (const attempt of cache.attempts) {
+    if (attempt.state !== "correct") continue;
+    if (Number.isFinite(attempt.finalLatitude) && Number.isFinite(attempt.finalLongitude)) {
+      return { latitude: attempt.finalLatitude!, longitude: attempt.finalLongitude! };
+    }
+    if (attempt.kind !== "keyword" && Number.isFinite(attempt.latitude) && Number.isFinite(attempt.longitude)) {
+      return { latitude: attempt.latitude!, longitude: attempt.longitude! };
+    }
+  }
+  return null;
 }
 
 function locationLabel(cache: TravelCache) {
