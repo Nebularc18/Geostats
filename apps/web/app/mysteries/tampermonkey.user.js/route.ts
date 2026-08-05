@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { cachePageShowsCoordinate } from "../../../lib/mystery-coordinate-confirmation";
 import { locationFromCachePageMetadata } from "../../../lib/mystery-area";
 import { locationFromPageSources } from "../../../lib/mystery-page-location";
 import { MYSTERY_USERSCRIPT_VERSION } from "../../../lib/mystery-userscript";
@@ -35,6 +36,7 @@ function userscript(appOrigin: string) {
   const SYNC_RECEIPT_KEY = "geostats-coordinate-sync-receipt";
   const SYNC_RECEIPT_PREFIX = SYNC_RECEIPT_KEY + ":";
   const MAX_SYNC_AGE_MS = 10 * 60 * 1000;
+  const cachePageShowsCoordinate = ${cachePageShowsCoordinate.toString()};
 
   if (location.origin === GEOSTATS_ORIGIN) {
     document.addEventListener("geostats-sync-request", () => {
@@ -214,10 +216,6 @@ function userscript(appOrigin: string) {
     return copied;
   }
 
-  function sameCoordinates(first, second) {
-    return Boolean(first && second) && Math.abs(first.latitude - second.latitude) < 0.00001 && Math.abs(first.longitude - second.longitude) < 0.00001;
-  }
-
   function syncStorageKey() {
     return syncPayload ? "geostats-synced:" + syncPayload.gcCode + ":" + syncPayload.attemptId : "";
   }
@@ -294,7 +292,7 @@ function userscript(appOrigin: string) {
     return new Promise((resolve) => {
       const started = Date.now();
       const timer = window.setInterval(() => {
-        if (sameCoordinates(pageData(), syncPayload)) {
+        if (cachePageShowsCoordinate(document, syncPayload)) {
           window.clearInterval(timer);
           resolve(true);
           return;
@@ -319,7 +317,7 @@ function userscript(appOrigin: string) {
       return;
     }
 
-    if (sameCoordinates(pageData(), syncPayload)) {
+    if (cachePageShowsCoordinate(document, syncPayload)) {
       markCoordinateSynced();
       return;
     }

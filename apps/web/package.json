@@ -8,7 +8,7 @@
     "start": "next start -p 3000",
     "lint": "tsc -p tsconfig.json --noEmit",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --test .next/**/*.test.js"
+    "test": "node --test lib/*.test.ts"
   },
   "dependencies": {
     "@geostats/shared": "workspace:*",
