@@ -27,7 +27,7 @@ import { apiFetch } from "../../lib/api";
 import { normalizeMysteryArea } from "../../lib/mystery-area";
 import { MYSTERY_USERSCRIPT_VERSION } from "../../lib/mystery-userscript";
 
-type CheckState = "correct" | "wrong";
+type CheckState = "correct" | "wrong" | "unchecked";
 type MysteryStatus = "solving" | "solved" | "planned";
 type AttemptKind = "coordinate" | "keyword";
 
@@ -182,7 +182,8 @@ function escapeXml(value: string) {
 
 function stateLabel(state: CheckState) {
   if (state === "correct") return "Correct";
-  return "Didn't work";
+  if (state === "wrong") return "Didn't work";
+  return "Result unknown";
 }
 
 function inputCoordinate(attempt: CoordinateAttempt) {
@@ -258,7 +259,10 @@ function verifiedStoredShares(caches: MysteryCache[]) {
       : [],
     clues: Array.isArray(cache.clues) ? cache.clues.filter((clue): clue is string => typeof clue === "string") : [],
     attempts: Array.isArray(cache.attempts)
-      ? cache.attempts.map((attempt): CoordinateAttempt => ({ ...attempt, state: attempt.state === "correct" ? "correct" : "wrong" }))
+      ? cache.attempts.map((attempt): CoordinateAttempt => ({
+          ...attempt,
+          state: attempt.state === "correct" || attempt.state === "wrong" ? attempt.state : "unchecked"
+        }))
       : [],
     sharedWith: Array.isArray(cache.sharedWith) ? cache.sharedWith.filter(isAppUser) : []
   }));
@@ -852,12 +856,17 @@ export default function MysteriesPage() {
   }, [showShare, userQuery]);
 
   const selected = caches.find((cache) => cache.id === selectedId) ?? caches[0];
+  const selectedCacheId = selected?.id;
+  useEffect(() => {
+    setAttemptSearch("");
+  }, [selectedCacheId]);
   const normalizedAttemptSearch = attemptSearch.trim().toLocaleLowerCase();
   const matchingAttempts = selected?.attempts.filter((attempt) =>
     !normalizedAttemptSearch || attemptInputLabel(attempt).toLocaleLowerCase().includes(normalizedAttemptSearch)
   ) ?? [];
   const matchingWorkedAttempts = matchingAttempts.filter((attempt) => attempt.state === "correct");
   const matchingFailedAttempts = matchingAttempts.filter((attempt) => attempt.state === "wrong");
+  const matchingUnknownAttempts = matchingAttempts.filter((attempt) => attempt.state === "unchecked");
   const syncableCaches = useMemo(() => caches.flatMap((cache) => {
     if (cache.status !== "solved") return [];
     const solved = finalCoordinate(cache);
@@ -1197,6 +1206,7 @@ export default function MysteriesPage() {
     if (!selected) return;
     const worked = selected.attempts.filter((attempt) => attempt.state === "correct");
     const failed = selected.attempts.filter((attempt) => attempt.state === "wrong");
+    const unknown = selected.attempts.filter((attempt) => attempt.state === "unchecked");
     const lineForAttempt = (attempt: CoordinateAttempt) => {
       const revealed = revealedCoordinate(attempt);
       return `- ${attemptKind(attempt) === "keyword" ? "Keyword" : "Coordinate"}: ${attemptInputLabel(attempt)}${revealed ? ` (revealed final coordinates: ${formatCoordinate(revealed.latitude, revealed.longitude)})` : ""}`;
@@ -1214,6 +1224,7 @@ export default function MysteriesPage() {
       context,
       `DIDN'T WORK (${failed.length})\n${failed.length ? failed.map(lineForAttempt).join("\n") : "- None"}`,
       `WORKED (${worked.length})\n${worked.length ? worked.map(lineForAttempt).join("\n") : "- None"}`,
+      unknown.length ? `RESULT UNKNOWN (${unknown.length})\n${unknown.map(lineForAttempt).join("\n")}` : "",
       selected.clues.length ? `CLUES\n${selected.clues.map((clue) => `- ${clue}`).join("\n")}` : "",
       selected.notes.trim() ? `NOTES\n${selected.notes.trim()}` : "",
       "Suggest useful next attempts and explain why they are different from everything already tried."
@@ -1343,7 +1354,7 @@ export default function MysteriesPage() {
                 </div>
                 <div className="attempt-overview">
                   <div className="attempt-overview-counts" aria-label="Checker result summary">
-                    <span><strong>{selected.attempts.length}</strong><small>Total tried</small></span>
+                    <span><strong>{selected.attempts.length}</strong><small>Recorded</small></span>
                     <span className="failed"><strong>{selected.attempts.filter((attempt) => attempt.state === "wrong").length}</strong><small>Didn't work</small></span>
                     <span className="worked"><strong>{selected.attempts.filter((attempt) => attempt.state === "correct").length}</strong><small>Worked</small></span>
                   </div>
@@ -1353,6 +1364,7 @@ export default function MysteriesPage() {
                       {normalizedAttemptSearch && !matchingAttempts.length ? <p className="attempt-search-result new"><Sparkles size={15} /><strong>Not found in your history.</strong> This answer has not been saved as tried.</p> : null}
                       {matchingFailedAttempts.length ? <section className="attempt-result-group failed"><div><X size={15} /><strong>Didn't work</strong><small>{matchingFailedAttempts.length}{normalizedAttemptSearch ? " matching" : ""}</small></div><div>{matchingFailedAttempts.map((attempt) => <span key={attempt.id}>{attemptKind(attempt) === "keyword" ? "Keyword" : "Coordinate"}<strong>{attemptInputLabel(attempt)}</strong></span>)}</div></section> : null}
                       {matchingWorkedAttempts.length ? <section className="attempt-result-group worked"><div><Check size={15} /><strong>Worked</strong><small>{matchingWorkedAttempts.length}{normalizedAttemptSearch ? " matching" : ""}</small></div><div>{matchingWorkedAttempts.map((attempt) => <span key={attempt.id}>{attemptKind(attempt) === "keyword" ? "Keyword" : "Coordinate"}<strong>{attemptInputLabel(attempt)}</strong></span>)}</div></section> : null}
+                      {matchingUnknownAttempts.length ? <section className="attempt-result-group unknown"><div><CircleDot size={15} /><strong>Result unknown</strong><small>{matchingUnknownAttempts.length}{normalizedAttemptSearch ? " matching" : ""}</small></div><div>{matchingUnknownAttempts.map((attempt) => <span key={attempt.id}>{attemptKind(attempt) === "keyword" ? "Keyword" : "Coordinate"}<strong>{attemptInputLabel(attempt)}</strong></span>)}</div></section> : null}
                     </div>
                   ) : <p className="attempt-search-result"><MapPin size={15} />Nothing has been tested for {selected.gcCode} yet.</p>}
                 </div>
@@ -1372,7 +1384,7 @@ export default function MysteriesPage() {
                     const distance = distanceCoordinate ? distanceKm(selected.publishedLatitude, selected.publishedLongitude, distanceCoordinate.latitude, distanceCoordinate.longitude) : null;
                     return (
                       <div className="attempt-row" key={attempt.id}>
-                        <span className={`attempt-state ${attempt.state}`}>{attempt.state === "correct" ? <Check size={16} /> : <X size={16} />}</span>
+                        <span className={`attempt-state ${attempt.state}`}>{attempt.state === "correct" ? <Check size={16} /> : attempt.state === "wrong" ? <X size={16} /> : <CircleDot size={16} />}</span>
                         <span><strong>{attemptInputLabel(attempt)}</strong>{revealedCoordinate(attempt) && <em>Final: {formatCoordinate(attempt.finalLatitude!, attempt.finalLongitude!)}</em>}<small>{attemptKind(attempt) === "keyword" ? "Keyword" : "Coordinate"} · {new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(attempt.createdAt))}</small></span>
                         {distance !== null && <span className={`distance-badge ${distance > MAX_REASONABLE_DISTANCE_KM ? "warning" : ""}`}>{distance > MAX_REASONABLE_DISTANCE_KM && <AlertTriangle size={13} />}{distance < 1 ? `${Math.round(distance * 1000)} m` : `${distance.toFixed(1)} km`} away</span>}
                         {selected.status === "solved" && final && finalCoordinate(selected)?.attempt.id === attempt.id ? (

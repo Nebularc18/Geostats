@@ -3130,6 +3130,10 @@ select:focus {
   color: var(--green);
 }
 
+.attempt-result-group.unknown > div:first-child {
+  color: var(--blue);
+}
+
 .attempt-result-group > div:last-child {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(125px, 1fr));
