@@ -182,8 +182,8 @@ function escapeXml(value: string) {
 
 function stateLabel(state: CheckState) {
   if (state === "correct") return "Correct";
-  if (state === "wrong") return "Not correct";
-  return "Not checked";
+  if (state === "wrong") return "Didn't work";
+  return "Result unknown";
 }
 
 function inputCoordinate(attempt: CoordinateAttempt) {
@@ -258,7 +258,12 @@ function verifiedStoredShares(caches: MysteryCache[]) {
       ? cache.locationHierarchy.map(normalizeMysteryArea).filter(Boolean)
       : [],
     clues: Array.isArray(cache.clues) ? cache.clues.filter((clue): clue is string => typeof clue === "string") : [],
-    attempts: Array.isArray(cache.attempts) ? cache.attempts : [],
+    attempts: Array.isArray(cache.attempts)
+      ? cache.attempts.map((attempt): CoordinateAttempt => ({
+          ...attempt,
+          state: attempt.state === "correct" || attempt.state === "wrong" ? attempt.state : "unchecked"
+        }))
+      : [],
     sharedWith: Array.isArray(cache.sharedWith) ? cache.sharedWith.filter(isAppUser) : []
   }));
 
@@ -400,7 +405,8 @@ export default function MysteriesPage() {
   const [filter, setFilter] = useState<"all" | MysteryStatus>("all");
   const [attemptType, setAttemptType] = useState<AttemptKind>("coordinate");
   const [coordinate, setCoordinate] = useState("");
-  const [coordinateState, setCoordinateState] = useState<CheckState>("unchecked");
+  const [coordinateState, setCoordinateState] = useState<CheckState>("wrong");
+  const [attemptSearch, setAttemptSearch] = useState("");
   const [finalCoordinateText, setFinalCoordinateText] = useState("");
   const [coordinateError, setCoordinateError] = useState("");
   const [showAdd, setShowAdd] = useState(false);
@@ -850,6 +856,17 @@ export default function MysteriesPage() {
   }, [showShare, userQuery]);
 
   const selected = caches.find((cache) => cache.id === selectedId) ?? caches[0];
+  const selectedCacheId = selected?.id;
+  useEffect(() => {
+    setAttemptSearch("");
+  }, [selectedCacheId]);
+  const normalizedAttemptSearch = attemptSearch.trim().toLocaleLowerCase();
+  const matchingAttempts = selected?.attempts.filter((attempt) =>
+    !normalizedAttemptSearch || attemptInputLabel(attempt).toLocaleLowerCase().includes(normalizedAttemptSearch)
+  ) ?? [];
+  const matchingWorkedAttempts = matchingAttempts.filter((attempt) => attempt.state === "correct");
+  const matchingFailedAttempts = matchingAttempts.filter((attempt) => attempt.state === "wrong");
+  const matchingUnknownAttempts = matchingAttempts.filter((attempt) => attempt.state === "unchecked");
   const syncableCaches = useMemo(() => caches.flatMap((cache) => {
     if (cache.status !== "solved") return [];
     const solved = finalCoordinate(cache);
@@ -1185,6 +1202,51 @@ export default function MysteriesPage() {
     setNotice(`Exported ${solved.length} solved ${solved.length === 1 ? "cache" : "caches"}`);
   }
 
+  async function copyAttemptsForAi() {
+    if (!selected) return;
+    const worked = selected.attempts.filter((attempt) => attempt.state === "correct");
+    const failed = selected.attempts.filter((attempt) => attempt.state === "wrong");
+    const unknown = selected.attempts.filter((attempt) => attempt.state === "unchecked");
+    const lineForAttempt = (attempt: CoordinateAttempt) => {
+      const revealed = revealedCoordinate(attempt);
+      return `- ${attemptKind(attempt) === "keyword" ? "Keyword" : "Coordinate"}: ${attemptInputLabel(attempt)}${revealed ? ` (revealed final coordinates: ${formatCoordinate(revealed.latitude, revealed.longitude)})` : ""}`;
+    };
+    const final = finalCoordinate(selected);
+    const context = [
+      `Cache: ${selected.gcCode} — ${selected.name}`,
+      `Geocache link: https://coord.info/${selected.gcCode}`,
+      locationLabel(selected) ? `Location: ${locationLabel(selected)}` : "",
+      `Published coordinates: ${formatCoordinate(selected.publishedLatitude, selected.publishedLongitude)}`,
+      final ? `Known final coordinates: ${formatCoordinate(final.latitude, final.longitude)}` : ""
+    ].filter(Boolean).join("\n");
+    const text = [
+      "Help me continue solving this geocaching mystery without repeating previous attempts.",
+      context,
+      `DIDN'T WORK (${failed.length})\n${failed.length ? failed.map(lineForAttempt).join("\n") : "- None"}`,
+      `WORKED (${worked.length})\n${worked.length ? worked.map(lineForAttempt).join("\n") : "- None"}`,
+      unknown.length ? `RESULT UNKNOWN (${unknown.length})\n${unknown.map(lineForAttempt).join("\n")}` : "",
+      selected.clues.length ? `CLUES\n${selected.clues.map((clue) => `- ${clue}`).join("\n")}` : "",
+      selected.notes.trim() ? `NOTES\n${selected.notes.trim()}` : "",
+      "Suggest useful next attempts and explain why they are different from everything already tried."
+    ].filter(Boolean).join("\n\n");
+
+    let copied = false;
+    try {
+      await navigator.clipboard.writeText(text);
+      copied = true;
+    } catch {
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.select();
+      copied = document.execCommand("copy");
+      textarea.remove();
+    }
+    setNotice(copied ? "AI solving summary copied" : "Could not copy the solving summary");
+  }
+
   async function copyUserscript() {
     if (!userscript) return;
     let copied = false;
@@ -1247,10 +1309,11 @@ export default function MysteriesPage() {
                 <p>Mystery caches<span>{filteredCaches.length}</span></p>
                 {filteredCaches.map((cache) => {
                   const final = finalCoordinate(cache);
+                  const testedAnswers = cache.attempts.map(attemptInputLabel);
                   return (
                     <button className={`mystery-cache-card ${selected?.id === cache.id ? "active" : ""}`} type="button" key={cache.id} onClick={() => setSelectedId(cache.id)}>
                       <span className={`cache-status-dot ${cache.status}`}><CircleDot size={16} /></span>
-                      <span className="mystery-card-copy"><small>{cache.gcCode}{locationLabel(cache) ? ` · ${locationLabel(cache)}` : ""}</small><strong>{cache.name}</strong><em>{final ? formatCoordinate(final.latitude, final.longitude) : `${cache.attempts.length} checker ${cache.attempts.length === 1 ? "try" : "tries"}`}</em></span>
+                      <span className="mystery-card-copy"><small>{cache.gcCode}{locationLabel(cache) ? ` · ${locationLabel(cache)}` : ""}</small><strong>{cache.name}</strong><em title={testedAnswers.length ? `Tested: ${testedAnswers.join(" · ")}` : undefined}>{final ? formatCoordinate(final.latitude, final.longitude) : testedAnswers.length ? `Tried: ${testedAnswers.join(" · ")}` : "No checker tries yet"}</em></span>
                       <ChevronRight size={17} />
                     </button>
                   );
@@ -1285,11 +1348,30 @@ export default function MysteriesPage() {
 
             <div className="mystery-detail-grid">
               <section className="mystery-section coordinate-section">
-                <div className="section-heading"><div><p className="eyebrow">Checker lab</p><h3>Tested answers</h3></div><small>{selected.attempts.length} saved</small></div>
+                <div className="section-heading checker-heading">
+                  <div><p className="eyebrow">Checker lab</p><h3>Test history</h3></div>
+                  <button className="secondary-button copy-ai-button" type="button" onClick={() => void copyAttemptsForAi()} disabled={!selected.attempts.length}><Copy size={15} /> Copy for AI</button>
+                </div>
+                <div className="attempt-overview">
+                  <div className="attempt-overview-counts" aria-label="Checker result summary">
+                    <span><strong>{selected.attempts.length}</strong><small>Recorded</small></span>
+                    <span className="failed"><strong>{selected.attempts.filter((attempt) => attempt.state === "wrong").length}</strong><small>Didn't work</small></span>
+                    <span className="worked"><strong>{selected.attempts.filter((attempt) => attempt.state === "correct").length}</strong><small>Worked</small></span>
+                  </div>
+                  <label className="attempt-search"><Search size={15} /><input value={attemptSearch} onChange={(event) => setAttemptSearch(event.target.value)} placeholder="Search whether an answer was already tried…" aria-label="Search tested answers" />{attemptSearch && <button type="button" onClick={() => setAttemptSearch("")} aria-label="Clear tested answer search"><X size={14} /></button>}</label>
+                  {selected.attempts.length ? (
+                    <div className="attempt-result-groups" aria-live="polite">
+                      {normalizedAttemptSearch && !matchingAttempts.length ? <p className="attempt-search-result new"><Sparkles size={15} /><strong>Not found in your history.</strong> This answer has not been saved as tried.</p> : null}
+                      {matchingFailedAttempts.length ? <section className="attempt-result-group failed"><div><X size={15} /><strong>Didn't work</strong><small>{matchingFailedAttempts.length}{normalizedAttemptSearch ? " matching" : ""}</small></div><div>{matchingFailedAttempts.map((attempt) => <span key={attempt.id}>{attemptKind(attempt) === "keyword" ? "Keyword" : "Coordinate"}<strong>{attemptInputLabel(attempt)}</strong></span>)}</div></section> : null}
+                      {matchingWorkedAttempts.length ? <section className="attempt-result-group worked"><div><Check size={15} /><strong>Worked</strong><small>{matchingWorkedAttempts.length}{normalizedAttemptSearch ? " matching" : ""}</small></div><div>{matchingWorkedAttempts.map((attempt) => <span key={attempt.id}>{attemptKind(attempt) === "keyword" ? "Keyword" : "Coordinate"}<strong>{attemptInputLabel(attempt)}</strong></span>)}</div></section> : null}
+                      {matchingUnknownAttempts.length ? <section className="attempt-result-group unknown"><div><CircleDot size={15} /><strong>Result unknown</strong><small>{matchingUnknownAttempts.length}{normalizedAttemptSearch ? " matching" : ""}</small></div><div>{matchingUnknownAttempts.map((attempt) => <span key={attempt.id}>{attemptKind(attempt) === "keyword" ? "Keyword" : "Coordinate"}<strong>{attemptInputLabel(attempt)}</strong></span>)}</div></section> : null}
+                    </div>
+                  ) : <p className="attempt-search-result"><MapPin size={15} />Nothing has been tested for {selected.gcCode} yet.</p>}
+                </div>
                 <form className="coordinate-form" onSubmit={addAttempt}>
                   <label className="attempt-type-field"><span>Try type</span><select value={attemptType} onChange={(event) => { setAttemptType(event.target.value as AttemptKind); setCoordinate(""); setCoordinateError(""); }}><option value="coordinate">Coordinate</option><option value="keyword">Keyword</option></select></label>
                   <label className="attempt-answer-field"><span>{attemptType === "keyword" ? "Keyword" : "Coordinate tried"}</span><input value={coordinate} onChange={(event) => setCoordinate(event.target.value)} placeholder={attemptType === "keyword" ? "Enter checker keyword" : "59.40582, 18.36120"} /></label>
-                  <label className="checker-result-field"><span>Checker result</span><select value={coordinateState} onChange={(event) => setCoordinateState(event.target.value as CheckState)}><option value="unchecked">Not checked</option><option value="wrong">Not correct</option><option value="correct">Correct</option></select></label>
+                  <label className="checker-result-field"><span>Checker result</span><select value={coordinateState} onChange={(event) => setCoordinateState(event.target.value as CheckState)}><option value="wrong">Didn't work</option><option value="correct">Worked</option></select></label>
                   <label className="final-coordinate-field"><span>Final coordinates <small>{coordinateState === "correct" && attemptType === "keyword" ? "(required)" : "(if revealed)"}</small></span><input value={finalCoordinateText} onChange={(event) => setFinalCoordinateText(event.target.value)} placeholder="Coordinates returned by checker" /></label>
                   <button className="primary-button" type="submit"><Plus size={17} /> Save try</button>
                 </form>
