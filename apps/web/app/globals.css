@@ -2999,6 +2999,180 @@ select:focus {
   container-type: inline-size;
 }
 
+.checker-heading {
+  align-items: center;
+}
+
+.copy-ai-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  white-space: nowrap;
+}
+
+.attempt-overview {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 14px;
+  padding: 11px;
+  border: 1px solid rgba(105, 169, 189, 0.16);
+  border-radius: 7px;
+  background: rgba(105, 169, 189, 0.055);
+}
+
+.attempt-overview-counts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  overflow: hidden;
+  border: 1px solid rgba(237, 244, 232, 0.07);
+  border-radius: 6px;
+  background: rgba(8, 13, 10, 0.25);
+}
+
+.attempt-overview-counts > span {
+  display: grid;
+  gap: 1px;
+  padding: 8px 10px;
+  border-right: 1px solid rgba(237, 244, 232, 0.07);
+}
+
+.attempt-overview-counts > span:last-child {
+  border-right: 0;
+}
+
+.attempt-overview-counts strong {
+  font-size: 1rem;
+}
+
+.attempt-overview-counts small {
+  color: var(--muted);
+  font-size: 0.61rem;
+}
+
+.attempt-overview-counts .failed strong {
+  color: var(--danger);
+}
+
+.attempt-overview-counts .worked strong {
+  color: var(--green);
+}
+
+.attempt-search {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 38px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--muted);
+  background: rgba(8, 13, 10, 0.34);
+}
+
+.attempt-search:focus-within {
+  border-color: var(--blue);
+}
+
+.attempt-search input {
+  min-width: 0;
+  flex: 1;
+  border: 0;
+  outline: 0;
+  background: transparent;
+}
+
+.attempt-search button {
+  display: grid;
+  padding: 2px;
+  border: 0;
+  place-items: center;
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+}
+
+.attempt-result-groups {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.attempt-result-group {
+  min-width: 0;
+  padding: 9px;
+  border: 1px solid rgba(237, 244, 232, 0.07);
+  border-radius: 6px;
+  background: rgba(8, 13, 10, 0.25);
+}
+
+.attempt-result-group > div:first-child {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 7px;
+}
+
+.attempt-result-group > div:first-child strong {
+  font-size: 0.69rem;
+}
+
+.attempt-result-group > div:first-child small {
+  margin-left: auto;
+  font-size: 0.61rem;
+}
+
+.attempt-result-group.failed > div:first-child {
+  color: var(--danger);
+}
+
+.attempt-result-group.worked > div:first-child {
+  color: var(--green);
+}
+
+.attempt-result-group > div:last-child {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(125px, 1fr));
+  gap: 5px;
+}
+
+.attempt-result-group > div:last-child > span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding: 6px 7px;
+  border-radius: 5px;
+  color: var(--muted);
+  background: rgba(237, 244, 232, 0.045);
+  font-size: 0.56rem;
+}
+
+.attempt-result-group > div:last-child strong {
+  overflow: hidden;
+  color: var(--ink);
+  font-family: "Cascadia Mono", "Consolas", monospace;
+  font-size: 0.65rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attempt-search-result {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.67rem;
+}
+
+.attempt-search-result.new {
+  padding: 9px;
+  border-radius: 6px;
+  color: var(--green);
+  background: rgba(95, 191, 133, 0.09);
+}
+
 .coordinate-form > * {
   min-width: 0;
 }
@@ -3845,12 +4019,25 @@ select:focus {
 /* The coordinate card can become narrow while the page viewport is still wide
    (for example beside the cache list or at increased browser zoom). */
 @container coordinate-card (max-width: 520px) {
+  .attempt-result-groups {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .coordinate-form {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
 @container coordinate-card (max-width: 340px) {
+  .checker-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .copy-ai-button {
+    justify-content: center;
+  }
+
   .coordinate-form {
     grid-template-areas:
       "type"
