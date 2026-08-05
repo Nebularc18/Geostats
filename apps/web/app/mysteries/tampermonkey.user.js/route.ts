@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { cachePageShowsCoordinate } from "../../../lib/mystery-coordinate-confirmation";
 import { locationFromCachePageMetadata } from "../../../lib/mystery-area";
 import { locationFromPageSources } from "../../../lib/mystery-page-location";
 import { MYSTERY_USERSCRIPT_VERSION } from "../../../lib/mystery-userscript";
@@ -35,6 +36,7 @@ function userscript(appOrigin: string) {
   const SYNC_RECEIPT_KEY = "geostats-coordinate-sync-receipt";
   const SYNC_RECEIPT_PREFIX = SYNC_RECEIPT_KEY + ":";
   const MAX_SYNC_AGE_MS = 10 * 60 * 1000;
+  const cachePageShowsCoordinate = ${cachePageShowsCoordinate.toString()};
 
   if (location.origin === GEOSTATS_ORIGIN) {
     document.addEventListener("geostats-sync-request", () => {
@@ -85,6 +87,7 @@ function userscript(appOrigin: string) {
   let syncSubmissionStarted = false;
   let syncReceiptReturned = false;
   let directSyncStarted = false;
+  let useCoordinateEditor = false;
 
   function readSyncPayload() {
     const encoded = new URLSearchParams(location.hash.replace(/^#/, "")).get("geostats-sync");
@@ -213,10 +216,6 @@ function userscript(appOrigin: string) {
     return copied;
   }
 
-  function sameCoordinates(first, second) {
-    return Boolean(first && second) && Math.abs(first.latitude - second.latitude) < 0.00001 && Math.abs(first.longitude - second.longitude) < 0.00001;
-  }
-
   function syncStorageKey() {
     return syncPayload ? "geostats-synced:" + syncPayload.gcCode + ":" + syncPayload.attemptId : "";
   }
@@ -274,10 +273,36 @@ function userscript(appOrigin: string) {
     const retry = document.getElementById("geostats-sync-save");
     if (instructions) instructions.textContent = message;
     if (retry) {
-      retry.style.display = state === "error" ? "block" : "none";
+      retry.style.display = state === "error" || state === "editor" ? "block" : "none";
       retry.disabled = false;
-      retry.textContent = "Retry automatic sync";
+      retry.textContent = state === "editor" ? "Save on Geocaching" : "Retry automatic sync";
     }
+  }
+
+  function markCoordinateSynced() {
+    if (!syncPayload || syncReceiptReturned) return;
+    window.localStorage.setItem(syncStorageKey(), new Date().toISOString());
+    removePendingSyncPayload();
+    setSyncPanelState("Corrected coordinate saved. Returning to Geostats…", "success");
+    toast("Corrected coordinate saved on Geocaching", false);
+    window.setTimeout(returnSyncReceipt, 700);
+  }
+
+  function waitForSyncedCoordinate(timeoutMs) {
+    return new Promise((resolve) => {
+      const started = Date.now();
+      const timer = window.setInterval(() => {
+        if (cachePageShowsCoordinate(document, syncPayload)) {
+          window.clearInterval(timer);
+          resolve(true);
+          return;
+        }
+        if (Date.now() - started >= timeoutMs) {
+          window.clearInterval(timer);
+          resolve(false);
+        }
+      }, 250);
+    });
   }
 
   async function performDirectSync() {
@@ -292,6 +317,11 @@ function userscript(appOrigin: string) {
       return;
     }
 
+    if (cachePageShowsCoordinate(document, syncPayload)) {
+      markCoordinateSynced();
+      return;
+    }
+
     try {
       const token = await waitForUserToken(10000);
       if (!token) throw new Error("The signed-in page token was not available. Reload the cache page and press Sync again.");
@@ -301,7 +331,8 @@ function userscript(appOrigin: string) {
         credentials: "same-origin",
         headers: {
           "Accept": "application/json",
-          "Content-Type": "application/json; charset=UTF-8"
+          "Content-Type": "application/json; charset=UTF-8",
+          "X-Requested-With": "XMLHttpRequest"
         },
         body: JSON.stringify({
           dto: {
@@ -329,16 +360,19 @@ function userscript(appOrigin: string) {
         }
       }
 
-      window.localStorage.setItem(syncStorageKey(), new Date().toISOString());
-      removePendingSyncPayload();
-      setSyncPanelState("Corrected coordinate saved. Returning to Geostats…", "success");
-      toast("Corrected coordinate saved on Geocaching", false);
-      window.setTimeout(returnSyncReceipt, 700);
+      markCoordinateSynced();
     } catch (error) {
       directSyncStarted = false;
       const message = error instanceof Error ? error.message : "Automatic sync failed.";
-      setSyncPanelState(message, "error");
-      toast(message, true);
+      const editorOpened = await openAndFillCoordinateEditor();
+      if (editorOpened && findSolvedCoordinateEditor()) {
+        useCoordinateEditor = true;
+        setSyncPanelState(message + " The coordinate is filled in Geocaching's editor; choose Save on Geocaching to finish.", "editor");
+        toast("Automatic sync was rejected, so Geocaching's coordinate editor is ready instead.", true);
+      } else {
+        setSyncPanelState(message, "error");
+        toast(message, true);
+      }
     }
   }
 
@@ -530,6 +564,16 @@ function userscript(appOrigin: string) {
         window.clearInterval(acceptTimer);
         accept.click();
         toast("Coordinate submitted. Waiting for Geocaching to confirm it.", false);
+        setSyncPanelState("Waiting for Geocaching to confirm the corrected coordinate…", "loading");
+        void waitForSyncedCoordinate(15000).then((synced) => {
+          if (synced) {
+            markCoordinateSynced();
+            return;
+          }
+          syncSubmissionStarted = false;
+          useCoordinateEditor = false;
+          setSyncPanelState("Geocaching did not confirm the saved coordinate. Check the page, then retry the sync.", "error");
+        });
         return;
       }
       if (attempts >= 50) {
@@ -597,6 +641,10 @@ function userscript(appOrigin: string) {
     save.type = "button";
     save.textContent = "Retry automatic sync";
     save.addEventListener("click", () => {
+      if (useCoordinateEditor) {
+        submitSolvedCoordinate();
+        return;
+      }
       directSyncStarted = false;
       void performDirectSync();
     });
