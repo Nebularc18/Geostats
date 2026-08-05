@@ -25,13 +25,19 @@ type ScreenId = "dashboard" | "upload" | "imports" | "stats" | "ftf" | "hides" |
 type Session = { token: string; user: { id: string; email: string; username: string } };
 type CheckState = "correct" | "wrong" | "unchecked";
 type MysteryStatus = "solving" | "solved" | "planned";
+type AttemptKind = "coordinate" | "keyword";
 type AppUser = { id: string; username: string };
 type CoordinateAttempt = {
   id: string;
-  latitude: number;
-  longitude: number;
+  kind?: AttemptKind;
+  latitude?: number;
+  longitude?: number;
+  answer?: string;
+  finalLatitude?: number;
+  finalLongitude?: number;
   state: CheckState;
   createdAt: string;
+  geocachingSyncedAt?: string;
 };
 type MysteryCache = {
   id: string;
@@ -346,8 +352,31 @@ function mysteryLocation(cache: MysteryCache) {
     .join(", ");
 }
 
+function inputCoordinate(attempt: CoordinateAttempt) {
+  return Number.isFinite(attempt.latitude) && Number.isFinite(attempt.longitude)
+    ? { latitude: attempt.latitude!, longitude: attempt.longitude! }
+    : null;
+}
+
+function revealedCoordinate(attempt: CoordinateAttempt) {
+  return Number.isFinite(attempt.finalLatitude) && Number.isFinite(attempt.finalLongitude)
+    ? { latitude: attempt.finalLatitude!, longitude: attempt.finalLongitude! }
+    : null;
+}
+
 function finalCoordinate(cache: MysteryCache) {
-  return cache.attempts.find((attempt) => attempt.state === "correct");
+  for (const attempt of cache.attempts) {
+    if (attempt.state !== "correct") continue;
+    const coordinate = revealedCoordinate(attempt) ?? (attempt.kind !== "keyword" ? inputCoordinate(attempt) : null);
+    if (coordinate) return coordinate;
+  }
+  return null;
+}
+
+function attemptLabel(attempt: CoordinateAttempt) {
+  if (attempt.kind === "keyword") return attempt.answer?.trim() || "Keyword";
+  const coordinate = inputCoordinate(attempt);
+  return coordinate ? `${coordinate.latitude.toFixed(5)}, ${coordinate.longitude.toFixed(5)}` : "Invalid coordinate attempt";
 }
 
 function shareableMystery(cache: MysteryCache) {
@@ -1810,12 +1839,17 @@ function MysteriesScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; to
       setNotice("Use decimal coordinates or N 59° 20.123' E 018° 04.321'.");
       return;
     }
-    if (selected.attempts.some((item) => Math.abs(item.latitude - coordinate.latitude) < 0.000001 && Math.abs(item.longitude - coordinate.longitude) < 0.000001)) {
+    if (selected.attempts.some((item) => {
+      const previous = inputCoordinate(item);
+      return item.kind !== "keyword" && item.state === attemptState && previous &&
+        Math.abs(previous.latitude - coordinate.latitude) < 0.000001 &&
+        Math.abs(previous.longitude - coordinate.longitude) < 0.000001;
+    })) {
       setNotice("Those coordinates are already in the attempt history.");
       return;
     }
     updateSelected({
-      attempts: [{ id: newId("attempt"), ...coordinate, state: attemptState, createdAt: new Date().toISOString() }, ...selected.attempts],
+      attempts: [{ id: newId("attempt"), kind: "coordinate", ...coordinate, state: attemptState, createdAt: new Date().toISOString() }, ...selected.attempts],
       status: attemptState === "correct" ? "solved" : selected.status
     });
     setAttemptText("");
@@ -1937,7 +1971,10 @@ function MysteriesScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; to
           <Segmented values={["unchecked", "wrong", "correct"]} active={attemptState} onPress={(value) => setAttemptState(value as CheckState)} />
           <PrimaryButton label="Save coordinate" onPress={addAttempt} />
         </> : null}
-        {selected.attempts.map((attempt) => <View key={attempt.id} style={styles.attemptRow}><View style={styles.flex}><Text style={styles.rowTitle}>{attempt.latitude.toFixed(5)}, {attempt.longitude.toFixed(5)}</Text><Text style={styles.muted}>{attempt.state} · {dateText(attempt.createdAt)}</Text></View>{!selected.sharedBy ? <Pressable onPress={() => updateSelected({ attempts: selected.attempts.filter((item) => item.id !== attempt.id) })}><Text style={styles.danger}>Remove</Text></Pressable> : null}</View>)}
+        {selected.attempts.map((attempt) => {
+          const revealed = revealedCoordinate(attempt);
+          return <View key={attempt.id} style={styles.attemptRow}><View style={styles.flex}><Text style={styles.rowTitle}>{attemptLabel(attempt)}</Text>{revealed ? <Text style={styles.linkText}>Final: {revealed.latitude.toFixed(5)}, {revealed.longitude.toFixed(5)}</Text> : null}<Text style={styles.muted}>{attempt.kind === "keyword" ? "keyword" : "coordinate"} · {attempt.state} · {dateText(attempt.createdAt)}</Text></View>{!selected.sharedBy ? <Pressable onPress={() => updateSelected({ attempts: selected.attempts.filter((item) => item.id !== attempt.id) })}><Text style={styles.danger}>Remove</Text></Pressable> : null}</View>;
+        })}
         {!selected.sharedBy ? <>
           <Text style={styles.sectionLabel}>Share with a Geostats user</Text>
           {selected.sharedWith.map((person) => <View key={person.id} style={styles.attemptRow}><Text style={styles.rowTitle}>{person.username}</Text><Pressable onPress={() => removeShare(person)}><Text style={styles.danger}>Remove</Text></Pressable></View>)}

@@ -941,9 +941,15 @@ export default function MysteriesPage() {
     }
     const duplicate = selected.attempts.some((attempt) => {
       if (attemptKind(attempt) !== attemptType) return false;
+      const sameResult = attempt.state === coordinateState;
+      const previousFinal = revealedCoordinate(attempt);
+      const sameFinal = previousFinal && revealed
+        ? Math.abs(previousFinal.latitude - revealed.latitude) < 0.000001 && Math.abs(previousFinal.longitude - revealed.longitude) < 0.000001
+        : previousFinal === revealed;
+      if (!sameResult || !sameFinal) return false;
       if (attemptType === "keyword") return attempt.answer?.trim().toLocaleLowerCase() === answer.toLocaleLowerCase();
       const previous = inputCoordinate(attempt);
-      return previous && parsed && Math.abs(previous.latitude - parsed.latitude) < 0.000001 && Math.abs(previous.longitude - parsed.longitude) < 0.000001;
+      return Boolean(previous && parsed && Math.abs(previous.latitude - parsed.latitude) < 0.000001 && Math.abs(previous.longitude - parsed.longitude) < 0.000001);
     });
     if (duplicate) {
       setCoordinateError(`You have already tried this ${attemptType}.`);
