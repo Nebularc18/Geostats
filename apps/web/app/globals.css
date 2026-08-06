@@ -3137,7 +3137,11 @@ select:focus {
 .attempt-result-group > div:last-child {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(125px, 1fr));
+  align-content: start;
   gap: 5px;
+  max-height: 28rem;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
 }
 
 .attempt-result-group > div:last-child > span {
