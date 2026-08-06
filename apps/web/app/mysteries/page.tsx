@@ -1212,6 +1212,7 @@ export default function MysteriesPage() {
       return `- ${attemptKind(attempt) === "keyword" ? "Keyword" : "Coordinate"}: ${attemptInputLabel(attempt)}${revealed ? ` (revealed final coordinates: ${formatCoordinate(revealed.latitude, revealed.longitude)})` : ""}`;
     };
     const final = finalCoordinate(selected);
+    const hasAttempts = selected.attempts.length > 0;
     const context = [
       `Cache: ${selected.gcCode} — ${selected.name}`,
       `Geocache link: https://coord.info/${selected.gcCode}`,
@@ -1220,14 +1221,18 @@ export default function MysteriesPage() {
       final ? `Known final coordinates: ${formatCoordinate(final.latitude, final.longitude)}` : ""
     ].filter(Boolean).join("\n");
     const text = [
-      "Help me continue solving this geocaching mystery without repeating previous attempts.",
+      hasAttempts
+        ? "Help me continue solving this geocaching mystery without repeating previous attempts."
+        : "Help me start solving this geocaching mystery. Analyze the available information and propose promising first attempts.",
       context,
       `DIDN'T WORK (${failed.length})\n${failed.length ? failed.map(lineForAttempt).join("\n") : "- None"}`,
       `WORKED (${worked.length})\n${worked.length ? worked.map(lineForAttempt).join("\n") : "- None"}`,
       unknown.length ? `RESULT UNKNOWN (${unknown.length})\n${unknown.map(lineForAttempt).join("\n")}` : "",
       selected.clues.length ? `CLUES\n${selected.clues.map((clue) => `- ${clue}`).join("\n")}` : "",
       selected.notes.trim() ? `NOTES\n${selected.notes.trim()}` : "",
-      "Suggest useful next attempts and explain why they are different from everything already tried."
+      hasAttempts
+        ? "Suggest useful next attempts and explain why they are different from everything already tried."
+        : "Suggest useful first attempts and explain the reasoning behind each one."
     ].filter(Boolean).join("\n\n");
 
     let copied = false;
@@ -1350,7 +1355,7 @@ export default function MysteriesPage() {
               <section className="mystery-section coordinate-section">
                 <div className="section-heading checker-heading">
                   <div><p className="eyebrow">Checker lab</p><h3>Test history</h3></div>
-                  <button className="secondary-button copy-ai-button" type="button" onClick={() => void copyAttemptsForAi()} disabled={!selected.attempts.length}><Copy size={15} /> Copy for AI</button>
+                  <button className="secondary-button copy-ai-button" type="button" onClick={() => void copyAttemptsForAi()}><Copy size={15} /> Copy for AI</button>
                 </div>
                 <div className="attempt-overview">
                   <div className="attempt-overview-counts" aria-label="Checker result summary">
