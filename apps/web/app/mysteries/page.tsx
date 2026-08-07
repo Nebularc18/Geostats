@@ -26,7 +26,7 @@ import { AppShell } from "../../components/app-shell";
 import { apiFetch } from "../../lib/api";
 import { normalizeMysteryArea } from "../../lib/mystery-area";
 import { MYSTERY_USERSCRIPT_VERSION } from "../../lib/mystery-userscript";
-import { bulkAttemptKey, parseBulkFailedAttempts } from "../../lib/mystery-bulk-attempts";
+import { bulkAttemptKey, parseBulkFailedAttempts, parseFailedCoordinateCsv } from "../../lib/mystery-bulk-attempts";
 
 type CheckState = "correct" | "wrong" | "unchecked" | "planned";
 type MysteryStatus = "solving" | "solved" | "planned";
@@ -425,6 +425,8 @@ export default function MysteriesPage() {
   const [showBulkImport, setShowBulkImport] = useState(false);
   const [bulkTries, setBulkTries] = useState("");
   const [bulkImportError, setBulkImportError] = useState("");
+  const [bulkCsvName, setBulkCsvName] = useState("");
+  const [bulkCsvSummary, setBulkCsvSummary] = useState("");
   const [showShare, setShowShare] = useState(false);
   const [cacheToDelete, setCacheToDelete] = useState<MysteryCache | null>(null);
   const [deletingCache, setDeletingCache] = useState(false);
@@ -1150,7 +1152,33 @@ export default function MysteriesPage() {
   function openBulkImport() {
     setBulkTries("");
     setBulkImportError("");
+    setBulkCsvName("");
+    setBulkCsvSummary("");
     setShowBulkImport(true);
+  }
+
+  async function loadBulkFailedCsv(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    setBulkImportError("");
+    setBulkCsvSummary("");
+    if (file.size > 2_000_000) {
+      setBulkImportError("Choose a CSV file smaller than 2 MB.");
+      return;
+    }
+    const parsed = parseFailedCoordinateCsv(await file.text());
+    if (!parsed.attempts.length) {
+      setBulkCsvName(file.name);
+      setBulkImportError("No valid coordinates were found. Use Latitude and Longitude columns, or a Coordinates column.");
+      return;
+    }
+    const lines = parsed.attempts.flatMap((attempt) => attempt.kind === "coordinate"
+      ? [`${attempt.latitude.toFixed(6)}, ${attempt.longitude.toFixed(6)}`]
+      : []);
+    setBulkTries(lines.join("\n"));
+    setBulkCsvName(file.name);
+    setBulkCsvSummary(`${lines.length} ${lines.length === 1 ? "coordinate" : "coordinates"} ready${parsed.ignoredRows ? `; ignored ${parsed.ignoredRows} rows without coordinates` : ""}.`);
   }
 
   function importBulkFailedTries(event: FormEvent<HTMLFormElement>) {
@@ -1204,6 +1232,8 @@ export default function MysteriesPage() {
     setShowBulkImport(false);
     setBulkTries("");
     setBulkImportError("");
+    setBulkCsvName("");
+    setBulkCsvSummary("");
     const imported = added + updated;
     setNotice(`Imported ${imported} failed ${imported === 1 ? "try" : "tries"}${updated ? ` (${updated} updated)` : ""}${skipped ? `; skipped ${skipped} already recorded or correct` : ""}`);
   }
@@ -1532,7 +1562,9 @@ export default function MysteriesPage() {
         <div className="mystery-modal-backdrop" role="presentation" onMouseDown={() => setShowBulkImport(false)}>
           <form className="mystery-modal bulk-tries-modal" onSubmit={importBulkFailedTries} onMouseDown={(event) => event.stopPropagation()}>
             <div className="section-heading"><div><p className="eyebrow">Test history</p><h2>Import failed tries</h2></div><button className="row-delete" type="button" aria-label="Close" onClick={() => setShowBulkImport(false)}><X /></button></div>
-            <p className="bulk-tries-lead">Paste one failed try per line. Every imported entry is marked <strong>Didn't work</strong>; this importer never creates a correct answer.</p>
+            <p className="bulk-tries-lead">Upload a CSV to extract only its coordinates, or paste entries manually. Every imported entry is marked <strong>Didn't work</strong>; this importer never creates a correct answer.</p>
+            <label className="bulk-csv-picker"><span>CSV file</span><span className="secondary-button"><Import size={16} /> Choose CSV<input type="file" accept=".csv,text/csv" onChange={(event) => void loadBulkFailedCsv(event)} /></span>{bulkCsvName && <small>{bulkCsvName}</small>}</label>
+            {bulkCsvSummary && <p className="bulk-csv-summary"><Check size={15} /> {bulkCsvSummary}</p>}
             <label><span>Failed tries</span><textarea autoFocus rows={12} value={bulkTries} onChange={(event) => { setBulkTries(event.target.value); setBulkImportError(""); }} placeholder={"59.40582, 18.36120\nkeyword: BLUEBIRD\napproach: Decode the title as ROT13\nplain text becomes a keyword"} /></label>
             <small className="bulk-tries-help">Coordinates are recognized automatically. Use <strong>keyword:</strong> or <strong>approach:</strong> to choose a type explicitly. Blank lines and duplicates are ignored.</small>
             {bulkImportError && <p className="coordinate-error"><AlertTriangle size={15} /> {bulkImportError}</p>}

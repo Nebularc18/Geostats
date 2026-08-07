@@ -3042,6 +3042,35 @@ select:focus {
   line-height: 1.5;
 }
 
+.bulk-csv-picker {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.bulk-csv-picker > .secondary-button {
+  width: fit-content;
+  cursor: pointer;
+}
+
+.bulk-csv-picker input {
+  display: none;
+}
+
+.bulk-csv-picker small {
+  grid-column: 2;
+  color: var(--muted);
+}
+
+.bulk-csv-summary {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--green);
+  font-size: 0.72rem;
+}
+
 .attempt-overview-counts {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
