@@ -3021,6 +3021,27 @@ select:focus {
   background: rgba(105, 169, 189, 0.055);
 }
 
+.checker-heading-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.bulk-tries-modal textarea {
+  min-height: 220px;
+  resize: vertical;
+}
+
+.bulk-tries-lead,
+.bulk-tries-help {
+  color: var(--muted);
+}
+
+.bulk-tries-help {
+  line-height: 1.5;
+}
+
 .attempt-overview-counts {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -3132,6 +3153,10 @@ select:focus {
 
 .attempt-result-group.unknown > div:first-child {
   color: var(--blue);
+}
+
+.attempt-result-group.planned > div:first-child {
+  color: var(--ochre);
 }
 
 .attempt-result-group > div:last-child {
@@ -3286,6 +3311,12 @@ select:focus {
 .attempt-state.wrong {
   color: var(--danger);
   background: rgba(255, 123, 114, 0.1);
+}
+
+.attempt-state.planned,
+.checker-label.planned {
+  color: var(--ochre);
+  background: rgba(217, 145, 69, 0.1);
 }
 
 .distance-badge,

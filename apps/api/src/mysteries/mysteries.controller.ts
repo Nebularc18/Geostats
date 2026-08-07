@@ -47,7 +47,7 @@ function snapshotRevision(value: unknown): number {
   return value as number;
 }
 
-async function lockMystery(tx: Prisma.TransactionClient, ownerId: string, ...keys: string[]) {
+export async function lockMystery(tx: Prisma.TransactionClient, ownerId: string, ...keys: string[]) {
   for (const key of [...new Set(keys)].sort()) {
     await tx.$queryRaw`
       SELECT pg_advisory_xact_lock(hashtext(${ownerId}), hashtext(${key}))::text AS lock_result
