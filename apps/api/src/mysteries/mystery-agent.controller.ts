@@ -172,6 +172,7 @@ export class MysteryAgentController {
 
       const mystery = record(existing.data);
       const attempts = Array.isArray(mystery.attempts) ? mystery.attempts.map(record) : [];
+      const hadSolution = attempts.some(attemptRevealsSolution);
       const duplicateIndex = attempts.findIndex((attempt) => attemptKey(attempt) === attemptKey(input));
       const attempt = duplicateIndex >= 0
         ? { ...attempts[duplicateIndex], ...input, updatedAt: new Date().toISOString() }
@@ -180,7 +181,7 @@ export class MysteryAgentController {
       else attempts.push(attempt);
 
       const hasSolution = attempts.some(attemptRevealsSolution);
-      const status = hasSolution ? "solved" : mystery.status === "solved" ? "solving" : mystery.status;
+      const status = hasSolution ? "solved" : mystery.status === "solved" && hadSolution ? "solving" : mystery.status;
       const data = { ...mystery, attempts, status } as Prisma.InputJsonObject;
       if (Buffer.byteLength(JSON.stringify(data), "utf8") > MAX_SNAPSHOT_BYTES) {
         throw new BadRequestException("Mystery data is too large");

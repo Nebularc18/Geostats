@@ -59,3 +59,13 @@ Second;60,12345;19,54321;also failed`);
   ]);
   assert.equal(result.ignoredRows, 0);
 });
+
+test("coordinate CSV import normalizes decimal commas in a combined coordinates column", () => {
+  const result = parseFailedCoordinateCsv(`Name;Coordinates;Notes
+First;59,40582 18,36120;failed`);
+
+  assert.deepEqual(result.attempts, [
+    { kind: "coordinate", latitude: 59.40582, longitude: 18.3612 }
+  ]);
+  assert.equal(result.ignoredRows, 0);
+});

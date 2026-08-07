@@ -154,3 +154,32 @@ test("agent keeps solved status when another valid solution remains", async () =
 
   assert.equal(result.mystery.status, "solved");
 });
+
+test("agent preserves manually solved status when an unrelated attempt is added", async () => {
+  const original = {
+    id: "workspace-1",
+    clientId: "local-1",
+    snapshotRevision: 8,
+    data: { id: "local-1", gcCode: "GC12345", name: "Cipher", status: "solved", attempts: [] }
+  };
+  const tx = {
+    $queryRaw: async () => [],
+    mysteryWorkspace: {
+      findUnique: async () => original,
+      update: async (input: any) => ({ clientId: original.clientId, data: input.data.data, snapshotRevision: 9 })
+    }
+  };
+  const controller = new MysteryAgentController(
+    { $transaction: async (callback: any) => callback(tx) } as any,
+    { userId: async () => "user-1" } as any
+  );
+
+  const result = await controller.addAttempt("Bearer secret", "GC12345", {
+    kind: "approach",
+    answer: "Try reading every third word",
+    state: "planned"
+  });
+
+  assert.equal(result.mystery.status, "solved");
+  assert.equal(result.notTried.length, 1);
+});

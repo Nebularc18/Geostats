@@ -106,6 +106,10 @@ function decimalCoordinatePart(value: string) {
   return /^[-+]?\d+,\d+$/.test(trimmed) ? trimmed.replace(",", ".") : trimmed;
 }
 
+function decimalCoordinateText(value: string) {
+  return value.replace(/([-+]?\d+),(\d+)/g, "$1.$2");
+}
+
 function headerName(value: string) {
   return value.trim().toLocaleLowerCase().replace(/[^a-z0-9]/g, "");
 }
@@ -131,13 +135,13 @@ export function parseFailedCoordinateCsv(text: string) {
   for (const row of dataRows) {
     let parsed: ReturnType<typeof parseCoordinate> = null;
     if (coordinateIndex >= 0) {
-      parsed = parseCoordinate(row[coordinateIndex] ?? "");
+      parsed = parseCoordinate(decimalCoordinateText(row[coordinateIndex] ?? ""));
     } else if (latitudeIndex >= 0 && longitudeIndex >= 0) {
       parsed = parseCoordinate(`${decimalCoordinatePart(row[latitudeIndex] ?? "")}, ${decimalCoordinatePart(row[longitudeIndex] ?? "")}`);
     } else {
       // Headerless CSVs commonly contain latitude and longitude as the first two columns.
       parsed = parseCoordinate(`${decimalCoordinatePart(row[0] ?? "")}, ${decimalCoordinatePart(row[1] ?? "")}`);
-      if (!parsed) parsed = row.map((field) => parseCoordinate(field)).find(Boolean) ?? null;
+      if (!parsed) parsed = row.map((field) => parseCoordinate(decimalCoordinateText(field))).find(Boolean) ?? null;
     }
     if (!parsed) {
       ignoredRows += 1;
