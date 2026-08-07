@@ -77,3 +77,80 @@ test("agent updates the matching approach instead of duplicating it", async () =
   assert.equal(result.tried[0].state, "wrong");
   assert.equal(result.notTried.length, 0);
 });
+
+test("agent downgrades solved status when the only solving attempt no longer works", async () => {
+  const solvingAttempt = {
+    id: "agent-solution",
+    kind: "coordinate",
+    latitude: 59.40582,
+    longitude: 18.3612,
+    state: "correct",
+    createdAt: "2026-01-01T00:00:00.000Z"
+  };
+  const original = {
+    id: "workspace-1",
+    clientId: "local-1",
+    snapshotRevision: 6,
+    data: { id: "local-1", gcCode: "GC12345", name: "Cipher", status: "solved", attempts: [solvingAttempt] }
+  };
+  const tx = {
+    $queryRaw: async () => [],
+    mysteryWorkspace: {
+      findUnique: async () => original,
+      update: async (input: any) => ({ clientId: original.clientId, data: input.data.data, snapshotRevision: 7 })
+    }
+  };
+  const controller = new MysteryAgentController(
+    { $transaction: async (callback: any) => callback(tx) } as any,
+    { userId: async () => "user-1" } as any
+  );
+
+  const result = await controller.addAttempt("Bearer secret", "GC12345", {
+    kind: "coordinate",
+    latitude: 59.40582,
+    longitude: 18.3612,
+    state: "wrong"
+  });
+
+  assert.equal(result.created, false);
+  assert.equal(result.mystery.status, "solving");
+  assert.equal(result.mystery.attempts[0].state, "wrong");
+});
+
+test("agent keeps solved status when another valid solution remains", async () => {
+  const original = {
+    id: "workspace-1",
+    clientId: "local-1",
+    snapshotRevision: 7,
+    data: {
+      id: "local-1",
+      gcCode: "GC12345",
+      name: "Cipher",
+      status: "solved",
+      attempts: [
+        { id: "first", kind: "coordinate", latitude: 59.4, longitude: 18.3, state: "correct", createdAt: "2026-01-01T00:00:00.000Z" },
+        { id: "second", kind: "keyword", answer: "answer", finalLatitude: 59.5, finalLongitude: 18.4, state: "correct", createdAt: "2026-01-02T00:00:00.000Z" }
+      ]
+    }
+  };
+  const tx = {
+    $queryRaw: async () => [],
+    mysteryWorkspace: {
+      findUnique: async () => original,
+      update: async (input: any) => ({ clientId: original.clientId, data: input.data.data, snapshotRevision: 8 })
+    }
+  };
+  const controller = new MysteryAgentController(
+    { $transaction: async (callback: any) => callback(tx) } as any,
+    { userId: async () => "user-1" } as any
+  );
+
+  const result = await controller.addAttempt("Bearer secret", "GC12345", {
+    kind: "coordinate",
+    latitude: 59.4,
+    longitude: 18.3,
+    state: "planned"
+  });
+
+  assert.equal(result.mystery.status, "solved");
+});

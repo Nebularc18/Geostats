@@ -47,3 +47,15 @@ One,"N 59° 24.349' E 018° 21.672'",failed`);
   assert.ok(Math.abs((result.attempts[0] as { latitude: number }).latitude - 59.4058167) < 0.000001);
   assert.equal(result.ignoredRows, 0);
 });
+
+test("coordinate CSV import preserves decimal commas in semicolon-delimited files", () => {
+  const result = parseFailedCoordinateCsv(`Name;Latitude;Longitude;Notes
+First;59,40582;18,36120;failed
+Second;60,12345;19,54321;also failed`);
+
+  assert.deepEqual(result.attempts, [
+    { kind: "coordinate", latitude: 59.40582, longitude: 18.3612 },
+    { kind: "coordinate", latitude: 60.12345, longitude: 19.54321 }
+  ]);
+  assert.equal(result.ignoredRows, 0);
+});

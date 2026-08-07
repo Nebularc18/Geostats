@@ -56,8 +56,21 @@ export function parseBulkFailedAttempts(text: string) {
   return { attempts, errors };
 }
 
+function csvDelimiter(text: string) {
+  let quoted = false;
+  for (const character of text) {
+    if (character === '"') quoted = !quoted;
+    if (quoted) continue;
+    if (character === "\t") return "\t";
+    if (character === ";") return ";";
+    if (character === "\n" || character === "\r") break;
+  }
+  return ",";
+}
+
 function csvRows(text: string) {
   const rows: string[][] = [];
+  const delimiter = csvDelimiter(text);
   let row: string[] = [];
   let field = "";
   let quoted = false;
@@ -70,7 +83,7 @@ function csvRows(text: string) {
       } else {
         quoted = !quoted;
       }
-    } else if (!quoted && (character === "," || character === ";" || character === "\t")) {
+    } else if (!quoted && character === delimiter) {
       row.push(field.trim());
       field = "";
     } else if (!quoted && (character === "\n" || character === "\r")) {
@@ -86,6 +99,11 @@ function csvRows(text: string) {
   row.push(field.trim());
   if (row.some(Boolean)) rows.push(row);
   return rows;
+}
+
+function decimalCoordinatePart(value: string) {
+  const trimmed = value.trim();
+  return /^[-+]?\d+,\d+$/.test(trimmed) ? trimmed.replace(",", ".") : trimmed;
 }
 
 function headerName(value: string) {
@@ -115,10 +133,10 @@ export function parseFailedCoordinateCsv(text: string) {
     if (coordinateIndex >= 0) {
       parsed = parseCoordinate(row[coordinateIndex] ?? "");
     } else if (latitudeIndex >= 0 && longitudeIndex >= 0) {
-      parsed = parseCoordinate(`${row[latitudeIndex] ?? ""}, ${row[longitudeIndex] ?? ""}`);
+      parsed = parseCoordinate(`${decimalCoordinatePart(row[latitudeIndex] ?? "")}, ${decimalCoordinatePart(row[longitudeIndex] ?? "")}`);
     } else {
       // Headerless CSVs commonly contain latitude and longitude as the first two columns.
-      parsed = parseCoordinate(`${row[0] ?? ""}, ${row[1] ?? ""}`);
+      parsed = parseCoordinate(`${decimalCoordinatePart(row[0] ?? "")}, ${decimalCoordinatePart(row[1] ?? "")}`);
       if (!parsed) parsed = row.map((field) => parseCoordinate(field)).find(Boolean) ?? null;
     }
     if (!parsed) {

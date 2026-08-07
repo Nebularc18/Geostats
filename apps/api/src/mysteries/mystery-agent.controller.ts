@@ -92,6 +92,13 @@ function attemptKey(attempt: Record<string, any>) {
     : `${attempt.kind}:${String(attempt.answer ?? "").trim().toLocaleLowerCase()}`;
 }
 
+function attemptRevealsSolution(attempt: Record<string, any>) {
+  if (attempt.state !== "correct") return false;
+  const hasFinalCoordinate = Number.isFinite(attempt.finalLatitude) && Number.isFinite(attempt.finalLongitude);
+  const hasSubmittedCoordinate = attempt.kind === "coordinate" && Number.isFinite(attempt.latitude) && Number.isFinite(attempt.longitude);
+  return hasFinalCoordinate || hasSubmittedCoordinate;
+}
+
 function solverView(workspace: { clientId: string; data: unknown; snapshotRevision: number }) {
   const mystery = record(workspace.data);
   const attempts = Array.isArray(mystery.attempts) ? mystery.attempts.map(record) : [];
@@ -172,8 +179,9 @@ export class MysteryAgentController {
       if (duplicateIndex >= 0) attempts[duplicateIndex] = attempt;
       else attempts.push(attempt);
 
-      const revealsSolution = input.state === "correct" && (input.kind === "coordinate" || "finalLatitude" in input);
-      const data = { ...mystery, attempts, ...(revealsSolution ? { status: "solved" } : {}) } as Prisma.InputJsonObject;
+      const hasSolution = attempts.some(attemptRevealsSolution);
+      const status = hasSolution ? "solved" : mystery.status === "solved" ? "solving" : mystery.status;
+      const data = { ...mystery, attempts, status } as Prisma.InputJsonObject;
       if (Buffer.byteLength(JSON.stringify(data), "utf8") > MAX_SNAPSHOT_BYTES) {
         throw new BadRequestException("Mystery data is too large");
       }
