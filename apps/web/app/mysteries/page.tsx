@@ -26,6 +26,7 @@ import { AppShell } from "../../components/app-shell";
 import { apiFetch } from "../../lib/api";
 import {
   fieldMergeDecision,
+  formatMysteryCoordinate as formatCoordinate,
   mergeMysteryAttempts,
   mergeMysteryCaches,
   stableJsonStringify,
@@ -176,16 +177,6 @@ function distanceKm(lat1: number, lon1: number, lat2: number, lon2: number) {
     Math.sin(dLat / 2) ** 2 +
     Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
   return earthRadiusKm * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
-
-function formatCoordinate(latitude: number, longitude: number, minuteDecimals = 3) {
-  const part = (value: number, positive: string, negative: string, degrees: number) => {
-    const absolute = Math.abs(value);
-    const wholeDegrees = Math.floor(absolute);
-    const minutes = (absolute - wholeDegrees) * 60;
-    return `${value >= 0 ? positive : negative} ${String(wholeDegrees).padStart(degrees, "0")}° ${minutes.toFixed(minuteDecimals)}'`;
-  };
-  return `${part(latitude, "N", "S", 2)}  ${part(longitude, "E", "W", 3)}`;
 }
 
 function downloadFile(name: string, content: string, type: string) {

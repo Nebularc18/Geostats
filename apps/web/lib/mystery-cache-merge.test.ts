@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   fieldChangedSinceBaseline,
   fieldMergeDecision,
+  formatMysteryCoordinate,
   mergeMysteryAttempts,
   mergeMysteryCaches,
   stableJsonStringify,
@@ -110,6 +111,18 @@ test("keeps coordinates that mobile displays as distinct five-decimal values", (
   ]);
 
   assert.equal(merged.length, 2);
+});
+
+test("keeps coordinates on opposite four-decimal-minute display boundaries", () => {
+  const first = attempt({ id: "first", latitude: 56, longitude: 15.25 });
+  const second = attempt({ id: "second", latitude: 56.00000166666667, longitude: 15.25 });
+
+  assert.notEqual(
+    formatMysteryCoordinate(first.latitude!, first.longitude!, 4),
+    formatMysteryCoordinate(second.latitude!, second.longitude!, 4)
+  );
+  assert.equal(first.latitude!.toFixed(5), second.latitude!.toFixed(5));
+  assert.equal(mergeMysteryAttempts([first, second]).length, 2);
 });
 
 test("keeps every distinct coordinate while preserving sync confirmation", () => {

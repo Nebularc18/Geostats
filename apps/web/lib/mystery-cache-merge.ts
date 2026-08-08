@@ -78,11 +78,21 @@ export function fieldMergeDecision(
   };
 }
 
+export function formatMysteryCoordinate(latitude: number, longitude: number, minuteDecimals = 3) {
+  const part = (value: number, positive: string, negative: string, degrees: number) => {
+    const absolute = Math.abs(value);
+    const wholeDegrees = Math.floor(absolute);
+    const minutes = (absolute - wholeDegrees) * 60;
+    return `${value >= 0 ? positive : negative} ${String(wholeDegrees).padStart(degrees, "0")}° ${minutes.toFixed(minuteDecimals)}'`;
+  };
+  return `${part(latitude, "N", "S", 2)}  ${part(longitude, "E", "W", 3)}`;
+}
+
 export function coordinateIdentityKey(latitude: unknown, longitude: unknown) {
-  // Mobile displays five decimal degrees. Use that highest shared display
-  // precision so web reconciliation never collapses mobile-distinct values.
+  // Attempt labels show four decimal-minute digits. Derive identity from that
+  // exact representation so visibly distinct coordinates can never collapse.
   return Number.isFinite(latitude) && Number.isFinite(longitude)
-    ? `${(latitude as number).toFixed(5)}:${(longitude as number).toFixed(5)}`
+    ? formatMysteryCoordinate(latitude as number, longitude as number, 4)
     : "";
 }
 
