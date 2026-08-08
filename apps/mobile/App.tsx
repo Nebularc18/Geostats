@@ -7,6 +7,7 @@ import { File, Paths } from "expo-file-system";
 import * as SecureStore from "expo-secure-store";
 import * as Clipboard from "expo-clipboard";
 import * as Sharing from "expo-sharing";
+import * as Updates from "expo-updates";
 import MapView, { Callout, Marker, Polygon, PROVIDER_GOOGLE, type Region } from "react-native-maps";
 import * as Linking from "expo-linking";
 import * as WebBrowser from "expo-web-browser";
@@ -83,7 +84,8 @@ type BoundaryFeature = {
 };
 type BoundaryFeatureCollection = { type: "FeatureCollection"; features: BoundaryFeature[] };
 
-const DEFAULT_API_URL = process.env.EXPO_PUBLIC_API_URL ?? (__DEV__ ? "http://10.0.2.2:3001" : "");
+const HOSTED_API_URL = process.env.EXPO_PUBLIC_API_URL ?? "https://geostats-api.hampusek.com";
+const DEFAULT_API_URL = process.env.EXPO_PUBLIC_API_URL ?? (__DEV__ ? "http://10.0.2.2:3001" : HOSTED_API_URL);
 const ANDROID_MAP_PROVIDER = Platform.OS === "android" ? PROVIDER_GOOGLE : undefined;
 const TOKEN_KEY = "geostats_session";
 const SERVER_URL_KEY = "geostats_server_url";
@@ -168,6 +170,14 @@ function normalizeStoredServerUrl(value: string) {
   if (!trimmed) return DEFAULT_API_URL;
   const withProtocol = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
   return new URL(withProtocol).toString().replace(/\/+$/, "");
+}
+
+function displayServerHost(value: string) {
+  try {
+    return new URL(normalizeStoredServerUrl(value)).host || "Not configured";
+  } catch {
+    return value.trim() || "Not configured";
+  }
 }
 
 function isLocalDevelopmentUrl(url: URL) {
@@ -812,20 +822,29 @@ function AuthScreen({ apiBaseUrl, onApiBaseUrlChange, onSession }: { apiBaseUrl:
   const [password, setPassword] = useState("");
   const [config, setConfig] = useState<AuthConfig>({ mode: "password", providerName: "Home Auth" });
   const [message, setMessage] = useState<string | null>(null);
+  const [editingServer, setEditingServer] = useState(!apiBaseUrl);
+  const [serverStatus, setServerStatus] = useState<"checking" | "connected" | "unreachable">("checking");
   useEffect(() => {
     const timeout = setTimeout(() => {
       try {
         const nextUrl = normalizeServerUrl(serverUrl);
-        onApiBaseUrlChange(nextUrl);
-        setServerUrl(nextUrl);
         if (!nextUrl) {
+          setServerStatus("unreachable");
           setConfig({ mode: "password", providerName: "Home Auth" });
           return;
         }
+        setServerStatus("checking");
         void apiFetch<AuthConfig>(nextUrl, "/auth/config", null)
-          .then(setConfig)
-          .catch(() => setConfig({ mode: "password", providerName: "Home Auth" }));
+          .then((nextConfig) => {
+            setConfig(nextConfig);
+            setServerStatus("connected");
+          })
+          .catch(() => {
+            setServerStatus("unreachable");
+            setConfig({ mode: "password", providerName: "Home Auth" });
+          });
       } catch {
+        setServerStatus("unreachable");
         setConfig({ mode: "password", providerName: "Home Auth" });
       }
     }, 350);
@@ -850,7 +869,32 @@ function AuthScreen({ apiBaseUrl, onApiBaseUrlChange, onSession }: { apiBaseUrl:
     onApiBaseUrlChange(nextUrl);
     setServerUrl(nextUrl);
     await SecureStore.setItemAsync(SERVER_URL_KEY, nextUrl);
+    setEditingServer(false);
     return nextUrl;
+  }
+  async function pasteServerUrl() {
+    const clipboardValue = (await Clipboard.getStringAsync()).trim();
+    if (!clipboardValue) {
+      setMessage("Copy a server address first, then tap Paste address.");
+      return;
+    }
+    setMessage(null);
+    setServerUrl(clipboardValue);
+  }
+  function useHostedServer() {
+    setMessage(null);
+    setServerUrl(HOSTED_API_URL);
+  }
+  async function toggleServerEditor() {
+    if (!editingServer) {
+      setEditingServer(true);
+      return;
+    }
+    if (serverStatus !== "connected") {
+      Alert.alert("Server not connected", "Check the address and wait for a successful connection before saving it.");
+      return;
+    }
+    await saveServerUrl();
   }
   async function submit() {
     setMessage("Signing in...");
@@ -920,8 +964,33 @@ function AuthScreen({ apiBaseUrl, onApiBaseUrlChange, onSession }: { apiBaseUrl:
       <ScrollView contentContainerStyle={styles.authPage}>
         <Text style={styles.brand}>Geostats</Text>
         <Text style={styles.title}>{mode === "login" ? "Sign in" : "Create account"}</Text>
-        <Field label="Server" value={serverUrl} onChangeText={setServerUrl} autoCapitalize="none" keyboardType="url" />
-        {!DEFAULT_API_URL ? <Text style={styles.muted}>Release builds need your public API URL here, for example https://api.example.com.</Text> : null}
+        <View style={styles.serverCard}>
+          <View style={styles.serverSummary}>
+            <View style={styles.flex}>
+              <Text style={styles.serverLabel}>Geostats server</Text>
+              <Text style={styles.serverHost} numberOfLines={1}>{displayServerHost(serverUrl)}</Text>
+            </View>
+            <View style={[styles.connectionBadge, serverStatus === "connected" && styles.connectionBadgeConnected, serverStatus === "unreachable" && styles.connectionBadgeError]}>
+              <Text style={styles.connectionBadgeText}>{serverStatus === "checking" ? "Checking" : serverStatus === "connected" ? "Connected" : "Not found"}</Text>
+            </View>
+          </View>
+          <Pressable onPress={() => void toggleServerEditor()} style={styles.serverChangeButton}>
+            <Text style={styles.textButtonText}>{editingServer ? "Done" : "Change server"}</Text>
+          </Pressable>
+          {editingServer ? (
+            <View style={styles.serverEditor}>
+              <Text style={styles.muted}>Use the hosted Geostats service, or enter the address supplied by your server administrator.</Text>
+              <Pressable onPress={useHostedServer} style={styles.secondaryButton}>
+                <Text style={styles.secondaryButtonText}>Use hosted Geostats</Text>
+              </Pressable>
+              <Field label="Self-hosted server address" value={serverUrl} onChangeText={setServerUrl} autoCapitalize="none" keyboardType="url" />
+              <Pressable onPress={pasteServerUrl} style={styles.secondaryButton}>
+                <Text style={styles.secondaryButtonText}>Paste address</Text>
+              </Pressable>
+              <Text style={styles.muted}>You can paste api.example.com; Geostats adds https:// automatically.</Text>
+            </View>
+          ) : null}
+        </View>
         {config.mode === "password" ? (
           <>
             <Field label="Email" value={email} onChangeText={setEmail} autoCapitalize="none" keyboardType="email-address" />
@@ -947,6 +1016,24 @@ export default function App() {
   const [booting, setBooting] = useState(true);
   const [needsOnboarding, setNeedsOnboarding] = useState(false);
   const [screen, setScreen] = useState<ScreenId>("dashboard");
+  useEffect(() => {
+    if (__DEV__ || !Updates.isEnabled) return;
+    let active = true;
+    void Updates.checkForUpdateAsync()
+      .then(async (result) => {
+        if (!active || !result.isAvailable) return;
+        await Updates.fetchUpdateAsync();
+        if (!active) return;
+        Alert.alert("Geostats updated", "A new revision is ready.", [
+          { text: "Later", style: "cancel" },
+          { text: "Restart now", onPress: () => void Updates.reloadAsync() }
+        ]);
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, []);
   async function acceptSession(nextSession: Session, baseUrl = apiBaseUrl) {
     setSession(nextSession);
     try {
@@ -2389,6 +2476,16 @@ const styles = StyleSheet.create({
   field: { gap: 6 },
   fieldLabel: { color: "#c9d8cf", fontWeight: "800" },
   input: { borderWidth: 1, borderColor: "#294839", borderRadius: 8, color: "#eef8f0", backgroundColor: "#0c1b14", paddingHorizontal: 12, paddingVertical: 11 },
+  serverCard: { backgroundColor: "#0d1f17", borderColor: "#1d3a2c", borderWidth: 1, borderRadius: 10, padding: 14, gap: 10 },
+  serverSummary: { flexDirection: "row", alignItems: "center", gap: 12 },
+  serverLabel: { color: "#91a79c", fontSize: 12, fontWeight: "800", textTransform: "uppercase" },
+  serverHost: { color: "#edf7ef", fontSize: 16, fontWeight: "900", marginTop: 2 },
+  connectionBadge: { backgroundColor: "#59441b", borderRadius: 999, paddingHorizontal: 10, paddingVertical: 6 },
+  connectionBadgeConnected: { backgroundColor: "#1e5a36" },
+  connectionBadgeError: { backgroundColor: "#6b2922" },
+  connectionBadgeText: { color: "#f3f7f4", fontSize: 11, fontWeight: "900" },
+  serverChangeButton: { alignSelf: "flex-start", paddingVertical: 4 },
+  serverEditor: { borderTopWidth: 1, borderColor: "#294839", paddingTop: 12, gap: 10 },
   textArea: { minHeight: 110, textAlignVertical: "top" },
   primaryButton: { backgroundColor: "#f3b34d", borderRadius: 8, paddingVertical: 13, alignItems: "center", marginTop: 4 },
   primaryButtonText: { color: "#172016", fontWeight: "900" },

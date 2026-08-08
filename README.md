@@ -276,6 +276,16 @@ corepack pnpm mobile:build:apk
 
 That produces an installable Android APK you can download and sideload onto your phone.
 
+Preview builds use a remotely managed Android version code, so each new APK can update the previous installation without uninstalling it. After installing a 0.2.0-or-newer APK once, JavaScript, styling, and asset-only revisions can be delivered over the air:
+
+The preview profile intentionally keeps using the signing key from the original preview APK. Keep that key and an ignored `credentials.json` available when creating preview builds; switching keys makes Android reject an in-place update. Production continues to use the EAS-managed production key.
+
+```powershell
+corepack pnpm mobile:update:preview
+```
+
+The app checks for a compatible revision when it starts, downloads it, and offers to restart. Changes to Expo SDK packages, native plugins, permissions, maps configuration, or other native code still require a new APK build.
+
 For Play Store submission instead:
 
 ```powershell

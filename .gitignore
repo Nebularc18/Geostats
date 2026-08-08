@@ -28,6 +28,7 @@ minio-data
 received-logs.csv
 .codex/
 security-scans/
+credentials.json
 
 .DS_Store
 Thumbs.db
