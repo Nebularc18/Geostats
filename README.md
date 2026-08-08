@@ -309,12 +309,13 @@ Production API deployments reject mobile external-auth redirects unless `MOBILE_
 
 ### GitHub mobile releases
 
-The **Mobile Release** workflow in GitHub Actions provides four manually selected release paths. `preview-apk` is the default because it serves both first-time installations and in-place Android updates:
+The **Mobile Release** workflow in GitHub Actions provides three manually selected release paths. `preview-release` is the default and handles both preview distribution paths with one button:
 
-- `preview-update`: publishes a JavaScript/assets update to installed preview builds.
-- `preview-apk`: creates an installable APK, signed like previous preview builds with an incremented version code, and attaches it to a GitHub prerelease. Its deployment and workflow summary link directly to the download page.
+- `preview-release`: creates an installable APK for first-time users and manual native updates, attaches it to a GitHub prerelease, and publishes the same compatible JavaScript/assets revision to installed preview apps over the air. Its deployment and workflow summary link directly to the download page.
 - `production-update`: publishes a JavaScript/assets update to installed production builds.
 - `play-internal`: builds an Android App Bundle and submits it to Google Play internal testing.
+
+Android does not allow a sideloaded app to silently replace its installed APK. The automatic part of `preview-release` therefore covers JavaScript, styling, and asset changes. Changes to native packages, plugins, permissions, or Android configuration require the user to install the new APK from the release page; use Google Play distribution when automatic native-binary updates are required.
 
 Configure the following before the first workflow run:
 
@@ -326,7 +327,7 @@ Configure the following before the first workflow run:
 
 The repository does not contain signing keystores or service-account credentials. Preview and production signing credentials and Play submission credentials remain managed by EAS.
 
-After a successful `preview-apk` run, open the repository's **Releases** page in GitHub and select the newest **Geostats Mobile ... Preview** prerelease. Expand **Assets** in the GitHub mobile app, then tap the `.apk` file. A failed build never creates a release, which is why the earlier failed 0.2.0 run left only the 0.1.0 release visible.
+After a successful `preview-release` run, open the repository's **Releases** page in GitHub and select the newest **Geostats Mobile ... Preview** prerelease. Expand **Assets** in the GitHub mobile app, then tap the `.apk` file. A failed build never creates a release, which is why the earlier failed 0.2.0 run left only the 0.1.0 release visible.
 
 ## Architecture Notes
 

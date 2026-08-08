@@ -4,13 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       release_kind:
-        description: Build an installable APK, or publish an OTA-only update?
+        description: What should be released?
         required: true
-        default: preview-apk
+        default: preview-release
         type: choice
         options:
-          - preview-apk
-          - preview-update
+          - preview-release
           - production-update
           - play-internal
 
@@ -76,12 +75,16 @@ jobs:
       - name: Bundle Android app
         run: pnpm --filter @geostats/mobile exec expo export --platform android --output-dir /tmp/geostats-mobile-export
 
-  preview-update:
-    name: Publish preview update
-    if: inputs.release_kind == 'preview-update'
+  preview-release:
+    name: Publish downloadable APK and automatic preview update
+    if: inputs.release_kind == 'preview-release'
     needs: quality
     runs-on: ubuntu-latest
-    environment: mobile-preview
+    environment:
+      name: mobile-preview
+      url: ${{ steps.release.outputs.url }}
+    permissions:
+      contents: write
     steps:
       - name: Check out repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -99,34 +102,6 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-
-      - name: Set up Expo and EAS
-        uses: expo/expo-github-action@c7b66a9c327a43a8fa7c0158e7f30d6040d2481e # v8
-        with:
-          eas-version: ${{ env.EAS_VERSION }}
-          token: ${{ secrets.EXPO_TOKEN }}
-
-      - name: Publish preview update
-        run: pnpm mobile:update:preview
-
-  preview-apk:
-    name: Build and publish preview APK
-    if: inputs.release_kind == 'preview-apk'
-    needs: quality
-    runs-on: ubuntu-latest
-    environment:
-      name: mobile-preview
-      url: ${{ steps.release.outputs.url }}
-    permissions:
-      contents: write
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
 
       - name: Set up Expo and EAS
         uses: expo/expo-github-action@c7b66a9c327a43a8fa7c0158e7f30d6040d2481e # v8
@@ -161,7 +136,7 @@ jobs:
               --prerelease \
               --target "$GITHUB_SHA" \
               --title "Geostats Mobile ${version} Preview ${GITHUB_RUN_NUMBER}" \
-              --notes "Download the APK below for a first-time installation or to update an existing preview installation. Future JavaScript and asset updates can also arrive automatically through the preview OTA channel."
+              --notes "Download the APK below for a first-time installation or a manual native update. This release's compatible JavaScript and asset changes are also published automatically to installed preview apps."
           fi
           release_url="$(gh release view "$tag" --json url --jq .url)"
           echo "url=$release_url" >> "$GITHUB_OUTPUT"
@@ -172,6 +147,9 @@ jobs:
             echo
             echo "[Open the GitHub release](${release_url})"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish automatic preview update
+        run: pnpm mobile:update:preview
 
   production-update:
     name: Publish production update
