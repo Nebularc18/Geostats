@@ -32,6 +32,11 @@ export type MergeableMysteryCache = {
   image?: string;
 };
 
+export type MysteryCacheMergeOptions = {
+  preferIncomingNotes?: boolean;
+  preferIncomingImage?: boolean;
+};
+
 function coordinateKey(latitude: unknown, longitude: unknown) {
   return Number.isFinite(latitude) && Number.isFinite(longitude)
     ? `${latitude}:${longitude}`
@@ -101,7 +106,11 @@ export function mergeMysteryAttempts<T extends MergeableMysteryAttempt>(attempts
 }
 
 /** Produce one cache from a server copy and an incoming device copy. */
-export function mergeMysteryCaches<T extends MergeableMysteryCache>(existing: T, incoming: T): T {
+export function mergeMysteryCaches<T extends MergeableMysteryCache>(
+  existing: T,
+  incoming: T,
+  options: MysteryCacheMergeOptions = {}
+): T {
   const sharedWith = new Map([...existing.sharedWith, ...incoming.sharedWith].map((user) => [user.id, user]));
   const statusRank = { solving: 0, planned: 1, solved: 2 } as const;
   return {
@@ -114,13 +123,12 @@ export function mergeMysteryCaches<T extends MergeableMysteryCache>(existing: T,
     locality: existing.locality || incoming.locality,
     locationHierarchy: existing.locationHierarchy?.length ? existing.locationHierarchy : incoming.locationHierarchy,
     status: statusRank[incoming.status] > statusRank[existing.status] ? incoming.status : existing.status,
-    // Notes can be intentionally rewritten to something shorter. The incoming
-    // device copy must win instead of using content length as a recency signal.
-    notes: incoming.notes,
+    notes: options.preferIncomingNotes === false ? existing.notes : incoming.notes,
     clues: [...new Set([...existing.clues, ...incoming.clues])],
     attempts: mergeMysteryAttempts([...existing.attempts, ...incoming.attempts]),
     sharedWith: [...sharedWith.values()],
-    // `undefined` is also meaningful here: it records an intentional removal.
-    image: incoming.image
+    // `undefined` is meaningful when the device changed this field: it records
+    // an intentional removal rather than a missing value to fill from server.
+    image: options.preferIncomingImage === false ? existing.image : incoming.image
   };
 }

@@ -24,7 +24,7 @@ import {
 } from "lucide-react";
 import { AppShell } from "../../components/app-shell";
 import { apiFetch } from "../../lib/api";
-import { mergeMysteryAttempts, mergeMysteryCaches } from "../../lib/mystery-cache-merge";
+import { mergeMysteryAttempts, mergeMysteryCaches, type MysteryCacheMergeOptions } from "../../lib/mystery-cache-merge";
 import { normalizeMysteryArea } from "../../lib/mystery-area";
 import { MYSTERY_USERSCRIPT_VERSION } from "../../lib/mystery-userscript";
 import { bulkAttemptKey, parseBulkFailedAttempts, parseFailedCoordinateCsv } from "../../lib/mystery-bulk-attempts";
@@ -99,6 +99,8 @@ type OwnedMysterySnapshot = {
 type MysterySyncMetadata = {
   revision: number;
   fingerprint: string;
+  notesFingerprint?: string;
+  imageFingerprint?: string;
 };
 
 type BrowserImport = {
@@ -254,7 +256,20 @@ function isAppUser(value: unknown): value is AppUser {
   return typeof user.id === "string" && user.id.length > 0 && typeof user.username === "string" && user.username.length > 0;
 }
 
-function verifiedStoredShares(caches: MysteryCache[]) {
+function mysteryFieldFingerprint(value: unknown) {
+  return snapshotFingerprint(JSON.stringify(value ?? null));
+}
+
+function deviceMergeOptions(cache: MysteryCache, metadata: MysterySyncMetadata | undefined): MysteryCacheMergeOptions {
+  return {
+    // Metadata from older clients has no field baselines. In that one-time case,
+    // retain device precedence so existing offline edits are not discarded.
+    preferIncomingNotes: !metadata?.notesFingerprint || mysteryFieldFingerprint(cache.notes) !== metadata.notesFingerprint,
+    preferIncomingImage: !metadata?.imageFingerprint || mysteryFieldFingerprint(cache.image) !== metadata.imageFingerprint
+  };
+}
+
+function verifiedStoredShares(caches: MysteryCache[], mergeOptions?: MysteryCacheMergeOptions) {
   const normalized = caches.map((cache) => ({
     ...cache,
     gcCode: typeof cache.gcCode === "string" ? cache.gcCode.trim().toUpperCase() : "",
@@ -292,7 +307,7 @@ function verifiedStoredShares(caches: MysteryCache[]) {
       continue;
     }
 
-    merged.set(key, mergeMysteryCaches(existing, cache));
+    merged.set(key, mergeMysteryCaches(existing, cache, mergeOptions));
   }
   return [...merged.values()];
 }
@@ -426,7 +441,18 @@ export default function MysteriesPage() {
   function rememberServerSnapshot(cacheId: string, revision: number, serialized: string) {
     rememberSnapshotRevision(cacheId, revision);
     serverSnapshots.current.set(cacheId, serialized);
-    syncMetadata.current.set(cacheId, { revision, fingerprint: snapshotFingerprint(serialized) });
+    let snapshot: Partial<MysteryCache> = {};
+    try {
+      snapshot = JSON.parse(serialized) as Partial<MysteryCache>;
+    } catch {
+      // The full fingerprint still protects reconciliation if field parsing fails.
+    }
+    syncMetadata.current.set(cacheId, {
+      revision,
+      fingerprint: snapshotFingerprint(serialized),
+      notesFingerprint: mysteryFieldFingerprint(snapshot.notes),
+      imageFingerprint: mysteryFieldFingerprint(snapshot.image)
+    });
     persistSyncMetadata();
   }
 
@@ -568,6 +594,7 @@ export default function MysteriesPage() {
     const timeout = window.setTimeout(() => {
       void Promise.all(pendingCaches.map(({ cache, serialized }) => {
         const requestedRevision = nextSnapshotRevision(cache.id);
+        const baseMetadata = syncMetadata.current.get(cache.id);
         return apiFetch<{ revision: number; mystery: MysteryCache }>(`/mysteries/${encodeURIComponent(cache.id)}`, {
           method: "PUT",
           body: JSON.stringify({
@@ -581,7 +608,7 @@ export default function MysteriesPage() {
             const authoritative = verifiedStoredShares([{ ...mystery, sharedWith: cache.sharedWith }])[0];
             setCaches((current) => verifiedStoredShares(current.map((item) => {
               if (item.id !== cache.id) return item;
-              const merged = verifiedStoredShares([authoritative, item])[0];
+              const merged = verifiedStoredShares([authoritative, item], deviceMergeOptions(item, baseMetadata))[0];
               return { ...merged, id: authoritative.id, sharedWith: authoritative.sharedWith };
             })));
             setNotice(`Merged offline and server changes for ${cache.gcCode}.`);
@@ -660,6 +687,8 @@ export default function MysteriesPage() {
         const reconciledOwned = ownedEntries.map(({ cache: serverCache, revision, serialized: serverSerialized }) => {
           const currentCache = currentById.get(serverCache.id) ?? currentByGcCode.get(serverCache.gcCode);
           if (!currentCache) return serverCache;
+          const metadata = knownSyncMetadata.get(currentCache.id) ?? knownSyncMetadata.get(serverCache.id);
+          const mergeOptions = deviceMergeOptions(currentCache, metadata);
           if (currentCache.id !== serverCache.id) {
             serverSnapshots.current.delete(currentCache.id);
             snapshotRevisions.current.delete(currentCache.id);
@@ -668,12 +697,11 @@ export default function MysteriesPage() {
             const merged = verifiedStoredShares([
               serverCache,
               { ...currentCache, id: serverCache.id, sharedWith: serverCache.sharedWith }
-            ])[0];
+            ], mergeOptions)[0];
             return { ...merged, id: serverCache.id, sharedWith: serverCache.sharedWith };
           }
           const currentSerialized = JSON.stringify(shareableMystery(currentCache));
           const requestSerialized = ownedAtRequest.get(serverCache.id);
-          const metadata = knownSyncMetadata.get(serverCache.id);
           const localChanged = metadata
             ? snapshotFingerprint(currentSerialized) !== metadata.fingerprint
             : currentSerialized !== serverSerialized;
@@ -684,7 +712,7 @@ export default function MysteriesPage() {
           if ((localChanged || changedDuringRequest) && !serverChanged) return currentCache;
           if (localChanged || changedDuringRequest) {
             mergedConflictCount += 1;
-            const merged = verifiedStoredShares([serverCache, currentCache])[0];
+            const merged = verifiedStoredShares([serverCache, currentCache], mergeOptions)[0];
             return { ...merged, id: serverCache.id, sharedWith: serverCache.sharedWith };
           }
           return serverCache;

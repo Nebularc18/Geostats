@@ -167,3 +167,34 @@ test("keeps an intentional device image removal during a server conflict", () =>
 
   assert.equal(mergeMysteryCaches(server, { ...server, image: undefined }).image, undefined);
 });
+
+test("keeps independent server notes and image when those device fields are unchanged", () => {
+  const server: MergeableMysteryCache = {
+    id: "server-cache-id",
+    gcCode: "GC1234",
+    name: "Mystery",
+    area: "",
+    country: "Sweden",
+    status: "solving",
+    notes: "New server notes",
+    clues: [],
+    sharedWith: [],
+    attempts: [],
+    image: "data:image/png;base64,new-server-image"
+  };
+  const staleDevice = {
+    ...server,
+    notes: "Old notes from the last sync",
+    image: "data:image/png;base64,old-image",
+    clues: ["offline device edit"]
+  };
+
+  const merged = mergeMysteryCaches(server, staleDevice, {
+    preferIncomingNotes: false,
+    preferIncomingImage: false
+  });
+
+  assert.equal(merged.notes, server.notes);
+  assert.equal(merged.image, server.image);
+  assert.deepEqual(merged.clues, ["offline device edit"]);
+});
