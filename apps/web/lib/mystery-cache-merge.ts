@@ -79,12 +79,10 @@ export function fieldMergeDecision(
 }
 
 export function coordinateIdentityKey(latitude: unknown, longitude: unknown) {
-  // Geocaching coordinates are displayed and entered to 0.001 minutes. Values
-  // can acquire smaller floating-point differences on different devices, so
-  // key them at the precision users can actually distinguish in the UI.
-  const displayedUnits = (value: number) => Math.sign(value) * Math.round(Math.abs(value) * 60_000);
+  // Mobile displays five decimal degrees. Use that highest shared display
+  // precision so web reconciliation never collapses mobile-distinct values.
   return Number.isFinite(latitude) && Number.isFinite(longitude)
-    ? `${displayedUnits(latitude as number)}:${displayedUnits(longitude as number)}`
+    ? `${(latitude as number).toFixed(5)}:${(longitude as number).toFixed(5)}`
     : "";
 }
 

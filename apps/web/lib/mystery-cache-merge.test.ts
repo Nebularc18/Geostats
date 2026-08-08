@@ -83,7 +83,7 @@ test("merges duplicate offline and server coordinates into one attempt", () => {
   }));
 });
 
-test("merges coordinate values that differ below displayed geocaching precision", () => {
+test("merges coordinate values that are identical at mobile display precision", () => {
   const merged = mergeMysteryAttempts([
     attempt({ id: "server-attempt", latitude: 56.1333331, longitude: 15.2500001 }),
     attempt({ id: "device-attempt", latitude: 56.1333334, longitude: 15.2500004, state: "correct" })
@@ -98,6 +98,15 @@ test("keeps coordinates that differ by one displayed thousandth of a minute", ()
   const merged = mergeMysteryAttempts([
     attempt({ id: "first", latitude: 56.133333, longitude: 15.25 }),
     attempt({ id: "second", latitude: 56.13335, longitude: 15.25 })
+  ]);
+
+  assert.equal(merged.length, 2);
+});
+
+test("keeps coordinates that mobile displays as distinct five-decimal values", () => {
+  const merged = mergeMysteryAttempts([
+    attempt({ id: "first", latitude: 56.000009, longitude: 15.25 }),
+    attempt({ id: "second", latitude: 56.000019, longitude: 15.25 })
   ]);
 
   assert.equal(merged.length, 2);

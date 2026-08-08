@@ -154,6 +154,7 @@ const DEDUP_BACKUP_KEY = "geostats-mysteries-backup-before-dedup-v1";
 const DELETION_STORAGE_KEY = "geostats-mystery-deletions-v1";
 const DELETION_CHANNEL = "geostats-mystery-deletions";
 const MAX_REASONABLE_DISTANCE_KM = 3.2;
+const AUTOMATIC_SYNC_RETRY_DELAYS_MS = [5_000, 30_000] as const;
 
 function snapshotFingerprint(value: string) {
   let first = 2166136261;
@@ -177,12 +178,12 @@ function distanceKm(lat1: number, lon1: number, lat2: number, lon2: number) {
   return earthRadiusKm * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-function formatCoordinate(latitude: number, longitude: number) {
+function formatCoordinate(latitude: number, longitude: number, minuteDecimals = 3) {
   const part = (value: number, positive: string, negative: string, degrees: number) => {
     const absolute = Math.abs(value);
     const wholeDegrees = Math.floor(absolute);
     const minutes = (absolute - wholeDegrees) * 60;
-    return `${value >= 0 ? positive : negative} ${String(wholeDegrees).padStart(degrees, "0")}° ${minutes.toFixed(3)}'`;
+    return `${value >= 0 ? positive : negative} ${String(wholeDegrees).padStart(degrees, "0")}° ${minutes.toFixed(minuteDecimals)}'`;
   };
   return `${part(latitude, "N", "S", 2)}  ${part(longitude, "E", "W", 3)}`;
 }
@@ -247,7 +248,7 @@ function attemptInputLabel(attempt: CoordinateAttempt) {
   return attemptKind(attempt) !== "coordinate"
     ? attempt.answer || attemptKindLabel(attempt)
     : coordinate
-      ? formatCoordinate(coordinate.latitude, coordinate.longitude)
+      ? formatCoordinate(coordinate.latitude, coordinate.longitude, 4)
       : "Coordinate";
 }
 
@@ -421,6 +422,11 @@ export default function MysteriesPage() {
   const shareMutationRevisions = useRef(new Map<string, number>());
   const deletedCacheIds = useRef(new Set<string>());
   const deletionChannel = useRef<BroadcastChannel | null>(null);
+  const syncRetryCount = useRef(0);
+  const syncRetryBatch = useRef("");
+  const serverLoadRetryCount = useRef(0);
+  const serverLoadInFlight = useRef(false);
+  const lastFailedServerLoadSnapshot = useRef("");
   const [caches, setCaches] = useState<MysteryCache[]>([]);
   const [persistedForSync, setPersistedForSync] = useState<MysteryCache[] | null>(null);
   const [serverSyncReady, setServerSyncReady] = useState(false);
@@ -617,6 +623,16 @@ export default function MysteriesPage() {
     });
     if (!pendingCaches.length) return;
 
+    const batchSignature = snapshotFingerprint(stableJsonStringify(
+      pendingCaches.map(({ cache, serialized }) => [cache.id, serialized])
+    ));
+    if (syncRetryBatch.current !== batchSignature) {
+      syncRetryBatch.current = batchSignature;
+      syncRetryCount.current = 0;
+    }
+
+    let active = true;
+    let retryTimeout: number | undefined;
     const timeout = window.setTimeout(() => {
       void Promise.all(pendingCaches.map(({ cache, serialized }) => {
         const requestedRevision = nextSnapshotRevision(cache.id);
@@ -640,18 +656,36 @@ export default function MysteriesPage() {
             setNotice(`Merged offline and server changes for ${cache.gcCode}.`);
           }
         });
-      })).catch(() => {
+      })).then(() => {
+        if (!active) return;
+        syncRetryCount.current = 0;
+        syncRetryBatch.current = "";
+      }).catch(() => {
+        if (!active) return;
+        const retryDelay = AUTOMATIC_SYNC_RETRY_DELAYS_MS[syncRetryCount.current];
+        if (retryDelay !== undefined) {
+          syncRetryCount.current += 1;
+          setNotice("Saved offline; account sync will retry with reduced frequency.");
+          retryTimeout = window.setTimeout(() => {
+            setPersistedForSync([...persistedCaches.current]);
+          }, retryDelay);
+          return;
+        }
         setNotice("Saved offline; account sync will resume after your next change or reconnect.");
       });
     }, 400);
     return () => {
+      active = false;
       window.clearTimeout(timeout);
+      if (retryTimeout) window.clearTimeout(retryTimeout);
     };
   }, [persistedForSync, ready, serverSyncReady]);
 
   useEffect(() => {
     if (!ready) return;
     let active = true;
+    let retryTimeout: number | undefined;
+    serverLoadInFlight.current = true;
     const ownedAtRequest = new Map(caches.filter((cache) => !cache.sharedBy).map((cache) => [
       cache.id,
       stableJsonStringify(shareableMystery(cache))
@@ -753,19 +787,57 @@ export default function MysteriesPage() {
         if (mergedConflictCount) {
           setNotice(`Merged offline and server changes for ${mergedConflictCount} ${mergedConflictCount === 1 ? "cache" : "caches"}.`);
         }
+        serverLoadInFlight.current = false;
+        serverLoadRetryCount.current = 0;
+        lastFailedServerLoadSnapshot.current = "";
         setServerSyncReady(true);
       })
       .catch(() => {
+        if (!active) return;
+        serverLoadInFlight.current = false;
         setServerSyncReady(false);
-        setNotice("Offline — mysteries will sync with your account when reconnected.");
+        lastFailedServerLoadSnapshot.current = stableJsonStringify(
+          latestCaches.current.filter((cache) => !cache.sharedBy).map(shareableMystery)
+        );
+        const retryDelay = AUTOMATIC_SYNC_RETRY_DELAYS_MS[serverLoadRetryCount.current];
+        if (retryDelay !== undefined) {
+          serverLoadRetryCount.current += 1;
+          setNotice("Could not reach account sync; retrying with reduced frequency.");
+          retryTimeout = window.setTimeout(() => {
+            setServerLoadAttempt((attempt) => attempt + 1);
+          }, retryDelay);
+          return;
+        }
+        setNotice("Offline — mysteries will sync after your next change or reconnect.");
       });
     return () => {
       active = false;
+      if (retryTimeout) window.clearTimeout(retryTimeout);
     };
   }, [ready, serverLoadAttempt]);
 
   useEffect(() => {
-    const retryServerLoad = () => setServerLoadAttempt((attempt) => attempt + 1);
+    if (!ready || serverSyncReady || !persistedForSync) return;
+    const localSnapshot = stableJsonStringify(
+      persistedForSync.filter((cache) => !cache.sharedBy).map(shareableMystery)
+    );
+    if (localSnapshot === lastFailedServerLoadSnapshot.current) return;
+    const timeout = window.setTimeout(() => {
+      if (serverLoadInFlight.current) return;
+      lastFailedServerLoadSnapshot.current = localSnapshot;
+      serverLoadRetryCount.current = 0;
+      setServerLoadAttempt((attempt) => attempt + 1);
+    }, 800);
+    return () => window.clearTimeout(timeout);
+  }, [persistedForSync, ready, serverSyncReady]);
+
+  useEffect(() => {
+    const retryServerLoad = () => {
+      serverLoadRetryCount.current = 0;
+      syncRetryCount.current = 0;
+      lastFailedServerLoadSnapshot.current = "";
+      setServerLoadAttempt((attempt) => attempt + 1);
+    };
     window.addEventListener("online", retryServerLoad);
     return () => {
       window.removeEventListener("online", retryServerLoad);
