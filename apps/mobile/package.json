@@ -4,24 +4,26 @@
   "main": "index.ts",
   "dependencies": {
     "@geostats/shared": "workspace:*",
-    "expo": "~56.0.12",
+    "expo": "~56.0.19",
     "expo-clipboard": "~56.0.4",
     "expo-crypto": "~56.0.4",
     "expo-document-picker": "~56.0.4",
-    "expo-file-system": "~56.0.8",
-    "expo-linking": "~56.0.14",
+    "expo-file-system": "~56.0.9",
+    "expo-linking": "~56.0.16",
     "expo-secure-store": "~56.0.4",
-    "expo-sharing": "~56.0.23",
+    "expo-sharing": "~56.0.24",
     "expo-status-bar": "~56.0.4",
     "expo-updates": "~56.0.24",
-    "expo-web-browser": "~56.0.5",
+    "expo-web-browser": "~56.0.6",
     "react": "19.2.3",
     "react-native": "0.85.3",
     "react-native-maps": "1.27.2",
     "react-native-safe-area-context": "^5.7.0"
   },
   "devDependencies": {
+    "@types/node": "^22.10.2",
     "@types/react": "~19.2.2",
+    "tsx": "^4.19.2",
     "typescript": "~6.0.3"
   },
   "scripts": {
@@ -30,7 +32,8 @@
     "ios": "expo run:ios",
     "web": "expo start --web",
     "prebuild:android": "expo prebuild --platform android",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsc -p tsconfig.test.json --noEmit && tsx --test upload.test.ts"
   },
   "private": true
 }

@@ -1,4 +1,5 @@
 import { StatusBar } from "expo-status-bar";
+import { fetch as expoFetch } from "expo/fetch";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Alert, Image, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
@@ -13,6 +14,7 @@ import MapView, { Callout, Marker, Polygon, PROVIDER_GOOGLE, type Region } from 
 import * as Linking from "expo-linking";
 import * as WebBrowser from "expo-web-browser";
 import { parseCoordinate } from "@geostats/shared";
+import { pickAndUploadDocument, type UploadKind } from "./upload";
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -240,7 +242,7 @@ async function apiFetch<T>(baseUrl: string, path: string, token: string | null, 
   const headers = new Headers(options.headers);
   if (!(options.body instanceof FormData) && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
   if (token) headers.set("Authorization", `Bearer ${token}`);
-  const response = await fetch(`${baseUrl}${path}`, { ...options, headers });
+  const response = await expoFetch(`${baseUrl}${path}`, { ...options, headers });
   if (!response.ok) {
     const body = await response.json().catch(() => ({ message: response.statusText }));
     throw new ApiError(body.message ?? "Request failed", response.status);
@@ -1490,6 +1492,7 @@ function HidesScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string 
 
 function UploadScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
   const [message, setMessage] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
   const imports = useApi<{ imports: ImportListItem[] }>(apiBaseUrl, token, "/imports", { imports: [] });
   useEffect(() => {
     if (!hasActiveImports(imports.data.imports)) return;
@@ -1498,28 +1501,26 @@ function UploadScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string
     }, 3000);
     return () => clearInterval(interval);
   }, [imports.data.imports]);
-  async function pickAndUpload(kind: "cache" | "csv") {
-    const result = await DocumentPicker.getDocumentAsync({ type: kind === "cache" ? ["application/gpx+xml", "application/zip", "text/xml", "*/*"] : ["text/csv", "text/plain", "*/*"], copyToCacheDirectory: true });
-    if (result.canceled) return;
-    const asset = result.assets[0];
-    const form = new FormData();
-    const fileObj = new File(asset.uri);
-    const uploadFile = fileObj.type ? fileObj : fileObj.slice(0, fileObj.size, asset.mimeType ?? "application/octet-stream");
-    form.append("file", uploadFile, asset.name);
-    setMessage(kind === "cache" ? "Uploading import..." : "Uploading owner logs...");
+  async function pickAndUpload(kind: UploadKind) {
+    if (uploading) return;
+    setUploading(true);
     try {
-      await apiFetch(apiBaseUrl, kind === "cache" ? "/imports/upload" : "/collector/received-logs/csv", token, { method: "POST", body: form });
-      setMessage(kind === "cache" ? "Import queued." : "Owner logs imported.");
-      await imports.refresh();
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Upload failed");
+      await pickAndUploadDocument(kind, {
+        pick: (options) => DocumentPicker.getDocumentAsync(options),
+        createFile: (uri) => new File(uri),
+        request: (path, body) => apiFetch(apiBaseUrl, path, token, { method: "POST", body }),
+        refresh: imports.refresh,
+        onMessage: setMessage
+      });
+    } finally {
+      setUploading(false);
     }
   }
   return (
     <>
       <PageTitle eyebrow="Import pipeline" title="Upload cache data" />
-      <Panel title="GPX or ZIP"><PrimaryButton label="Choose GPX or ZIP" onPress={() => pickAndUpload("cache")} /></Panel>
-      <Panel title="Owner log CSV"><PrimaryButton label="Choose CSV" onPress={() => pickAndUpload("csv")} /><Text style={styles.muted}>Use the CSV command from Profile after importing My Hides data.</Text></Panel>
+      <Panel title="GPX or ZIP"><PrimaryButton label={uploading ? "Uploading..." : "Choose GPX or ZIP"} onPress={() => pickAndUpload("cache")} /></Panel>
+      <Panel title="Owner log CSV"><PrimaryButton label={uploading ? "Uploading..." : "Choose CSV"} onPress={() => pickAndUpload("csv")} /><Text style={styles.muted}>Use the CSV command from Profile after importing My Hides data.</Text></Panel>
       {message ? <Text style={styles.note}>{message}</Text> : null}
       <Panel title="Latest imports"><ImportRows imports={imports.data.imports.slice(0, 8)} /></Panel>
       <LoadState loading={imports.loading} error={imports.error} />

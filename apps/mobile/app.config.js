@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
-const { expo } = require("./app.json");
+
+const projectId = "08a3cc2d-e083-4cda-b8ad-96301c663253";
 
 function readEnvValue(filePath, key) {
   if (!fs.existsSync(filePath)) return "";
@@ -14,9 +15,42 @@ const androidGoogleMapsApiKey =
 
 module.exports = {
   expo: {
-    ...expo,
+    name: "Geostats",
+    slug: "geostats",
+    scheme: "geostats",
+    version: "0.2.0",
+    runtimeVersion: { policy: "appVersion" },
+    updates: {
+      url: `https://u.expo.dev/${projectId}`,
+      checkAutomatically: "ON_ERROR_RECOVERY"
+    },
+    orientation: "portrait",
+    icon: "./assets/icon.png",
+    userInterfaceStyle: "dark",
+    ios: {
+      supportsTablet: true
+    },
+    android: {
+      package: "com.hampu.geostats",
+      versionCode: 5,
+      adaptiveIcon: {
+        backgroundColor: "#07110d",
+        foregroundImage: "./assets/android-icon-foreground.png",
+        backgroundImage: "./assets/android-icon-background.png",
+        monochromeImage: "./assets/android-icon-monochrome.png"
+      },
+      predictiveBackGestureEnabled: false
+    },
+    web: {
+      favicon: "./assets/favicon.png"
+    },
+    extra: {
+      eas: {
+        projectId
+      }
+    },
     plugins: [
-      ...(expo.plugins ?? []),
+      "expo-secure-store",
       [
         "react-native-maps",
         {

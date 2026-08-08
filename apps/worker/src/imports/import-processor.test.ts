@@ -130,6 +130,9 @@ test("process uses database object metadata without overwriting existing shared 
     hide: {
       findMany: async () => []
     },
+    ownerFinderCountryStat: {
+      findMany: async () => []
+    },
     statSnapshot: {
       deleteMany: async () => ({ count: 0 }),
       create: async () => ({})
@@ -231,6 +234,9 @@ test("process recovers from concurrent cache upsert conflict by reading the exis
       findMany: async () => []
     },
     hide: {
+      findMany: async () => []
+    },
+    ownerFinderCountryStat: {
       findMany: async () => []
     },
     statSnapshot: {
@@ -335,6 +341,9 @@ test("process creates missing cache metadata before the import transaction", asy
       findMany: async () => []
     },
     hide: {
+      findMany: async () => []
+    },
+    ownerFinderCountryStat: {
       findMany: async () => []
     },
     statSnapshot: {
@@ -518,6 +527,9 @@ test("process updates an existing find to the full GPX timestamp", async () => {
     hide: {
       findMany: async () => []
     },
+    ownerFinderCountryStat: {
+      findMany: async () => []
+    },
     statSnapshot: {
       deleteMany: async () => ({ count: 0 }),
       create: async () => ({})
@@ -637,6 +649,9 @@ test("process matches same-cache re-imports to each existing find once", async (
       findMany: async () => []
     },
     hide: {
+      findMany: async () => []
+    },
+    ownerFinderCountryStat: {
       findMany: async () => []
     },
     statSnapshot: {
@@ -763,6 +778,9 @@ test("process pairs same-cache re-import fallbacks in chronological order when G
     hide: {
       findMany: async () => []
     },
+    ownerFinderCountryStat: {
+      findMany: async () => []
+    },
     statSnapshot: {
       deleteMany: async () => ({ count: 0 }),
       create: async () => ({})
@@ -873,6 +891,9 @@ test("process clears an auto-detected FTF mark when re-imported log text no long
     hide: {
       findMany: async () => []
     },
+    ownerFinderCountryStat: {
+      findMany: async () => []
+    },
     statSnapshot: {
       deleteMany: async () => ({ count: 0 }),
       create: async () => ({})
@@ -970,6 +991,9 @@ test("process creates multiple same-cache finds when no existing row matches the
       findMany: async () => []
     },
     hide: {
+      findMany: async () => []
+    },
+    ownerFinderCountryStat: {
       findMany: async () => []
     },
     statSnapshot: {
@@ -1083,6 +1107,9 @@ test("process skips stats recalculation when an import has no new or changed fin
     hide: {
       findMany: async () => []
     },
+    ownerFinderCountryStat: {
+      findMany: async () => []
+    },
     statSnapshot: {
       deleteMany: async () => ({ count: 0 }),
       create: async () => ({})
@@ -1177,6 +1204,9 @@ test("process uses an explicit FTF time near the FTF term when the GPX timestamp
     hide: {
       findMany: async () => []
     },
+    ownerFinderCountryStat: {
+      findMany: async () => []
+    },
     statSnapshot: {
       deleteMany: async () => ({ count: 0 }),
       create: async () => ({})
@@ -1267,6 +1297,9 @@ test("process uses an explicit FTF time next to a custom detection term", async 
       findMany: async () => []
     },
     hide: {
+      findMany: async () => []
+    },
+    ownerFinderCountryStat: {
       findMany: async () => []
     },
     statSnapshot: {
@@ -1362,6 +1395,9 @@ test("process keeps the GPX wall-clock date when applying a late-evening FTF log
     hide: {
       findMany: async () => []
     },
+    ownerFinderCountryStat: {
+      findMany: async () => []
+    },
     statSnapshot: {
       deleteMany: async () => ({ count: 0 }),
       create: async () => ({})
@@ -1455,6 +1491,9 @@ test("process ignores incidental time mentions in FTF log text", async () => {
     hide: {
       findMany: async () => []
     },
+    ownerFinderCountryStat: {
+      findMany: async () => []
+    },
     statSnapshot: {
       deleteMany: async () => ({ count: 0 }),
       create: async () => ({})
@@ -1546,6 +1585,9 @@ test("process interprets GPX find timestamps in the profile time zone", async ()
       findMany: async () => []
     },
     hide: {
+      findMany: async () => []
+    },
+    ownerFinderCountryStat: {
       findMany: async () => []
     },
     statSnapshot: {
@@ -1651,6 +1693,9 @@ test("process preserves a manually cleared FTF mark during re-import", async () 
       }
     },
     hide: {
+      findMany: async () => []
+    },
+    ownerFinderCountryStat: {
       findMany: async () => []
     },
     statSnapshot: {

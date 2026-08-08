@@ -9,7 +9,7 @@
     "dev": "tsc -p tsconfig.json --watch",
     "lint": "tsc -p tsconfig.json --noEmit",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --test dist/**/*.test.js"
+    "test": "tsc -p tsconfig.json && node --test dist/**/*.test.js"
   },
   "devDependencies": {
     "typescript": "^5.7.2"
