@@ -3,6 +3,7 @@ export type UploadKind = "cache" | "csv";
 type UploadAsset = {
   name: string;
   uri: string;
+  mimeType?: string;
 };
 
 type PickResult =
@@ -32,6 +33,16 @@ const uploadSpecs: Record<UploadKind, { types: string[]; path: string; uploading
   }
 };
 
+const acceptedCsvMimeTypes = new Set(["text/csv", "application/csv", "text/plain"]);
+
+function fileForUpload(kind: UploadKind, asset: UploadAsset, file: Blob) {
+  if (kind !== "csv") return file;
+
+  const pickerMimeType = asset.mimeType?.toLowerCase();
+  const mimeType = pickerMimeType && acceptedCsvMimeTypes.has(pickerMimeType) ? pickerMimeType : "text/csv";
+  return file.type === mimeType ? file : file.slice(0, file.size, mimeType);
+}
+
 export async function pickAndUploadDocument(kind: UploadKind, dependencies: UploadDependencies) {
   const spec = uploadSpecs[kind];
   try {
@@ -42,7 +53,7 @@ export async function pickAndUploadDocument(kind: UploadKind, dependencies: Uplo
     if (!asset) throw new Error("The selected file could not be opened");
 
     const form = new FormData();
-    form.append("file", dependencies.createFile(asset.uri), asset.name);
+    form.append("file", fileForUpload(kind, asset, dependencies.createFile(asset.uri)), asset.name);
     dependencies.onMessage(spec.uploading);
     await dependencies.request(spec.path, form);
     dependencies.onMessage(spec.complete);

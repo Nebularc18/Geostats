@@ -10,7 +10,14 @@ function uploadHarness(kind: UploadKind, overrides: Record<string, unknown> = {}
   const dependencies = {
     pick: async (options: { type: string[]; copyToCacheDirectory: true }) => {
       pickerOptions = options;
-      return { canceled: false as const, assets: [{ name: kind === "cache" ? "my-finds.gpx" : "owner-logs.csv", uri: "file:///picked-file" }] };
+      return {
+        canceled: false as const,
+        assets: [{
+          name: kind === "cache" ? "my-finds.gpx" : "owner-logs.csv",
+          uri: "file:///picked-file",
+          mimeType: kind === "cache" ? "application/gpx+xml" : "text/csv"
+        }]
+      };
     },
     createFile: () => new Blob(["file contents"], { type: kind === "cache" ? "application/gpx+xml" : "text/csv" }),
     request: async (path: string, body: FormData) => {
@@ -44,13 +51,42 @@ test("GPX uploads use a cached document and the imports multipart endpoint", asy
 });
 
 test("CSV uploads use the owner-log endpoint", async () => {
-  const harness = uploadHarness("csv");
+  const harness = uploadHarness("csv", { createFile: () => new Blob(["owner logs"]) });
 
   const result = await pickAndUploadDocument("csv", harness.dependencies);
 
   assert.equal(result, "uploaded");
   assert.equal(harness.requests[0]?.path, "/collector/received-logs/csv");
+  assert.equal((harness.requests[0]?.body.get("file") as Blob).type, "text/csv");
   assert.deepEqual(harness.messages, ["Uploading owner logs...", "Owner logs imported."]);
+});
+
+test("CSV uploads preserve accepted picker MIME types", async () => {
+  const harness = uploadHarness("csv", {
+    pick: async () => ({
+      canceled: false as const,
+      assets: [{ name: "owner-logs.csv", uri: "file:///picked-file", mimeType: "text/plain" }]
+    }),
+    createFile: () => new Blob(["owner logs"])
+  });
+
+  assert.equal(await pickAndUploadDocument("csv", harness.dependencies), "uploaded");
+  assert.equal((harness.requests[0]?.body.get("file") as Blob).type, "text/plain");
+});
+
+test("CSV uploads normalize unsupported or missing picker MIME types", async () => {
+  for (const mimeType of ["application/octet-stream", undefined]) {
+    const harness = uploadHarness("csv", {
+      pick: async () => ({
+        canceled: false as const,
+        assets: [{ name: "owner-logs.csv", uri: "file:///picked-file", mimeType }]
+      }),
+      createFile: () => new Blob(["owner logs"])
+    });
+
+    assert.equal(await pickAndUploadDocument("csv", harness.dependencies), "uploaded");
+    assert.equal((harness.requests[0]?.body.get("file") as Blob).type, "text/csv");
+  }
 });
 
 test("canceling the picker does not upload or refresh", async () => {
