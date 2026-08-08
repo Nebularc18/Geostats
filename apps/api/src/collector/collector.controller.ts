@@ -40,6 +40,11 @@ type ReceivedLogInput = {
   text?: string | null;
 };
 
+type ReceivedCacheInput = {
+  gcCode?: string;
+  favoritePoints?: number;
+};
+
 type FinderCountryInput = {
   country?: unknown;
   count?: unknown;
@@ -453,6 +458,35 @@ export function rawFromInput(log: ReceivedLogInput) {
   return { gcCode, raw };
 }
 
+function normalizedCacheInput(cache: ReceivedCacheInput) {
+  const gcCode = cache.gcCode?.trim().toUpperCase();
+  if (!gcCode) {
+    throw new BadRequestException("gcCode is required for cache metadata");
+  }
+  if (!Number.isSafeInteger(cache.favoritePoints) || Number(cache.favoritePoints) < 0) {
+    throw new BadRequestException("favoritePoints must be a non-negative integer");
+  }
+  return { gcCode, favoritePoints: Number(cache.favoritePoints) };
+}
+
+export function rawWithFavoritePoints(raw: unknown, favoritePoints: number) {
+  const root = rawObject(raw);
+  const cacheKey = root["groundspeak:cache"] !== undefined || root.cache === undefined ? "groundspeak:cache" : "cache";
+  const extension = rawObject(root[cacheKey]);
+  delete extension["groundspeak:favorite_points"];
+  delete extension["groundspeak:favorites"];
+  delete extension.favorite_points;
+  delete extension.favorites;
+  delete extension.favpoints;
+  return {
+    ...root,
+    [cacheKey]: {
+      ...extension,
+      "groundspeak:favorite_points": String(favoritePoints)
+    }
+  };
+}
+
 function countReceivedLogs(logs: Array<Record<string, any>>) {
   return logs.filter((log) => rawText(log["groundspeak:type"], log.type)?.toLowerCase() !== "publish listing").length;
 }
@@ -702,7 +736,10 @@ export class CollectorController {
   }
 
   @Post("received-logs")
-  async receivedLogs(@Headers("authorization") authorization: string | undefined, @Body() body: { logs?: ReceivedLogInput[] }) {
+  async receivedLogs(
+    @Headers("authorization") authorization: string | undefined,
+    @Body() body: { logs?: ReceivedLogInput[]; caches?: ReceivedCacheInput[] }
+  ) {
     const userId = await this.tokenUser(authorization);
     return this.importReceivedLogsForUser(userId, body);
   }
@@ -748,7 +785,7 @@ export class CollectorController {
     return this.importReceivedLogsForUser(user.id, { logs });
   }
 
-  private async importReceivedLogsForUser(userId: string, body: { logs?: ReceivedLogInput[] }) {
+  private async importReceivedLogsForUser(userId: string, body: { logs?: ReceivedLogInput[]; caches?: ReceivedCacheInput[] }) {
     const logs = body.logs ?? [];
     if (!Array.isArray(logs)) {
       throw new BadRequestException("logs must be an array");
@@ -758,7 +795,12 @@ export class CollectorController {
       const normalized = rawFromInput(log);
       byCode.set(normalized.gcCode, [...(byCode.get(normalized.gcCode) ?? []), normalized.raw]);
     }
-    const codes = Array.from(byCode.keys());
+    const caches = body.caches ?? [];
+    if (!Array.isArray(caches)) {
+      throw new BadRequestException("caches must be an array");
+    }
+    const cacheTotals = new Map(caches.map(normalizedCacheInput).map((cache) => [cache.gcCode, cache.favoritePoints]));
+    const codes = Array.from(new Set([...byCode.keys(), ...cacheTotals.keys()]));
     const hides = await this.prisma.hide.findMany({
       where: { userId, cache: { gcCode: { in: codes } } },
       include: { cache: true }
@@ -772,7 +814,8 @@ export class CollectorController {
     let added = 0;
     let changedCaches = 0;
     await this.prisma.$transaction(async (tx) => {
-      for (const [gcCode, cacheLogsToAdd] of byCode) {
+      for (const gcCode of codes) {
+        const cacheLogsToAdd = byCode.get(gcCode) ?? [];
         const hide = hidesByCode.get(gcCode);
         if (!hide) {
           continue;
@@ -785,24 +828,42 @@ export class CollectorController {
           throw new BadRequestException(`Unknown owned caches: ${gcCode}`);
         }
         const merged = mergedRaw(current.receivedLogsRaw, cacheLogsToAdd);
-        if (merged.added === 0 && current.receivedLogCount === merged.receivedLogCount) {
-          continue;
-        }
-        const updated = await tx.hide.updateMany({
-          where: { id: current.id, userId, updatedAt: current.updatedAt },
-          data: {
-            receivedLogCount: merged.receivedLogCount,
-            receivedLogsRaw: merged.raw as Prisma.InputJsonValue
+        const logsChanged = merged.added > 0 || current.receivedLogCount !== merged.receivedLogCount;
+        const favoriteTotal = cacheTotals.get(gcCode);
+        const cacheRoot = rawObject(current.cache.raw);
+        const currentFavoriteText = rawText(
+          rawObject(cacheRoot["groundspeak:cache"] ?? cacheRoot.cache)["groundspeak:favorite_points"]
+        );
+        const currentFavoriteTotal = currentFavoriteText === null ? null : Number(currentFavoriteText);
+        const favoriteChanged = favoriteTotal !== undefined && currentFavoriteTotal !== favoriteTotal;
+        if (logsChanged) {
+          const updated = await tx.hide.updateMany({
+            where: { id: current.id, userId, updatedAt: current.updatedAt },
+            data: {
+              receivedLogCount: merged.receivedLogCount,
+              receivedLogsRaw: merged.raw as Prisma.InputJsonValue
+            }
+          });
+          if (updated.count !== 1) {
+            throw new ConflictException(`Hide changed while receiving logs: ${gcCode}`);
           }
-        });
-        if (updated.count !== 1) {
-          throw new ConflictException(`Hide changed while receiving logs: ${gcCode}`);
+        }
+        if (favoriteChanged) {
+          const updated = await tx.cache.updateMany({
+            where: { id: current.cache.id, updatedAt: current.cache.updatedAt },
+            data: { raw: rawWithFavoritePoints(current.cache.raw, favoriteTotal) as Prisma.InputJsonValue }
+          });
+          if (updated.count !== 1) {
+            throw new ConflictException(`Cache changed while receiving favorite points: ${gcCode}`);
+          }
         }
         added += merged.added;
-        changedCaches += 1;
+        if (logsChanged || favoriteChanged) {
+          changedCaches += 1;
+        }
       }
     });
-    if (added > 0) {
+    if (changedCaches > 0) {
       try {
         const stats = await this.stats.buildSnapshotForUser(userId);
         await this.prisma.$transaction((tx) => this.stats.replaceSnapshotForUser(userId, stats, tx));

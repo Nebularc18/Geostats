@@ -22,6 +22,7 @@ type HideStats = {
   cumulativeReceivedLogsByMonth: CountBucket[];
   receivedLogsByCalendarMonth: PercentBucket[];
   receivedLogsByWeekday: PercentBucket[];
+  receivedLogsByType: PercentBucket[];
   receivedFoundDateMatrix: CountBucket[];
   placedHiddenDateMatrix: CountBucket[];
   hidesByYear: CountBucket[];
@@ -35,6 +36,14 @@ type HideStats = {
   hidesByDifficultyTerrain: Array<{ difficulty: number; terrain: number; count: number }>;
   finderCountryBuckets: PercentBucket[];
   finderBuckets: PercentBucket[];
+  recentReceivedLogs: Array<{
+    date: string;
+    finder: string;
+    type: string;
+    text: string | null;
+    gcCode: string;
+    cacheName: string;
+  }>;
   hideSummaryRows: Array<{ label: string; value: string }>;
   logsReceived: Array<{
     hidden: string | null;
@@ -116,15 +125,15 @@ function OwnedStatsTable({ rows }: { rows: HideStats["hideSummaryRows"] }) {
 }
 
 function LogsReceivedTable({ rows, ownerName }: { rows: HideStats["logsReceived"]; ownerName: string }) {
-  const totalFinds = rows.reduce((sum, row) => sum + row.finds, 0);
+  const totalLogs = rows.reduce((sum, row) => sum + row.finds, 0);
   return (
     <section className="panel hide-report-section">
       <h2>Logs received</h2>
       <div className="hide-log-table">
         <span>Hidden</span>
-        <span>Last found</span>
-        <span>Finds</span>
-        <span>Days/find</span>
+        <span>Last log</span>
+        <span>Logs</span>
+        <span>Days/log</span>
         <span>FP</span>
         <span>GC Code</span>
         <span>Cache name</span>
@@ -143,8 +152,34 @@ function LogsReceivedTable({ rows, ownerName }: { rows: HideStats["logsReceived"
         ))}
       </div>
       <p className="hide-table-note">
-        {totalFinds} finds on {rows.length} geocaches owned by {ownerName}.
+        {totalLogs} logs on {rows.length} geocaches owned by {ownerName}.
       </p>
+    </section>
+  );
+}
+
+function RecentReceivedLogs({ rows }: { rows: HideStats["recentReceivedLogs"] }) {
+  return (
+    <section className="panel hide-report-section">
+      <h2>Recent imported logs</h2>
+      <div className="hide-recent-log-table">
+        <span>Date</span>
+        <span>Type</span>
+        <span>Logger</span>
+        <span>Cache</span>
+        {rows.map((row, index) => (
+          <Fragment key={`${row.gcCode}-${row.date}-${row.finder}-${row.type}-${index}`}>
+            <span>{row.date}</span>
+            <strong>{row.type}</strong>
+            <span>{row.finder}</span>
+            <a href={`https://coord.info/${row.gcCode}`} rel="noreferrer" target="_blank" title={row.cacheName}>
+              {row.gcCode}
+            </a>
+          </Fragment>
+        ))}
+      </div>
+      {rows.length === 0 ? <p className="muted">No imported owner logs yet.</p> : null}
+      {rows.length === 100 ? <p className="hide-table-note">Showing the 100 most recent imported logs.</p> : null}
     </section>
   );
 }
@@ -202,7 +237,7 @@ function MonthPerYearTable({ data }: { data: CountBucket[] }) {
 
   return (
     <section className="panel hide-report-section">
-      <h2>Finds on my hides by month per year</h2>
+      <h2>Logs on my hides by month per year</h2>
       <div className="tab-list">
         {years.map((year) => (
           <button className={selectedYear === year ? "active" : ""} key={year} type="button" onClick={() => setSelectedYear(year)}>
@@ -265,7 +300,7 @@ export default function HidesPage() {
 
       <section className="two-column">
         <div className="panel">
-          <h2>Cumulative finds of my caches</h2>
+          <h2>Cumulative logs on my caches</h2>
           <CumulativeFindsChart data={hideStats?.cumulativeReceivedLogsByMonth ?? []} />
         </div>
         <div className="panel">
@@ -277,6 +312,7 @@ export default function HidesPage() {
       <MonthPerYearTable data={hideStats?.receivedLogsByMonth ?? []} />
       <OwnedStatsTable rows={hideStats?.hideSummaryRows ?? []} />
       <LogsReceivedTable rows={hideStats?.logsReceived ?? []} ownerName={ownerName} />
+      <RecentReceivedLogs rows={hideStats?.recentReceivedLogs ?? []} />
 
       <section className="panel hide-report-section">
         <h2>Finder and favorite breakdowns</h2>
@@ -284,6 +320,7 @@ export default function HidesPage() {
           {hasFinderCountries ? <PercentTable title="Finders by country" data={hideStats?.finderCountryBuckets ?? []} /> : null}
           <CountPercentTable title="Placed by country" data={hideStats?.hidesByCountry ?? []} total={hideStats?.totalHides ?? 0} />
           <PercentTable title="Top finders of my caches" data={hideStats?.finderBuckets ?? []} />
+          <PercentTable title="Received log types" data={hideStats?.receivedLogsByType ?? []} />
           <PercentTable title="Placed by type" data={hideStats?.hidesByType ?? []} />
           <PercentTable title="Placed by size" data={hideStats?.hidesBySize ?? []} />
         </div>
@@ -303,13 +340,13 @@ export default function HidesPage() {
       </section>
 
       <CalendarHeatmap title="Placed by hidden date" data={hideStats?.placedHiddenDateMatrix ?? []} />
-      <CalendarHeatmap title="Placed by found date" data={hideStats?.receivedFoundDateMatrix ?? []} />
+      <CalendarHeatmap title="Received by log date" data={hideStats?.receivedFoundDateMatrix ?? []} />
 
       <section className="panel hide-report-section">
-        <h2>Received found logs</h2>
+        <h2>Received logs</h2>
         <div className="stats-breakdown-grid">
-          <PercentTable title="Placed by found month" data={hideStats?.receivedLogsByCalendarMonth ?? []} />
-          <PercentTable title="Placed by found weekday" data={hideStats?.receivedLogsByWeekday ?? []} />
+          <PercentTable title="Logs by calendar month" data={hideStats?.receivedLogsByCalendarMonth ?? []} />
+          <PercentTable title="Logs by weekday" data={hideStats?.receivedLogsByWeekday ?? []} />
         </div>
       </section>
     </AppShell>

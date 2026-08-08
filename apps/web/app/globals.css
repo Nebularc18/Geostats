@@ -1867,6 +1867,30 @@ select:focus {
   text-decoration: underline;
 }
 
+.hide-recent-log-table {
+  display: grid;
+  grid-template-columns: minmax(92px, 0.8fr) minmax(130px, 1fr) minmax(130px, 1fr) minmax(90px, 0.7fr);
+  overflow-x: auto;
+}
+
+.hide-recent-log-table > * {
+  min-width: 0;
+  padding: 0.62rem 0.7rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.hide-recent-log-table > :nth-child(-n + 4) {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.hide-recent-log-table a {
+  color: var(--accent);
+  font-weight: 700;
+}
+
 .hide-table-note {
   margin: 12px 0 0;
   color: var(--muted);

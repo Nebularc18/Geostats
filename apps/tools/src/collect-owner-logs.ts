@@ -39,6 +39,11 @@ type CollectorLog = {
   text: string;
 };
 
+type CollectedCache = {
+  gcCode: string;
+  favoritePoints: number | null;
+};
+
 const DEFAULT_PROFILE_DIR = ".codex/geocaching-browser";
 const DEFAULT_OUTPUT = "received-logs.csv";
 const DEFAULT_SERVER = "http://127.0.0.1:3001";
@@ -235,6 +240,24 @@ function tokenFromPage(html: string): string | null {
   return html.match(/userToken\s*=\s*'([^']+)'/)?.[1] ?? null;
 }
 
+export function favoritePointsFromHtml(html: string): number | null {
+  const patterns = [
+    /["'](?:favoritePoints|favoritePointCount|favorite_points|FavoritePoints)["']\s*[:=]\s*["']?([\d][\d,. ]*)/i,
+    /([\d][\d,. ]*)\s*(?:favorite points?|favoritpoäng)/i,
+    /(?:favorite points?|favoritpoäng)[\s\S]{0,160}?>([\d][\d,. ]*)</i
+  ];
+  for (const pattern of patterns) {
+    const text = pattern.exec(html)?.[1]?.replace(/[^\d]/g, "");
+    if (text !== undefined && text !== "") {
+      const value = Number(text);
+      if (Number.isSafeInteger(value) && value >= 0) {
+        return value;
+      }
+    }
+  }
+  return null;
+}
+
 async function apiRequest<T>(args: Args, path: string, options: RequestInit = {}): Promise<T> {
   if (!args.token && args.upload) {
     throw new Error("Pass --token <collector-token> or set GEOSTATS_COLLECTOR_TOKEN");
@@ -259,13 +282,13 @@ async function loadOwnedCaches(args: Args): Promise<CacheState[]> {
   return args.limitCaches ? data.caches.slice(0, args.limitCaches) : data.caches;
 }
 
-async function uploadLogs(args: Args, logs: CollectorLog[]) {
-  if (!args.upload || logs.length === 0) {
+async function uploadLogs(args: Args, logs: CollectorLog[], cache: CollectedCache) {
+  if (!args.upload || (logs.length === 0 && cache.favoritePoints === null)) {
     return { added: 0, changedCaches: 0 };
   }
   return apiRequest<{ added: number; changedCaches: number }>(args, "/collector/received-logs", {
     method: "POST",
-    body: JSON.stringify({ logs })
+    body: JSON.stringify({ logs, caches: cache.favoritePoints === null ? [] : [cache] })
   });
 }
 
@@ -306,16 +329,17 @@ async function isLoggedIn(page: Page) {
   return passwordInputs === 0;
 }
 
-async function fetchCacheToken(context: BrowserContext, gcCode: string): Promise<string> {
+async function fetchCacheInfo(context: BrowserContext, gcCode: string): Promise<{ token: string; favoritePoints: number | null }> {
   const page = await context.newPage();
   await page.goto(`https://www.geocaching.com/geocache/${gcCode}?decrypt=y`, { waitUntil: "domcontentloaded" });
   const html = await page.content();
   const token = tokenFromPage(html);
+  const favoritePoints = favoritePointsFromHtml(html);
   await page.close();
   if (!token) {
     throw new Error(`Could not find logbook token for ${gcCode}. Check that you can view the cache page while logged in.`);
   }
-  return token;
+  return { token, favoritePoints };
 }
 
 async function fetchLogbookPage(context: BrowserContext, token: string, index: number, pageSize: number) {
@@ -333,10 +357,15 @@ async function fetchLogbookPage(context: BrowserContext, token: string, index: n
   }
 }
 
-async function fetchNewLogs(context: BrowserContext, cache: CacheState, pageSize: number, delayMs: number): Promise<CollectorLog[]> {
+async function fetchNewLogs(
+  context: BrowserContext,
+  cache: CacheState,
+  token: string,
+  pageSize: number,
+  delayMs: number
+): Promise<CollectorLog[]> {
   const knownIds = new Set(cache.existingLogIds.map(String));
   const knownKeys = new Set(cache.existingLogKeys);
-  const token = await fetchCacheToken(context, cache.gcCode);
   const collected: CollectorLog[] = [];
   const seenIds = new Set<string>();
   let index = 1;
@@ -403,7 +432,8 @@ async function main() {
     for (let index = 0; index < caches.length; index += 1) {
       const cache = caches[index];
       console.log(`[${index + 1}/${caches.length}] ${cache.gcCode} ${cache.name}`);
-      const logs = await fetchNewLogs(context, cache, args.pageSize, args.delayMs);
+      const cacheInfo = await fetchCacheInfo(context, cache.gcCode);
+      const logs = await fetchNewLogs(context, cache, cacheInfo.token, args.pageSize, args.delayMs);
       const rows = logs.map((log) => csvRow([log.gcCode, log.logId ?? "", log.date, log.type, log.finder, log.text]));
       const newRows = rows.filter((row) => {
         if (existingRows.has(row)) {
@@ -413,9 +443,10 @@ async function main() {
         return true;
       });
       appendRows(outputPath, newRows);
-      const result = await uploadLogs(args, logs);
+      const result = await uploadLogs(args, logs, { gcCode: cache.gcCode, favoritePoints: cacheInfo.favoritePoints });
       totalUploaded += result.added;
-      console.log(`  ${logs.length} new log candidates, ${result.added} accepted by server`);
+      const favoriteText = cacheInfo.favoritePoints === null ? "favorite total unavailable" : `${cacheInfo.favoritePoints} favorite points`;
+      console.log(`  ${logs.length} new log candidates, ${result.added} accepted by server, ${favoriteText}`);
       if (args.delayMs > 0) {
         await new Promise((resolveDelay) => setTimeout(resolveDelay, args.delayMs));
       }

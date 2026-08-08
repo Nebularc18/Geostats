@@ -1,9 +1,8 @@
 import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
 import { countableFindWhere, Prisma } from "@geostats/db";
-import { calculateHideStats, calculateStats, normalizedGcUsername } from "@geostats/stats";
+import { calculateHideStats, calculateStats, normalizedGcUsername, STATS_VERSION } from "@geostats/stats";
 import { PrismaService } from "../common/prisma.service";
 
-const STATS_VERSION = 19;
 const DEFAULT_FTF_FIND_LIMIT = 100;
 const MAX_FTF_FIND_LIMIT = 200;
 const MAX_FTF_LOG_TEXT_LENGTH = 1_000;

@@ -54,6 +54,8 @@ export interface CountBucket {
   count: number;
 }
 
+export const STATS_VERSION = 20;
+
 export function normalizedGcUsername(profile?: { gcUsername?: string | null } | string | null): string | null {
   const value = typeof profile === "string" ? profile : profile?.gcUsername;
   const username = value?.trim().toLowerCase();
@@ -358,6 +360,7 @@ export interface HideStats {
   cumulativeReceivedLogsByMonth: CountBucket[];
   receivedLogsByCalendarMonth: PercentBucket[];
   receivedLogsByWeekday: PercentBucket[];
+  receivedLogsByType: PercentBucket[];
   receivedFoundDateMatrix: CountBucket[];
   placedHiddenDateMatrix: CountBucket[];
   hidesByYear: CountBucket[];
@@ -371,6 +374,7 @@ export interface HideStats {
   hidesByDifficultyTerrain: DifficultyTerrainCell[];
   finderCountryBuckets: PercentBucket[];
   finderBuckets: PercentBucket[];
+  recentReceivedLogs: HideLog[];
   hideSummaryRows: Array<{ label: string; value: string }>;
   logsReceived: Array<{
     hidden: string | null;
@@ -998,6 +1002,7 @@ export function calculateHideStats(hides: StatsHide[], options: HideStatsOptions
   const byRegion = new Map<string, number>();
   const byFinder = new Map<string, number>();
   const byFinderCountry = new Map<string, number>();
+  const byLogType = new Map<string, number>();
   const byPlacedDate = new Map<string, number>();
   const dt = new Map<string, DifficultyTerrainCell>();
   const allLogs: HideLog[] = [];
@@ -1014,6 +1019,7 @@ export function calculateHideStats(hides: StatsHide[], options: HideStatsOptions
     for (const log of logs) {
       increment(byFinder, log.finder);
       increment(byFinderCountry, log.finderCountry);
+      increment(byLogType, log.type);
     }
     if (isArchived(hide.cache)) {
       archivedHides += 1;
@@ -1104,6 +1110,7 @@ export function calculateHideStats(hides: StatsHide[], options: HideStatsOptions
     cumulativeReceivedLogsByMonth: logDateRows.cumulativeByMonth,
     receivedLogsByCalendarMonth: logDateRows.byCalendarMonth,
     receivedLogsByWeekday: logDateRows.byWeekday,
+    receivedLogsByType: percentBuckets(byLogType, allLogs.length),
     receivedFoundDateMatrix: logDateRows.foundDateMatrix,
     placedHiddenDateMatrix: buckets(byPlacedDate).sort((a, b) => a.key.localeCompare(b.key)),
     hidesByYear: buckets(byYear).sort((a, b) => a.key.localeCompare(b.key)),
@@ -1120,11 +1127,14 @@ export function calculateHideStats(hides: StatsHide[], options: HideStatsOptions
         ? countryPercentBuckets(options.finderCountryBuckets)
         : percentBuckets(byFinderCountry, totalReceivedLogs),
     finderBuckets: percentBuckets(byFinder, totalReceivedLogs),
+    recentReceivedLogs: [...allLogs]
+      .sort((a, b) => b.date.localeCompare(a.date) || a.gcCode.localeCompare(b.gcCode))
+      .slice(0, 100),
     hideSummaryRows: [
       { label: "Owned", value: `${totalHides}, ${archivedHides} archived` },
       {
-        label: "Total finds of my caches",
-        value: `${totalReceivedLogs} finds${totalDays > 0 ? ` in ${totalDays} total days` : ""}`
+        label: "Total logs on my caches",
+        value: `${totalReceivedLogs} logs${totalDays > 0 ? ` in ${totalDays} total days` : ""}`
       },
       { label: "Total unique finders of my caches", value: String(byFinder.size) },
       {
@@ -1152,11 +1162,11 @@ export function calculateHideStats(hides: StatsHide[], options: HideStatsOptions
         value: lowest ? `${Math.round(Number(lowest.cache.elevationMeters))} m, ${cacheLinkLabel(lowest.cache)}` : "-"
       },
       {
-        label: "Hide with the most finds",
+        label: "Hide with the most logs",
         value: topLogged[0] ? `${hideLogs(topLogged[0]).length || topLogged[0].receivedLogCount}, ${cacheLinkLabel(topLogged[0].cache)}` : "-"
       },
       {
-        label: "Hide with the most finds in a day",
+        label: "Hide with the most logs in a day",
         value: bestCacheDay ? `${bestCacheDay.count}, ${cacheLinkLabel(bestCacheDay.hide.cache)} on ${bestCacheDay.day}` : "-"
       },
       {
@@ -1168,8 +1178,8 @@ export function calculateHideStats(hides: StatsHide[], options: HideStatsOptions
         value: "Calculated when profile find total is available"
       },
       {
-        label: "Day with the most found logs received",
-        value: bestOverallDay ? `${bestOverallDay.key}, ${bestOverallDay.count} find${bestOverallDay.count === 1 ? "" : "s"}` : "-"
+        label: "Day with the most logs received",
+        value: bestOverallDay ? `${bestOverallDay.key}, ${bestOverallDay.count} log${bestOverallDay.count === 1 ? "" : "s"}` : "-"
       },
       { label: "Total favorite points received", value: String(totalFavoritePoints) },
       { label: "Log length, words", value: `Average: ${averageLogWords} words` },
@@ -1402,7 +1412,7 @@ export function calculateStats(finds: StatsFind[], options: StatsOptions = {}): 
   const milestoneStats = calculateMilestoneStats(sorted);
 
   return {
-    statsVersion: 19,
+    statsVersion: STATS_VERSION,
     totalFinds,
     findsByYear: buckets(byYear).sort((a, b) => a.key.localeCompare(b.key)),
     findsByMonth: sortedMonths,

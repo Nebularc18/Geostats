@@ -289,6 +289,89 @@ test("receivedLogs rejects unknown owned caches with BadRequestException", async
   );
 });
 
+test("receivedLogs replaces the current favorite-point total without creating history", async () => {
+  const updatedAt = new Date("2026-01-01T00:00:00.000Z");
+  const raw = {
+    "groundspeak:cache": {
+      "groundspeak:favorite_points": "4",
+      favorites: "3",
+      "groundspeak:logs": { "groundspeak:log": [] }
+    }
+  };
+  let writtenCacheRaw: any;
+  let hideUpdated = false;
+  const tx = {
+    hide: {
+      findFirst: async () => ({
+        id: "hide-1",
+        cacheId: "cache-1",
+        updatedAt,
+        receivedLogCount: 0,
+        receivedLogsRaw: raw,
+        cache: { id: "cache-1", updatedAt, raw }
+      }),
+      updateMany: async () => {
+        hideUpdated = true;
+        return { count: 1 };
+      }
+    },
+    cache: {
+      updateMany: async ({ where, data }: any) => {
+        assert.deepEqual(where, { id: "cache-1", updatedAt });
+        writtenCacheRaw = data.raw;
+        return { count: 1 };
+      }
+    }
+  };
+  let transactionCount = 0;
+  const prisma = {
+    collectorToken: {
+      findUnique: async () => ({ id: "token-1", userId: "user-1" }),
+      update: async () => ({})
+    },
+    hide: {
+      findMany: async () => [
+        {
+          id: "hide-1",
+          cacheId: "cache-1",
+          receivedLogCount: 0,
+          receivedLogsRaw: raw,
+          cache: { gcCode: "GC123", raw }
+        }
+      ]
+    },
+    $transaction: async (run: (client: unknown) => Promise<unknown>) => {
+      transactionCount += 1;
+      return run(tx);
+    }
+  };
+  const stats = {
+    buildSnapshotForUser: async () => ({}),
+    replaceSnapshotForUser: async () => ({})
+  };
+  const controller = new CollectorController(prisma as any, stats as any);
+
+  const result = await controller.receivedLogs("Bearer token", {
+    logs: [],
+    caches: [{ gcCode: "gc123", favoritePoints: 9 }]
+  });
+
+  assert.deepEqual(result, { added: 0, changedCaches: 1 });
+  assert.equal(transactionCount, 2);
+  assert.equal(hideUpdated, false);
+  assert.equal(writtenCacheRaw["groundspeak:cache"]["groundspeak:favorite_points"], "9");
+  assert.equal(Object.keys(writtenCacheRaw["groundspeak:cache"]).filter((key) => key.includes("favorite")).length, 1);
+});
+
+test("receivedLogs rejects invalid favorite-point totals", async () => {
+  const controller = collectorControllerWithHides([]);
+
+  await assert.rejects(
+    () => controller.receivedLogs("Bearer token", { caches: [{ gcCode: "GC123", favoritePoints: -1 }] }),
+    BadRequestException
+  );
+});
+
 test("receivedLogs rereads raw in the transaction and builds stats after commit", async () => {
   const updatedAt = new Date("2026-01-01T00:00:00.000Z");
   const preloadedRaw = {
