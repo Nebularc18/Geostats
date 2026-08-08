@@ -22,7 +22,7 @@ module.exports = {
     runtimeVersion: { policy: "appVersion" },
     updates: {
       url: `https://u.expo.dev/${projectId}`,
-      checkAutomatically: "ON_ERROR_RECOVERY"
+      checkAutomatically: "ON_LOAD"
     },
     orientation: "portrait",
     icon: "./apps/mobile/assets/icon.png",

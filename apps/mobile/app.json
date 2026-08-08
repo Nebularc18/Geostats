@@ -7,7 +7,7 @@
     "runtimeVersion": { "policy": "appVersion" },
     "updates": {
       "url": "https://u.expo.dev/08a3cc2d-e083-4cda-b8ad-96301c663253",
-      "checkAutomatically": "ON_ERROR_RECOVERY"
+      "checkAutomatically": "ON_LOAD"
     },
     "orientation": "portrait",
     "icon": "./assets/icon.png",
