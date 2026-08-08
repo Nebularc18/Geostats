@@ -20,20 +20,6 @@ const MAX_MYSTERY_NAME_LENGTH = 300;
 const MAX_MYSTERY_SNAPSHOT_BYTES = 256 * 1024;
 const MAX_MYSTERY_WORKSPACES_PER_OWNER = 500;
 
-function stableJsonStringify(value: unknown): string {
-  return JSON.stringify(value, (_key, nestedValue: unknown) => {
-    if (!nestedValue || typeof nestedValue !== "object" || Array.isArray(nestedValue)) {
-      return nestedValue;
-    }
-    return Object.keys(nestedValue as Record<string, unknown>)
-      .sort()
-      .reduce<Record<string, unknown>>((sorted, key) => {
-        sorted[key] = (nestedValue as Record<string, unknown>)[key];
-        return sorted;
-      }, {});
-  }) ?? "undefined";
-}
-
 function mysteryData(value: unknown, clientId: string): { data: Prisma.InputJsonValue; gcCode: string } {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new BadRequestException("Mystery data is required");
@@ -272,11 +258,17 @@ export class MysteriesController {
         update: {},
         select: { id: true, data: true }
       });
-      // Multiple open tabs can submit the same reconciled snapshot with
-      // successively newer client revisions. Advancing the server revision for
-      // identical data makes every other tab look stale and can sustain an
-      // otherwise content-free sync loop.
-      if (stableJsonStringify(mystery.data) !== stableJsonStringify(data)) {
+      // Compare snapshots using PostgreSQL's JSONB semantics. A JavaScript
+      // stringify comparison can disagree with the representation PostgreSQL
+      // returns (notably for numbers), causing the client to resubmit a value
+      // that the database canonicalizes back to the same snapshot forever.
+      const [comparison] = await tx.$queryRaw<Array<{ content_matches: boolean }>>`
+        SELECT data = ${JSON.stringify(data)}::jsonb AS content_matches
+        FROM mystery_workspaces
+        WHERE id = ${mystery.id}
+      `;
+      const contentMatches = comparison?.content_matches === true;
+      if (!contentMatches) {
         await tx.mysteryWorkspace.updateMany({
           where: { id: mystery.id, snapshotRevision: { lt: revision } },
           data: { data, snapshotRevision: revision }
@@ -288,7 +280,10 @@ export class MysteriesController {
       });
       return {
         revision: stored?.snapshotRevision ?? revision,
-        mystery: stored?.data ?? data
+        // Echo an equivalent submitted representation. This lets the browser
+        // remember exactly what it sent instead of interpreting a JSONB
+        // readback representation difference as another server edit.
+        mystery: contentMatches ? data : stored?.data ?? data
       };
     });
     return { ok: true, ...storedRevision };
