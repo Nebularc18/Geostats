@@ -6,11 +6,10 @@ on:
       release_kind:
         description: What should be released?
         required: true
-        default: preview-update
+        default: preview-release
         type: choice
         options:
-          - preview-update
-          - preview-apk
+          - preview-release
           - production-update
           - play-internal
 
@@ -76,12 +75,16 @@ jobs:
       - name: Bundle Android app
         run: pnpm --filter @geostats/mobile exec expo export --platform android --output-dir /tmp/geostats-mobile-export
 
-  preview-update:
-    name: Publish preview update
-    if: inputs.release_kind == 'preview-update'
+  preview-release:
+    name: Publish downloadable APK and automatic preview update
+    if: inputs.release_kind == 'preview-release'
     needs: quality
     runs-on: ubuntu-latest
-    environment: mobile-preview
+    environment:
+      name: mobile-preview
+      url: ${{ steps.release.outputs.url }}
+    permissions:
+      contents: write
     steps:
       - name: Check out repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -106,46 +109,6 @@ jobs:
           eas-version: ${{ env.EAS_VERSION }}
           token: ${{ secrets.EXPO_TOKEN }}
 
-      - name: Publish preview update
-        run: pnpm mobile:update:preview
-
-  preview-apk:
-    name: Build and publish preview APK
-    if: inputs.release_kind == 'preview-apk'
-    needs: quality
-    runs-on: ubuntu-latest
-    environment: mobile-preview
-    permissions:
-      contents: write
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-
-      - name: Set up Expo and EAS
-        uses: expo/expo-github-action@c7b66a9c327a43a8fa7c0158e7f30d6040d2481e # v8
-        with:
-          eas-version: ${{ env.EAS_VERSION }}
-          token: ${{ secrets.EXPO_TOKEN }}
-
-      - name: Restore existing preview signing credentials
-        env:
-          CREDENTIALS_JSON_B64: ${{ secrets.MOBILE_PREVIEW_CREDENTIALS_JSON_B64 }}
-          KEYSTORE_B64: ${{ secrets.MOBILE_PREVIEW_KEYSTORE_B64 }}
-        shell: bash
-        run: |
-          if [[ -z "$CREDENTIALS_JSON_B64" || -z "$KEYSTORE_B64" ]]; then
-            echo "Preview signing secrets are not configured. See README.md#github-mobile-releases." >&2
-            exit 1
-          fi
-          mkdir -p credentials
-          printf '%s' "$CREDENTIALS_JSON_B64" | base64 --decode > credentials.json
-          printf '%s' "$KEYSTORE_B64" | base64 --decode > credentials/android-preview.keystore
-
       - name: Build preview APK
         run: eas build --platform android --profile preview --non-interactive --wait --json > eas-build.json
 
@@ -156,22 +119,37 @@ jobs:
           test -n "$build_url" && test "$build_url" != "null"
           curl --fail --location --retry 3 "$build_url" --output geostats-preview.apk
 
-      - name: Create GitHub prerelease
+      - name: Create downloadable GitHub prerelease
+        id: release
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           version="$(node -p "require('./app.config.js').expo.version")"
           tag="mobile-v${version}-preview.${GITHUB_RUN_NUMBER}"
+          apk="geostats-${version}-preview.${GITHUB_RUN_NUMBER}.apk"
+          mv geostats-preview.apk "$apk"
           if gh release view "$tag" >/dev/null 2>&1; then
-            gh release upload "$tag" geostats-preview.apk --clobber
+            gh release upload "$tag" "$apk" --clobber
           else
-            gh release create "$tag" geostats-preview.apk \
+            gh release create "$tag" "$apk" \
               --prerelease \
               --target "$GITHUB_SHA" \
               --title "Geostats Mobile ${version} Preview ${GITHUB_RUN_NUMBER}" \
-              --generate-notes
+              --notes "Download the APK below for a first-time installation or a manual native update. This release's compatible JavaScript and asset changes are also published automatically to installed preview apps."
           fi
+          release_url="$(gh release view "$tag" --json url --jq .url)"
+          echo "url=$release_url" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Android preview ready"
+            echo
+            echo "Download **${apk}** for a first install or an in-place update."
+            echo
+            echo "[Open the GitHub release](${release_url})"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish automatic preview update
+        run: pnpm mobile:update:preview
 
   production-update:
     name: Publish production update

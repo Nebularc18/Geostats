@@ -285,9 +285,7 @@ corepack pnpm mobile:build:apk
 
 That produces an installable Android APK you can download and sideload onto your phone.
 
-Preview builds use a remotely managed Android version code, so each new APK can update the previous installation without uninstalling it. After installing a 0.2.0-or-newer APK once, JavaScript, styling, and asset-only revisions can be delivered over the air:
-
-The preview profile intentionally keeps using the signing key from the original preview APK. Keep that key and an ignored `credentials.json` available when creating preview builds; switching keys makes Android reject an in-place update. Production continues to use the EAS-managed production key.
+Preview builds reuse the EAS-managed Android signing key and remotely increment the Android version code. Each new APK can therefore update the previous installation without uninstalling it. Do not replace or reset the Android credentials in EAS, because Android rejects an in-place update signed with a different key. After installing a 0.2.0-or-newer APK once, JavaScript, styling, and asset-only revisions can be delivered over the air:
 
 ```powershell
 corepack pnpm mobile:update:preview
@@ -311,22 +309,25 @@ Production API deployments reject mobile external-auth redirects unless `MOBILE_
 
 ### GitHub mobile releases
 
-The **Mobile Release** workflow in GitHub Actions provides four manually selected release paths:
+The **Mobile Release** workflow in GitHub Actions provides three manually selected release paths. `preview-release` is the default and handles both preview distribution paths with one button:
 
-- `preview-update`: publishes a JavaScript/assets update to installed preview builds.
-- `preview-apk`: creates an installable APK and attaches it to a GitHub prerelease.
+- `preview-release`: creates an installable APK for first-time users and manual native updates, attaches it to a GitHub prerelease, and publishes the same compatible JavaScript/assets revision to installed preview apps over the air. Its deployment and workflow summary link directly to the download page.
 - `production-update`: publishes a JavaScript/assets update to installed production builds.
 - `play-internal`: builds an Android App Bundle and submits it to Google Play internal testing.
+
+Android does not allow a sideloaded app to silently replace its installed APK. The automatic part of `preview-release` therefore covers JavaScript, styling, and asset changes. Changes to native packages, plugins, permissions, or Android configuration require the user to install the new APK from the release page; use Google Play distribution when automatic native-binary updates are required.
 
 Configure the following before the first workflow run:
 
 1. Create GitHub environments named `mobile-preview` and `mobile-production`. Require approval on `mobile-production` if production releases should be gated.
 2. Add an Expo access token as the `EXPO_TOKEN` secret to both environments.
 3. In the EAS project, define `EXPO_PUBLIC_API_URL`, `EXPO_PUBLIC_MOBILE_AUTH_REDIRECT_URI`, and `EXPO_PUBLIC_GOOGLE_MAPS_ANDROID_API_KEY` for the `preview` and `production` environments. Values embedded in a mobile app are public; restrict the Google Maps key to the Android package and signing certificate in Google Cloud.
-4. Preserve the signing identity of existing preview installs. Base64-encode the original `credentials.json` and keystore as the `MOBILE_PREVIEW_CREDENTIALS_JSON_B64` and `MOBILE_PREVIEW_KEYSTORE_B64` secrets on `mobile-preview`. The JSON must reference `credentials/android-preview.keystore` as its `keystorePath`. Do not generate a replacement key.
+4. Preserve the signing identity of existing preview installs by retaining the Android credentials already managed by EAS. Do not generate or select a replacement key.
 5. For `play-internal`, create the Play Console app and upload a Google Play service-account key to the Android app's EAS submit credentials.
 
-The repository does not contain the signing keystore or service-account credentials. GitHub supplies preview signing credentials only to the ephemeral build runner, while production signing and Play submission credentials remain managed by EAS.
+The repository does not contain signing keystores or service-account credentials. Preview and production signing credentials and Play submission credentials remain managed by EAS.
+
+After a successful `preview-release` run, open the repository's **Releases** page in GitHub and select the newest **Geostats Mobile ... Preview** prerelease. Expand **Assets** in the GitHub mobile app, then tap the `.apk` file. A failed build never creates a release, which is why the earlier failed 0.2.0 run left only the 0.1.0 release visible.
 
 ## Architecture Notes
 
