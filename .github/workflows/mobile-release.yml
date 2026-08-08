@@ -27,6 +27,19 @@ env:
   EAS_VERSION: 21.7.0
 
 jobs:
+  reject-non-main-production:
+    name: Require main for production releases
+    if: >-
+      (inputs.release_kind == 'production-update' || inputs.release_kind == 'play-internal') &&
+      github.ref != 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reject non-main production release
+        shell: bash
+        run: |
+          echo "Production releases must be dispatched from the main branch; selected ref was ${GITHUB_REF}." >&2
+          exit 1
+
   quality:
     name: Test release candidate
     runs-on: ubuntu-latest
@@ -162,7 +175,7 @@ jobs:
 
   production-update:
     name: Publish production update
-    if: inputs.release_kind == 'production-update'
+    if: inputs.release_kind == 'production-update' && github.ref == 'refs/heads/main'
     needs: quality
     runs-on: ubuntu-latest
     environment: mobile-production
@@ -195,7 +208,7 @@ jobs:
 
   play-internal:
     name: Build and submit to Google Play internal testing
-    if: inputs.release_kind == 'play-internal'
+    if: inputs.release_kind == 'play-internal' && github.ref == 'refs/heads/main'
     needs: quality
     runs-on: ubuntu-latest
     environment: mobile-production

@@ -29,6 +29,16 @@ assert.equal(
   mobileConfig.extra?.eas?.projectId,
   "Expo config mismatch for extra.eas.projectId",
 );
+assert.deepEqual(
+  rootConfig.runtimeVersion,
+  mobileConfig.runtimeVersion,
+  "Expo config mismatch for runtimeVersion",
+);
+assert.deepEqual(
+  rootConfig.updates,
+  mobileConfig.updates,
+  "Expo config mismatch for updates",
+);
 assert.equal(
   eas.build.preview?.environment,
   "preview",
