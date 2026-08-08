@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  fieldChangedSinceBaseline,
   mergeMysteryAttempts,
   mergeMysteryCaches,
   type MergeableMysteryAttempt,
@@ -18,6 +19,12 @@ function attempt(overrides: Partial<MergeableMysteryAttempt>): MergeableMysteryA
     ...overrides
   };
 }
+
+test("does not treat a legacy field without a baseline as a device edit", () => {
+  assert.equal(fieldChangedSinceBaseline("device-fingerprint"), false);
+  assert.equal(fieldChangedSinceBaseline("device-fingerprint", "device-fingerprint"), false);
+  assert.equal(fieldChangedSinceBaseline("device-fingerprint", "older-server-fingerprint"), true);
+});
 
 test("merges duplicate offline and server coordinates into one attempt", () => {
   const merged = mergeMysteryAttempts([

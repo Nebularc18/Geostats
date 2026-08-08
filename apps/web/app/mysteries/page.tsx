@@ -24,7 +24,12 @@ import {
 } from "lucide-react";
 import { AppShell } from "../../components/app-shell";
 import { apiFetch } from "../../lib/api";
-import { mergeMysteryAttempts, mergeMysteryCaches, type MysteryCacheMergeOptions } from "../../lib/mystery-cache-merge";
+import {
+  fieldChangedSinceBaseline,
+  mergeMysteryAttempts,
+  mergeMysteryCaches,
+  type MysteryCacheMergeOptions
+} from "../../lib/mystery-cache-merge";
 import { normalizeMysteryArea } from "../../lib/mystery-area";
 import { MYSTERY_USERSCRIPT_VERSION } from "../../lib/mystery-userscript";
 import { bulkAttemptKey, parseBulkFailedAttempts, parseFailedCoordinateCsv } from "../../lib/mystery-bulk-attempts";
@@ -262,10 +267,10 @@ function mysteryFieldFingerprint(value: unknown) {
 
 function deviceMergeOptions(cache: MysteryCache, metadata: MysterySyncMetadata | undefined): MysteryCacheMergeOptions {
   return {
-    // Metadata from older clients has no field baselines. In that one-time case,
-    // retain device precedence so existing offline edits are not discarded.
-    preferIncomingNotes: !metadata?.notesFingerprint || mysteryFieldFingerprint(cache.notes) !== metadata.notesFingerprint,
-    preferIncomingImage: !metadata?.imageFingerprint || mysteryFieldFingerprint(cache.image) !== metadata.imageFingerprint
+    // Without a baseline the device cannot prove that a stale field was edited,
+    // so the server wins this first reconciliation and establishes baselines.
+    preferIncomingNotes: fieldChangedSinceBaseline(mysteryFieldFingerprint(cache.notes), metadata?.notesFingerprint),
+    preferIncomingImage: fieldChangedSinceBaseline(mysteryFieldFingerprint(cache.image), metadata?.imageFingerprint)
   };
 }
 

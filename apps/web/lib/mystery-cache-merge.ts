@@ -37,6 +37,11 @@ export type MysteryCacheMergeOptions = {
   preferIncomingImage?: boolean;
 };
 
+/** A device field can win only when a baseline exists and proves it changed. */
+export function fieldChangedSinceBaseline(currentFingerprint: string, baselineFingerprint?: string) {
+  return typeof baselineFingerprint === "string" && currentFingerprint !== baselineFingerprint;
+}
+
 function coordinateKey(latitude: unknown, longitude: unknown) {
   return Number.isFinite(latitude) && Number.isFinite(longitude)
     ? `${latitude}:${longitude}`
