@@ -101,6 +101,28 @@ DEV_AUTH_USERNAME=dev
 
 With those values, opening a protected web page redirects through `/auth/dev`, creates the development user if needed, sets the session cookie, and returns to the page. Keep `NEXT_PUBLIC_DEV_AUTO_LOGIN=false` outside development.
 
+## AI mystery solver journal
+
+An AI job on any computer can read and update the same Mystery workspace without sharing the user's password. Create a revocable token under **Settings → Profile → Computer access tokens**, then send it as `Authorization: Bearer <token>`.
+
+- `GET /agent/mysteries` lists synchronized mysteries with notes, clues, tried entries, and not-yet-tried entries.
+- `GET /agent/mysteries/:gcCode` gets one solver context.
+- `POST /agent/mysteries/:gcCode/attempts` atomically creates or updates an entry.
+
+Example body:
+
+```json
+{
+  "kind": "approach",
+  "answer": "Try ROT13 on the cache title",
+  "state": "planned",
+  "note": "Different from the Caesar shifts already tested",
+  "source": "garage-pc-agent"
+}
+```
+
+Kinds are `approach`, `keyword`, and `coordinate`. States are `planned` (not tried), `wrong`, `correct`, and `unchecked`. Coordinate entries use numeric `latitude` and `longitude`; an optional solved result uses `finalLatitude` and `finalLongitude`. Reposting the same approach, keyword, or coordinate updates its state instead of creating a duplicate, making it safe for several solver jobs to coordinate through the journal.
+
 ## Docker Compose
 
 For a full local deployment:

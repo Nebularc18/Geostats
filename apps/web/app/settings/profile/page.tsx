@@ -34,6 +34,18 @@ function projectGcCommand(token: string) {
   return `$env:GEOSTATS_COLLECTOR_TOKEN=${powerShellString(token)}; irm ${powerShellString(`${API_URL}/collector/project-gc.ps1`)} | iex`;
 }
 
+function aiSolverInstructions(token: string) {
+  return [
+    `Geostats API: ${API_URL}`,
+    `Authorization: Bearer ${token}`,
+    "Read workspaces: GET /agent/mysteries",
+    "Read one cache: GET /agent/mysteries/GC_CODE",
+    "Record work: POST /agent/mysteries/GC_CODE/attempts",
+    'JSON: {"kind":"approach","answer":"Try ROT13 on the title","state":"planned","source":"my-ai-job"}',
+    "States: planned (not tried), wrong, correct, unchecked. Kinds: approach, keyword, coordinate."
+  ].join("\n");
+}
+
 export default function ProfilePage() {
   const [profile, setProfile] = useState<any>(null);
   const [tokens, setTokens] = useState<any[]>([]);
@@ -74,7 +86,7 @@ export default function ProfilePage() {
   async function createToken() {
     const data = await apiFetch<{ token: string; collectorToken: any }>("/collector/tokens", {
       method: "POST",
-      body: JSON.stringify({ name: "Owner logs collector" })
+      body: JSON.stringify({ name: "Computer access" })
     });
     setCopiedCommandId(null);
     setTokens((current) => [data.collectorToken, ...current]);
@@ -95,13 +107,13 @@ export default function ProfilePage() {
     setMessage(`Imported ${data.rows.length} finder country rows from Project-GC.`);
   }
 
-  async function copyCommand(token: any, mode: "direct" | "csv" | "project-gc") {
+  async function copyCommand(token: any, mode: "direct" | "csv" | "project-gc" | "ai-solver") {
     if (!token.token) {
       return;
     }
     try {
       await navigator.clipboard.writeText(
-        mode === "csv" ? hidesCsvCommand(token.token) : mode === "project-gc" ? projectGcCommand(token.token) : hidesCommand(token.token)
+        mode === "csv" ? hidesCsvCommand(token.token) : mode === "project-gc" ? projectGcCommand(token.token) : mode === "ai-solver" ? aiSolverInstructions(token.token) : hidesCommand(token.token)
       );
       setCopiedCommandId(`${token.id}:${mode}`);
       setMessage(null);
@@ -175,13 +187,13 @@ export default function ProfilePage() {
         </form>
       </section>
       <section className="panel narrow">
-        <h2>Owner log collector</h2>
+        <h2>Computer access tokens</h2>
         <p className="muted">
-          The direct command uploads owner logs automatically. The CSV command saves geostats-received-logs.csv in Downloads so it can be imported later from Upload.
+          Use a revocable token for owner-log tools or an AI mystery-solving job on another computer. The AI connection can read your synced mystery context and record tried or planned approaches.
         </p>
         <button className="primary-button" type="button" onClick={createToken}>
           <KeyRound size={18} />
-          Create collector token
+          Create computer token
         </button>
         <div className="table-list">
           {tokens.map((token) => (
@@ -226,6 +238,16 @@ export default function ProfilePage() {
                         </button>
                       </div>
                       <textarea readOnly rows={3} value={projectGcCommand(token.token)} />
+                    </div>
+                    <div className="collector-token-command-card">
+                      <div className="collector-command-title">
+                        <span>AI mystery solver connection</span>
+                        <button className="ghost-button collector-command-action" type="button" onClick={() => copyCommand(token, "ai-solver")}>
+                          <KeyRound size={16} />
+                          {copiedCommandId === `${token.id}:ai-solver` ? "Copied" : "Copy"}
+                        </button>
+                      </div>
+                      <textarea readOnly rows={8} value={aiSolverInstructions(token.token)} />
                     </div>
                   </div>
                 ) : (

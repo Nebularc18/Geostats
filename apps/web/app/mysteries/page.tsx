@@ -27,10 +27,11 @@ import { apiFetch } from "../../lib/api";
 import { mergeMysteryAttempts, mergeMysteryCaches } from "../../lib/mystery-cache-merge";
 import { normalizeMysteryArea } from "../../lib/mystery-area";
 import { MYSTERY_USERSCRIPT_VERSION } from "../../lib/mystery-userscript";
+import { bulkAttemptKey, parseBulkFailedAttempts, parseFailedCoordinateCsv } from "../../lib/mystery-bulk-attempts";
 
-type CheckState = "correct" | "wrong" | "unchecked";
+type CheckState = "correct" | "wrong" | "unchecked" | "planned";
 type MysteryStatus = "solving" | "solved" | "planned";
-type AttemptKind = "coordinate" | "keyword";
+type AttemptKind = "coordinate" | "keyword" | "approach";
 
 type CoordinateAttempt = {
   id: string;
@@ -42,7 +43,10 @@ type CoordinateAttempt = {
   finalLongitude?: number;
   state: CheckState;
   createdAt: string;
+  updatedAt?: string;
   geocachingSyncedAt?: string;
+  note?: string;
+  source?: string;
 };
 
 type SolvedCoordinate = {
@@ -184,6 +188,7 @@ function escapeXml(value: string) {
 function stateLabel(state: CheckState) {
   if (state === "correct") return "Correct";
   if (state === "wrong") return "Didn't work";
+  if (state === "planned") return "Not tried";
   return "Result unknown";
 }
 
@@ -214,13 +219,19 @@ function finalCoordinate(cache: MysteryCache) {
 }
 
 function attemptKind(attempt: CoordinateAttempt): AttemptKind {
-  return attempt.kind === "keyword" ? "keyword" : "coordinate";
+  return attempt.kind === "keyword" || attempt.kind === "approach" ? attempt.kind : "coordinate";
+}
+
+function attemptKindLabel(attempt: CoordinateAttempt) {
+  if (attemptKind(attempt) === "keyword") return "Keyword";
+  if (attemptKind(attempt) === "approach") return "Approach";
+  return "Coordinate";
 }
 
 function attemptInputLabel(attempt: CoordinateAttempt) {
   const coordinate = inputCoordinate(attempt);
-  return attemptKind(attempt) === "keyword"
-    ? attempt.answer || "Keyword"
+  return attemptKind(attempt) !== "coordinate"
+    ? attempt.answer || attemptKindLabel(attempt)
     : coordinate
       ? formatCoordinate(coordinate.latitude, coordinate.longitude)
       : "Coordinate";
@@ -262,7 +273,7 @@ function verifiedStoredShares(caches: MysteryCache[]) {
     attempts: Array.isArray(cache.attempts)
       ? mergeMysteryAttempts(cache.attempts.map((attempt): CoordinateAttempt => ({
           ...attempt,
-          state: attempt.state === "correct" || attempt.state === "wrong" ? attempt.state : "unchecked"
+          state: attempt.state === "correct" || attempt.state === "wrong" || attempt.state === "planned" ? attempt.state : "unchecked"
         })))
       : [],
     sharedWith: Array.isArray(cache.sharedWith) ? cache.sharedWith.filter(isAppUser) : []
@@ -384,6 +395,11 @@ export default function MysteriesPage() {
   const [coordinateError, setCoordinateError] = useState("");
   const [showAdd, setShowAdd] = useState(false);
   const [showBrowserImport, setShowBrowserImport] = useState(false);
+  const [showBulkImport, setShowBulkImport] = useState(false);
+  const [bulkTries, setBulkTries] = useState("");
+  const [bulkImportError, setBulkImportError] = useState("");
+  const [bulkCsvName, setBulkCsvName] = useState("");
+  const [bulkCsvSummary, setBulkCsvSummary] = useState("");
   const [showShare, setShowShare] = useState(false);
   const [cacheToDelete, setCacheToDelete] = useState<MysteryCache | null>(null);
   const [deletingCache, setDeletingCache] = useState(false);
@@ -701,7 +717,13 @@ export default function MysteriesPage() {
   useEffect(() => {
     const retryServerLoad = () => setServerLoadAttempt((attempt) => attempt + 1);
     window.addEventListener("online", retryServerLoad);
-    return () => window.removeEventListener("online", retryServerLoad);
+    window.addEventListener("focus", retryServerLoad);
+    const interval = window.setInterval(retryServerLoad, 60_000);
+    return () => {
+      window.removeEventListener("online", retryServerLoad);
+      window.removeEventListener("focus", retryServerLoad);
+      window.clearInterval(interval);
+    };
   }, []);
 
   useEffect(() => {
@@ -845,6 +867,7 @@ export default function MysteriesPage() {
   const matchingWorkedAttempts = matchingAttempts.filter((attempt) => attempt.state === "correct");
   const matchingFailedAttempts = matchingAttempts.filter((attempt) => attempt.state === "wrong");
   const matchingUnknownAttempts = matchingAttempts.filter((attempt) => attempt.state === "unchecked");
+  const matchingPlannedAttempts = matchingAttempts.filter((attempt) => attempt.state === "planned");
   const syncableCaches = useMemo(() => caches.flatMap((cache) => {
     if (cache.status !== "solved") return [];
     const solved = finalCoordinate(cache);
@@ -921,8 +944,8 @@ export default function MysteriesPage() {
       setCoordinateError("Use decimal coordinates or N 59° 20.123' E 018° 04.321'.");
       return;
     }
-    if (attemptType === "keyword" && !answer) {
-      setCoordinateError("Enter the keyword you tried.");
+    if (attemptType !== "coordinate" && !answer) {
+      setCoordinateError(attemptType === "keyword" ? "Enter the keyword you tried." : "Describe the solving approach.");
       return;
     }
     const revealed = finalCoordinateText.trim() ? parseCoordinate(finalCoordinateText) : null;
@@ -942,7 +965,7 @@ export default function MysteriesPage() {
         ? Math.abs(previousFinal.latitude - revealed.latitude) < 0.000001 && Math.abs(previousFinal.longitude - revealed.longitude) < 0.000001
         : previousFinal === revealed;
       if (!sameResult || !sameFinal) return false;
-      if (attemptType === "keyword") return attempt.answer?.trim().toLocaleLowerCase() === answer.toLocaleLowerCase();
+      if (attemptType !== "coordinate") return attempt.answer?.trim().toLocaleLowerCase() === answer.toLocaleLowerCase();
       const previous = inputCoordinate(attempt);
       return Boolean(previous && parsed && Math.abs(previous.latitude - parsed.latitude) < 0.000001 && Math.abs(previous.longitude - parsed.longitude) < 0.000001);
     });
@@ -954,7 +977,7 @@ export default function MysteriesPage() {
       id: newId("attempt"),
       kind: attemptType,
       ...(parsed ?? {}),
-      ...(attemptType === "keyword" ? { answer } : {}),
+      ...(attemptType !== "coordinate" ? { answer } : {}),
       ...(revealed ? { finalLatitude: revealed.latitude, finalLongitude: revealed.longitude } : {}),
       state: coordinateState,
       createdAt: new Date().toISOString()
@@ -1104,6 +1127,95 @@ export default function MysteriesPage() {
     if (clue?.trim()) updateSelected({ clues: [...selected.clues, clue.trim()] });
   }
 
+  function openBulkImport() {
+    setBulkTries("");
+    setBulkImportError("");
+    setBulkCsvName("");
+    setBulkCsvSummary("");
+    setShowBulkImport(true);
+  }
+
+  async function loadBulkFailedCsv(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    setBulkImportError("");
+    setBulkCsvSummary("");
+    if (file.size > 2_000_000) {
+      setBulkImportError("Choose a CSV file smaller than 2 MB.");
+      return;
+    }
+    const parsed = parseFailedCoordinateCsv(await file.text());
+    if (!parsed.attempts.length) {
+      setBulkCsvName(file.name);
+      setBulkImportError("No valid coordinates were found. Use Latitude and Longitude columns, or a Coordinates column.");
+      return;
+    }
+    const lines = parsed.attempts.flatMap((attempt) => attempt.kind === "coordinate"
+      ? [`${attempt.latitude.toFixed(6)}, ${attempt.longitude.toFixed(6)}`]
+      : []);
+    setBulkTries(lines.join("\n"));
+    setBulkCsvName(file.name);
+    setBulkCsvSummary(`${lines.length} ${lines.length === 1 ? "coordinate" : "coordinates"} ready${parsed.ignoredRows ? `; ignored ${parsed.ignoredRows} rows without coordinates` : ""}.`);
+  }
+
+  function importBulkFailedTries(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selected || selected.sharedBy) return;
+    const parsed = parseBulkFailedAttempts(bulkTries);
+    if (parsed.errors.length) {
+      setBulkImportError(parsed.errors.join(" · "));
+      return;
+    }
+    if (!parsed.attempts.length) {
+      setBulkImportError("Paste at least one keyword, coordinate, or approach.");
+      return;
+    }
+
+    const attempts = [...selected.attempts];
+    const existingIndexes = new Map(attempts.map((attempt, index) => [bulkAttemptKey(attempt), index]));
+    const importedAt = Date.now();
+    let added = 0;
+    let updated = 0;
+    let skipped = 0;
+    parsed.attempts.forEach((attempt) => {
+      const key = bulkAttemptKey(attempt);
+      const existingIndex = existingIndexes.get(key);
+      if (existingIndex !== undefined) {
+        const existing = attempts[existingIndex];
+        if (existing.state === "planned" || existing.state === "unchecked") {
+          attempts[existingIndex] = { ...existing, state: "wrong", updatedAt: new Date(importedAt + updated).toISOString() };
+          updated += 1;
+        } else {
+          // Never replace the one correct answer, and do not duplicate an existing failed try.
+          skipped += 1;
+        }
+        return;
+      }
+      const next: CoordinateAttempt = {
+        id: newId("attempt"),
+        ...attempt,
+        state: "wrong",
+        createdAt: new Date(importedAt + added + updated).toISOString()
+      };
+      existingIndexes.set(key, attempts.length);
+      attempts.push(next);
+      added += 1;
+    });
+    if (!added && !updated) {
+      setBulkImportError("Every entry is already in this mystery's history.");
+      return;
+    }
+    updateSelected({ attempts });
+    setShowBulkImport(false);
+    setBulkTries("");
+    setBulkImportError("");
+    setBulkCsvName("");
+    setBulkCsvSummary("");
+    const imported = added + updated;
+    setNotice(`Imported ${imported} failed ${imported === 1 ? "try" : "tries"}${updated ? ` (${updated} updated)` : ""}${skipped ? `; skipped ${skipped} already recorded or correct` : ""}`);
+  }
+
   function openShare() {
     if (!selected || selected.sharedBy) return;
     setUserQuery("");
@@ -1187,7 +1299,7 @@ export default function MysteriesPage() {
     const unknown = selected.attempts.filter((attempt) => attempt.state === "unchecked");
     const lineForAttempt = (attempt: CoordinateAttempt) => {
       const revealed = revealedCoordinate(attempt);
-      return `- ${attemptKind(attempt) === "keyword" ? "Keyword" : "Coordinate"}: ${attemptInputLabel(attempt)}${revealed ? ` (revealed final coordinates: ${formatCoordinate(revealed.latitude, revealed.longitude)})` : ""}`;
+      return `- ${attemptKindLabel(attempt)}: ${attemptInputLabel(attempt)}${attempt.note ? ` — ${attempt.note}` : ""}${revealed ? ` (revealed final coordinates: ${formatCoordinate(revealed.latitude, revealed.longitude)})` : ""}`;
     };
     const final = finalCoordinate(selected);
     const hasAttempts = selected.attempts.length > 0;
@@ -1205,6 +1317,7 @@ export default function MysteriesPage() {
       context,
       `DIDN'T WORK (${failed.length})\n${failed.length ? failed.map(lineForAttempt).join("\n") : "- None"}`,
       `WORKED (${worked.length})\n${worked.length ? worked.map(lineForAttempt).join("\n") : "- None"}`,
+      selected.attempts.some((attempt) => attempt.state === "planned") ? `NOT TRIED YET\n${selected.attempts.filter((attempt) => attempt.state === "planned").map(lineForAttempt).join("\n")}` : "",
       unknown.length ? `RESULT UNKNOWN (${unknown.length})\n${unknown.map(lineForAttempt).join("\n")}` : "",
       selected.clues.length ? `CLUES\n${selected.clues.map((clue) => `- ${clue}`).join("\n")}` : "",
       selected.notes.trim() ? `NOTES\n${selected.notes.trim()}` : "",
@@ -1333,7 +1446,10 @@ export default function MysteriesPage() {
               <section className="mystery-section coordinate-section">
                 <div className="section-heading checker-heading">
                   <div><p className="eyebrow">Checker lab</p><h3>Test history</h3></div>
-                  <button className="secondary-button copy-ai-button" type="button" onClick={() => void copyAttemptsForAi()}><Copy size={15} /> Copy for AI</button>
+                  <div className="checker-heading-actions">
+                    {!selected.sharedBy && <button className="secondary-button" type="button" onClick={openBulkImport}><Import size={15} /> Bulk failed tries</button>}
+                    <button className="secondary-button copy-ai-button" type="button" onClick={() => void copyAttemptsForAi()}><Copy size={15} /> Copy for AI</button>
+                  </div>
                 </div>
                 <div className="attempt-overview">
                   <div className="attempt-overview-counts" aria-label="Checker result summary">
@@ -1345,16 +1461,17 @@ export default function MysteriesPage() {
                   {selected.attempts.length ? (
                     <div className="attempt-result-groups" aria-live="polite">
                       {normalizedAttemptSearch && !matchingAttempts.length ? <p className="attempt-search-result new"><Sparkles size={15} /><strong>Not found in your history.</strong> This answer has not been saved as tried.</p> : null}
-                      {matchingFailedAttempts.length ? <section className="attempt-result-group failed"><div><X size={15} /><strong>Didn't work</strong><small>{matchingFailedAttempts.length}{normalizedAttemptSearch ? " matching" : ""}</small></div><div>{matchingFailedAttempts.map((attempt) => <span key={attempt.id}>{attemptKind(attempt) === "keyword" ? "Keyword" : "Coordinate"}<strong>{attemptInputLabel(attempt)}</strong></span>)}</div></section> : null}
-                      {matchingWorkedAttempts.length ? <section className="attempt-result-group worked"><div><Check size={15} /><strong>Worked</strong><small>{matchingWorkedAttempts.length}{normalizedAttemptSearch ? " matching" : ""}</small></div><div>{matchingWorkedAttempts.map((attempt) => <span key={attempt.id}>{attemptKind(attempt) === "keyword" ? "Keyword" : "Coordinate"}<strong>{attemptInputLabel(attempt)}</strong></span>)}</div></section> : null}
-                      {matchingUnknownAttempts.length ? <section className="attempt-result-group unknown"><div><CircleDot size={15} /><strong>Result unknown</strong><small>{matchingUnknownAttempts.length}{normalizedAttemptSearch ? " matching" : ""}</small></div><div>{matchingUnknownAttempts.map((attempt) => <span key={attempt.id}>{attemptKind(attempt) === "keyword" ? "Keyword" : "Coordinate"}<strong>{attemptInputLabel(attempt)}</strong></span>)}</div></section> : null}
+                      {matchingFailedAttempts.length ? <section className="attempt-result-group failed"><div><X size={15} /><strong>Didn't work</strong><small>{matchingFailedAttempts.length}{normalizedAttemptSearch ? " matching" : ""}</small></div><div>{matchingFailedAttempts.map((attempt) => <span key={attempt.id}>{attemptKindLabel(attempt)}<strong>{attemptInputLabel(attempt)}</strong></span>)}</div></section> : null}
+                      {matchingWorkedAttempts.length ? <section className="attempt-result-group worked"><div><Check size={15} /><strong>Worked</strong><small>{matchingWorkedAttempts.length}{normalizedAttemptSearch ? " matching" : ""}</small></div><div>{matchingWorkedAttempts.map((attempt) => <span key={attempt.id}>{attemptKindLabel(attempt)}<strong>{attemptInputLabel(attempt)}</strong></span>)}</div></section> : null}
+                      {matchingUnknownAttempts.length ? <section className="attempt-result-group unknown"><div><CircleDot size={15} /><strong>Result unknown</strong><small>{matchingUnknownAttempts.length}{normalizedAttemptSearch ? " matching" : ""}</small></div><div>{matchingUnknownAttempts.map((attempt) => <span key={attempt.id}>{attemptKindLabel(attempt)}<strong>{attemptInputLabel(attempt)}</strong></span>)}</div></section> : null}
+                      {matchingPlannedAttempts.length ? <section className="attempt-result-group planned"><div><Sparkles size={15} /><strong>Not tried</strong><small>{matchingPlannedAttempts.length}{normalizedAttemptSearch ? " matching" : ""}</small></div><div>{matchingPlannedAttempts.map((attempt) => <span key={attempt.id}>{attemptKindLabel(attempt)}<strong>{attemptInputLabel(attempt)}</strong></span>)}</div></section> : null}
                     </div>
                   ) : <p className="attempt-search-result"><MapPin size={15} />Nothing has been tested for {selected.gcCode} yet.</p>}
                 </div>
                 <form className="coordinate-form" onSubmit={addAttempt}>
-                  <label className="attempt-type-field"><span>Try type</span><select value={attemptType} onChange={(event) => { setAttemptType(event.target.value as AttemptKind); setCoordinate(""); setCoordinateError(""); }}><option value="coordinate">Coordinate</option><option value="keyword">Keyword</option></select></label>
-                  <label className="attempt-answer-field"><span>{attemptType === "keyword" ? "Keyword" : "Coordinate tried"}</span><input value={coordinate} onChange={(event) => setCoordinate(event.target.value)} placeholder={attemptType === "keyword" ? "Enter checker keyword" : "59.40582, 18.36120"} /></label>
-                  <label className="checker-result-field"><span>Checker result</span><select value={coordinateState} onChange={(event) => setCoordinateState(event.target.value as CheckState)}><option value="wrong">Didn't work</option><option value="correct">Worked</option></select></label>
+                  <label className="attempt-type-field"><span>Try type</span><select value={attemptType} onChange={(event) => { setAttemptType(event.target.value as AttemptKind); setCoordinate(""); setCoordinateError(""); }}><option value="coordinate">Coordinate</option><option value="keyword">Keyword</option><option value="approach">Solving approach</option></select></label>
+                  <label className="attempt-answer-field"><span>{attemptType === "keyword" ? "Keyword" : attemptType === "approach" ? "Approach" : "Coordinate tried"}</span><input value={coordinate} onChange={(event) => setCoordinate(event.target.value)} placeholder={attemptType === "keyword" ? "Enter checker keyword" : attemptType === "approach" ? "Example: Decode title as ROT13" : "59.40582, 18.36120"} /></label>
+                  <label className="checker-result-field"><span>Status</span><select value={coordinateState} onChange={(event) => setCoordinateState(event.target.value as CheckState)}><option value="wrong">Didn't work</option><option value="correct">Worked</option><option value="planned">Not tried yet</option><option value="unchecked">Result unknown</option></select></label>
                   <label className="final-coordinate-field"><span>Final coordinates <small>{coordinateState === "correct" && attemptType === "keyword" ? "(required)" : "(if revealed)"}</small></span><input value={finalCoordinateText} onChange={(event) => setFinalCoordinateText(event.target.value)} placeholder="Coordinates returned by checker" /></label>
                   <button className="primary-button" type="submit"><Plus size={17} /> Save try</button>
                 </form>
@@ -1368,7 +1485,7 @@ export default function MysteriesPage() {
                     return (
                       <div className="attempt-row" key={attempt.id}>
                         <span className={`attempt-state ${attempt.state}`}>{attempt.state === "correct" ? <Check size={16} /> : attempt.state === "wrong" ? <X size={16} /> : <CircleDot size={16} />}</span>
-                        <span><strong>{attemptInputLabel(attempt)}</strong>{revealedCoordinate(attempt) && <em>Final: {formatCoordinate(attempt.finalLatitude!, attempt.finalLongitude!)}</em>}<small>{attemptKind(attempt) === "keyword" ? "Keyword" : "Coordinate"} · {new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(attempt.createdAt))}</small></span>
+                        <span><strong>{attemptInputLabel(attempt)}</strong>{attempt.note && <em>{attempt.note}</em>}{revealedCoordinate(attempt) && <em>Final: {formatCoordinate(attempt.finalLatitude!, attempt.finalLongitude!)}</em>}<small>{attemptKindLabel(attempt)}{attempt.source ? ` · ${attempt.source}` : ""} · {new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(attempt.createdAt))}</small></span>
                         {distance !== null && <span className={`distance-badge ${distance > MAX_REASONABLE_DISTANCE_KM ? "warning" : ""}`}>{distance > MAX_REASONABLE_DISTANCE_KM && <AlertTriangle size={13} />}{distance < 1 ? `${Math.round(distance * 1000)} m` : `${distance.toFixed(1)} km`} away</span>}
                         {selected.status === "solved" && final && finalCoordinate(selected)?.attempt.id === attempt.id ? (
                           attempt.geocachingSyncedAt ? (
@@ -1415,6 +1532,21 @@ export default function MysteriesPage() {
             <div className="two-column"><label>County<input name="county" placeholder="Stockholm County" /></label><label>Area / district<input name="area" placeholder="Vaxholm Municipality" /></label></div>
             <label>Locality<input name="locality" placeholder="Vaxholm" /></label>
             <div className="modal-actions"><button className="secondary-button" type="button" onClick={() => setShowAdd(false)}>Cancel</button><button className="primary-button" type="submit">Add to workspace</button></div>
+          </form>
+        </div>
+      )}
+
+      {showBulkImport && selected && !selected.sharedBy && (
+        <div className="mystery-modal-backdrop" role="presentation" onMouseDown={() => setShowBulkImport(false)}>
+          <form className="mystery-modal bulk-tries-modal" onSubmit={importBulkFailedTries} onMouseDown={(event) => event.stopPropagation()}>
+            <div className="section-heading"><div><p className="eyebrow">Test history</p><h2>Import failed tries</h2></div><button className="row-delete" type="button" aria-label="Close" onClick={() => setShowBulkImport(false)}><X /></button></div>
+            <p className="bulk-tries-lead">Upload a CSV to extract only its coordinates, or paste entries manually. Every imported entry is marked <strong>Didn't work</strong>; this importer never creates a correct answer.</p>
+            <label className="bulk-csv-picker"><span>CSV file</span><span className="secondary-button"><Import size={16} /> Choose CSV<input type="file" accept=".csv,text/csv" onChange={(event) => void loadBulkFailedCsv(event)} /></span>{bulkCsvName && <small>{bulkCsvName}</small>}</label>
+            {bulkCsvSummary && <p className="bulk-csv-summary"><Check size={15} /> {bulkCsvSummary}</p>}
+            <label><span>Failed tries</span><textarea autoFocus rows={12} value={bulkTries} onChange={(event) => { setBulkTries(event.target.value); setBulkImportError(""); }} placeholder={"59.40582, 18.36120\nkeyword: BLUEBIRD\napproach: Decode the title as ROT13\nplain text becomes a keyword"} /></label>
+            <small className="bulk-tries-help">Coordinates are recognized automatically. Use <strong>keyword:</strong> or <strong>approach:</strong> to choose a type explicitly. Blank lines and duplicates are ignored.</small>
+            {bulkImportError && <p className="coordinate-error"><AlertTriangle size={15} /> {bulkImportError}</p>}
+            <div className="modal-actions"><button className="secondary-button" type="button" onClick={() => setShowBulkImport(false)}>Cancel</button><button className="primary-button" type="submit"><Import size={16} /> Import as didn't work</button></div>
           </form>
         </div>
       )}

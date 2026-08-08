@@ -1,12 +1,12 @@
 export type MergeableMysteryAttempt = {
   id: string;
-  kind?: "coordinate" | "keyword";
+  kind?: "coordinate" | "keyword" | "approach";
   latitude?: number;
   longitude?: number;
   answer?: string;
   finalLatitude?: number;
   finalLongitude?: number;
-  state: "correct" | "wrong" | "unchecked";
+  state: "correct" | "wrong" | "unchecked" | "planned";
   createdAt: string;
   geocachingSyncedAt?: string;
 };
@@ -36,17 +36,17 @@ function coordinateKey(latitude: unknown, longitude: unknown) {
 }
 
 function attemptKey(attempt: MergeableMysteryAttempt) {
-  if (attempt.kind === "keyword") {
+  if (attempt.kind === "keyword" || attempt.kind === "approach") {
     const answer = attempt.answer?.trim().toLocaleLowerCase();
-    return answer ? `keyword:${answer}` : `id:${attempt.id}`;
+    return answer ? `${attempt.kind}:${answer}` : `id:${attempt.id}`;
   }
   const coordinate = coordinateKey(attempt.latitude, attempt.longitude);
   return coordinate ? `coordinate:${coordinate}` : `id:${attempt.id}`;
 }
 
 function mergeDuplicateAttempt<T extends MergeableMysteryAttempt>(existing: T, incoming: T): T {
-  const stateRank = { unchecked: 0, wrong: 1, correct: 2 } as const;
-  const preferred = stateRank[incoming.state] > stateRank[existing.state] ? incoming : existing;
+  const stateRank = { planned: 0, unchecked: 1, wrong: 2, correct: 3 } as const;
+  const preferred = stateRank[incoming.state] >= stateRank[existing.state] ? incoming : existing;
   const fallback = preferred === existing ? incoming : existing;
   const preferredHasFinal = Number.isFinite(preferred.finalLatitude) && Number.isFinite(preferred.finalLongitude);
   const fallbackHasFinal = Number.isFinite(fallback.finalLatitude) && Number.isFinite(fallback.finalLongitude);
@@ -103,8 +103,7 @@ export function mergeMysteryCaches<T extends MergeableMysteryCache>(existing: T,
     clues: [...new Set([...existing.clues, ...incoming.clues])],
     attempts: mergeMysteryAttempts([...existing.attempts, ...incoming.attempts]),
     sharedWith: [...sharedWith.values()],
-    // A newly attached device image supersedes the server image. Falling back
-    // still preserves a server image when the device did not contain one.
-    image: incoming.image || existing.image
+    // `undefined` is also meaningful here: it records an intentional removal.
+    image: incoming.image
   };
 }

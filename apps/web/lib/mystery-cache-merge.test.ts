@@ -124,7 +124,7 @@ test("device notes and images win a server conflict even when notes are shorter"
   assert.equal(merged.image, "data:image/png;base64,device");
 });
 
-test("keeps a server image when the incoming device has no image", () => {
+test("keeps an intentional device image removal during a server conflict", () => {
   const server: MergeableMysteryCache = {
     id: "server-cache-id",
     gcCode: "GC1234",
@@ -139,5 +139,5 @@ test("keeps a server image when the incoming device has no image", () => {
     image: "data:image/png;base64,server"
   };
 
-  assert.equal(mergeMysteryCaches(server, { ...server, image: undefined }).image, server.image);
+  assert.equal(mergeMysteryCaches(server, { ...server, image: undefined }).image, undefined);
 });
