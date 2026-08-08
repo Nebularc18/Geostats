@@ -300,6 +300,25 @@ MOBILE_AUTH_REDIRECT_URI=geostats://auth
 
 Production API deployments reject mobile external-auth redirects unless `MOBILE_AUTH_REDIRECT_URI` is set exactly.
 
+### GitHub mobile releases
+
+The **Mobile Release** workflow in GitHub Actions provides four manually selected release paths:
+
+- `preview-update`: publishes a JavaScript/assets update to installed preview builds.
+- `preview-apk`: creates an installable APK and attaches it to a GitHub prerelease.
+- `production-update`: publishes a JavaScript/assets update to installed production builds.
+- `play-internal`: builds an Android App Bundle and submits it to Google Play internal testing.
+
+Configure the following before the first workflow run:
+
+1. Create GitHub environments named `mobile-preview` and `mobile-production`. Require approval on `mobile-production` if production releases should be gated.
+2. Add an Expo access token as the `EXPO_TOKEN` secret to both environments.
+3. In the EAS project, define `EXPO_PUBLIC_API_URL`, `EXPO_PUBLIC_MOBILE_AUTH_REDIRECT_URI`, and `EXPO_PUBLIC_GOOGLE_MAPS_ANDROID_API_KEY` for the `preview` and `production` environments. Values embedded in a mobile app are public; restrict the Google Maps key to the Android package and signing certificate in Google Cloud.
+4. Preserve the signing identity of existing preview installs. Base64-encode the original `credentials.json` and keystore as the `MOBILE_PREVIEW_CREDENTIALS_JSON_B64` and `MOBILE_PREVIEW_KEYSTORE_B64` secrets on `mobile-preview`. The JSON must reference `credentials/android-preview.keystore` as its `keystorePath`. Do not generate a replacement key.
+5. For `play-internal`, create the Play Console app and upload a Google Play service-account key to the Android app's EAS submit credentials.
+
+The repository does not contain the signing keystore or service-account credentials. GitHub supplies preview signing credentials only to the ephemeral build runner, while production signing and Play submission credentials remain managed by EAS.
+
 ## Architecture Notes
 
 - The backend API is the source of truth. The frontend never reads from Prisma directly.

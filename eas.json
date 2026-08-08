@@ -1,18 +1,20 @@
 {
   "cli": {
-    "version": ">= 16.16.0",
+    "version": "21.7.0",
     "appVersionSource": "remote"
   },
   "build": {
     "development": {
       "node": "22.22.2",
       "pnpm": "9.15.0",
+      "environment": "development",
       "developmentClient": true,
       "distribution": "internal"
     },
     "preview": {
       "node": "22.22.2",
       "pnpm": "9.15.0",
+      "environment": "preview",
       "distribution": "internal",
       "credentialsSource": "local",
       "channel": "preview",
@@ -24,11 +26,20 @@
     "production": {
       "node": "22.22.2",
       "pnpm": "9.15.0",
+      "environment": "production",
       "channel": "production",
       "android": {
         "buildType": "app-bundle"
       },
       "autoIncrement": true
+    }
+  },
+  "submit": {
+    "production": {
+      "android": {
+        "track": "internal",
+        "releaseStatus": "completed"
+      }
     }
   }
 }

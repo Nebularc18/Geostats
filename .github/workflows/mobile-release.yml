@@ -1,0 +1,231 @@
+name: Mobile Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_kind:
+        description: What should be released?
+        required: true
+        default: preview-update
+        type: choice
+        options:
+          - preview-update
+          - preview-apk
+          - production-update
+          - play-internal
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mobile-release-${{ inputs.release_kind }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: 22.22.2
+  PNPM_VERSION: 9.15.0
+  EAS_VERSION: 21.7.0
+
+jobs:
+  reject-non-main-production:
+    name: Require main for production releases
+    if: >-
+      (inputs.release_kind == 'production-update' || inputs.release_kind == 'play-internal') &&
+      github.ref != 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reject non-main production release
+        shell: bash
+        run: |
+          echo "Production releases must be dispatched from the main branch; selected ref was ${GITHUB_REF}." >&2
+          exit 1
+
+  quality:
+    name: Test release candidate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate mobile release configuration
+        run: pnpm mobile:release:check
+
+      - name: Build shared mobile contracts
+        run: pnpm --filter @geostats/shared build
+
+      - name: Typecheck mobile app
+        run: pnpm --filter @geostats/mobile typecheck
+
+      - name: Test shared mobile contracts
+        run: pnpm --filter @geostats/shared test
+
+      - name: Bundle Android app
+        run: pnpm --filter @geostats/mobile exec expo export --platform android --output-dir /tmp/geostats-mobile-export
+
+  preview-update:
+    name: Publish preview update
+    if: inputs.release_kind == 'preview-update'
+    needs: quality
+    runs-on: ubuntu-latest
+    environment: mobile-preview
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Set up Expo and EAS
+        uses: expo/expo-github-action@c7b66a9c327a43a8fa7c0158e7f30d6040d2481e # v8
+        with:
+          eas-version: ${{ env.EAS_VERSION }}
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Publish preview update
+        run: pnpm mobile:update:preview
+
+  preview-apk:
+    name: Build and publish preview APK
+    if: inputs.release_kind == 'preview-apk'
+    needs: quality
+    runs-on: ubuntu-latest
+    environment: mobile-preview
+    permissions:
+      contents: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Set up Expo and EAS
+        uses: expo/expo-github-action@c7b66a9c327a43a8fa7c0158e7f30d6040d2481e # v8
+        with:
+          eas-version: ${{ env.EAS_VERSION }}
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Restore existing preview signing credentials
+        env:
+          CREDENTIALS_JSON_B64: ${{ secrets.MOBILE_PREVIEW_CREDENTIALS_JSON_B64 }}
+          KEYSTORE_B64: ${{ secrets.MOBILE_PREVIEW_KEYSTORE_B64 }}
+        shell: bash
+        run: |
+          if [[ -z "$CREDENTIALS_JSON_B64" || -z "$KEYSTORE_B64" ]]; then
+            echo "Preview signing secrets are not configured. See README.md#github-mobile-releases." >&2
+            exit 1
+          fi
+          mkdir -p credentials
+          printf '%s' "$CREDENTIALS_JSON_B64" | base64 --decode > credentials.json
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > credentials/android-preview.keystore
+
+      - name: Build preview APK
+        run: eas build --platform android --profile preview --non-interactive --wait --json > eas-build.json
+
+      - name: Download APK
+        shell: bash
+        run: |
+          build_url="$(jq -r '.[0].artifacts.buildUrl' eas-build.json)"
+          test -n "$build_url" && test "$build_url" != "null"
+          curl --fail --location --retry 3 "$build_url" --output geostats-preview.apk
+
+      - name: Create GitHub prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          version="$(node -p "require('./app.config.js').expo.version")"
+          tag="mobile-v${version}-preview.${GITHUB_RUN_NUMBER}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" geostats-preview.apk --clobber
+          else
+            gh release create "$tag" geostats-preview.apk \
+              --prerelease \
+              --target "$GITHUB_SHA" \
+              --title "Geostats Mobile ${version} Preview ${GITHUB_RUN_NUMBER}" \
+              --generate-notes
+          fi
+
+  production-update:
+    name: Publish production update
+    if: inputs.release_kind == 'production-update' && github.ref == 'refs/heads/main'
+    needs: quality
+    runs-on: ubuntu-latest
+    environment: mobile-production
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Set up Expo and EAS
+        uses: expo/expo-github-action@c7b66a9c327a43a8fa7c0158e7f30d6040d2481e # v8
+        with:
+          eas-version: ${{ env.EAS_VERSION }}
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Publish production update
+        run: pnpm mobile:update:production
+
+  play-internal:
+    name: Build and submit to Google Play internal testing
+    if: inputs.release_kind == 'play-internal' && github.ref == 'refs/heads/main'
+    needs: quality
+    runs-on: ubuntu-latest
+    environment: mobile-production
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Set up Expo and EAS
+        uses: expo/expo-github-action@c7b66a9c327a43a8fa7c0158e7f30d6040d2481e # v8
+        with:
+          eas-version: ${{ env.EAS_VERSION }}
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Build and submit Android App Bundle
+        run: eas build --platform android --profile production --auto-submit-with-profile production --non-interactive --wait
