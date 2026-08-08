@@ -228,7 +228,7 @@ test("update creates an unshared server snapshot", async () => {
       upsert: async (input: unknown) => {
         operations.push("upsert");
         upsertInput = input;
-        return { id: "workspace-1" };
+        return { id: "workspace-1", data: mystery };
       },
       updateMany: async () => {
         operations.push("update");
@@ -244,7 +244,7 @@ test("update creates an unshared server snapshot", async () => {
   const result = await controller.update(owner, mystery.id, { mystery, revision: 1 });
 
   assert.deepEqual(result, { ok: true, revision: 1, mystery });
-  assert.deepEqual(operations, ["lock", "lock", "deletion", "duplicate", "existing", "count", "upsert", "update", "readback"]);
+  assert.deepEqual(operations, ["lock", "lock", "deletion", "duplicate", "existing", "count", "upsert", "readback"]);
   assert.deepEqual((upsertInput as any).create, {
     ownerId: owner.id,
     clientId: mystery.id,
@@ -303,7 +303,7 @@ test("an older in-flight update cannot overwrite a newer snapshot", async () => 
       findUnique: async () => null
     },
     mysteryWorkspace: {
-      upsert: async () => ({ id: "workspace-1" }),
+      upsert: async () => ({ id: "workspace-1", data: { ...mystery, notes: "Newer notes" } }),
       updateMany: async (input: unknown) => {
         updateInput = input;
         return { count: 0 };
@@ -329,6 +329,40 @@ test("an older in-flight update cannot overwrite a newer snapshot", async () => 
     mystery: { ...mystery, notes: "Newer notes" }
   });
   assert.deepEqual((updateInput as any).where.snapshotRevision, { lt: 1 });
+});
+
+test("an identical update does not advance the server revision", async () => {
+  let updateCalls = 0;
+  const reorderedMystery = {
+    attempts: [],
+    sharedWith: [],
+    name: mystery.name,
+    gcCode: mystery.gcCode,
+    id: mystery.id
+  };
+  const transaction = {
+    $queryRaw: async () => [],
+    mysteryWorkspaceDeletion: { findUnique: async () => null },
+    mysteryWorkspace: {
+      findUnique: async (input: any) => input.select?.clientId
+        ? { clientId: mystery.id }
+        : { snapshotRevision: 42, data: mystery },
+      upsert: async () => ({ id: "workspace-1", data: reorderedMystery }),
+      updateMany: async () => {
+        updateCalls += 1;
+        return { count: 1 };
+      }
+    }
+  };
+  const prisma = {
+    $transaction: async (callback: (tx: typeof transaction) => unknown) => callback(transaction)
+  };
+  const controller = new MysteriesController(prisma as any);
+
+  const result = await controller.update(owner, mystery.id, { mystery, revision: 43 });
+
+  assert.equal(updateCalls, 0);
+  assert.deepEqual(result, { ok: true, revision: 42, mystery });
 });
 
 test("delete removes only the owner's workspace so its grants cascade", async () => {

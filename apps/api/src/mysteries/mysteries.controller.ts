@@ -20,6 +20,20 @@ const MAX_MYSTERY_NAME_LENGTH = 300;
 const MAX_MYSTERY_SNAPSHOT_BYTES = 256 * 1024;
 const MAX_MYSTERY_WORKSPACES_PER_OWNER = 500;
 
+function stableJsonStringify(value: unknown): string {
+  return JSON.stringify(value, (_key, nestedValue: unknown) => {
+    if (!nestedValue || typeof nestedValue !== "object" || Array.isArray(nestedValue)) {
+      return nestedValue;
+    }
+    return Object.keys(nestedValue as Record<string, unknown>)
+      .sort()
+      .reduce<Record<string, unknown>>((sorted, key) => {
+        sorted[key] = (nestedValue as Record<string, unknown>)[key];
+        return sorted;
+      }, {});
+  }) ?? "undefined";
+}
+
 function mysteryData(value: unknown, clientId: string): { data: Prisma.InputJsonValue; gcCode: string } {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new BadRequestException("Mystery data is required");
@@ -255,12 +269,19 @@ export class MysteriesController {
       const mystery = await tx.mysteryWorkspace.upsert({
         where: { ownerId_clientId: { ownerId: user.id, clientId } },
         create: { ownerId: user.id, clientId, gcCode, data, snapshotRevision: revision },
-        update: {}
+        update: {},
+        select: { id: true, data: true }
       });
-      await tx.mysteryWorkspace.updateMany({
-        where: { id: mystery.id, snapshotRevision: { lt: revision } },
-        data: { data, snapshotRevision: revision }
-      });
+      // Multiple open tabs can submit the same reconciled snapshot with
+      // successively newer client revisions. Advancing the server revision for
+      // identical data makes every other tab look stale and can sustain an
+      // otherwise content-free sync loop.
+      if (stableJsonStringify(mystery.data) !== stableJsonStringify(data)) {
+        await tx.mysteryWorkspace.updateMany({
+          where: { id: mystery.id, snapshotRevision: { lt: revision } },
+          data: { data, snapshotRevision: revision }
+        });
+      }
       const stored = await tx.mysteryWorkspace.findUnique({
         where: { id: mystery.id },
         select: { snapshotRevision: true, data: true }
