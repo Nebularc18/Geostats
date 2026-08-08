@@ -30,11 +30,17 @@ export type MergeableMysteryCache = {
   sharedWith: Array<{ id: string }>;
   attempts: MergeableMysteryAttempt[];
   image?: string;
+  syncConflicts?: {
+    notes?: { server: string; device: string };
+    image?: { server: string | null; device: string | null };
+  };
 };
 
 export type MysteryCacheMergeOptions = {
   preferIncomingNotes?: boolean;
   preferIncomingImage?: boolean;
+  preserveNotesConflict?: boolean;
+  preserveImageConflict?: boolean;
 };
 
 /** A device field can win only when a baseline exists and proves it changed. */
@@ -118,6 +124,13 @@ export function mergeMysteryCaches<T extends MergeableMysteryCache>(
 ): T {
   const sharedWith = new Map([...existing.sharedWith, ...incoming.sharedWith].map((user) => [user.id, user]));
   const statusRank = { solving: 0, planned: 1, solved: 2 } as const;
+  const syncConflicts = { ...existing.syncConflicts, ...incoming.syncConflicts };
+  if (options.preserveNotesConflict && existing.notes !== incoming.notes) {
+    syncConflicts.notes = { server: existing.notes, device: incoming.notes };
+  }
+  if (options.preserveImageConflict && existing.image !== incoming.image) {
+    syncConflicts.image = { server: existing.image ?? null, device: incoming.image ?? null };
+  }
   return {
     ...existing,
     name: existing.name || incoming.name,
@@ -134,6 +147,7 @@ export function mergeMysteryCaches<T extends MergeableMysteryCache>(
     sharedWith: [...sharedWith.values()],
     // `undefined` is meaningful when the device changed this field: it records
     // an intentional removal rather than a missing value to fill from server.
-    image: options.preferIncomingImage === false ? existing.image : incoming.image
+    image: options.preferIncomingImage === false ? existing.image : incoming.image,
+    syncConflicts: Object.keys(syncConflicts).length ? syncConflicts : undefined
   };
 }

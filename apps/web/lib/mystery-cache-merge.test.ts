@@ -205,3 +205,33 @@ test("keeps independent server notes and image when those device fields are unch
   assert.equal(merged.image, server.image);
   assert.deepEqual(merged.clues, ["offline device edit"]);
 });
+
+test("preserves ambiguous legacy device fields without overwriting the server", () => {
+  const server: MergeableMysteryCache = {
+    id: "server-cache-id",
+    gcCode: "GC1234",
+    name: "Mystery",
+    area: "",
+    country: "Sweden",
+    status: "solving",
+    notes: "Server notes",
+    clues: [],
+    sharedWith: [],
+    attempts: [],
+    image: "data:image/png;base64,server"
+  };
+  const device = { ...server, notes: "Offline rewrite", image: undefined };
+  const merged = mergeMysteryCaches(server, device, {
+    preferIncomingNotes: false,
+    preferIncomingImage: false,
+    preserveNotesConflict: true,
+    preserveImageConflict: true
+  });
+
+  assert.equal(merged.notes, "Server notes");
+  assert.equal(merged.image, "data:image/png;base64,server");
+  assert.deepEqual(merged.syncConflicts, {
+    notes: { server: "Server notes", device: "Offline rewrite" },
+    image: { server: "data:image/png;base64,server", device: null }
+  });
+});

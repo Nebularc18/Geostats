@@ -65,6 +65,11 @@ type AppUser = {
   username: string;
 };
 
+type MysterySyncConflicts = {
+  notes?: { server: string; device: string };
+  image?: { server: string | null; device: string | null };
+};
+
 type MysteryCache = {
   id: string;
   gcCode: string;
@@ -83,6 +88,7 @@ type MysteryCache = {
   sharedWith: AppUser[];
   attempts: CoordinateAttempt[];
   image?: string;
+  syncConflicts?: MysterySyncConflicts;
   sharedBy?: AppUser;
   sharedWorkspaceId?: string;
 };
@@ -266,11 +272,16 @@ function mysteryFieldFingerprint(value: unknown) {
 }
 
 function deviceMergeOptions(cache: MysteryCache, metadata: MysterySyncMetadata | undefined): MysteryCacheMergeOptions {
+  const hasNotesBaseline = typeof metadata?.notesFingerprint === "string";
+  const hasImageBaseline = typeof metadata?.imageFingerprint === "string";
+  const localSnapshotChanged = !metadata || snapshotFingerprint(JSON.stringify(shareableMystery(cache))) !== metadata.fingerprint;
   return {
-    // Without a baseline the device cannot prove that a stale field was edited,
-    // so the server wins this first reconciliation and establishes baselines.
+    // Proven field edits win normally. Legacy ambiguity keeps the server value
+    // active and preserves the device value for explicit user resolution.
     preferIncomingNotes: fieldChangedSinceBaseline(mysteryFieldFingerprint(cache.notes), metadata?.notesFingerprint),
-    preferIncomingImage: fieldChangedSinceBaseline(mysteryFieldFingerprint(cache.image), metadata?.imageFingerprint)
+    preferIncomingImage: fieldChangedSinceBaseline(mysteryFieldFingerprint(cache.image), metadata?.imageFingerprint),
+    preserveNotesConflict: !hasNotesBaseline && localSnapshotChanged,
+    preserveImageConflict: !hasImageBaseline && localSnapshotChanged
   };
 }
 
@@ -318,7 +329,7 @@ function verifiedStoredShares(caches: MysteryCache[], mergeOptions?: MysteryCach
 }
 
 function shareableMystery(cache: MysteryCache) {
-  const { sharedBy: _sharedBy, sharedWorkspaceId: _sharedWorkspaceId, ...mystery } = cache;
+  const { sharedBy: _sharedBy, sharedWorkspaceId: _sharedWorkspaceId, syncConflicts: _syncConflicts, ...mystery } = cache;
   return mystery;
 }
 
@@ -929,6 +940,22 @@ export default function MysteriesPage() {
     setCaches((current) => current.map((cache) => (cache.id === selected.id ? { ...cache, ...patch } : cache)));
   }
 
+  function resolveSyncConflict(field: "notes" | "image", useDevice: boolean) {
+    if (!selected?.syncConflicts || selected.sharedBy) return;
+    if (!selected.syncConflicts[field]) return;
+    const remaining = { ...selected.syncConflicts };
+    delete remaining[field];
+    const patch: Partial<MysteryCache> = {
+      syncConflicts: Object.keys(remaining).length ? remaining : undefined
+    };
+    if (useDevice) {
+      if (field === "notes") patch.notes = selected.syncConflicts.notes!.device;
+      else patch.image = selected.syncConflicts.image!.device ?? undefined;
+    }
+    updateSelected(patch);
+    setNotice(useDevice ? `Restored offline ${field}.` : `Kept server ${field}.`);
+  }
+
   function rememberDeletedCache(cacheId: string) {
     rememberDeletedCaches([cacheId]);
   }
@@ -1468,6 +1495,12 @@ export default function MysteriesPage() {
             </div>
 
             {selected.image && <div className="mystery-image"><img src={selected.image} alt={`Attached reference for ${selected.name}`} /><button type="button" onClick={() => updateSelected({ image: undefined })}><X size={15} /> Remove</button></div>}
+
+            {selected.syncConflicts && <section className="mystery-sync-conflicts" aria-label="Offline edit conflicts">
+              <div><AlertTriangle size={18} /><span><strong>Offline edits need review</strong><small>The server version is active. Restore your device edit or keep the server value.</small></span></div>
+              {selected.syncConflicts.notes && <div className="mystery-sync-conflict-row"><span><strong>Notes from this device</strong><small>{selected.syncConflicts.notes.device || "Notes were cleared on this device."}</small></span><button className="secondary-button" type="button" onClick={() => resolveSyncConflict("notes", true)}>Use device</button><button className="text-button" type="button" onClick={() => resolveSyncConflict("notes", false)}>Keep server</button></div>}
+              {selected.syncConflicts.image && <div className="mystery-sync-conflict-row"><span><strong>Image from this device</strong><small>{selected.syncConflicts.image.device ? "A different image was saved on this device." : "The image was removed on this device."}</small></span><button className="secondary-button" type="button" onClick={() => resolveSyncConflict("image", true)}>Use device</button><button className="text-button" type="button" onClick={() => resolveSyncConflict("image", false)}>Keep server</button></div>}
+            </section>}
 
             <div className="clue-strip">
               <span><Sparkles size={15} /> Clues</span>
