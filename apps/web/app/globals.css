@@ -3825,6 +3825,11 @@ select:focus {
   line-height: 1.35;
 }
 
+.mystery-toast:empty {
+  opacity: 0;
+  pointer-events: none;
+}
+
 .mystery-toast svg {
   flex: 0 0 auto;
 }
