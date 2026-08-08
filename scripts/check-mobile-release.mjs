@@ -1,15 +1,10 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { readFile } from "node:fs/promises";
 
 const require = createRequire(import.meta.url);
 const rootConfig = require("../app.config.js").expo;
-const mobileConfig = JSON.parse(
-  await readFile(new URL("../apps/mobile/app.json", import.meta.url), "utf8"),
-).expo;
-const eas = JSON.parse(
-  await readFile(new URL("../eas.json", import.meta.url), "utf8"),
-);
+const mobileConfig = require("../apps/mobile/app.config.js").expo;
+const eas = require("../eas.json");
 
 for (const field of ["name", "slug", "version", "scheme"]) {
   assert.equal(
