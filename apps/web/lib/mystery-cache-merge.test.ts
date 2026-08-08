@@ -53,6 +53,32 @@ test("keeps every distinct coordinate while preserving sync confirmation", () =>
   assert.equal(merged[1]?.id, "different");
 });
 
+test("keeps the strongest result and the newest device attempt metadata", () => {
+  const merged = mergeMysteryAttempts([
+    attempt({
+      id: "server-attempt",
+      state: "correct",
+      updatedAt: "2026-02-01T00:00:00.000Z",
+      note: "Older server note",
+      source: "server-agent"
+    }),
+    attempt({
+      id: "device-attempt",
+      state: "wrong",
+      updatedAt: "2026-02-02T00:00:00.000Z",
+      note: "Newer device note",
+      source: "device-edit"
+    })
+  ]);
+
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0]?.id, "server-attempt");
+  assert.equal(merged[0]?.state, "correct");
+  assert.equal(merged[0]?.note, "Newer device note");
+  assert.equal(merged[0]?.source, "device-edit");
+  assert.equal(merged[0]?.updatedAt, "2026-02-02T00:00:00.000Z");
+});
+
 test("merges repeated keyword attempts independently from coordinate attempts", () => {
   const merged = mergeMysteryAttempts([
     attempt({ id: "keyword-server", kind: "keyword", answer: " North ", latitude: undefined, longitude: undefined }),

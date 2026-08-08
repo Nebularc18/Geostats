@@ -8,7 +8,10 @@ export type MergeableMysteryAttempt = {
   finalLongitude?: number;
   state: "correct" | "wrong" | "unchecked" | "planned";
   createdAt: string;
+  updatedAt?: string;
   geocachingSyncedAt?: string;
+  note?: string;
+  source?: string;
 };
 
 export type MergeableMysteryCache = {
@@ -44,10 +47,18 @@ function attemptKey(attempt: MergeableMysteryAttempt) {
   return coordinate ? `coordinate:${coordinate}` : `id:${attempt.id}`;
 }
 
+function attemptModifiedAt(attempt: MergeableMysteryAttempt) {
+  const updatedAt = Date.parse(attempt.updatedAt ?? "");
+  if (Number.isFinite(updatedAt)) return updatedAt;
+  const createdAt = Date.parse(attempt.createdAt);
+  return Number.isFinite(createdAt) ? createdAt : 0;
+}
+
 function mergeDuplicateAttempt<T extends MergeableMysteryAttempt>(existing: T, incoming: T): T {
   const stateRank = { planned: 0, unchecked: 1, wrong: 2, correct: 3 } as const;
   const preferred = stateRank[incoming.state] >= stateRank[existing.state] ? incoming : existing;
   const fallback = preferred === existing ? incoming : existing;
+  const metadata = attemptModifiedAt(incoming) >= attemptModifiedAt(existing) ? incoming : existing;
   const preferredHasFinal = Number.isFinite(preferred.finalLatitude) && Number.isFinite(preferred.finalLongitude);
   const fallbackHasFinal = Number.isFinite(fallback.finalLatitude) && Number.isFinite(fallback.finalLongitude);
 
@@ -69,6 +80,12 @@ function mergeDuplicateAttempt<T extends MergeableMysteryAttempt>(existing: T, i
   const syncedAt = existing.geocachingSyncedAt || incoming.geocachingSyncedAt;
   if (syncedAt) merged.geocachingSyncedAt = syncedAt;
   else delete merged.geocachingSyncedAt;
+  // Solve state and annotations have different conflict rules: retain the
+  // strongest result, but take editable metadata from the newest record.
+  for (const field of ["note", "source", "updatedAt"] as const) {
+    if (field in metadata) merged[field] = metadata[field];
+    else delete merged[field];
+  }
   return merged;
 }
 
