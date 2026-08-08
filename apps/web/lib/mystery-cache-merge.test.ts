@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   fieldChangedSinceBaseline,
+  fieldMergeDecision,
   mergeMysteryAttempts,
   mergeMysteryCaches,
   type MergeableMysteryAttempt,
@@ -24,6 +25,25 @@ test("does not treat a legacy field without a baseline as a device edit", () => 
   assert.equal(fieldChangedSinceBaseline("device-fingerprint"), false);
   assert.equal(fieldChangedSinceBaseline("device-fingerprint", "device-fingerprint"), false);
   assert.equal(fieldChangedSinceBaseline("device-fingerprint", "older-server-fingerprint"), true);
+});
+
+test("detects device-only, server-only and concurrent field edits", () => {
+  assert.deepEqual(fieldMergeDecision("device-new", "baseline", "baseline"), {
+    preferIncoming: true,
+    preserveConflict: false
+  });
+  assert.deepEqual(fieldMergeDecision("baseline", "server-new", "baseline"), {
+    preferIncoming: false,
+    preserveConflict: false
+  });
+  assert.deepEqual(fieldMergeDecision("device-new", "server-new", "baseline"), {
+    preferIncoming: false,
+    preserveConflict: true
+  });
+  assert.deepEqual(fieldMergeDecision("same-new", "same-new", "baseline"), {
+    preferIncoming: true,
+    preserveConflict: false
+  });
 });
 
 test("merges duplicate offline and server coordinates into one attempt", () => {

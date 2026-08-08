@@ -25,7 +25,7 @@ import {
 import { AppShell } from "../../components/app-shell";
 import { apiFetch } from "../../lib/api";
 import {
-  fieldChangedSinceBaseline,
+  fieldMergeDecision,
   mergeMysteryAttempts,
   mergeMysteryCaches,
   type MysteryCacheMergeOptions
@@ -271,17 +271,27 @@ function mysteryFieldFingerprint(value: unknown) {
   return snapshotFingerprint(JSON.stringify(value ?? null));
 }
 
-function deviceMergeOptions(cache: MysteryCache, metadata: MysterySyncMetadata | undefined): MysteryCacheMergeOptions {
+function deviceMergeOptions(cache: MysteryCache, serverCache: MysteryCache, metadata: MysterySyncMetadata | undefined): MysteryCacheMergeOptions {
   const hasNotesBaseline = typeof metadata?.notesFingerprint === "string";
   const hasImageBaseline = typeof metadata?.imageFingerprint === "string";
   const localSnapshotChanged = !metadata || snapshotFingerprint(JSON.stringify(shareableMystery(cache))) !== metadata.fingerprint;
+  const notesDecision = fieldMergeDecision(
+    mysteryFieldFingerprint(cache.notes),
+    mysteryFieldFingerprint(serverCache.notes),
+    metadata?.notesFingerprint
+  );
+  const imageDecision = fieldMergeDecision(
+    mysteryFieldFingerprint(cache.image),
+    mysteryFieldFingerprint(serverCache.image),
+    metadata?.imageFingerprint
+  );
   return {
-    // Proven field edits win normally. Legacy ambiguity keeps the server value
-    // active and preserves the device value for explicit user resolution.
-    preferIncomingNotes: fieldChangedSinceBaseline(mysteryFieldFingerprint(cache.notes), metadata?.notesFingerprint),
-    preferIncomingImage: fieldChangedSinceBaseline(mysteryFieldFingerprint(cache.image), metadata?.imageFingerprint),
-    preserveNotesConflict: !hasNotesBaseline && localSnapshotChanged,
-    preserveImageConflict: !hasImageBaseline && localSnapshotChanged
+    // Device-only edits apply directly. Concurrent and legacy-ambiguous edits
+    // keep the server active while preserving the device value for review.
+    preferIncomingNotes: notesDecision.preferIncoming,
+    preferIncomingImage: imageDecision.preferIncoming,
+    preserveNotesConflict: notesDecision.preserveConflict || (!hasNotesBaseline && localSnapshotChanged),
+    preserveImageConflict: imageDecision.preserveConflict || (!hasImageBaseline && localSnapshotChanged)
   };
 }
 
@@ -624,7 +634,7 @@ export default function MysteriesPage() {
             const authoritative = verifiedStoredShares([{ ...mystery, sharedWith: cache.sharedWith }])[0];
             setCaches((current) => verifiedStoredShares(current.map((item) => {
               if (item.id !== cache.id) return item;
-              const merged = verifiedStoredShares([authoritative, item], deviceMergeOptions(item, baseMetadata))[0];
+              const merged = verifiedStoredShares([authoritative, item], deviceMergeOptions(item, authoritative, baseMetadata))[0];
               return { ...merged, id: authoritative.id, sharedWith: authoritative.sharedWith };
             })));
             setNotice(`Merged offline and server changes for ${cache.gcCode}.`);
@@ -704,7 +714,7 @@ export default function MysteriesPage() {
           const currentCache = currentById.get(serverCache.id) ?? currentByGcCode.get(serverCache.gcCode);
           if (!currentCache) return serverCache;
           const metadata = knownSyncMetadata.get(currentCache.id) ?? knownSyncMetadata.get(serverCache.id);
-          const mergeOptions = deviceMergeOptions(currentCache, metadata);
+          const mergeOptions = deviceMergeOptions(currentCache, serverCache, metadata);
           if (currentCache.id !== serverCache.id) {
             serverSnapshots.current.delete(currentCache.id);
             snapshotRevisions.current.delete(currentCache.id);

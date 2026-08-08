@@ -48,6 +48,21 @@ export function fieldChangedSinceBaseline(currentFingerprint: string, baselineFi
   return typeof baselineFingerprint === "string" && currentFingerprint !== baselineFingerprint;
 }
 
+/** Compare server and device values to their common last-synced baseline. */
+export function fieldMergeDecision(
+  deviceFingerprint: string,
+  serverFingerprint: string,
+  baselineFingerprint?: string
+) {
+  const deviceChanged = fieldChangedSinceBaseline(deviceFingerprint, baselineFingerprint);
+  const serverChanged = fieldChangedSinceBaseline(serverFingerprint, baselineFingerprint);
+  const divergentConflict = deviceChanged && serverChanged && deviceFingerprint !== serverFingerprint;
+  return {
+    preferIncoming: deviceChanged && !divergentConflict,
+    preserveConflict: divergentConflict
+  };
+}
+
 function coordinateKey(latitude: unknown, longitude: unknown) {
   return Number.isFinite(latitude) && Number.isFinite(longitude)
     ? `${latitude}:${longitude}`
