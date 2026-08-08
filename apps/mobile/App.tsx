@@ -1453,9 +1453,9 @@ function HidesScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string 
   const { data, loading, error } = useApi<{ stats: any }>(apiBaseUrl, token, "/stats/summary", { stats: {} });
   const h = data.stats.hideStats ?? {};
   const ownerGroups: Array<[string, any[]]> = [
-    ["Cumulative finds of my caches", h.cumulativeReceivedLogsByMonth ?? []],
+    ["Cumulative logs on my caches", h.cumulativeReceivedLogsByMonth ?? []],
     ["Caching karma", h.receivedLogsByYear ?? []],
-    ["Finds on hides by month", h.receivedLogsByMonth ?? []]
+    ["Logs on hides by month", h.receivedLogsByMonth ?? []]
   ];
   if ((h.finderCountryBuckets ?? []).some((row: any) => row.key !== "Unknown" && row.count > 0)) {
     ownerGroups.push(["Finders by country", h.finderCountryBuckets ?? []]);
@@ -1466,12 +1466,13 @@ function HidesScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string 
     ["Placed by country", h.hidesByCountry ?? []],
     ["Placed by region", h.hidesByRegion ?? []],
     ["Top finders of my caches", h.finderBuckets ?? []],
+    ["Received log types", h.receivedLogsByType ?? []],
     ["Placed by type", h.hidesByType ?? []],
     ["Placed by size", h.hidesBySize ?? []],
     ["Placed by difficulty", h.hidesByDifficulty ?? []],
     ["Placed by terrain", h.hidesByTerrain ?? []],
-    ["Placed by found month", h.receivedLogsByCalendarMonth ?? []],
-    ["Placed by found weekday", h.receivedLogsByWeekday ?? []]
+    ["Logs by calendar month", h.receivedLogsByCalendarMonth ?? []],
+    ["Logs by weekday", h.receivedLogsByWeekday ?? []]
   );
   return (
     <>
@@ -1481,8 +1482,9 @@ function HidesScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string 
       <Panel title="Owned cache statistics"><KeyValue rows={(h.hideSummaryRows ?? []).map((row: any) => [row.label, row.value])} /></Panel>
       <Panel title="Placed D/T chart"><DifficultyGrid data={h.hidesByDifficultyTerrain ?? []} /></Panel>
       <Panel title="Placed by hidden date"><CalendarHeatmap data={h.placedHiddenDateMatrix ?? []} /></Panel>
-      <Panel title="Placed by found date"><CalendarHeatmap data={h.receivedFoundDateMatrix ?? []} /></Panel>
-      <Panel title="Logs received"><Rows rows={(h.logsReceived ?? []).map((row: any) => [row.gcCode, row.name, `${row.finds} finds`])} /></Panel>
+      <Panel title="Received by log date"><CalendarHeatmap data={h.receivedFoundDateMatrix ?? []} /></Panel>
+      <Panel title="Logs received"><Rows rows={(h.logsReceived ?? []).map((row: any) => [row.gcCode, row.name, `${row.finds} logs`])} /></Panel>
+      <Panel title="Recent imported logs"><Rows rows={(h.recentReceivedLogs ?? []).map((row: any) => [row.date, `${row.type} · ${row.finder}`, row.gcCode])} /></Panel>
       <LoadState loading={loading} error={error} />
     </>
   );

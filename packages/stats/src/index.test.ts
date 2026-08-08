@@ -224,6 +224,17 @@ test("calculateHideStats derives owner-side log and date buckets", () => {
                 "groundspeak:date": "2026-05-04T19:00:00Z",
                 "groundspeak:type": "Publish Listing",
                 "groundspeak:finder": "Reviewer"
+              },
+              {
+                "groundspeak:date": "2026-05-05T19:00:00Z",
+                "groundspeak:type": "Didn't find it",
+                "groundspeak:finder": "FinderTwo",
+                "groundspeak:text": "Could not locate it"
+              },
+              {
+                "groundspeak:date": "2026-05-06T19:00:00Z",
+                "groundspeak:type": "Write note",
+                "groundspeak:finder": "FinderOne"
               }
             ]
           }
@@ -246,12 +257,32 @@ test("calculateHideStats derives owner-side log and date buckets", () => {
   ]);
 
   assert.equal(stats.totalHides, 1);
-  assert.equal(stats.totalReceivedLogs, 1);
-  assert.equal(stats.totalUniqueFinders, 1);
-  assert.deepEqual(stats.receivedLogsByMonth, [{ key: "2026-05", count: 1 }]);
+  assert.equal(stats.totalReceivedLogs, 3);
+  assert.equal(stats.totalUniqueFinders, 2);
+  assert.deepEqual(stats.receivedLogsByMonth, [{ key: "2026-05", count: 3 }]);
   assert.deepEqual(stats.placedHiddenDateMatrix, [{ key: "05-01", count: 1 }]);
-  assert.deepEqual(stats.receivedFoundDateMatrix, [{ key: "05-03", count: 1 }]);
+  assert.deepEqual(stats.receivedFoundDateMatrix, [
+    { key: "05-03", count: 1 },
+    { key: "05-05", count: 1 },
+    { key: "05-06", count: 1 }
+  ]);
   assert.equal(stats.logsReceived[0]?.gcCode, "GCHIDE1");
   assert.equal(stats.finderBuckets[0]?.key, "FinderOne");
-  assert.deepEqual(stats.finderCountryBuckets, [{ key: "Sweden", count: 1, percent: 100 }]);
+  assert.deepEqual(stats.finderCountryBuckets, [
+    { key: "Unknown", count: 2, percent: 66.66666666666666 },
+    { key: "Sweden", count: 1, percent: 33.33333333333333 }
+  ]);
+  assert.deepEqual(stats.receivedLogsByType, [
+    { key: "Didn't find it", count: 1, percent: 33.33333333333333 },
+    { key: "Found it", count: 1, percent: 33.33333333333333 },
+    { key: "Write note", count: 1, percent: 33.33333333333333 }
+  ]);
+  assert.deepEqual(
+    stats.recentReceivedLogs.map((log) => [log.date, log.type, log.finder]),
+    [
+      ["2026-05-06", "Write note", "FinderOne"],
+      ["2026-05-05", "Didn't find it", "FinderTwo"],
+      ["2026-05-03", "Found it", "FinderOne"]
+    ]
+  );
 });
