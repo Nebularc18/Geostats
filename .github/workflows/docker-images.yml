@@ -1,9 +1,6 @@
 name: Docker Images
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
 
 permissions:
