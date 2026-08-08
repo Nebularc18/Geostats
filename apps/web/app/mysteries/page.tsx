@@ -1733,7 +1733,12 @@ export default function MysteriesPage() {
         </div>
       )}
 
-      {notice && <div className="mystery-toast"><Check size={16} /> {notice}</div>}
+      {notice && (
+        <div className="mystery-toast" role="status" aria-live="polite">
+          <Check size={16} aria-hidden="true" />
+          <span>{notice}</span>
+        </div>
+      )}
     </AppShell>
   );
 }

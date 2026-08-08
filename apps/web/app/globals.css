@@ -3814,6 +3814,7 @@ select:focus {
   display: flex;
   align-items: center;
   gap: 8px;
+  max-width: calc(100vw - 48px);
   padding: 11px 14px;
   border: 1px solid rgba(95, 191, 133, 0.35);
   border-radius: 8px;
@@ -3821,6 +3822,16 @@ select:focus {
   background: rgba(27, 38, 31, 0.96);
   box-shadow: 0 14px 44px rgba(0, 0, 0, 0.4);
   font-size: 0.78rem;
+  line-height: 1.35;
+}
+
+.mystery-toast svg {
+  flex: 0 0 auto;
+}
+
+.mystery-toast span {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 /* Travel workspace */
