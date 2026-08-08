@@ -83,7 +83,7 @@ export function mergeMysteryAttempts<T extends MergeableMysteryAttempt>(attempts
   return [...merged.values()];
 }
 
-/** Produce one cache from server and offline copies while retaining their useful data. */
+/** Produce one cache from a server copy and an incoming device copy. */
 export function mergeMysteryCaches<T extends MergeableMysteryCache>(existing: T, incoming: T): T {
   const sharedWith = new Map([...existing.sharedWith, ...incoming.sharedWith].map((user) => [user.id, user]));
   const statusRank = { solving: 0, planned: 1, solved: 2 } as const;
@@ -97,10 +97,14 @@ export function mergeMysteryCaches<T extends MergeableMysteryCache>(existing: T,
     locality: existing.locality || incoming.locality,
     locationHierarchy: existing.locationHierarchy?.length ? existing.locationHierarchy : incoming.locationHierarchy,
     status: statusRank[incoming.status] > statusRank[existing.status] ? incoming.status : existing.status,
-    notes: (incoming.notes?.length ?? 0) > (existing.notes?.length ?? 0) ? incoming.notes : existing.notes,
+    // Notes can be intentionally rewritten to something shorter. The incoming
+    // device copy must win instead of using content length as a recency signal.
+    notes: incoming.notes,
     clues: [...new Set([...existing.clues, ...incoming.clues])],
     attempts: mergeMysteryAttempts([...existing.attempts, ...incoming.attempts]),
     sharedWith: [...sharedWith.values()],
-    image: existing.image || incoming.image
+    // A newly attached device image supersedes the server image. Falling back
+    // still preserves a server image when the device did not contain one.
+    image: incoming.image || existing.image
   };
 }

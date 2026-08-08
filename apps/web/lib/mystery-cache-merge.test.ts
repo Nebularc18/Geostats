@@ -98,3 +98,46 @@ test("reconnect produces one cache with both server and offline coordinates", ()
   assert.deepEqual(merged.attempts.map(({ id }) => id), ["server-coordinate", "offline-coordinate"]);
   assert.equal(merged.attempts[0]?.state, "correct");
 });
+
+test("device notes and images win a server conflict even when notes are shorter", () => {
+  const server: MergeableMysteryCache = {
+    id: "server-cache-id",
+    gcCode: "GC1234",
+    name: "Mystery",
+    area: "",
+    country: "Sweden",
+    status: "solving",
+    notes: "Long server notes that the device user intentionally rewrote",
+    clues: [],
+    sharedWith: [],
+    attempts: [],
+    image: "data:image/png;base64,server"
+  };
+
+  const merged = mergeMysteryCaches(server, {
+    ...server,
+    notes: "Short rewrite",
+    image: "data:image/png;base64,device"
+  });
+
+  assert.equal(merged.notes, "Short rewrite");
+  assert.equal(merged.image, "data:image/png;base64,device");
+});
+
+test("keeps a server image when the incoming device has no image", () => {
+  const server: MergeableMysteryCache = {
+    id: "server-cache-id",
+    gcCode: "GC1234",
+    name: "Mystery",
+    area: "",
+    country: "Sweden",
+    status: "solving",
+    notes: "Server notes",
+    clues: [],
+    sharedWith: [],
+    attempts: [],
+    image: "data:image/png;base64,server"
+  };
+
+  assert.equal(mergeMysteryCaches(server, { ...server, image: undefined }).image, server.image);
+});
