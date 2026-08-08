@@ -2873,6 +2873,34 @@ select:focus {
   cursor: pointer;
 }
 
+.mystery-sync-conflicts {
+  display: grid;
+  gap: 10px;
+  margin-top: 18px;
+  padding: 14px;
+  border: 1px solid rgba(234, 179, 8, 0.42);
+  border-radius: 8px;
+  background: rgba(234, 179, 8, 0.08);
+}
+
+.mystery-sync-conflicts > div,
+.mystery-sync-conflict-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.mystery-sync-conflicts span {
+  display: grid;
+  flex: 1;
+  gap: 2px;
+}
+
+.mystery-sync-conflicts small {
+  color: var(--muted);
+  white-space: pre-wrap;
+}
+
 .clue-strip {
   display: flex;
   flex-wrap: wrap;

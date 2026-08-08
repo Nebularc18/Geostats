@@ -24,6 +24,12 @@ import {
 } from "lucide-react";
 import { AppShell } from "../../components/app-shell";
 import { apiFetch } from "../../lib/api";
+import {
+  fieldMergeDecision,
+  mergeMysteryAttempts,
+  mergeMysteryCaches,
+  type MysteryCacheMergeOptions
+} from "../../lib/mystery-cache-merge";
 import { normalizeMysteryArea } from "../../lib/mystery-area";
 import { MYSTERY_USERSCRIPT_VERSION } from "../../lib/mystery-userscript";
 import { bulkAttemptKey, parseBulkFailedAttempts, parseFailedCoordinateCsv } from "../../lib/mystery-bulk-attempts";
@@ -59,6 +65,11 @@ type AppUser = {
   username: string;
 };
 
+type MysterySyncConflicts = {
+  notes?: { server: string; device: string };
+  image?: { server: string | null; device: string | null };
+};
+
 type MysteryCache = {
   id: string;
   gcCode: string;
@@ -77,6 +88,7 @@ type MysteryCache = {
   sharedWith: AppUser[];
   attempts: CoordinateAttempt[];
   image?: string;
+  syncConflicts?: MysterySyncConflicts;
   sharedBy?: AppUser;
   sharedWorkspaceId?: string;
 };
@@ -98,6 +110,8 @@ type OwnedMysterySnapshot = {
 type MysterySyncMetadata = {
   revision: number;
   fingerprint: string;
+  notesFingerprint?: string;
+  imageFingerprint?: string;
 };
 
 type BrowserImport = {
@@ -253,7 +267,35 @@ function isAppUser(value: unknown): value is AppUser {
   return typeof user.id === "string" && user.id.length > 0 && typeof user.username === "string" && user.username.length > 0;
 }
 
-function verifiedStoredShares(caches: MysteryCache[]) {
+function mysteryFieldFingerprint(value: unknown) {
+  return snapshotFingerprint(JSON.stringify(value ?? null));
+}
+
+function deviceMergeOptions(cache: MysteryCache, serverCache: MysteryCache, metadata: MysterySyncMetadata | undefined): MysteryCacheMergeOptions {
+  const hasNotesBaseline = typeof metadata?.notesFingerprint === "string";
+  const hasImageBaseline = typeof metadata?.imageFingerprint === "string";
+  const localSnapshotChanged = !metadata || snapshotFingerprint(JSON.stringify(shareableMystery(cache))) !== metadata.fingerprint;
+  const notesDecision = fieldMergeDecision(
+    mysteryFieldFingerprint(cache.notes),
+    mysteryFieldFingerprint(serverCache.notes),
+    metadata?.notesFingerprint
+  );
+  const imageDecision = fieldMergeDecision(
+    mysteryFieldFingerprint(cache.image),
+    mysteryFieldFingerprint(serverCache.image),
+    metadata?.imageFingerprint
+  );
+  return {
+    // Device-only edits apply directly. Concurrent and legacy-ambiguous edits
+    // keep the server active while preserving the device value for review.
+    preferIncomingNotes: notesDecision.preferIncoming,
+    preferIncomingImage: imageDecision.preferIncoming,
+    preserveNotesConflict: notesDecision.preserveConflict || (!hasNotesBaseline && localSnapshotChanged),
+    preserveImageConflict: imageDecision.preserveConflict || (!hasImageBaseline && localSnapshotChanged)
+  };
+}
+
+function verifiedStoredShares(caches: MysteryCache[], mergeOptions?: MysteryCacheMergeOptions) {
   const normalized = caches.map((cache) => ({
     ...cache,
     gcCode: typeof cache.gcCode === "string" ? cache.gcCode.trim().toUpperCase() : "",
@@ -270,10 +312,10 @@ function verifiedStoredShares(caches: MysteryCache[]) {
       : [],
     clues: Array.isArray(cache.clues) ? cache.clues.filter((clue): clue is string => typeof clue === "string") : [],
     attempts: Array.isArray(cache.attempts)
-      ? cache.attempts.map((attempt): CoordinateAttempt => ({
+      ? mergeMysteryAttempts(cache.attempts.map((attempt): CoordinateAttempt => ({
           ...attempt,
           state: attempt.state === "correct" || attempt.state === "wrong" || attempt.state === "planned" ? attempt.state : "unchecked"
-        }))
+        })))
       : [],
     sharedWith: Array.isArray(cache.sharedWith) ? cache.sharedWith.filter(isAppUser) : []
   }));
@@ -291,41 +333,13 @@ function verifiedStoredShares(caches: MysteryCache[]) {
       continue;
     }
 
-    const attempts = new Map<string, CoordinateAttempt>();
-    for (const attempt of [...existing.attempts, ...cache.attempts]) {
-      const submitted = inputCoordinate(attempt);
-      const revealed = revealedCoordinate(attempt);
-      const attemptKey = attemptKind(attempt) !== "coordinate"
-        ? `${attemptKind(attempt)}:${attempt.answer?.trim().toLocaleLowerCase()}:${attempt.state}:${revealed?.latitude}:${revealed?.longitude}`
-        : `coordinate:${submitted?.latitude}:${submitted?.longitude}:${attempt.state}:${revealed?.latitude}:${revealed?.longitude}`;
-      const previous = attempts.get(attemptKey);
-      attempts.set(attemptKey, previous?.geocachingSyncedAt ? previous : attempt);
-    }
-    const sharedWith = new Map([...existing.sharedWith, ...cache.sharedWith].map((user) => [user.id, user]));
-    const statusRank: Record<MysteryStatus, number> = { solving: 0, planned: 1, solved: 2 };
-
-    merged.set(key, {
-      ...existing,
-      name: existing.name || cache.name,
-      area: existing.area || cache.area,
-      county: existing.county || cache.county,
-      country: existing.country || cache.country,
-      region: existing.region || cache.region,
-      locality: existing.locality || cache.locality,
-      locationHierarchy: existing.locationHierarchy?.length ? existing.locationHierarchy : cache.locationHierarchy,
-      status: statusRank[cache.status] > statusRank[existing.status] ? cache.status : existing.status,
-      notes: (cache.notes?.length ?? 0) > (existing.notes?.length ?? 0) ? cache.notes : existing.notes,
-      clues: [...new Set([...existing.clues, ...cache.clues])],
-      attempts: [...attempts.values()],
-      sharedWith: [...sharedWith.values()],
-      image: existing.image || cache.image
-    });
+    merged.set(key, mergeMysteryCaches(existing, cache, mergeOptions));
   }
   return [...merged.values()];
 }
 
 function shareableMystery(cache: MysteryCache) {
-  const { sharedBy: _sharedBy, sharedWorkspaceId: _sharedWorkspaceId, ...mystery } = cache;
+  const { sharedBy: _sharedBy, sharedWorkspaceId: _sharedWorkspaceId, syncConflicts: _syncConflicts, ...mystery } = cache;
   return mystery;
 }
 
@@ -453,7 +467,18 @@ export default function MysteriesPage() {
   function rememberServerSnapshot(cacheId: string, revision: number, serialized: string) {
     rememberSnapshotRevision(cacheId, revision);
     serverSnapshots.current.set(cacheId, serialized);
-    syncMetadata.current.set(cacheId, { revision, fingerprint: snapshotFingerprint(serialized) });
+    let snapshot: Partial<MysteryCache> = {};
+    try {
+      snapshot = JSON.parse(serialized) as Partial<MysteryCache>;
+    } catch {
+      // The full fingerprint still protects reconciliation if field parsing fails.
+    }
+    syncMetadata.current.set(cacheId, {
+      revision,
+      fingerprint: snapshotFingerprint(serialized),
+      notesFingerprint: mysteryFieldFingerprint(snapshot.notes),
+      imageFingerprint: mysteryFieldFingerprint(snapshot.image)
+    });
     persistSyncMetadata();
   }
 
@@ -575,10 +600,19 @@ export default function MysteriesPage() {
 
   useEffect(() => {
     if (!ready || !serverSyncReady || !persistedForSync) return;
+    const currentOwnedByGcCode = new Map(latestCaches.current
+      .filter((cache) => !cache.sharedBy)
+      .map((cache) => [cache.gcCode.trim().toUpperCase(), cache]));
     const pendingCaches = persistedForSync.flatMap((cache) => {
       if (cache.sharedBy || deletedCacheIds.current.has(cache.id)) return [];
-      const serialized = JSON.stringify(shareableMystery(cache));
-      return serverSnapshots.current.get(cache.id) === serialized ? [] : [{ cache, serialized }];
+      // A reconnect can replace an offline-generated ID with the server's ID.
+      // Never submit the stale identity after that cache has been reconciled.
+      const canonicalCache = currentOwnedByGcCode.get(cache.gcCode.trim().toUpperCase());
+      if (!canonicalCache || canonicalCache.id !== cache.id) return [];
+      const serialized = JSON.stringify(shareableMystery(canonicalCache));
+      return serverSnapshots.current.get(canonicalCache.id) === serialized
+        ? []
+        : [{ cache: canonicalCache, serialized }];
     });
     if (!pendingCaches.length) return;
 
@@ -586,6 +620,7 @@ export default function MysteriesPage() {
     const timeout = window.setTimeout(() => {
       void Promise.all(pendingCaches.map(({ cache, serialized }) => {
         const requestedRevision = nextSnapshotRevision(cache.id);
+        const baseMetadata = syncMetadata.current.get(cache.id);
         return apiFetch<{ revision: number; mystery: MysteryCache }>(`/mysteries/${encodeURIComponent(cache.id)}`, {
           method: "PUT",
           body: JSON.stringify({
@@ -597,13 +632,12 @@ export default function MysteriesPage() {
           rememberServerSnapshot(cache.id, revision, storedSerialized);
           if (storedSerialized !== serialized) {
             const authoritative = verifiedStoredShares([{ ...mystery, sharedWith: cache.sharedWith }])[0];
-            setCaches((current) => current.flatMap((item) => item.id === cache.id
-              ? [
-                  authoritative,
-                  { ...shareableMystery(item), id: newId(), name: `${item.name} (device edits)`, sharedWith: [] }
-                ]
-              : [item]));
-            setNotice(`A newer ${cache.gcCode} was already on the server. Your device edits were preserved as a separate copy.`);
+            setCaches((current) => verifiedStoredShares(current.map((item) => {
+              if (item.id !== cache.id) return item;
+              const merged = verifiedStoredShares([authoritative, item], deviceMergeOptions(item, authoritative, baseMetadata))[0];
+              return { ...merged, id: authoritative.id, sharedWith: authoritative.sharedWith };
+            })));
+            setNotice(`Merged offline and server changes for ${cache.gcCode}.`);
           }
         });
       })).catch(() => {
@@ -675,24 +709,25 @@ export default function MysteriesPage() {
         const current = latestCaches.current;
         const currentById = new Map(current.filter((cache) => !cache.sharedBy).map((cache) => [cache.id, cache]));
         const currentByGcCode = new Map(current.filter((cache) => !cache.sharedBy).map((cache) => [cache.gcCode.trim().toUpperCase(), cache]));
-        const conflictCopies: MysteryCache[] = [];
+        let mergedConflictCount = 0;
         const reconciledOwned = ownedEntries.map(({ cache: serverCache, revision, serialized: serverSerialized }) => {
           const currentCache = currentById.get(serverCache.id) ?? currentByGcCode.get(serverCache.gcCode);
           if (!currentCache) return serverCache;
+          const metadata = knownSyncMetadata.get(currentCache.id) ?? knownSyncMetadata.get(serverCache.id);
+          const mergeOptions = deviceMergeOptions(currentCache, serverCache, metadata);
           if (currentCache.id !== serverCache.id) {
             serverSnapshots.current.delete(currentCache.id);
             snapshotRevisions.current.delete(currentCache.id);
             syncMetadata.current.delete(currentCache.id);
             shareMutationRevisions.current.delete(currentCache.id);
-            return {
-              ...currentCache,
-              id: serverCache.id,
-              sharedWith: serverCache.sharedWith
-            };
+            const merged = verifiedStoredShares([
+              serverCache,
+              { ...currentCache, id: serverCache.id, sharedWith: serverCache.sharedWith }
+            ], mergeOptions)[0];
+            return { ...merged, id: serverCache.id, sharedWith: serverCache.sharedWith };
           }
           const currentSerialized = JSON.stringify(shareableMystery(currentCache));
           const requestSerialized = ownedAtRequest.get(serverCache.id);
-          const metadata = knownSyncMetadata.get(serverCache.id);
           const localChanged = metadata
             ? snapshotFingerprint(currentSerialized) !== metadata.fingerprint
             : currentSerialized !== serverSerialized;
@@ -702,12 +737,9 @@ export default function MysteriesPage() {
           const changedDuringRequest = requestSerialized !== undefined && currentSerialized !== requestSerialized;
           if ((localChanged || changedDuringRequest) && !serverChanged) return currentCache;
           if (localChanged || changedDuringRequest) {
-            conflictCopies.push({
-              ...shareableMystery(currentCache),
-              id: newId(),
-              name: `${currentCache.name} (device edits)`,
-              sharedWith: []
-            });
+            mergedConflictCount += 1;
+            const merged = verifiedStoredShares([serverCache, currentCache], mergeOptions)[0];
+            return { ...merged, id: serverCache.id, sharedWith: serverCache.sharedWith };
           }
           return serverCache;
         });
@@ -721,9 +753,9 @@ export default function MysteriesPage() {
         const receivedShares = current.filter((cache) =>
           cache.sharedBy && !deletedCacheIds.current.has(cache.id)
         );
-        setCaches([...reconciledOwned, ...conflictCopies, ...localOnly, ...receivedShares]);
-        if (conflictCopies.length) {
-          setNotice(`${conflictCopies.length} local ${conflictCopies.length === 1 ? "edit was" : "edits were"} preserved as a separate device copy because the server also changed.`);
+        setCaches(verifiedStoredShares([...reconciledOwned, ...localOnly, ...receivedShares]));
+        if (mergedConflictCount) {
+          setNotice(`Merged offline and server changes for ${mergedConflictCount} ${mergedConflictCount === 1 ? "cache" : "caches"}.`);
         }
         setServerSyncReady(true);
       })
@@ -916,6 +948,22 @@ export default function MysteriesPage() {
   function updateSelected(patch: Partial<MysteryCache>) {
     if (!selected || selected.sharedBy) return;
     setCaches((current) => current.map((cache) => (cache.id === selected.id ? { ...cache, ...patch } : cache)));
+  }
+
+  function resolveSyncConflict(field: "notes" | "image", useDevice: boolean) {
+    if (!selected?.syncConflicts || selected.sharedBy) return;
+    if (!selected.syncConflicts[field]) return;
+    const remaining = { ...selected.syncConflicts };
+    delete remaining[field];
+    const patch: Partial<MysteryCache> = {
+      syncConflicts: Object.keys(remaining).length ? remaining : undefined
+    };
+    if (useDevice) {
+      if (field === "notes") patch.notes = selected.syncConflicts.notes!.device;
+      else patch.image = selected.syncConflicts.image!.device ?? undefined;
+    }
+    updateSelected(patch);
+    setNotice(useDevice ? `Restored offline ${field}.` : `Kept server ${field}.`);
   }
 
   function rememberDeletedCache(cacheId: string) {
@@ -1457,6 +1505,12 @@ export default function MysteriesPage() {
             </div>
 
             {selected.image && <div className="mystery-image"><img src={selected.image} alt={`Attached reference for ${selected.name}`} /><button type="button" onClick={() => updateSelected({ image: undefined })}><X size={15} /> Remove</button></div>}
+
+            {selected.syncConflicts && <section className="mystery-sync-conflicts" aria-label="Offline edit conflicts">
+              <div><AlertTriangle size={18} /><span><strong>Offline edits need review</strong><small>The server version is active. Restore your device edit or keep the server value.</small></span></div>
+              {selected.syncConflicts.notes && <div className="mystery-sync-conflict-row"><span><strong>Notes from this device</strong><small>{selected.syncConflicts.notes.device || "Notes were cleared on this device."}</small></span><button className="secondary-button" type="button" onClick={() => resolveSyncConflict("notes", true)}>Use device</button><button className="text-button" type="button" onClick={() => resolveSyncConflict("notes", false)}>Keep server</button></div>}
+              {selected.syncConflicts.image && <div className="mystery-sync-conflict-row"><span><strong>Image from this device</strong><small>{selected.syncConflicts.image.device ? "A different image was saved on this device." : "The image was removed on this device."}</small></span><button className="secondary-button" type="button" onClick={() => resolveSyncConflict("image", true)}>Use device</button><button className="text-button" type="button" onClick={() => resolveSyncConflict("image", false)}>Keep server</button></div>}
+            </section>}
 
             <div className="clue-strip">
               <span><Sparkles size={15} /> Clues</span>
