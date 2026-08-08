@@ -6,6 +6,7 @@ import * as DocumentPicker from "expo-document-picker";
 import { File, Paths } from "expo-file-system";
 import * as SecureStore from "expo-secure-store";
 import * as Clipboard from "expo-clipboard";
+import * as Crypto from "expo-crypto";
 import * as Sharing from "expo-sharing";
 import * as Updates from "expo-updates";
 import MapView, { Callout, Marker, Polygon, PROVIDER_GOOGLE, type Region } from "react-native-maps";
@@ -219,17 +220,8 @@ function requireServerUrl(value: string) {
 
 function randomBase64Url(length: number) {
   const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
-  const bytes = new Uint8Array(length);
-  if (globalThis.crypto?.getRandomValues) {
-    globalThis.crypto.getRandomValues(bytes);
-    return Array.from(bytes, (byte) => alphabet[byte % alphabet.length]).join("");
-  }
-  if (globalThis.crypto?.randomUUID) {
-    return Array.from({ length: Math.ceil(length / 32) }, () => globalThis.crypto.randomUUID().replace(/-/g, ""))
-      .join("")
-      .slice(0, length);
-  }
-  throw new Error("Secure random values are unavailable on this device.");
+  const bytes = Crypto.getRandomBytes(length);
+  return Array.from(bytes, (byte) => alphabet[byte % alphabet.length]).join("");
 }
 
 function mobileCodeVerifier() {

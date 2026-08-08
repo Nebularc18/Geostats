@@ -17,6 +17,9 @@ importers:
       expo-clipboard:
         specifier: ~56.0.4
         version: 56.0.4(expo@56.0.12)(react-native@0.85.3(@babel/core@7.29.0)(@types/react@19.2.15)(react@19.2.3))(react@19.2.3)
+      expo-crypto:
+        specifier: ~56.0.4
+        version: 56.0.4(expo@56.0.12)
       expo-document-picker:
         specifier: ~56.0.4
         version: 56.0.4(expo@56.0.12)
@@ -166,6 +169,9 @@ importers:
       expo-clipboard:
         specifier: ~56.0.4
         version: 56.0.4(expo@56.0.12)(react-native@0.85.3(@babel/core@7.29.0)(@types/react@19.2.15)(react@19.2.3))(react@19.2.3)
+      expo-crypto:
+        specifier: ~56.0.4
+        version: 56.0.4(expo@56.0.12)
       expo-document-picker:
         specifier: ~56.0.4
         version: 56.0.4(expo@56.0.12)
@@ -2972,6 +2978,11 @@ packages:
     peerDependencies:
       expo: '*'
       react-native: '*'
+
+  expo-crypto@56.0.4:
+    resolution: {integrity: sha512-fRNEhoXRXgAWBpe3/hq5X+KXTit3OZqdiAGts1YvNEUHQb+H5591mpPac0Yw+sZg9pXcrjRnzo5AxvZaENpc7g==}
+    peerDependencies:
+      expo: '*'
 
   expo-document-picker@56.0.4:
     resolution: {integrity: sha512-75Apf74XNkYYohObIH19VZw42xpe0gmEnPccuzGXKVAzlvTYCfibSgW17F+6vt4paOfZEnAoZ1QFZM6dmaujRA==}
@@ -8524,6 +8535,10 @@ snapshots:
       react-native: 0.85.3(@babel/core@7.29.0)(@types/react@19.2.15)(react@19.2.3)
     transitivePeerDependencies:
       - supports-color
+
+  expo-crypto@56.0.4(expo@56.0.12):
+    dependencies:
+      expo: 56.0.12(@babel/core@7.29.0)(@expo/dom-webview@56.0.5)(react-dom@19.2.6(react@19.2.3))(react-native@0.85.3(@babel/core@7.29.0)(@types/react@19.2.15)(react@19.2.3))(react@19.2.3)(typescript@6.0.3)
 
   expo-document-picker@56.0.4(expo@56.0.12):
     dependencies:
