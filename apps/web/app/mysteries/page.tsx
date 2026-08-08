@@ -35,6 +35,7 @@ import {
 import { normalizeMysteryArea } from "../../lib/mystery-area";
 import { MYSTERY_USERSCRIPT_VERSION } from "../../lib/mystery-userscript";
 import { bulkAttemptKey, parseBulkFailedAttempts, parseFailedCoordinateCsv } from "../../lib/mystery-bulk-attempts";
+import { automaticSyncRetryDelay } from "../../lib/mystery-sync-policy";
 
 type CheckState = "correct" | "wrong" | "unchecked" | "planned";
 type MysteryStatus = "solving" | "solved" | "planned";
@@ -155,7 +156,6 @@ const DEDUP_BACKUP_KEY = "geostats-mysteries-backup-before-dedup-v1";
 const DELETION_STORAGE_KEY = "geostats-mystery-deletions-v1";
 const DELETION_CHANNEL = "geostats-mystery-deletions";
 const MAX_REASONABLE_DISTANCE_KM = 3.2;
-const AUTOMATIC_SYNC_RETRY_DELAYS_MS = [5_000, 30_000] as const;
 
 function snapshotFingerprint(value: string) {
   let first = 2166136261;
@@ -653,16 +653,13 @@ export default function MysteriesPage() {
         syncRetryBatch.current = "";
       }).catch(() => {
         if (!active) return;
-        const retryDelay = AUTOMATIC_SYNC_RETRY_DELAYS_MS[syncRetryCount.current];
-        if (retryDelay !== undefined) {
-          syncRetryCount.current += 1;
-          setNotice("Saved offline; account sync will retry with reduced frequency.");
-          retryTimeout = window.setTimeout(() => {
-            setPersistedForSync([...persistedCaches.current]);
-          }, retryDelay);
-          return;
-        }
-        setNotice("Saved offline; account sync will resume after your next change or reconnect.");
+        const retryDelay = automaticSyncRetryDelay(syncRetryCount.current);
+        syncRetryCount.current += 1;
+        setNotice("Saved offline; account sync will retry with reduced frequency.");
+        retryTimeout = window.setTimeout(() => {
+          if (!navigator.onLine) return;
+          setPersistedForSync([...persistedCaches.current]);
+        }, retryDelay);
       });
     }, 400);
     return () => {
@@ -790,16 +787,13 @@ export default function MysteriesPage() {
         lastFailedServerLoadSnapshot.current = stableJsonStringify(
           latestCaches.current.filter((cache) => !cache.sharedBy).map(shareableMystery)
         );
-        const retryDelay = AUTOMATIC_SYNC_RETRY_DELAYS_MS[serverLoadRetryCount.current];
-        if (retryDelay !== undefined) {
-          serverLoadRetryCount.current += 1;
-          setNotice("Could not reach account sync; retrying with reduced frequency.");
-          retryTimeout = window.setTimeout(() => {
-            setServerLoadAttempt((attempt) => attempt + 1);
-          }, retryDelay);
-          return;
-        }
-        setNotice("Offline — mysteries will sync after your next change or reconnect.");
+        const retryDelay = automaticSyncRetryDelay(serverLoadRetryCount.current);
+        serverLoadRetryCount.current += 1;
+        setNotice("Could not reach account sync; retrying with reduced frequency.");
+        retryTimeout = window.setTimeout(() => {
+          if (!navigator.onLine) return;
+          setServerLoadAttempt((attempt) => attempt + 1);
+        }, retryDelay);
       });
     return () => {
       active = false;
