@@ -198,7 +198,11 @@ test("update creates an unshared server snapshot", async () => {
   const operations: string[] = [];
   let upsertInput: unknown;
   const transaction = {
-    $queryRaw: async () => {
+    $queryRaw: async (query: TemplateStringsArray) => {
+      if (query.join("?").includes("content_matches")) {
+        operations.push("comparison");
+        return [{ content_matches: true }];
+      }
       operations.push("lock");
       return [];
     },
@@ -244,7 +248,7 @@ test("update creates an unshared server snapshot", async () => {
   const result = await controller.update(owner, mystery.id, { mystery, revision: 1 });
 
   assert.deepEqual(result, { ok: true, revision: 1, mystery });
-  assert.deepEqual(operations, ["lock", "lock", "deletion", "duplicate", "existing", "count", "upsert", "readback"]);
+  assert.deepEqual(operations, ["lock", "lock", "deletion", "duplicate", "existing", "count", "upsert", "comparison", "readback"]);
   assert.deepEqual((upsertInput as any).create, {
     ownerId: owner.id,
     clientId: mystery.id,
@@ -333,6 +337,7 @@ test("an older in-flight update cannot overwrite a newer snapshot", async () => 
 
 test("an identical update does not advance the server revision", async () => {
   let updateCalls = 0;
+  let comparisonCalls = 0;
   const reorderedMystery = {
     attempts: [],
     sharedWith: [],
@@ -341,7 +346,13 @@ test("an identical update does not advance the server revision", async () => {
     id: mystery.id
   };
   const transaction = {
-    $queryRaw: async () => [],
+    $queryRaw: async (query: TemplateStringsArray) => {
+      if (query.join("?").includes("content_matches")) {
+        comparisonCalls += 1;
+        return [{ content_matches: true }];
+      }
+      return [];
+    },
     mysteryWorkspaceDeletion: { findUnique: async () => null },
     mysteryWorkspace: {
       findUnique: async (input: any) => input.select?.clientId
@@ -362,7 +373,8 @@ test("an identical update does not advance the server revision", async () => {
   const result = await controller.update(owner, mystery.id, { mystery, revision: 43 });
 
   assert.equal(updateCalls, 0);
-  assert.deepEqual(result, { ok: true, revision: 42, mystery });
+  assert.equal(comparisonCalls, 1);
+  assert.deepEqual(result, { ok: true, revision: 42, mystery: reorderedMystery });
 });
 
 test("delete removes only the owner's workspace so its grants cascade", async () => {
