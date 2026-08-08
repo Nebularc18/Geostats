@@ -278,14 +278,21 @@ export class MysteriesController {
           WHERE workspace.id = ${mystery.id}
             AND workspace.snapshot_revision < ${revision}
             AND workspace.data IS DISTINCT FROM requested.data
-          RETURNING workspace.id
+          RETURNING workspace.snapshot_revision AS revision,
+                    workspace.data AS mystery
         )
-        SELECT workspace.snapshot_revision AS revision,
-               workspace.data AS mystery,
-               workspace.data = requested.data AS content_matches
+        SELECT updated.revision,
+               updated.mystery,
+               TRUE AS content_matches
+        FROM updated
+        UNION ALL
+        SELECT workspace.snapshot_revision,
+               workspace.data,
+               workspace.data = requested.data
         FROM mystery_workspaces AS workspace
         CROSS JOIN requested
         WHERE workspace.id = ${mystery.id}
+          AND NOT EXISTS (SELECT 1 FROM updated)
       `;
       return {
         revision: stored?.revision ?? revision,

@@ -334,6 +334,41 @@ test("an older in-flight update cannot overwrite a newer snapshot", async () => 
   });
   assert.match(atomicQuery, /snapshot_revision < \?/);
   assert.match(atomicQuery, /data IS DISTINCT FROM requested\.data/);
+  assert.match(atomicQuery, /FROM updated[\s\S]*UNION ALL/);
+  assert.match(atomicQuery, /NOT EXISTS \(SELECT 1 FROM updated\)/);
+});
+
+test("a higher distinct update returns the updated CTE state", async () => {
+  let atomicQuery = "";
+  const updatedMystery = { ...mystery, notes: "Current notes" };
+  const transaction = {
+    $queryRaw: async (query: TemplateStringsArray) => {
+      const sql = query.join("?");
+      if (!sql.includes("content_matches")) return [];
+      atomicQuery = sql;
+      return [{ revision: 8, mystery: updatedMystery, content_matches: true }];
+    },
+    mysteryWorkspaceDeletion: { findUnique: async () => null },
+    mysteryWorkspace: {
+      findUnique: async (input: any) => input.select?.clientId
+        ? { clientId: mystery.id }
+        : null,
+      upsert: async () => ({ id: "workspace-1" })
+    }
+  };
+  const prisma = {
+    $transaction: async (callback: (tx: typeof transaction) => unknown) => callback(transaction)
+  };
+  const controller = new MysteriesController(prisma as any);
+
+  const result = await controller.update(owner, mystery.id, {
+    mystery: updatedMystery,
+    revision: 8
+  });
+
+  assert.deepEqual(result, { ok: true, revision: 8, mystery: updatedMystery });
+  assert.match(atomicQuery, /RETURNING workspace\.snapshot_revision AS revision,[\s\S]*workspace\.data AS mystery/);
+  assert.match(atomicQuery, /SELECT updated\.revision,[\s\S]*updated\.mystery/);
 });
 
 test("an identical update does not advance the server revision", async () => {
