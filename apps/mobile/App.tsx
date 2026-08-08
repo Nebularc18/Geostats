@@ -22,6 +22,11 @@ type PercentBucket = CountBucket & { percent: number };
 type CachePoint = { id: string; gcCode: string; name: string; cacheType: string | null; latitude: number; longitude: number; foundAt?: string; placedAt?: string; isOwnHide?: boolean };
 type ImportListItem = { id: string; fileName: string; source: string; status: string; createdAt: string; errorMessage: string | null };
 type AuthConfig = { mode: "dev" | "external" | "password"; providerName: string };
+type ServerProbeState = {
+  url: string | null;
+  status: "checking" | "connected" | "unreachable";
+  config: AuthConfig;
+};
 type ScratchLevel = "countries" | "regions" | "counties";
 type ScreenId = "dashboard" | "upload" | "imports" | "stats" | "ftf" | "hides" | "milestones" | "profileHtml" | "map" | "mysteries" | "travel" | "scratch" | "profile";
 type Session = { token: string; user: { id: string; email: string; username: string } };
@@ -90,6 +95,7 @@ const DEFAULT_API_URL = process.env.EXPO_PUBLIC_API_URL ?? (__DEV__ ? "http://10
 const ANDROID_MAP_PROVIDER = Platform.OS === "android" ? PROVIDER_GOOGLE : undefined;
 const TOKEN_KEY = "geostats_session";
 const SERVER_URL_KEY = "geostats_server_url";
+const DEFAULT_AUTH_CONFIG: AuthConfig = { mode: "password", providerName: "Home Auth" };
 const monthLabels = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const defaultTimeZone = "Europe/Stockholm";
 const defaultFtfTerms = ["FTF", "first to find"];
@@ -812,36 +818,47 @@ function AuthScreen({ apiBaseUrl, onApiBaseUrlChange, onSession }: { apiBaseUrl:
   const [email, setEmail] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
-  const [config, setConfig] = useState<AuthConfig>({ mode: "password", providerName: "Home Auth" });
   const [message, setMessage] = useState<string | null>(null);
   const [editingServer, setEditingServer] = useState(!apiBaseUrl);
-  const [serverStatus, setServerStatus] = useState<"checking" | "connected" | "unreachable">("checking");
-  useEffect(() => {
-    const timeout = setTimeout(() => {
-      try {
-        const nextUrl = normalizeServerUrl(serverUrl);
-        if (!nextUrl) {
-          setServerStatus("unreachable");
-          setConfig({ mode: "password", providerName: "Home Auth" });
-          return;
-        }
-        setServerStatus("checking");
-        void apiFetch<AuthConfig>(nextUrl, "/auth/config", null)
-          .then((nextConfig) => {
-            setConfig(nextConfig);
-            setServerStatus("connected");
-          })
-          .catch(() => {
-            setServerStatus("unreachable");
-            setConfig({ mode: "password", providerName: "Home Auth" });
-          });
-      } catch {
-        setServerStatus("unreachable");
-        setConfig({ mode: "password", providerName: "Home Auth" });
-      }
-    }, 350);
-    return () => clearTimeout(timeout);
+  const [serverProbe, setServerProbe] = useState<ServerProbeState>({ url: null, status: "checking", config: DEFAULT_AUTH_CONFIG });
+  const serverProbeId = useRef(0);
+  const normalizedServerUrl = useMemo(() => {
+    try {
+      return normalizeServerUrl(serverUrl);
+    } catch {
+      return null;
+    }
   }, [serverUrl]);
+  const serverProbeMatches = serverProbe.url === normalizedServerUrl;
+  const serverStatus = serverProbeMatches ? serverProbe.status : normalizedServerUrl ? "checking" : "unreachable";
+  const config = serverProbeMatches && serverProbe.status === "connected" ? serverProbe.config : DEFAULT_AUTH_CONFIG;
+  useEffect(() => {
+    const probeId = ++serverProbeId.current;
+    const controller = new AbortController();
+    if (!normalizedServerUrl) {
+      setServerProbe({ url: null, status: "unreachable", config: DEFAULT_AUTH_CONFIG });
+      return () => {
+        if (serverProbeId.current === probeId) serverProbeId.current += 1;
+      };
+    }
+    setServerProbe({ url: normalizedServerUrl, status: "checking", config: DEFAULT_AUTH_CONFIG });
+    const timeout = setTimeout(() => {
+      void apiFetch<AuthConfig>(normalizedServerUrl, "/auth/config", null, { signal: controller.signal })
+        .then((nextConfig) => {
+          if (serverProbeId.current !== probeId || controller.signal.aborted) return;
+          setServerProbe({ url: normalizedServerUrl, status: "connected", config: nextConfig });
+        })
+        .catch(() => {
+          if (serverProbeId.current !== probeId || controller.signal.aborted) return;
+          setServerProbe({ url: normalizedServerUrl, status: "unreachable", config: DEFAULT_AUTH_CONFIG });
+        });
+    }, 350);
+    return () => {
+      clearTimeout(timeout);
+      controller.abort();
+      if (serverProbeId.current === probeId) serverProbeId.current += 1;
+    };
+  }, [normalizedServerUrl]);
   async function saveServerUrl(): Promise<string | null> {
     let nextUrl: string;
     try {
@@ -849,6 +866,10 @@ function AuthScreen({ apiBaseUrl, onApiBaseUrlChange, onSession }: { apiBaseUrl:
     } catch (error) {
       setMessage(null);
       Alert.alert("Server URL required", error instanceof Error ? error.message : String(error));
+      return null;
+    }
+    if (serverProbe.url !== nextUrl || serverProbe.status !== "connected") {
+      Alert.alert("Server not connected", "Check the address and wait for a successful connection before saving it.");
       return null;
     }
     const savedToken = await SecureStore.getItemAsync(TOKEN_KEY);
@@ -880,10 +901,6 @@ function AuthScreen({ apiBaseUrl, onApiBaseUrlChange, onSession }: { apiBaseUrl:
   async function toggleServerEditor() {
     if (!editingServer) {
       setEditingServer(true);
-      return;
-    }
-    if (serverStatus !== "connected") {
-      Alert.alert("Server not connected", "Check the address and wait for a successful connection before saving it.");
       return;
     }
     await saveServerUrl();
