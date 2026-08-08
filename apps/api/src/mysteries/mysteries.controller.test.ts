@@ -201,7 +201,7 @@ test("update creates an unshared server snapshot", async () => {
     $queryRaw: async (query: TemplateStringsArray) => {
       if (query.join("?").includes("content_matches")) {
         operations.push("comparison");
-        return [{ content_matches: true }];
+        return [{ revision: 1, mystery, content_matches: true }];
       }
       operations.push("lock");
       return [];
@@ -222,8 +222,7 @@ test("update creates an unshared server snapshot", async () => {
           operations.push("existing");
           return null;
         }
-        operations.push("readback");
-        return { snapshotRevision: 1, data: mystery };
+        throw new Error("Unexpected mystery readback");
       },
       count: async () => {
         operations.push("count");
@@ -232,11 +231,7 @@ test("update creates an unshared server snapshot", async () => {
       upsert: async (input: unknown) => {
         operations.push("upsert");
         upsertInput = input;
-        return { id: "workspace-1", data: mystery };
-      },
-      updateMany: async () => {
-        operations.push("update");
-        return { count: 0 };
+        return { id: "workspace-1" };
       }
     }
   };
@@ -248,7 +243,7 @@ test("update creates an unshared server snapshot", async () => {
   const result = await controller.update(owner, mystery.id, { mystery, revision: 1 });
 
   assert.deepEqual(result, { ok: true, revision: 1, mystery });
-  assert.deepEqual(operations, ["lock", "lock", "deletion", "duplicate", "existing", "count", "upsert", "comparison", "readback"]);
+  assert.deepEqual(operations, ["lock", "lock", "deletion", "duplicate", "existing", "count", "upsert", "comparison"]);
   assert.deepEqual((upsertInput as any).create, {
     ownerId: owner.id,
     clientId: mystery.id,
@@ -300,21 +295,26 @@ test("update locks both the GC code and client identity before checking tombston
 });
 
 test("an older in-flight update cannot overwrite a newer snapshot", async () => {
-  let updateInput: unknown;
+  let atomicQuery = "";
   const transaction = {
-    $queryRaw: async () => [],
+    $queryRaw: async (query: TemplateStringsArray) => {
+      const sql = query.join("?");
+      if (!sql.includes("content_matches")) return [];
+      atomicQuery = sql;
+      return [{
+        revision: 2,
+        mystery: { ...mystery, notes: "Newer notes" },
+        content_matches: false
+      }];
+    },
     mysteryWorkspaceDeletion: {
       findUnique: async () => null
     },
     mysteryWorkspace: {
-      upsert: async () => ({ id: "workspace-1", data: { ...mystery, notes: "Newer notes" } }),
-      updateMany: async (input: unknown) => {
-        updateInput = input;
-        return { count: 0 };
-      },
+      upsert: async () => ({ id: "workspace-1" }),
       findUnique: async (input: any) => input.select?.clientId
         ? { clientId: mystery.id }
-        : { snapshotRevision: 2, data: { ...mystery, notes: "Newer notes" } }
+        : null
     }
   };
   const prisma = {
@@ -332,11 +332,11 @@ test("an older in-flight update cannot overwrite a newer snapshot", async () => 
     revision: 2,
     mystery: { ...mystery, notes: "Newer notes" }
   });
-  assert.deepEqual((updateInput as any).where.snapshotRevision, { lt: 1 });
+  assert.match(atomicQuery, /snapshot_revision < \?/);
+  assert.match(atomicQuery, /data IS DISTINCT FROM requested\.data/);
 });
 
 test("an identical update does not advance the server revision", async () => {
-  let updateCalls = 0;
   let comparisonCalls = 0;
   const reorderedMystery = {
     attempts: [],
@@ -349,7 +349,7 @@ test("an identical update does not advance the server revision", async () => {
     $queryRaw: async (query: TemplateStringsArray) => {
       if (query.join("?").includes("content_matches")) {
         comparisonCalls += 1;
-        return [{ content_matches: true }];
+        return [{ revision: 42, mystery, content_matches: true }];
       }
       return [];
     },
@@ -357,12 +357,8 @@ test("an identical update does not advance the server revision", async () => {
     mysteryWorkspace: {
       findUnique: async (input: any) => input.select?.clientId
         ? { clientId: mystery.id }
-        : { snapshotRevision: 42, data: mystery },
-      upsert: async () => ({ id: "workspace-1", data: reorderedMystery }),
-      updateMany: async () => {
-        updateCalls += 1;
-        return { count: 1 };
-      }
+        : null,
+      upsert: async () => ({ id: "workspace-1" })
     }
   };
   const prisma = {
@@ -372,7 +368,6 @@ test("an identical update does not advance the server revision", async () => {
 
   const result = await controller.update(owner, mystery.id, { mystery, revision: 43 });
 
-  assert.equal(updateCalls, 0);
   assert.equal(comparisonCalls, 1);
   assert.deepEqual(result, { ok: true, revision: 42, mystery: reorderedMystery });
 });
