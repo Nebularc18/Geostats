@@ -24,6 +24,7 @@ import {
 } from "lucide-react";
 import { AppShell } from "../../components/app-shell";
 import { apiFetch } from "../../lib/api";
+import { mergeMysteryAttempts, mergeMysteryCaches } from "../../lib/mystery-cache-merge";
 import { normalizeMysteryArea } from "../../lib/mystery-area";
 import { MYSTERY_USERSCRIPT_VERSION } from "../../lib/mystery-userscript";
 
@@ -259,10 +260,10 @@ function verifiedStoredShares(caches: MysteryCache[]) {
       : [],
     clues: Array.isArray(cache.clues) ? cache.clues.filter((clue): clue is string => typeof clue === "string") : [],
     attempts: Array.isArray(cache.attempts)
-      ? cache.attempts.map((attempt): CoordinateAttempt => ({
+      ? mergeMysteryAttempts(cache.attempts.map((attempt): CoordinateAttempt => ({
           ...attempt,
           state: attempt.state === "correct" || attempt.state === "wrong" ? attempt.state : "unchecked"
-        }))
+        })))
       : [],
     sharedWith: Array.isArray(cache.sharedWith) ? cache.sharedWith.filter(isAppUser) : []
   }));
@@ -280,35 +281,7 @@ function verifiedStoredShares(caches: MysteryCache[]) {
       continue;
     }
 
-    const attempts = new Map<string, CoordinateAttempt>();
-    for (const attempt of [...existing.attempts, ...cache.attempts]) {
-      const submitted = inputCoordinate(attempt);
-      const revealed = revealedCoordinate(attempt);
-      const attemptKey = attemptKind(attempt) === "keyword"
-        ? `keyword:${attempt.answer?.trim().toLocaleLowerCase()}:${attempt.state}:${revealed?.latitude}:${revealed?.longitude}`
-        : `coordinate:${submitted?.latitude}:${submitted?.longitude}:${attempt.state}:${revealed?.latitude}:${revealed?.longitude}`;
-      const previous = attempts.get(attemptKey);
-      attempts.set(attemptKey, previous?.geocachingSyncedAt ? previous : attempt);
-    }
-    const sharedWith = new Map([...existing.sharedWith, ...cache.sharedWith].map((user) => [user.id, user]));
-    const statusRank: Record<MysteryStatus, number> = { solving: 0, planned: 1, solved: 2 };
-
-    merged.set(key, {
-      ...existing,
-      name: existing.name || cache.name,
-      area: existing.area || cache.area,
-      county: existing.county || cache.county,
-      country: existing.country || cache.country,
-      region: existing.region || cache.region,
-      locality: existing.locality || cache.locality,
-      locationHierarchy: existing.locationHierarchy?.length ? existing.locationHierarchy : cache.locationHierarchy,
-      status: statusRank[cache.status] > statusRank[existing.status] ? cache.status : existing.status,
-      notes: (cache.notes?.length ?? 0) > (existing.notes?.length ?? 0) ? cache.notes : existing.notes,
-      clues: [...new Set([...existing.clues, ...cache.clues])],
-      attempts: [...attempts.values()],
-      sharedWith: [...sharedWith.values()],
-      image: existing.image || cache.image
-    });
+    merged.set(key, mergeMysteryCaches(existing, cache));
   }
   return [...merged.values()];
 }
@@ -559,10 +532,19 @@ export default function MysteriesPage() {
 
   useEffect(() => {
     if (!ready || !serverSyncReady || !persistedForSync) return;
+    const currentOwnedByGcCode = new Map(latestCaches.current
+      .filter((cache) => !cache.sharedBy)
+      .map((cache) => [cache.gcCode.trim().toUpperCase(), cache]));
     const pendingCaches = persistedForSync.flatMap((cache) => {
       if (cache.sharedBy || deletedCacheIds.current.has(cache.id)) return [];
-      const serialized = JSON.stringify(shareableMystery(cache));
-      return serverSnapshots.current.get(cache.id) === serialized ? [] : [{ cache, serialized }];
+      // A reconnect can replace an offline-generated ID with the server's ID.
+      // Never submit the stale identity after that cache has been reconciled.
+      const canonicalCache = currentOwnedByGcCode.get(cache.gcCode.trim().toUpperCase());
+      if (!canonicalCache || canonicalCache.id !== cache.id) return [];
+      const serialized = JSON.stringify(shareableMystery(canonicalCache));
+      return serverSnapshots.current.get(canonicalCache.id) === serialized
+        ? []
+        : [{ cache: canonicalCache, serialized }];
     });
     if (!pendingCaches.length) return;
 
@@ -581,13 +563,12 @@ export default function MysteriesPage() {
           rememberServerSnapshot(cache.id, revision, storedSerialized);
           if (storedSerialized !== serialized) {
             const authoritative = verifiedStoredShares([{ ...mystery, sharedWith: cache.sharedWith }])[0];
-            setCaches((current) => current.flatMap((item) => item.id === cache.id
-              ? [
-                  authoritative,
-                  { ...shareableMystery(item), id: newId(), name: `${item.name} (device edits)`, sharedWith: [] }
-                ]
-              : [item]));
-            setNotice(`A newer ${cache.gcCode} was already on the server. Your device edits were preserved as a separate copy.`);
+            setCaches((current) => verifiedStoredShares(current.map((item) => {
+              if (item.id !== cache.id) return item;
+              const merged = verifiedStoredShares([authoritative, item])[0];
+              return { ...merged, id: authoritative.id, sharedWith: authoritative.sharedWith };
+            })));
+            setNotice(`Merged offline and server changes for ${cache.gcCode}.`);
           }
         });
       })).catch(() => {
@@ -659,7 +640,7 @@ export default function MysteriesPage() {
         const current = latestCaches.current;
         const currentById = new Map(current.filter((cache) => !cache.sharedBy).map((cache) => [cache.id, cache]));
         const currentByGcCode = new Map(current.filter((cache) => !cache.sharedBy).map((cache) => [cache.gcCode.trim().toUpperCase(), cache]));
-        const conflictCopies: MysteryCache[] = [];
+        let mergedConflictCount = 0;
         const reconciledOwned = ownedEntries.map(({ cache: serverCache, revision, serialized: serverSerialized }) => {
           const currentCache = currentById.get(serverCache.id) ?? currentByGcCode.get(serverCache.gcCode);
           if (!currentCache) return serverCache;
@@ -668,11 +649,11 @@ export default function MysteriesPage() {
             snapshotRevisions.current.delete(currentCache.id);
             syncMetadata.current.delete(currentCache.id);
             shareMutationRevisions.current.delete(currentCache.id);
-            return {
-              ...currentCache,
-              id: serverCache.id,
-              sharedWith: serverCache.sharedWith
-            };
+            const merged = verifiedStoredShares([
+              serverCache,
+              { ...currentCache, id: serverCache.id, sharedWith: serverCache.sharedWith }
+            ])[0];
+            return { ...merged, id: serverCache.id, sharedWith: serverCache.sharedWith };
           }
           const currentSerialized = JSON.stringify(shareableMystery(currentCache));
           const requestSerialized = ownedAtRequest.get(serverCache.id);
@@ -686,12 +667,9 @@ export default function MysteriesPage() {
           const changedDuringRequest = requestSerialized !== undefined && currentSerialized !== requestSerialized;
           if ((localChanged || changedDuringRequest) && !serverChanged) return currentCache;
           if (localChanged || changedDuringRequest) {
-            conflictCopies.push({
-              ...shareableMystery(currentCache),
-              id: newId(),
-              name: `${currentCache.name} (device edits)`,
-              sharedWith: []
-            });
+            mergedConflictCount += 1;
+            const merged = verifiedStoredShares([serverCache, currentCache])[0];
+            return { ...merged, id: serverCache.id, sharedWith: serverCache.sharedWith };
           }
           return serverCache;
         });
@@ -705,9 +683,9 @@ export default function MysteriesPage() {
         const receivedShares = current.filter((cache) =>
           cache.sharedBy && !deletedCacheIds.current.has(cache.id)
         );
-        setCaches([...reconciledOwned, ...conflictCopies, ...localOnly, ...receivedShares]);
-        if (conflictCopies.length) {
-          setNotice(`${conflictCopies.length} local ${conflictCopies.length === 1 ? "edit was" : "edits were"} preserved as a separate device copy because the server also changed.`);
+        setCaches(verifiedStoredShares([...reconciledOwned, ...localOnly, ...receivedShares]));
+        if (mergedConflictCount) {
+          setNotice(`Merged offline and server changes for ${mergedConflictCount} ${mergedConflictCount === 1 ? "cache" : "caches"}.`);
         }
         setServerSyncReady(true);
       })
