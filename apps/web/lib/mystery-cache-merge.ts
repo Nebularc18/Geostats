@@ -43,6 +43,21 @@ export type MysteryCacheMergeOptions = {
   preserveImageConflict?: boolean;
 };
 
+/** Serialize JSON content independently of object property insertion order. */
+export function stableJsonStringify(value: unknown): string {
+  return JSON.stringify(value, (_key, nestedValue: unknown) => {
+    if (!nestedValue || typeof nestedValue !== "object" || Array.isArray(nestedValue)) {
+      return nestedValue;
+    }
+    return Object.keys(nestedValue as Record<string, unknown>)
+      .sort()
+      .reduce<Record<string, unknown>>((sorted, key) => {
+        sorted[key] = (nestedValue as Record<string, unknown>)[key];
+        return sorted;
+      }, {});
+  }) ?? "undefined";
+}
+
 /** A device field can win only when a baseline exists and proves it changed. */
 export function fieldChangedSinceBaseline(currentFingerprint: string, baselineFingerprint?: string) {
   return typeof baselineFingerprint === "string" && currentFingerprint !== baselineFingerprint;
@@ -63,9 +78,13 @@ export function fieldMergeDecision(
   };
 }
 
-function coordinateKey(latitude: unknown, longitude: unknown) {
+export function coordinateIdentityKey(latitude: unknown, longitude: unknown) {
+  // Geocaching coordinates are displayed and entered to 0.001 minutes. Values
+  // can acquire smaller floating-point differences on different devices, so
+  // key them at the precision users can actually distinguish in the UI.
+  const displayedUnits = (value: number) => Math.sign(value) * Math.round(Math.abs(value) * 60_000);
   return Number.isFinite(latitude) && Number.isFinite(longitude)
-    ? `${latitude}:${longitude}`
+    ? `${displayedUnits(latitude as number)}:${displayedUnits(longitude as number)}`
     : "";
 }
 
@@ -74,7 +93,7 @@ function attemptKey(attempt: MergeableMysteryAttempt) {
     const answer = attempt.answer?.trim().toLocaleLowerCase();
     return answer ? `${attempt.kind}:${answer}` : `id:${attempt.id}`;
   }
-  const coordinate = coordinateKey(attempt.latitude, attempt.longitude);
+  const coordinate = coordinateIdentityKey(attempt.latitude, attempt.longitude);
   return coordinate ? `coordinate:${coordinate}` : `id:${attempt.id}`;
 }
 

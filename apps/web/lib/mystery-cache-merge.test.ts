@@ -5,9 +5,26 @@ import {
   fieldMergeDecision,
   mergeMysteryAttempts,
   mergeMysteryCaches,
+  stableJsonStringify,
   type MergeableMysteryAttempt,
   type MergeableMysteryCache
 } from "./mystery-cache-merge.ts";
+
+test("compares snapshots by JSON content instead of property insertion order", () => {
+  const first = {
+    id: "cache-1",
+    details: { notes: "same", image: null },
+    attempts: [{ id: "attempt-1", state: "wrong" }]
+  };
+  const reordered = {
+    attempts: [{ state: "wrong", id: "attempt-1" }],
+    details: { image: null, notes: "same" },
+    id: "cache-1"
+  };
+
+  assert.notEqual(JSON.stringify(first), JSON.stringify(reordered));
+  assert.equal(stableJsonStringify(first), stableJsonStringify(reordered));
+});
 
 function attempt(overrides: Partial<MergeableMysteryAttempt>): MergeableMysteryAttempt {
   return {
@@ -64,6 +81,26 @@ test("merges duplicate offline and server coordinates into one attempt", () => {
     finalLatitude: 59.41,
     finalLongitude: 18.31
   }));
+});
+
+test("merges coordinate values that differ below displayed geocaching precision", () => {
+  const merged = mergeMysteryAttempts([
+    attempt({ id: "server-attempt", latitude: 56.1333331, longitude: 15.2500001 }),
+    attempt({ id: "device-attempt", latitude: 56.1333334, longitude: 15.2500004, state: "correct" })
+  ]);
+
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0]?.id, "server-attempt");
+  assert.equal(merged[0]?.state, "correct");
+});
+
+test("keeps coordinates that differ by one displayed thousandth of a minute", () => {
+  const merged = mergeMysteryAttempts([
+    attempt({ id: "first", latitude: 56.133333, longitude: 15.25 }),
+    attempt({ id: "second", latitude: 56.13335, longitude: 15.25 })
+  ]);
+
+  assert.equal(merged.length, 2);
 });
 
 test("keeps every distinct coordinate while preserving sync confirmation", () => {

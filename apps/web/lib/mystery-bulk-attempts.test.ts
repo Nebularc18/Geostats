@@ -26,6 +26,14 @@ test("bulk failed tries deduplicate case-insensitively and report explicit bad c
   assert.deepEqual(result.errors, ["Line 3: invalid coordinate"]);
 });
 
+test("bulk failed tries deduplicate coordinates at displayed precision", () => {
+  const result = parseBulkFailedAttempts("56.1333331, 15.2500001\n56.1333334, 15.2500004");
+
+  assert.deepEqual(result.attempts, [
+    { kind: "coordinate", latitude: 56.1333331, longitude: 15.2500001 }
+  ]);
+});
+
 test("coordinate CSV import reads latitude and longitude columns and ignores other data", () => {
   const result = parseFailedCoordinateCsv(`GC Code,Name,Latitude,Longitude,Notes
 GC12345,First,59.40582,18.36120,wrong checker result

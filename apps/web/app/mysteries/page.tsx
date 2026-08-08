@@ -28,6 +28,7 @@ import {
   fieldMergeDecision,
   mergeMysteryAttempts,
   mergeMysteryCaches,
+  stableJsonStringify,
   type MysteryCacheMergeOptions
 } from "../../lib/mystery-cache-merge";
 import { normalizeMysteryArea } from "../../lib/mystery-area";
@@ -268,13 +269,13 @@ function isAppUser(value: unknown): value is AppUser {
 }
 
 function mysteryFieldFingerprint(value: unknown) {
-  return snapshotFingerprint(JSON.stringify(value ?? null));
+  return snapshotFingerprint(stableJsonStringify(value ?? null));
 }
 
 function deviceMergeOptions(cache: MysteryCache, serverCache: MysteryCache, metadata: MysterySyncMetadata | undefined): MysteryCacheMergeOptions {
   const hasNotesBaseline = typeof metadata?.notesFingerprint === "string";
   const hasImageBaseline = typeof metadata?.imageFingerprint === "string";
-  const localSnapshotChanged = !metadata || snapshotFingerprint(JSON.stringify(shareableMystery(cache))) !== metadata.fingerprint;
+  const localSnapshotChanged = !metadata || snapshotFingerprint(stableJsonStringify(shareableMystery(cache))) !== metadata.fingerprint;
   const notesDecision = fieldMergeDecision(
     mysteryFieldFingerprint(cache.notes),
     mysteryFieldFingerprint(serverCache.notes),
@@ -609,14 +610,13 @@ export default function MysteriesPage() {
       // Never submit the stale identity after that cache has been reconciled.
       const canonicalCache = currentOwnedByGcCode.get(cache.gcCode.trim().toUpperCase());
       if (!canonicalCache || canonicalCache.id !== cache.id) return [];
-      const serialized = JSON.stringify(shareableMystery(canonicalCache));
+      const serialized = stableJsonStringify(shareableMystery(canonicalCache));
       return serverSnapshots.current.get(canonicalCache.id) === serialized
         ? []
         : [{ cache: canonicalCache, serialized }];
     });
     if (!pendingCaches.length) return;
 
-    let retryTimeout: number | undefined;
     const timeout = window.setTimeout(() => {
       void Promise.all(pendingCaches.map(({ cache, serialized }) => {
         const requestedRevision = nextSnapshotRevision(cache.id);
@@ -628,7 +628,7 @@ export default function MysteriesPage() {
             revision: requestedRevision
           })
         }).then(({ revision, mystery }) => {
-          const storedSerialized = JSON.stringify(mystery);
+          const storedSerialized = stableJsonStringify(mystery);
           rememberServerSnapshot(cache.id, revision, storedSerialized);
           if (storedSerialized !== serialized) {
             const authoritative = verifiedStoredShares([{ ...mystery, sharedWith: cache.sharedWith }])[0];
@@ -641,15 +641,11 @@ export default function MysteriesPage() {
           }
         });
       })).catch(() => {
-        setNotice("Saved offline; account sync will retry.");
-        retryTimeout = window.setTimeout(() => {
-          setPersistedForSync([...persistedCaches.current]);
-        }, 3000);
+        setNotice("Saved offline; account sync will resume after your next change or reconnect.");
       });
     }, 400);
     return () => {
       window.clearTimeout(timeout);
-      if (retryTimeout) window.clearTimeout(retryTimeout);
     };
   }, [persistedForSync, ready, serverSyncReady]);
 
@@ -658,7 +654,7 @@ export default function MysteriesPage() {
     let active = true;
     const ownedAtRequest = new Map(caches.filter((cache) => !cache.sharedBy).map((cache) => [
       cache.id,
-      JSON.stringify(shareableMystery(cache))
+      stableJsonStringify(shareableMystery(cache))
     ]));
     const knownSyncMetadata = new Map(syncMetadata.current);
     void apiFetch<{ mysteries: SharedMysteryGrant[] }>("/mysteries/shared")
@@ -701,7 +697,7 @@ export default function MysteriesPage() {
             id: clientId,
             sharedWith: Array.isArray(sharedWith) ? sharedWith.filter(isAppUser) : []
           }])[0];
-          const serialized = JSON.stringify(shareableMystery(cache));
+          const serialized = stableJsonStringify(shareableMystery(cache));
           return [{ cache, revision, serialized }];
         });
         const serverIds = new Set(ownedEntries.map(({ cache }) => cache.id));
@@ -726,7 +722,7 @@ export default function MysteriesPage() {
             ], mergeOptions)[0];
             return { ...merged, id: serverCache.id, sharedWith: serverCache.sharedWith };
           }
-          const currentSerialized = JSON.stringify(shareableMystery(currentCache));
+          const currentSerialized = stableJsonStringify(shareableMystery(currentCache));
           const requestSerialized = ownedAtRequest.get(serverCache.id);
           const localChanged = metadata
             ? snapshotFingerprint(currentSerialized) !== metadata.fingerprint
@@ -771,12 +767,8 @@ export default function MysteriesPage() {
   useEffect(() => {
     const retryServerLoad = () => setServerLoadAttempt((attempt) => attempt + 1);
     window.addEventListener("online", retryServerLoad);
-    window.addEventListener("focus", retryServerLoad);
-    const interval = window.setInterval(retryServerLoad, 60_000);
     return () => {
       window.removeEventListener("online", retryServerLoad);
-      window.removeEventListener("focus", retryServerLoad);
-      window.clearInterval(interval);
     };
   }, []);
 

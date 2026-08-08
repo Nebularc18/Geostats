@@ -1,4 +1,5 @@
 import { parseCoordinate } from "@geostats/shared";
+import { coordinateIdentityKey } from "./mystery-cache-merge.ts";
 
 export type BulkFailedAttempt =
   | { kind: "coordinate"; latitude: number; longitude: number }
@@ -14,7 +15,7 @@ export type BulkAttemptLike = {
 export function bulkAttemptKey(attempt: BulkAttemptLike) {
   const kind = attempt.kind === "keyword" || attempt.kind === "approach" ? attempt.kind : "coordinate";
   return kind === "coordinate"
-    ? `coordinate:${Number(attempt.latitude).toFixed(6)}:${Number(attempt.longitude).toFixed(6)}`
+    ? `coordinate:${coordinateIdentityKey(attempt.latitude, attempt.longitude)}`
     : `${kind}:${attempt.answer?.trim().toLocaleLowerCase() ?? ""}`;
 }
 
