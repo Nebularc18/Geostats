@@ -43,6 +43,21 @@ export type MysteryCacheMergeOptions = {
   preserveImageConflict?: boolean;
 };
 
+/** Serialize JSON content independently of object property insertion order. */
+export function stableJsonStringify(value: unknown): string {
+  return JSON.stringify(value, (_key, nestedValue: unknown) => {
+    if (!nestedValue || typeof nestedValue !== "object" || Array.isArray(nestedValue)) {
+      return nestedValue;
+    }
+    return Object.keys(nestedValue as Record<string, unknown>)
+      .sort()
+      .reduce<Record<string, unknown>>((sorted, key) => {
+        sorted[key] = (nestedValue as Record<string, unknown>)[key];
+        return sorted;
+      }, {});
+  }) ?? "undefined";
+}
+
 /** A device field can win only when a baseline exists and proves it changed. */
 export function fieldChangedSinceBaseline(currentFingerprint: string, baselineFingerprint?: string) {
   return typeof baselineFingerprint === "string" && currentFingerprint !== baselineFingerprint;
@@ -63,9 +78,21 @@ export function fieldMergeDecision(
   };
 }
 
-function coordinateKey(latitude: unknown, longitude: unknown) {
+export function formatMysteryCoordinate(latitude: number, longitude: number, minuteDecimals = 3) {
+  const part = (value: number, positive: string, negative: string, degrees: number) => {
+    const absolute = Math.abs(value);
+    const wholeDegrees = Math.floor(absolute);
+    const minutes = (absolute - wholeDegrees) * 60;
+    return `${value >= 0 ? positive : negative} ${String(wholeDegrees).padStart(degrees, "0")}° ${minutes.toFixed(minuteDecimals)}'`;
+  };
+  return `${part(latitude, "N", "S", 2)}  ${part(longitude, "E", "W", 3)}`;
+}
+
+export function coordinateIdentityKey(latitude: unknown, longitude: unknown) {
+  // Attempt labels show four decimal-minute digits. Derive identity from that
+  // exact representation so visibly distinct coordinates can never collapse.
   return Number.isFinite(latitude) && Number.isFinite(longitude)
-    ? `${latitude}:${longitude}`
+    ? formatMysteryCoordinate(latitude as number, longitude as number, 4)
     : "";
 }
 
@@ -74,7 +101,7 @@ function attemptKey(attempt: MergeableMysteryAttempt) {
     const answer = attempt.answer?.trim().toLocaleLowerCase();
     return answer ? `${attempt.kind}:${answer}` : `id:${attempt.id}`;
   }
-  const coordinate = coordinateKey(attempt.latitude, attempt.longitude);
+  const coordinate = coordinateIdentityKey(attempt.latitude, attempt.longitude);
   return coordinate ? `coordinate:${coordinate}` : `id:${attempt.id}`;
 }
 

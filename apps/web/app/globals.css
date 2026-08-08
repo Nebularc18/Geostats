@@ -3218,7 +3218,7 @@ select:focus {
 
 .attempt-result-group > div:last-child {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(125px, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   align-content: start;
   gap: 5px;
   max-height: 28rem;
@@ -3238,12 +3238,11 @@ select:focus {
 }
 
 .attempt-result-group > div:last-child strong {
-  overflow: hidden;
   color: var(--ink);
   font-family: "Cascadia Mono", "Consolas", monospace;
   font-size: 0.65rem;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .attempt-search-result {
@@ -3329,21 +3328,19 @@ select:focus {
 }
 
 .attempt-row > span:nth-child(2) em {
-  overflow: hidden;
   color: var(--green);
   font-family: "Cascadia Mono", "Consolas", monospace;
   font-size: 0.66rem;
   font-style: normal;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .attempt-row strong {
-  overflow: hidden;
   font-family: "Cascadia Mono", "Consolas", monospace;
   font-size: 0.73rem;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .attempt-row small {

@@ -3,11 +3,29 @@ import test from "node:test";
 import {
   fieldChangedSinceBaseline,
   fieldMergeDecision,
+  formatMysteryCoordinate,
   mergeMysteryAttempts,
   mergeMysteryCaches,
+  stableJsonStringify,
   type MergeableMysteryAttempt,
   type MergeableMysteryCache
 } from "./mystery-cache-merge.ts";
+
+test("compares snapshots by JSON content instead of property insertion order", () => {
+  const first = {
+    id: "cache-1",
+    details: { notes: "same", image: null },
+    attempts: [{ id: "attempt-1", state: "wrong" }]
+  };
+  const reordered = {
+    attempts: [{ state: "wrong", id: "attempt-1" }],
+    details: { image: null, notes: "same" },
+    id: "cache-1"
+  };
+
+  assert.notEqual(JSON.stringify(first), JSON.stringify(reordered));
+  assert.equal(stableJsonStringify(first), stableJsonStringify(reordered));
+});
 
 function attempt(overrides: Partial<MergeableMysteryAttempt>): MergeableMysteryAttempt {
   return {
@@ -64,6 +82,47 @@ test("merges duplicate offline and server coordinates into one attempt", () => {
     finalLatitude: 59.41,
     finalLongitude: 18.31
   }));
+});
+
+test("merges coordinate values that are identical at mobile display precision", () => {
+  const merged = mergeMysteryAttempts([
+    attempt({ id: "server-attempt", latitude: 56.1333331, longitude: 15.2500001 }),
+    attempt({ id: "device-attempt", latitude: 56.1333334, longitude: 15.2500004, state: "correct" })
+  ]);
+
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0]?.id, "server-attempt");
+  assert.equal(merged[0]?.state, "correct");
+});
+
+test("keeps coordinates that differ by one displayed thousandth of a minute", () => {
+  const merged = mergeMysteryAttempts([
+    attempt({ id: "first", latitude: 56.133333, longitude: 15.25 }),
+    attempt({ id: "second", latitude: 56.13335, longitude: 15.25 })
+  ]);
+
+  assert.equal(merged.length, 2);
+});
+
+test("keeps coordinates that mobile displays as distinct five-decimal values", () => {
+  const merged = mergeMysteryAttempts([
+    attempt({ id: "first", latitude: 56.000009, longitude: 15.25 }),
+    attempt({ id: "second", latitude: 56.000019, longitude: 15.25 })
+  ]);
+
+  assert.equal(merged.length, 2);
+});
+
+test("keeps coordinates on opposite four-decimal-minute display boundaries", () => {
+  const first = attempt({ id: "first", latitude: 56, longitude: 15.25 });
+  const second = attempt({ id: "second", latitude: 56.00000166666667, longitude: 15.25 });
+
+  assert.notEqual(
+    formatMysteryCoordinate(first.latitude!, first.longitude!, 4),
+    formatMysteryCoordinate(second.latitude!, second.longitude!, 4)
+  );
+  assert.equal(first.latitude!.toFixed(5), second.latitude!.toFixed(5));
+  assert.equal(mergeMysteryAttempts([first, second]).length, 2);
 });
 
 test("keeps every distinct coordinate while preserving sync confirmation", () => {

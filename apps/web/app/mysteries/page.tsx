@@ -26,13 +26,16 @@ import { AppShell } from "../../components/app-shell";
 import { apiFetch } from "../../lib/api";
 import {
   fieldMergeDecision,
+  formatMysteryCoordinate as formatCoordinate,
   mergeMysteryAttempts,
   mergeMysteryCaches,
+  stableJsonStringify,
   type MysteryCacheMergeOptions
 } from "../../lib/mystery-cache-merge";
 import { normalizeMysteryArea } from "../../lib/mystery-area";
 import { MYSTERY_USERSCRIPT_VERSION } from "../../lib/mystery-userscript";
 import { bulkAttemptKey, parseBulkFailedAttempts, parseFailedCoordinateCsv } from "../../lib/mystery-bulk-attempts";
+import { automaticSyncRetryDelay } from "../../lib/mystery-sync-policy";
 
 type CheckState = "correct" | "wrong" | "unchecked" | "planned";
 type MysteryStatus = "solving" | "solved" | "planned";
@@ -176,16 +179,6 @@ function distanceKm(lat1: number, lon1: number, lat2: number, lon2: number) {
   return earthRadiusKm * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-function formatCoordinate(latitude: number, longitude: number) {
-  const part = (value: number, positive: string, negative: string, degrees: number) => {
-    const absolute = Math.abs(value);
-    const wholeDegrees = Math.floor(absolute);
-    const minutes = (absolute - wholeDegrees) * 60;
-    return `${value >= 0 ? positive : negative} ${String(wholeDegrees).padStart(degrees, "0")}° ${minutes.toFixed(3)}'`;
-  };
-  return `${part(latitude, "N", "S", 2)}  ${part(longitude, "E", "W", 3)}`;
-}
-
 function downloadFile(name: string, content: string, type: string) {
   const anchor = document.createElement("a");
   anchor.href = URL.createObjectURL(new Blob([content], { type }));
@@ -246,7 +239,7 @@ function attemptInputLabel(attempt: CoordinateAttempt) {
   return attemptKind(attempt) !== "coordinate"
     ? attempt.answer || attemptKindLabel(attempt)
     : coordinate
-      ? formatCoordinate(coordinate.latitude, coordinate.longitude)
+      ? formatCoordinate(coordinate.latitude, coordinate.longitude, 4)
       : "Coordinate";
 }
 
@@ -268,13 +261,13 @@ function isAppUser(value: unknown): value is AppUser {
 }
 
 function mysteryFieldFingerprint(value: unknown) {
-  return snapshotFingerprint(JSON.stringify(value ?? null));
+  return snapshotFingerprint(stableJsonStringify(value ?? null));
 }
 
 function deviceMergeOptions(cache: MysteryCache, serverCache: MysteryCache, metadata: MysterySyncMetadata | undefined): MysteryCacheMergeOptions {
   const hasNotesBaseline = typeof metadata?.notesFingerprint === "string";
   const hasImageBaseline = typeof metadata?.imageFingerprint === "string";
-  const localSnapshotChanged = !metadata || snapshotFingerprint(JSON.stringify(shareableMystery(cache))) !== metadata.fingerprint;
+  const localSnapshotChanged = !metadata || snapshotFingerprint(stableJsonStringify(shareableMystery(cache))) !== metadata.fingerprint;
   const notesDecision = fieldMergeDecision(
     mysteryFieldFingerprint(cache.notes),
     mysteryFieldFingerprint(serverCache.notes),
@@ -420,6 +413,11 @@ export default function MysteriesPage() {
   const shareMutationRevisions = useRef(new Map<string, number>());
   const deletedCacheIds = useRef(new Set<string>());
   const deletionChannel = useRef<BroadcastChannel | null>(null);
+  const syncRetryCount = useRef(0);
+  const syncRetryBatch = useRef("");
+  const serverLoadRetryCount = useRef(0);
+  const serverLoadInFlight = useRef(false);
+  const lastFailedServerLoadSnapshot = useRef("");
   const [caches, setCaches] = useState<MysteryCache[]>([]);
   const [persistedForSync, setPersistedForSync] = useState<MysteryCache[] | null>(null);
   const [serverSyncReady, setServerSyncReady] = useState(false);
@@ -609,13 +607,22 @@ export default function MysteriesPage() {
       // Never submit the stale identity after that cache has been reconciled.
       const canonicalCache = currentOwnedByGcCode.get(cache.gcCode.trim().toUpperCase());
       if (!canonicalCache || canonicalCache.id !== cache.id) return [];
-      const serialized = JSON.stringify(shareableMystery(canonicalCache));
+      const serialized = stableJsonStringify(shareableMystery(canonicalCache));
       return serverSnapshots.current.get(canonicalCache.id) === serialized
         ? []
         : [{ cache: canonicalCache, serialized }];
     });
     if (!pendingCaches.length) return;
 
+    const batchSignature = snapshotFingerprint(stableJsonStringify(
+      pendingCaches.map(({ cache, serialized }) => [cache.id, serialized])
+    ));
+    if (syncRetryBatch.current !== batchSignature) {
+      syncRetryBatch.current = batchSignature;
+      syncRetryCount.current = 0;
+    }
+
+    let active = true;
     let retryTimeout: number | undefined;
     const timeout = window.setTimeout(() => {
       void Promise.all(pendingCaches.map(({ cache, serialized }) => {
@@ -628,7 +635,7 @@ export default function MysteriesPage() {
             revision: requestedRevision
           })
         }).then(({ revision, mystery }) => {
-          const storedSerialized = JSON.stringify(mystery);
+          const storedSerialized = stableJsonStringify(mystery);
           rememberServerSnapshot(cache.id, revision, storedSerialized);
           if (storedSerialized !== serialized) {
             const authoritative = verifiedStoredShares([{ ...mystery, sharedWith: cache.sharedWith }])[0];
@@ -640,14 +647,23 @@ export default function MysteriesPage() {
             setNotice(`Merged offline and server changes for ${cache.gcCode}.`);
           }
         });
-      })).catch(() => {
-        setNotice("Saved offline; account sync will retry.");
+      })).then(() => {
+        if (!active) return;
+        syncRetryCount.current = 0;
+        syncRetryBatch.current = "";
+      }).catch(() => {
+        if (!active) return;
+        const retryDelay = automaticSyncRetryDelay(syncRetryCount.current);
+        syncRetryCount.current += 1;
+        setNotice("Saved offline; account sync will retry with reduced frequency.");
         retryTimeout = window.setTimeout(() => {
+          if (!navigator.onLine) return;
           setPersistedForSync([...persistedCaches.current]);
-        }, 3000);
+        }, retryDelay);
       });
     }, 400);
     return () => {
+      active = false;
       window.clearTimeout(timeout);
       if (retryTimeout) window.clearTimeout(retryTimeout);
     };
@@ -656,9 +672,11 @@ export default function MysteriesPage() {
   useEffect(() => {
     if (!ready) return;
     let active = true;
+    let retryTimeout: number | undefined;
+    serverLoadInFlight.current = true;
     const ownedAtRequest = new Map(caches.filter((cache) => !cache.sharedBy).map((cache) => [
       cache.id,
-      JSON.stringify(shareableMystery(cache))
+      stableJsonStringify(shareableMystery(cache))
     ]));
     const knownSyncMetadata = new Map(syncMetadata.current);
     void apiFetch<{ mysteries: SharedMysteryGrant[] }>("/mysteries/shared")
@@ -701,7 +719,7 @@ export default function MysteriesPage() {
             id: clientId,
             sharedWith: Array.isArray(sharedWith) ? sharedWith.filter(isAppUser) : []
           }])[0];
-          const serialized = JSON.stringify(shareableMystery(cache));
+          const serialized = stableJsonStringify(shareableMystery(cache));
           return [{ cache, revision, serialized }];
         });
         const serverIds = new Set(ownedEntries.map(({ cache }) => cache.id));
@@ -726,7 +744,7 @@ export default function MysteriesPage() {
             ], mergeOptions)[0];
             return { ...merged, id: serverCache.id, sharedWith: serverCache.sharedWith };
           }
-          const currentSerialized = JSON.stringify(shareableMystery(currentCache));
+          const currentSerialized = stableJsonStringify(shareableMystery(currentCache));
           const requestSerialized = ownedAtRequest.get(serverCache.id);
           const localChanged = metadata
             ? snapshotFingerprint(currentSerialized) !== metadata.fingerprint
@@ -757,26 +775,57 @@ export default function MysteriesPage() {
         if (mergedConflictCount) {
           setNotice(`Merged offline and server changes for ${mergedConflictCount} ${mergedConflictCount === 1 ? "cache" : "caches"}.`);
         }
+        serverLoadInFlight.current = false;
+        serverLoadRetryCount.current = 0;
+        lastFailedServerLoadSnapshot.current = "";
         setServerSyncReady(true);
       })
       .catch(() => {
+        if (!active) return;
+        serverLoadInFlight.current = false;
         setServerSyncReady(false);
-        setNotice("Offline — mysteries will sync with your account when reconnected.");
+        lastFailedServerLoadSnapshot.current = stableJsonStringify(
+          latestCaches.current.filter((cache) => !cache.sharedBy).map(shareableMystery)
+        );
+        const retryDelay = automaticSyncRetryDelay(serverLoadRetryCount.current);
+        serverLoadRetryCount.current += 1;
+        setNotice("Could not reach account sync; retrying with reduced frequency.");
+        retryTimeout = window.setTimeout(() => {
+          if (!navigator.onLine) return;
+          setServerLoadAttempt((attempt) => attempt + 1);
+        }, retryDelay);
       });
     return () => {
       active = false;
+      if (retryTimeout) window.clearTimeout(retryTimeout);
     };
   }, [ready, serverLoadAttempt]);
 
   useEffect(() => {
-    const retryServerLoad = () => setServerLoadAttempt((attempt) => attempt + 1);
+    if (!ready || serverSyncReady || !persistedForSync) return;
+    const localSnapshot = stableJsonStringify(
+      persistedForSync.filter((cache) => !cache.sharedBy).map(shareableMystery)
+    );
+    if (localSnapshot === lastFailedServerLoadSnapshot.current) return;
+    const timeout = window.setTimeout(() => {
+      if (serverLoadInFlight.current) return;
+      lastFailedServerLoadSnapshot.current = localSnapshot;
+      serverLoadRetryCount.current = 0;
+      setServerLoadAttempt((attempt) => attempt + 1);
+    }, 800);
+    return () => window.clearTimeout(timeout);
+  }, [persistedForSync, ready, serverSyncReady]);
+
+  useEffect(() => {
+    const retryServerLoad = () => {
+      serverLoadRetryCount.current = 0;
+      syncRetryCount.current = 0;
+      lastFailedServerLoadSnapshot.current = "";
+      setServerLoadAttempt((attempt) => attempt + 1);
+    };
     window.addEventListener("online", retryServerLoad);
-    window.addEventListener("focus", retryServerLoad);
-    const interval = window.setInterval(retryServerLoad, 60_000);
     return () => {
       window.removeEventListener("online", retryServerLoad);
-      window.removeEventListener("focus", retryServerLoad);
-      window.clearInterval(interval);
     };
   }, []);
 
