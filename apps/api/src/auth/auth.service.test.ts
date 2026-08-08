@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ServiceUnavailableException, UnauthorizedException } from "@nestjs/common";
+import { UnauthorizedException } from "@nestjs/common";
 import { Prisma } from "@geostats/db";
 import bcrypt from "bcryptjs";
 import { AuthService } from "./auth.service";
@@ -264,11 +264,37 @@ test("login rejects malformed scrypt hashes without throwing", async () => {
   });
 });
 
-test("external auth mode disables password registration", async () => {
+test("external auth mode keeps password registration as an alternative", async () => {
   await withEnv({ AUTH_MODE: "external" }, async () => {
     const { service } = authServiceWithUsers();
-    await assert.rejects(() => service.register("user@example.com", "user", "correct-password"), ServiceUnavailableException);
+    const user = await service.register("user@example.com", "user", "correct-password");
+    assert.equal(user.email, "user@example.com");
   });
+});
+
+test("dev auth cannot be enabled in production", () => {
+  withEnv({ AUTH_MODE: "dev", NODE_ENV: "production" }, () => {
+    const { service } = authServiceWithUsers();
+    assert.equal(service.authMode(), "external");
+  });
+});
+
+test("Shoo external auth is the production default", () => {
+  withEnv(
+    {
+      AUTH_MODE: undefined,
+      NODE_ENV: "production",
+      EXTERNAL_AUTH_PROVIDER_ID: undefined,
+      API_ORIGIN: "https://api.example.com",
+      EXTERNAL_AUTH_CALLBACK_URL: "https://api.example.com/auth/external/callback"
+    },
+    () => {
+      const { service } = authServiceWithUsers();
+      assert.equal(service.authMode(), "external");
+      const url = new URL(service.externalAuthorizationUrl("state", "challenge"));
+      assert.equal(url.origin, "https://shoo.dev");
+    }
+  );
 });
 
 test("shoo external auth builds a Shoo authorize URL with PII consent", () => {

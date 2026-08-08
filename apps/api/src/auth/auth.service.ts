@@ -68,6 +68,9 @@ export class AuthService {
   ) {}
 
   authMode(): AuthMode {
+    if (process.env.NODE_ENV === "production") {
+      return process.env.AUTH_MODE === "password" ? "password" : "external";
+    }
     if (process.env.AUTH_MODE === "dev") {
       return "dev";
     }
@@ -231,7 +234,7 @@ export class AuthService {
   }
 
   private assertPasswordAuthMode() {
-    if (this.authMode() !== "password") {
+    if (this.authMode() === "dev") {
       throw new ServiceUnavailableException("Password auth is disabled");
     }
   }
@@ -245,15 +248,15 @@ export class AuthService {
   }
 
   private isShooProvider(): boolean {
-    return envOrDefault("EXTERNAL_AUTH_PROVIDER_ID", "external").toLowerCase() === "shoo";
+    return (process.env.EXTERNAL_AUTH_PROVIDER_ID?.trim() || "shoo").toLowerCase() === "shoo";
   }
 
   private shooBaseUrl(): string {
-    return envOrDefault("SHOO_BASE_URL", "https://shoo.dev").replace(/\/+$/, "");
+    return (process.env.SHOO_BASE_URL?.trim() || "https://shoo.dev").replace(/\/+$/, "");
   }
 
   private shooIssuer(): string {
-    return envOrDefault("SHOO_ISSUER", this.shooBaseUrl()).replace(/\/+$/, "");
+    return (process.env.SHOO_ISSUER?.trim() || this.shooBaseUrl()).replace(/\/+$/, "");
   }
 
   private shooClientId(): string {
@@ -267,7 +270,7 @@ export class AuthService {
     url.searchParams.set("state", state);
     url.searchParams.set("code_challenge", codeChallenge);
     url.searchParams.set("code_challenge_method", "S256");
-    if (envOrDefault("SHOO_REQUEST_PII", "true") !== "false") {
+    if ((process.env.SHOO_REQUEST_PII?.trim() || "true") !== "false") {
       url.searchParams.set("pii", "true");
     }
     return url.toString();

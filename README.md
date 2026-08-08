@@ -87,7 +87,16 @@ EXTERNAL_AUTH_CALLBACK_URL=https://api.example.com/auth/external/callback
 EXTERNAL_AUTH_REQUIRE_VERIFIED_EMAIL=true
 ```
 
-When external auth is enabled, the login page shows a single provider button instead of the password form.
+When external auth is enabled, the provider is the primary sign-in action and the local password form remains available as an alternative. Production deployments should use Shoo by default:
+
+```env
+AUTH_MODE=external
+NEXT_PUBLIC_AUTH_MODE=external
+NEXT_PUBLIC_AUTH_PROVIDER_NAME=Shoo
+EXTERNAL_AUTH_PROVIDER_ID=shoo
+```
+
+In production, external authentication defaults to Shoo and `AUTH_MODE=password` is the only override. Development auth is ignored, so production presents only Shoo and password authentication.
 
 For local Docker development where you want the app to boot without signing in, enable dev auth and rebuild the web image so its public auth flags are baked in:
 

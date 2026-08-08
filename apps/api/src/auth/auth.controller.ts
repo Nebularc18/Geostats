@@ -82,7 +82,7 @@ export class AuthController {
   config() {
     return {
       mode: this.auth.authMode(),
-      providerName: envOrDefault("NEXT_PUBLIC_AUTH_PROVIDER_NAME", "Home Auth")
+      providerName: process.env.NEXT_PUBLIC_AUTH_PROVIDER_NAME?.trim() || "Shoo"
     };
   }
 

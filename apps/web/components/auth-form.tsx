@@ -19,7 +19,7 @@ export function AuthForm({ mode }: { mode: "login" | "register" }) {
   const [config, setConfig] = useState<AuthConfig | null>(null);
   const action = mode === "login" ? "Sign in" : "Create account";
   const authMode = config?.mode;
-  const providerName = config?.providerName ?? "Home Auth";
+  const providerName = config?.providerName ?? "Shoo";
   const isDevMode = authMode === "dev";
   const isExternalMode = authMode === "external";
 
@@ -33,7 +33,7 @@ export function AuthForm({ mode }: { mode: "login" | "register" }) {
         if (!cancelled) {
           setConfig({
             mode: (process.env.NEXT_PUBLIC_AUTH_MODE as AuthMode | undefined) ?? "password",
-            providerName: process.env.NEXT_PUBLIC_AUTH_PROVIDER_NAME ?? "Home Auth"
+            providerName: process.env.NEXT_PUBLIC_AUTH_PROVIDER_NAME ?? "Shoo"
           });
         }
       });
@@ -73,13 +73,22 @@ export function AuthForm({ mode }: { mode: "login" | "register" }) {
         </div>
         {!config ? (
           <p className="muted">Loading sign-in options...</p>
-        ) : isDevMode || isExternalMode ? (
+        ) : isDevMode ? (
           <a className="primary-button oauth-button" href={`${API_URL}${isDevMode ? "/auth/dev" : "/auth/external"}`}>
             <LogIn aria-hidden="true" size={18} />
-            {isDevMode ? "Continue in dev mode" : `${action} with ${providerName}`}
+            Continue in dev mode
           </a>
         ) : (
           <>
+            {isExternalMode ? (
+              <>
+                <a className="primary-button oauth-button" href={`${API_URL}/auth/external`}>
+                  <LogIn aria-hidden="true" size={18} />
+                  {action} with {providerName}
+                </a>
+                <p className="auth-separator">or use a password</p>
+              </>
+            ) : null}
             <form onSubmit={submit} className="form">
               {mode === "register" ? (
                 <label>
