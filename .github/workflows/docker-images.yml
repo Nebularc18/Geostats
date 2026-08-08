@@ -106,8 +106,8 @@ jobs:
         type=sha,prefix=sha-
       build-args: |
         NEXT_PUBLIC_API_URL=${{ vars.NEXT_PUBLIC_API_URL || 'http://localhost:3001' }}
-        NEXT_PUBLIC_AUTH_MODE=${{ vars.NEXT_PUBLIC_AUTH_MODE || 'password' }}
-        NEXT_PUBLIC_AUTH_PROVIDER_NAME=${{ vars.NEXT_PUBLIC_AUTH_PROVIDER_NAME || 'Home Auth' }}
+        NEXT_PUBLIC_AUTH_MODE=${{ vars.NEXT_PUBLIC_AUTH_MODE || 'external' }}
+        NEXT_PUBLIC_AUTH_PROVIDER_NAME=${{ vars.NEXT_PUBLIC_AUTH_PROVIDER_NAME || 'Shoo' }}
     secrets:
       registry-auths: |
         - registry: ghcr.io

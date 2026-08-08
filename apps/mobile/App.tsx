@@ -95,7 +95,9 @@ const DEFAULT_API_URL = process.env.EXPO_PUBLIC_API_URL ?? (__DEV__ ? "http://10
 const ANDROID_MAP_PROVIDER = Platform.OS === "android" ? PROVIDER_GOOGLE : undefined;
 const TOKEN_KEY = "geostats_session";
 const SERVER_URL_KEY = "geostats_server_url";
-const DEFAULT_AUTH_CONFIG: AuthConfig = { mode: "password", providerName: "Home Auth" };
+const DEFAULT_AUTH_CONFIG: AuthConfig = __DEV__
+  ? { mode: "password", providerName: "Home Auth" }
+  : { mode: "external", providerName: "Shoo" };
 const monthLabels = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const defaultTimeZone = "Europe/Stockholm";
 const defaultFtfTerms = ["FTF", "first to find"];
@@ -1000,7 +1002,13 @@ function AuthScreen({ apiBaseUrl, onApiBaseUrlChange, onSession }: { apiBaseUrl:
             </View>
           ) : null}
         </View>
-        {config.mode === "password" ? (
+        {config.mode === "external" ? (
+          <>
+            <PrimaryButton label={`${mode === "login" ? "Sign in" : "Register"} with ${config.providerName}`} onPress={continueExternal} />
+            <Text style={styles.authAlternative}>or use a password</Text>
+          </>
+        ) : null}
+        {config.mode !== "dev" ? (
           <>
             <Field label="Email" value={email} onChangeText={setEmail} autoCapitalize="none" keyboardType="email-address" />
             {mode === "register" ? <Field label="Username" value={username} onChangeText={setUsername} autoCapitalize="none" /> : null}
@@ -1012,7 +1020,6 @@ function AuthScreen({ apiBaseUrl, onApiBaseUrlChange, onSession }: { apiBaseUrl:
           </>
         ) : null}
         {config.mode === "dev" ? <PrimaryButton label="Continue in dev mode" onPress={continueDev} /> : null}
-        {config.mode === "external" ? <PrimaryButton label={`${mode === "login" ? "Sign in" : "Register"} with ${config.providerName}`} onPress={continueExternal} /> : null}
         {message ? <Text style={styles.note}>{message}</Text> : null}
       </ScrollView>
     </SafeAreaView>
@@ -2480,6 +2487,7 @@ const styles = StyleSheet.create({
   eyebrow: { color: "#85a696", fontSize: 12, textTransform: "uppercase", letterSpacing: 0, fontWeight: "800" },
   title: { color: "#edf7ef", fontSize: 34, fontWeight: "900" },
   muted: { color: "#91a79c", fontSize: 13 },
+  authAlternative: { color: "#91a79c", fontSize: 13, textAlign: "center" },
   note: { color: "#dce8df", backgroundColor: "#10251b", borderRadius: 8, padding: 12 },
   error: { color: "#ffb4a8", backgroundColor: "#421c17", borderRadius: 8, padding: 12 },
   field: { gap: 6 },
