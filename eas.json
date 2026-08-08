@@ -16,7 +16,7 @@
       "pnpm": "9.15.0",
       "environment": "preview",
       "distribution": "internal",
-      "credentialsSource": "local",
+      "credentialsSource": "remote",
       "channel": "preview",
       "autoIncrement": true,
       "android": {

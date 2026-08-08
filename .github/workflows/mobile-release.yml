@@ -4,13 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       release_kind:
-        description: What should be released?
+        description: Build an installable APK, or publish an OTA-only update?
         required: true
-        default: preview-update
+        default: preview-apk
         type: choice
         options:
-          - preview-update
           - preview-apk
+          - preview-update
           - production-update
           - play-internal
 
@@ -114,7 +114,9 @@ jobs:
     if: inputs.release_kind == 'preview-apk'
     needs: quality
     runs-on: ubuntu-latest
-    environment: mobile-preview
+    environment:
+      name: mobile-preview
+      url: ${{ steps.release.outputs.url }}
     permissions:
       contents: write
     steps:
@@ -132,20 +134,6 @@ jobs:
           eas-version: ${{ env.EAS_VERSION }}
           token: ${{ secrets.EXPO_TOKEN }}
 
-      - name: Restore existing preview signing credentials
-        env:
-          CREDENTIALS_JSON_B64: ${{ secrets.MOBILE_PREVIEW_CREDENTIALS_JSON_B64 }}
-          KEYSTORE_B64: ${{ secrets.MOBILE_PREVIEW_KEYSTORE_B64 }}
-        shell: bash
-        run: |
-          if [[ -z "$CREDENTIALS_JSON_B64" || -z "$KEYSTORE_B64" ]]; then
-            echo "Preview signing secrets are not configured. See README.md#github-mobile-releases." >&2
-            exit 1
-          fi
-          mkdir -p credentials
-          printf '%s' "$CREDENTIALS_JSON_B64" | base64 --decode > credentials.json
-          printf '%s' "$KEYSTORE_B64" | base64 --decode > credentials/android-preview.keystore
-
       - name: Build preview APK
         run: eas build --platform android --profile preview --non-interactive --wait --json > eas-build.json
 
@@ -156,22 +144,34 @@ jobs:
           test -n "$build_url" && test "$build_url" != "null"
           curl --fail --location --retry 3 "$build_url" --output geostats-preview.apk
 
-      - name: Create GitHub prerelease
+      - name: Create downloadable GitHub prerelease
+        id: release
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           version="$(node -p "require('./app.config.js').expo.version")"
           tag="mobile-v${version}-preview.${GITHUB_RUN_NUMBER}"
+          apk="geostats-${version}-preview.${GITHUB_RUN_NUMBER}.apk"
+          mv geostats-preview.apk "$apk"
           if gh release view "$tag" >/dev/null 2>&1; then
-            gh release upload "$tag" geostats-preview.apk --clobber
+            gh release upload "$tag" "$apk" --clobber
           else
-            gh release create "$tag" geostats-preview.apk \
+            gh release create "$tag" "$apk" \
               --prerelease \
               --target "$GITHUB_SHA" \
               --title "Geostats Mobile ${version} Preview ${GITHUB_RUN_NUMBER}" \
-              --generate-notes
+              --notes "Download the APK below for a first-time installation or to update an existing preview installation. Future JavaScript and asset updates can also arrive automatically through the preview OTA channel."
           fi
+          release_url="$(gh release view "$tag" --json url --jq .url)"
+          echo "url=$release_url" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Android preview ready"
+            echo
+            echo "Download **${apk}** for a first install or an in-place update."
+            echo
+            echo "[Open the GitHub release](${release_url})"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   production-update:
     name: Publish production update

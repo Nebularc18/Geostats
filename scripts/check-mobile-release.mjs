@@ -55,6 +55,16 @@ assert.equal(
   "Preview builds must target the preview update channel",
 );
 assert.equal(
+  eas.build.preview?.credentialsSource,
+  "remote",
+  "Preview builds must reuse the EAS-managed signing identity",
+);
+assert.equal(
+  eas.build.preview?.autoIncrement,
+  true,
+  "Preview builds must increment the Android version code for in-place updates",
+);
+assert.equal(
   eas.build.production?.channel,
   "production",
   "Production builds must target the production update channel",
