@@ -54,6 +54,8 @@ export interface CountBucket {
   count: number;
 }
 
+export const STATS_VERSION = 20;
+
 export function normalizedGcUsername(profile?: { gcUsername?: string | null } | string | null): string | null {
   const value = typeof profile === "string" ? profile : profile?.gcUsername;
   const username = value?.trim().toLowerCase();
@@ -1410,7 +1412,7 @@ export function calculateStats(finds: StatsFind[], options: StatsOptions = {}): 
   const milestoneStats = calculateMilestoneStats(sorted);
 
   return {
-    statsVersion: 19,
+    statsVersion: STATS_VERSION,
     totalFinds,
     findsByYear: buckets(byYear).sort((a, b) => a.key.localeCompare(b.key)),
     findsByMonth: sortedMonths,

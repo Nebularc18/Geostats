@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { calculateHideStats, calculateStats } from "./index";
+import { calculateHideStats, calculateStats, STATS_VERSION } from "./index";
 
 test("calculateStats returns core buckets, milestones, and streaks", () => {
   const stats = calculateStats([
@@ -37,6 +37,8 @@ test("calculateStats returns core buckets, milestones, and streaks", () => {
     }
   ]);
 
+  assert.equal(STATS_VERSION, 20);
+  assert.equal(stats.statsVersion, STATS_VERSION);
   assert.equal(stats.totalFinds, 2);
   assert.deepEqual(stats.findsByMonth, [{ key: "2024-01", count: 2 }]);
   assert.deepEqual(stats.findsByDay, [
