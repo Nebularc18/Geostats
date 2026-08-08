@@ -256,34 +256,50 @@ export class MysteriesController {
         where: { ownerId_clientId: { ownerId: user.id, clientId } },
         create: { ownerId: user.id, clientId, gcCode, data, snapshotRevision: revision },
         update: {},
-        select: { id: true, data: true }
+        select: { id: true }
       });
-      // Compare snapshots using PostgreSQL's JSONB semantics. A JavaScript
-      // stringify comparison can disagree with the representation PostgreSQL
-      // returns (notably for numbers), causing the client to resubmit a value
-      // that the database canonicalizes back to the same snapshot forever.
-      const [comparison] = await tx.$queryRaw<Array<{ content_matches: boolean }>>`
-        SELECT data = ${JSON.stringify(data)}::jsonb AS content_matches
-        FROM mystery_workspaces
-        WHERE id = ${mystery.id}
+      // Let PostgreSQL compare and conditionally update the JSONB value in one
+      // statement. Keeping the equality check in the UPDATE predicate makes it
+      // impossible for an identical browser snapshot to advance the revision,
+      // even when several sync requests race each other.
+      const [stored] = await tx.$queryRaw<Array<{
+        revision: number;
+        mystery: Prisma.JsonValue;
+        content_matches: boolean;
+      }>>`
+        WITH requested AS (
+          SELECT ${JSON.stringify(data)}::jsonb AS data
+        ), updated AS (
+          UPDATE mystery_workspaces AS workspace
+          SET data = requested.data,
+              snapshot_revision = ${revision},
+              updated_at = CURRENT_TIMESTAMP
+          FROM requested
+          WHERE workspace.id = ${mystery.id}
+            AND workspace.snapshot_revision < ${revision}
+            AND workspace.data IS DISTINCT FROM requested.data
+          RETURNING workspace.snapshot_revision AS revision,
+                    workspace.data AS mystery
+        )
+        SELECT updated.revision,
+               updated.mystery,
+               TRUE AS content_matches
+        FROM updated
+        UNION ALL
+        SELECT workspace.snapshot_revision,
+               workspace.data,
+               workspace.data = requested.data
+        FROM mystery_workspaces AS workspace
+        CROSS JOIN requested
+        WHERE workspace.id = ${mystery.id}
+          AND NOT EXISTS (SELECT 1 FROM updated)
       `;
-      const contentMatches = comparison?.content_matches === true;
-      if (!contentMatches) {
-        await tx.mysteryWorkspace.updateMany({
-          where: { id: mystery.id, snapshotRevision: { lt: revision } },
-          data: { data, snapshotRevision: revision }
-        });
-      }
-      const stored = await tx.mysteryWorkspace.findUnique({
-        where: { id: mystery.id },
-        select: { snapshotRevision: true, data: true }
-      });
       return {
-        revision: stored?.snapshotRevision ?? revision,
+        revision: stored?.revision ?? revision,
         // Echo an equivalent submitted representation. This lets the browser
         // remember exactly what it sent instead of interpreting a JSONB
         // readback representation difference as another server edit.
-        mystery: contentMatches ? data : stored?.data ?? data
+        mystery: stored?.content_matches ? data : stored?.mystery ?? data
       };
     });
     return { ok: true, ...storedRevision };
