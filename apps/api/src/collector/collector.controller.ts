@@ -28,6 +28,7 @@ import { CurrentUser } from "../auth/current-user.decorator";
 import { normalizeCountry } from "../common/geocaching.utils";
 import { PrismaService } from "../common/prisma.service";
 import { StatsService } from "../stats/stats.service";
+import { CollectorTokenAuthService } from "./collector-token-auth.service";
 
 type ReceivedLogInput = {
   gcCode?: string;
@@ -341,11 +342,6 @@ try {
 `;
 }
 
-function authToken(header: string | undefined) {
-  const match = header?.match(/^Bearer\s+(.+)$/i);
-  return match?.[1]?.trim() ?? null;
-}
-
 function rawObject(value: unknown): Record<string, any> {
   return value && typeof value === "object" && !Array.isArray(value) ? { ...(value as Record<string, any>) } : {};
 }
@@ -619,8 +615,22 @@ export class CollectorController {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly stats: StatsService
+    private readonly stats: StatsService,
+    private readonly collectorTokenAuth?: CollectorTokenAuthService
   ) {}
+
+  private async tokenUser(authorization: string | undefined) {
+    if (this.collectorTokenAuth) return this.collectorTokenAuth.userId(authorization);
+    const token = authorization?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
+    if (!token) throw new UnauthorizedException("Missing collector bearer token");
+    const found = await this.prisma.collectorToken.findUnique({
+      where: { tokenHash: tokenHash(token) },
+      select: { id: true, userId: true }
+    });
+    if (!found) throw new UnauthorizedException("Invalid collector token");
+    await this.prisma.collectorToken.update({ where: { id: found.id }, data: { lastUsedAt: new Date() } });
+    return found.userId;
+  }
 
   @Get("hides.ps1")
   @Header("Content-Type", "text/plain; charset=utf-8")
@@ -654,22 +664,6 @@ export class CollectorController {
       throw new NotFoundException("Project-GC collector source is not available in this deployment.");
     }
     return readFileSync(PROJECT_GC_SOURCE_PATH, "utf8");
-  }
-
-  private async tokenUser(authorization: string | undefined) {
-    const token = authToken(authorization);
-    if (!token) {
-      throw new UnauthorizedException("Missing collector bearer token");
-    }
-    const found = await this.prisma.collectorToken.findUnique({
-      where: { tokenHash: tokenHash(token) },
-      select: { id: true, userId: true }
-    });
-    if (!found) {
-      throw new UnauthorizedException("Invalid collector token");
-    }
-    await this.prisma.collectorToken.update({ where: { id: found.id }, data: { lastUsedAt: new Date() } });
-    return found.userId;
   }
 
   @Get("owned-caches")

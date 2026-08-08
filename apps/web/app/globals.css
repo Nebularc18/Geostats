@@ -3021,6 +3021,56 @@ select:focus {
   background: rgba(105, 169, 189, 0.055);
 }
 
+.checker-heading-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.bulk-tries-modal textarea {
+  min-height: 220px;
+  resize: vertical;
+}
+
+.bulk-tries-lead,
+.bulk-tries-help {
+  color: var(--muted);
+}
+
+.bulk-tries-help {
+  line-height: 1.5;
+}
+
+.bulk-csv-picker {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.bulk-csv-picker > .secondary-button {
+  width: fit-content;
+  cursor: pointer;
+}
+
+.bulk-csv-picker input {
+  display: none;
+}
+
+.bulk-csv-picker small {
+  grid-column: 2;
+  color: var(--muted);
+}
+
+.bulk-csv-summary {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--green);
+  font-size: 0.72rem;
+}
+
 .attempt-overview-counts {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -3132,6 +3182,10 @@ select:focus {
 
 .attempt-result-group.unknown > div:first-child {
   color: var(--blue);
+}
+
+.attempt-result-group.planned > div:first-child {
+  color: var(--ochre);
 }
 
 .attempt-result-group > div:last-child {
@@ -3286,6 +3340,12 @@ select:focus {
 .attempt-state.wrong {
   color: var(--danger);
   background: rgba(255, 123, 114, 0.1);
+}
+
+.attempt-state.planned,
+.checker-label.planned {
+  color: var(--ochre);
+  background: rgba(217, 145, 69, 0.1);
 }
 
 .distance-badge,
