@@ -18,7 +18,12 @@ module.exports = {
     name: "Geostats",
     slug: "geostats",
     scheme: "geostats",
-    version: "0.1.0",
+    version: "0.2.0",
+    runtimeVersion: { policy: "appVersion" },
+    updates: {
+      url: `https://u.expo.dev/${projectId}`,
+      checkAutomatically: "ON_ERROR_RECOVERY"
+    },
     orientation: "portrait",
     icon: "./apps/mobile/assets/icon.png",
     userInterfaceStyle: "dark",
