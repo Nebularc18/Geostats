@@ -135,7 +135,7 @@ services:
       S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD in .env}
       S3_FORCE_PATH_STYLE: "true"
     ports:
-      - "127.0.0.1:3001:3001"
+      - "${API_BIND_ADDRESS:-127.0.0.1}:${API_PORT:-3001}:3001"
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -194,7 +194,7 @@ services:
         NEXT_PUBLIC_DEV_AUTO_LOGIN: ${NEXT_PUBLIC_DEV_AUTO_LOGIN:-false}
     restart: unless-stopped
     ports:
-      - "127.0.0.1:3000:3000"
+      - "${WEB_BIND_ADDRESS:-127.0.0.1}:${WEB_PORT:-3000}:3000"
     depends_on:
       api:
         condition: service_healthy
