@@ -103,17 +103,17 @@ test("stats recalculation holds a database user lock before loading inputs", asy
       events.push("lock");
       return [];
     },
+    geocachingProfile: { findUnique: async () => (events.push("read"), null) },
+    hide: { findMany: async () => [] },
+    ownerFinderCountryStat: { findMany: async () => [] },
+    find: { findMany: async () => [] },
     statSnapshot: {
       deleteMany: async () => events.push("delete"),
       create: async () => events.push("create")
     }
   };
   const prisma = {
-    $transaction: async (callback: (transaction: typeof tx) => Promise<unknown>) => callback(tx),
-    geocachingProfile: { findUnique: async () => (events.push("read"), null) },
-    hide: { findMany: async () => [] },
-    ownerFinderCountryStat: { findMany: async () => [] },
-    find: { findMany: async () => [] }
+    $transaction: async (callback: (transaction: typeof tx) => Promise<unknown>) => callback(tx)
   };
 
   const processor = new ImportProcessor(prisma as any, {} as any);
@@ -423,7 +423,7 @@ test("process creates missing cache metadata before the import transaction", asy
   assert.equal(importTransactionStarted, true);
 });
 
-test("process keeps a committed import completed when stats recalculation fails", async () => {
+test("process marks a committed import failed when stats recalculation fails", async () => {
   const existingCache = {
     id: "cache-1",
     gcCode: "GC12345",
@@ -453,9 +453,6 @@ test("process keeps a committed import completed when stats recalculation fails"
   };
   const importStatuses: ImportStatus[] = [];
   const events: string[] = [];
-  const originalError = console.error;
-  console.error = () => {};
-
   const tx = {
     hide: {
       upsert: async () => ({})
@@ -488,20 +485,19 @@ test("process keeps a committed import completed when stats recalculation fails"
     getObject: async () => Buffer.from(gpx)
   };
 
-  try {
-    const processor = new ImportProcessor(prisma as any, storage as any);
-    await processor.process({
+  const processor = new ImportProcessor(prisma as any, storage as any);
+  await assert.rejects(
+    processor.process({
       importId: "import-1",
       userId: "user-1",
       objectKey: "user-1/original.gpx",
       source: ImportSource.MY_HIDES_GPX
-    });
-  } finally {
-    console.error = originalError;
-  }
+    }),
+    /stats timeout/
+  );
 
-  assert.deepEqual(importStatuses, [ImportStatus.PROCESSING, ImportStatus.COMPLETED]);
-  assert.deepEqual(events, [ImportStatus.PROCESSING, "RECALCULATE", ImportStatus.COMPLETED]);
+  assert.deepEqual(importStatuses, [ImportStatus.PROCESSING, ImportStatus.FAILED]);
+  assert.deepEqual(events, [ImportStatus.PROCESSING, "RECALCULATE", ImportStatus.FAILED]);
 });
 
 test("process updates an existing find to the full GPX timestamp", async () => {

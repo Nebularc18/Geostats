@@ -284,11 +284,7 @@ export class ImportProcessor {
       });
 
       if (shouldRecalculateStats) {
-        try {
-          await this.recalculateStats(payload.userId);
-        } catch (error) {
-          console.error(`Stats recalculation failed for committed import ${payload.importId}`, error);
-        }
+        await this.recalculateStats(payload.userId);
       }
       await this.prisma.import.update({
         where: { id: payload.importId },
@@ -397,13 +393,17 @@ export class ImportProcessor {
     await this.prisma.$transaction(async (tx) => {
       // Serialise recalculations across worker processes before reading any
       // stats inputs, then hold the lock until the snapshot is replaced.
-      if (typeof tx.$queryRaw === "function") {
+      const holdsDatabaseLock = typeof tx.$queryRaw === "function";
+      if (holdsDatabaseLock) {
         await tx.$queryRaw`
           SELECT pg_advisory_xact_lock(hashtext('stats-recalculation'), hashtext(${userId}))::text AS lock_result
         `;
       }
 
-      const stats = await this.buildStats(userId);
+      // Real Prisma transactions always expose $queryRaw. The fallback keeps
+      // lightweight unit-test transaction doubles working without weakening
+      // the locked production path.
+      const stats = await this.buildStats(userId, holdsDatabaseLock ? tx : this.prisma);
       await tx.statSnapshot.deleteMany({ where: { userId } });
       await tx.statSnapshot.create({
         data: {
@@ -414,9 +414,9 @@ export class ImportProcessor {
     }, { maxWait: 10_000, timeout: 120_000 });
   }
 
-  private async buildStats(userId: string) {
-    const profile = await this.prisma.geocachingProfile.findUnique({ where: { userId } });
-    const hides = await this.prisma.hide.findMany({
+  private async buildStats(userId: string, prisma: Prisma.TransactionClient | PrismaClient = this.prisma) {
+    const profile = await prisma.geocachingProfile.findUnique({ where: { userId } });
+    const hides = await prisma.hide.findMany({
       where: { userId },
       include: {
         cache: {
@@ -429,12 +429,12 @@ export class ImportProcessor {
       },
       orderBy: { placedAt: "asc" }
     });
-    const ownerFinderCountryStats = await this.prisma.ownerFinderCountryStat.findMany({
+    const ownerFinderCountryStats = await prisma.ownerFinderCountryStat.findMany({
       where: { userId },
       orderBy: [{ count: "desc" }, { country: "asc" }]
     });
     const gcUsername = normalizedGcUsername(profile);
-    const finds = await this.prisma.find.findMany({
+    const finds = await prisma.find.findMany({
       where: countableFindWhere(userId, gcUsername),
       include: {
         cache: {
