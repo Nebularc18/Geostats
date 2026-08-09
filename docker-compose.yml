@@ -188,7 +188,7 @@ services:
       context: .
       dockerfile: apps/web/Dockerfile
       args:
-        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001}
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:${API_PORT:-3001}}
         NEXT_PUBLIC_AUTH_MODE: ${NEXT_PUBLIC_AUTH_MODE:-password}
         NEXT_PUBLIC_AUTH_PROVIDER_NAME: ${NEXT_PUBLIC_AUTH_PROVIDER_NAME:-Home Auth}
         NEXT_PUBLIC_DEV_AUTO_LOGIN: ${NEXT_PUBLIC_DEV_AUTO_LOGIN:-false}
