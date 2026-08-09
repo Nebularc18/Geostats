@@ -1005,7 +1005,10 @@ function AuthScreen({ apiBaseUrl, onApiBaseUrlChange, onSession }: { apiBaseUrl:
     <SafeAreaView style={styles.safe}>
       <StatusBar style="light" />
       <ScrollView contentContainerStyle={styles.authPage}>
-        <Text style={styles.brand}>Geostats</Text>
+        <View style={styles.authBrand}>
+          <Image accessible={false} source={require("./assets/icon.png")} style={styles.authBrandIcon} />
+          <Text style={styles.brand}>Geostats</Text>
+        </View>
         <Text style={styles.title}>{mode === "login" ? "Sign in" : "Create account"}</Text>
         <View style={styles.serverCard}>
           <View style={styles.serverSummary}>
@@ -1126,8 +1129,8 @@ export default function App() {
         <StatusBar style="light" />
         <View style={styles.shellHeader}>
           <View style={styles.brandLockup}>
-            <View style={styles.brandMark}><Text style={styles.brandMarkText}>G</Text></View>
-            <View><Text style={styles.brandSmall}>Geostats</Text><Text style={styles.shellContext}>{screenDetails[screen].label}</Text></View>
+            <Image accessible={false} source={require("./assets/icon.png")} style={styles.headerBrandIcon} />
+            <View style={styles.headerBrandText}><Text style={styles.brandSmall}>Geostats</Text><Text numberOfLines={1} ellipsizeMode="tail" style={styles.shellContext}>{screenDetails[screen].label}</Text></View>
           </View>
           <Pressable accessibilityRole="button" accessibilityLabel="Open profile" onPress={() => setScreen("profile")} style={styles.avatarButton}>
             <Text style={styles.avatarText}>{session.user.username.slice(0, 1).toUpperCase()}</Text>
@@ -2642,12 +2645,14 @@ const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: "#08120e" },
   safeCenter: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: "#08120e" },
   authPage: { flexGrow: 1, justifyContent: "center", padding: 22, gap: 14 },
+  authBrand: { flexDirection: "row", alignItems: "center", gap: 12 },
+  authBrandIcon: { width: 54, height: 54, borderRadius: 12 },
   brand: { color: "#f3b34d", fontSize: 42, fontWeight: "900" },
   brandSmall: { color: "#f2f8f4", fontSize: 19, fontWeight: "900", letterSpacing: -0.5 },
   shellHeader: { minHeight: 62, paddingHorizontal: 18, paddingVertical: 9, flexDirection: "row", alignItems: "center", justifyContent: "space-between", borderBottomWidth: 1, borderColor: "#193126" },
-  brandLockup: { flexDirection: "row", alignItems: "center", gap: 10 },
-  brandMark: { width: 35, height: 35, borderRadius: 12, alignItems: "center", justifyContent: "center", backgroundColor: "#f3b34d" },
-  brandMarkText: { color: "#122018", fontSize: 19, fontWeight: "900" },
+  brandLockup: { flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: 10, marginRight: 12 },
+  headerBrandIcon: { width: 35, height: 35, borderRadius: 10 },
+  headerBrandText: { flex: 1, minWidth: 0 },
   shellContext: { color: "#799387", fontSize: 11, fontWeight: "700", marginTop: 1 },
   avatarButton: { width: 38, height: 38, borderRadius: 19, alignItems: "center", justifyContent: "center", backgroundColor: "#173126", borderWidth: 1, borderColor: "#345444" },
   avatarText: { color: "#f3b34d", fontSize: 15, fontWeight: "900" },
