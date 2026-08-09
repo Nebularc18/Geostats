@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { hasNativeMapSupport, SCRATCH_WORLD_REGION, selectNativeMapPoints } from "./mobile-map";
+import { hasNativeMapSupport, scratchMapGeometryBudget, SCRATCH_WORLD_REGION, selectNativeMapPoints } from "./mobile-map";
 
 test("Scratch Map's world camera stays inside Google Maps latitude bounds", () => {
   const south = SCRATCH_WORLD_REGION.latitude - SCRATCH_WORLD_REGION.latitudeDelta / 2;
@@ -40,4 +40,22 @@ test("single-kind maps use the complete marker budget", () => {
 test("maps below the marker limit preserve their original points", () => {
   const points = [{ id: 1, isOwnHide: false }, { id: 2, isOwnHide: true }];
   assert.equal(selectNativeMapPoints(points, 500), points);
+});
+
+test("Android country and county layers can retain their complete feature sets", () => {
+  const countries = scratchMapGeometryBudget("countries", "android");
+  const counties = scratchMapGeometryBudget("counties", "android");
+
+  assert.ok(countries.maxPolygons >= 360);
+  assert.ok(counties.maxPolygons >= 290);
+  assert.ok(countries.maxPolygons * countries.maxPointsPerRing <= countries.maxVertices);
+  assert.ok(counties.maxPolygons * counties.maxPointsPerRing <= counties.maxVertices);
+  assert.ok(countries.maxHighlightedPointsPerRing >= 900);
+  assert.ok(countries.maxPointsPerRing >= 140);
+  assert.ok(countries.maxHighlightedPointsPerRing > countries.maxPointsPerRing * 6);
+});
+
+test("dense detail layers retain their lower hard vertex ceiling", () => {
+  assert.ok(scratchMapGeometryBudget("regions", "android").maxVertices < scratchMapGeometryBudget("countries", "android").maxVertices);
+  assert.equal(scratchMapGeometryBudget("counties", "android").maxVertices, 12_000);
 });

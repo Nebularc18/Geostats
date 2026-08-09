@@ -66,6 +66,62 @@ TFTC</groundspeak:text>
   </wpt>
 </gpx>`;
 
+test("stats recalculations for one user run in order", async () => {
+  const processor = new ImportProcessor({} as any, {} as any);
+  const events: string[] = [];
+  let releaseFirst!: () => void;
+  const firstCanFinish = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  let run = 0;
+
+  (processor as any).calculateAndStoreStats = async () => {
+    run += 1;
+    const currentRun = run;
+    events.push(`start-${currentRun}`);
+    if (currentRun === 1) await firstCanFinish;
+    events.push(`finish-${currentRun}`);
+  };
+
+  const first = (processor as any).recalculateStats("user-1");
+  await new Promise((resolve) => setImmediate(resolve));
+  const second = (processor as any).recalculateStats("user-1");
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(events, ["start-1"]);
+  releaseFirst();
+  await Promise.all([first, second]);
+  assert.deepEqual(events, ["start-1", "finish-1", "start-2", "finish-2"]);
+});
+
+test("stats recalculation holds a database user lock before loading inputs", async () => {
+  const events: string[] = [];
+  const tx = {
+    $queryRaw: async (query: TemplateStringsArray, userId: string) => {
+      assert.match(query.join("?"), /pg_advisory_xact_lock/);
+      assert.equal(userId, "user-1");
+      events.push("lock");
+      return [];
+    },
+    statSnapshot: {
+      deleteMany: async () => events.push("delete"),
+      create: async () => events.push("create")
+    }
+  };
+  const prisma = {
+    $transaction: async (callback: (transaction: typeof tx) => Promise<unknown>) => callback(tx),
+    geocachingProfile: { findUnique: async () => (events.push("read"), null) },
+    hide: { findMany: async () => [] },
+    ownerFinderCountryStat: { findMany: async () => [] },
+    find: { findMany: async () => [] }
+  };
+
+  const processor = new ImportProcessor(prisma as any, {} as any);
+  await (processor as any).calculateAndStoreStats("user-1");
+
+  assert.deepEqual(events, ["lock", "read", "delete", "create"]);
+});
+
 test("process uses database object metadata without overwriting existing shared cache rows", async () => {
   const existingCache = {
     id: "cache-1",

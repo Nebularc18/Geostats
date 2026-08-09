@@ -10,12 +10,12 @@ import * as Clipboard from "expo-clipboard";
 import * as Crypto from "expo-crypto";
 import * as Sharing from "expo-sharing";
 import * as Updates from "expo-updates";
-import MapView, { Callout, Marker, Polygon, PROVIDER_GOOGLE, type Region } from "react-native-maps";
+import MapView, { Callout, Marker, Polygon, PROVIDER_GOOGLE, type MapStyleElement, type Region } from "react-native-maps";
 import * as Linking from "expo-linking";
 import * as WebBrowser from "expo-web-browser";
 import { parseCoordinate } from "@geostats/shared";
 import { pickAndUploadDocument, type UploadKind } from "./upload";
-import { hasNativeMapSupport, SCRATCH_WORLD_REGION, selectNativeMapPoints } from "./mobile-map";
+import { hasNativeMapSupport, scratchMapGeometryBudget, SCRATCH_WORLD_REGION, selectNativeMapPoints } from "./mobile-map";
 import { schedulePostImportStatsRefresh } from "./import-refresh";
 
 WebBrowser.maybeCompleteAuthSession();
@@ -32,7 +32,7 @@ type ServerProbeState = {
   config: AuthConfig;
 };
 type ScratchLevel = "countries" | "regions" | "counties";
-type ScreenId = "dashboard" | "explore" | "upload" | "imports" | "stats" | "ftf" | "hides" | "milestones" | "profileHtml" | "map" | "mysteries" | "travel" | "scratch" | "profile";
+type ScreenId = "dashboard" | "explore" | "upload" | "imports" | "stats" | "ftf" | "hides" | "milestones" | "map" | "mysteries" | "travel" | "scratch" | "profile";
 type Session = { token: string; user: { id: string; email: string; username: string } };
 type CheckState = "correct" | "wrong" | "unchecked";
 type MysteryStatus = "solving" | "solved" | "planned";
@@ -107,19 +107,35 @@ const monthLabels = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Se
 const defaultTimeZone = "Europe/Stockholm";
 const defaultFtfTerms = ["FTF", "first to find"];
 const badgeTiers = ["Bronze", "Silver", "Gold", "Platinum", "Ruby", "Sapphire", "Emerald", "Diamond"];
+const countryBadgeThresholds = [1, 15, 20, 30, 40, 50, 75, 100];
+const badgeMarks: Record<string, string> = {
+  "long-distance": "🌍", attribute: "🎒", large: "🧰", matrix: "▦", jasmer: "🗓️", diverse: "🧩",
+  brainiac: "💡", adventurous: "△", "all-around": "✦", traveling: "🛂", veteran: "🎂",
+  traditional: "📍", multi: "⌁", mystery: "?", letterboxer: "✉", earth: "🌐", wherigo: "◉",
+  virtual: "👻", photogenic: "📷", event: "☻", environmental: "♻", "mega-social": "🎉",
+  "giga-social": "★", "gps-maze": "◈", "odd-sized": "◇", micro: "•", small: "▪", regular: "■",
+  rugged: "⛰", ftf: "1st", geocacher: "🏆", calendar: "📅", daily: "✓", busy: "⚡",
+  challenge: "🏅", trackable: "🔎", author: "✒", owner: "👑", "favorited-owner": "★", "event-host": "🎤"
+};
 const ACTIVE_IMPORT_STATUSES = new Set(["UPLOADED", "QUEUED", "PROCESSING"]);
 const MAX_NATIVE_MAP_MARKERS = Platform.OS === "android" ? 500 : 1_000;
-// Each Polygon is a native Google Maps view on Android. Large country and ADM2
-// datasets can otherwise enqueue hundreds of views and more than 100k points in
-// one render, which is enough to terminate the app on memory-constrained phones.
-const MAX_SCRATCH_MAP_POLYGONS = Platform.OS === "android" ? 80 : 160;
-const MAX_SCRATCH_MAP_VERTICES = Platform.OS === "android" ? 12_000 : 24_000;
-const MAX_SCRATCH_RING_POINTS = Platform.OS === "android" ? 150 : 250;
 const COUNTRY_GEOJSON_URL = "https://raw.githubusercontent.com/datasets/geo-countries/master/data/countries.geojson";
 const SWEDEN_REGION_GEOJSON_URL = "https://raw.githubusercontent.com/okfse/sweden-geojson/master/swedish_regions.geojson";
 const SWEDEN_COUNTY_GEOJSON_URL = "https://raw.githubusercontent.com/okfse/sweden-geojson/master/swedish_municipalities.geojson";
 const GEOBOUNDARIES_BASE_URL =
   "https://media.githubusercontent.com/media/wmgeolab/geoBoundaries/9469f09592ced973a3448cf66b6100b741b64c0d/releaseData/gbOpen";
+const SCRATCH_GOOGLE_MAP_STYLE: MapStyleElement[] = [
+  { elementType: "geometry", stylers: [{ color: "#9ca7aa" }] },
+  { elementType: "labels.text.fill", stylers: [{ color: "#26382f" }] },
+  { elementType: "labels.text.stroke", stylers: [{ color: "#cbd2ce" }] },
+  { featureType: "administrative", elementType: "geometry.stroke", stylers: [{ color: "#64716b" }] },
+  { featureType: "landscape", elementType: "geometry", stylers: [{ color: "#a9b3b0" }] },
+  { featureType: "poi", stylers: [{ visibility: "off" }] },
+  { featureType: "road", stylers: [{ saturation: -100 }, { lightness: 18 }] },
+  { featureType: "transit", stylers: [{ visibility: "off" }] },
+  { featureType: "water", elementType: "geometry", stylers: [{ color: "#879599" }] },
+  { featureType: "water", elementType: "labels.text.fill", stylers: [{ color: "#40524a" }] }
+];
 const COUNTRY_NAME_ALIASES: Record<string, string[]> = {
   "United States": ["United States of America"],
   "Russia": ["Russian Federation"],
@@ -163,7 +179,7 @@ const screenDetails: Record<ScreenId, { label: string; eyebrow: string; icon: st
   stats: { label: "Stats", eyebrow: "Patterns and progress", icon: "▥" },
   map: { label: "Map", eyebrow: "Every find in context", icon: "⌖" },
   explore: { label: "Explore", eyebrow: "All Geostats tools", icon: "✦" },
-  profile: { label: "Profile", eyebrow: "Account and collectors", icon: "●" },
+  profile: { label: "Profile", eyebrow: "Account settings", icon: "●" },
   scratch: { label: "Scratch Map", eyebrow: "Coverage around the world", icon: "◎" },
   milestones: { label: "Milestones", eyebrow: "Memorable firsts", icon: "◇" },
   ftf: { label: "First to Find", eyebrow: "Track your FTF history", icon: "⚑" },
@@ -171,15 +187,14 @@ const screenDetails: Record<ScreenId, { label: string; eyebrow: string; icon: st
   mysteries: { label: "Mysteries", eyebrow: "Solve and collaborate", icon: "?" },
   travel: { label: "Trip Planner", eyebrow: "Build a caching route", icon: "↗" },
   upload: { label: "Import Data", eyebrow: "Add caches to your archive", icon: "+" },
-  imports: { label: "Import History", eyebrow: "Processing and recent files", icon: "↻" },
-  profileHtml: { label: "Profile HTML", eyebrow: "Publish your statistics", icon: "</>" }
+  imports: { label: "Import History", eyebrow: "Processing and recent files", icon: "↻" }
 };
 
 const primaryScreens: ScreenId[] = ["dashboard", "stats", "map", "explore", "profile"];
 const exploreGroups: Array<{ title: string; subtitle: string; screens: ScreenId[] }> = [
   { title: "Maps & progress", subtitle: "See where you have cached and what comes next.", screens: ["scratch", "milestones", "ftf"] },
   { title: "Caching tools", subtitle: "Manage hides, puzzles, and upcoming trips.", screens: ["hides", "mysteries", "travel"] },
-  { title: "Data & publishing", subtitle: "Keep your archive current and share your stats.", screens: ["upload", "imports", "profileHtml"] }
+  { title: "Data", subtitle: "Keep your archive current and review recent imports.", screens: ["upload", "imports"] }
 ];
 
 function normalizeServerUrl(value: string) {
@@ -402,6 +417,12 @@ function finalCoordinate(cache: MysteryCache) {
   return null;
 }
 
+function escapeMarkup(value: unknown) {
+  return String(value ?? "").replace(/[<>&"']/g, (character) => (
+    { "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;", "'": "&#39;" }[character] ?? character
+  ));
+}
+
 function attemptLabel(attempt: CoordinateAttempt) {
   if (attempt.kind === "keyword") return attempt.answer?.trim() || "Keyword";
   const coordinate = inputCoordinate(attempt);
@@ -411,76 +432,6 @@ function attemptLabel(attempt: CoordinateAttempt) {
 function shareableMystery(cache: MysteryCache) {
   const { sharedBy: _sharedBy, sharedWorkspaceId: _workspace, ...mystery } = cache;
   return mystery;
-}
-
-function escapeMarkup(value: unknown) {
-  return String(value ?? "").replace(/[<>&"']/g, (character) => (
-    { "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;", "'": "&#39;" }[character] ?? character
-  ));
-}
-
-function profileStatRows(rows: Array<[string, unknown]>) {
-  return `<table border="0" cellpadding="6" cellspacing="1" style="width:740px;max-width:100%;margin:0 auto 14px;background:#c8d6cc;font-size:12px">${rows.map(([label, value]) => `<tr><td style="width:42%;background:#eef4ef;font-weight:bold">${escapeMarkup(label)}</td><td style="background:#fff">${value}</td></tr>`).join("")}</table>`;
-}
-
-function profileSection(title: string, body: string) {
-  return `<div style="margin:18px auto 8px;max-width:740px;background:#426052;color:#fff;border:1px solid #23362d;font-weight:bold;line-height:24px;text-align:center">${escapeMarkup(title)}</div>${body}`;
-}
-
-function profileBucketSection(title: string, buckets: any[] = [], limit = 16) {
-  if (!buckets.length) return "";
-  return profileSection(title, profileStatRows(buckets.slice(0, limit).map((row) => [row.key ?? row.name, Number(row.count ?? 0).toLocaleString()])));
-}
-
-function profileMonthSection(buckets: CountBucket[] = []) {
-  if (!buckets.length) return "";
-  const counts = new Map(buckets.map((bucket) => [bucket.key, bucket.count]));
-  const years = [...new Set(buckets.map((bucket) => bucket.key.slice(0, 4)))].sort((a, b) => b.localeCompare(a));
-  const header = `<tr><td style="background:#eef4ef;font-weight:bold">Year</td>${monthLabels.map((month) => `<td style="background:#eef4ef;font-weight:bold">${month}</td>`).join("")}<td style="background:#eef4ef;font-weight:bold">Total</td></tr>`;
-  const rows = years.map((year) => {
-    const values = monthLabels.map((_, index) => counts.get(`${year}-${String(index + 1).padStart(2, "0")}`) ?? 0);
-    return `<tr><td style="background:#eef4ef;font-weight:bold">${year}</td>${values.map((value) => `<td style="background:#fff">${value || ""}</td>`).join("")}<td style="background:#eef4ef;font-weight:bold">${values.reduce((sum, value) => sum + value, 0)}</td></tr>`;
-  }).join("");
-  return profileSection("Finds by Month", `<table border="0" cellpadding="5" cellspacing="1" style="width:740px;max-width:100%;margin:0 auto 14px;background:#c8d6cc;font-size:11px;text-align:center">${header}${rows}</table>`);
-}
-
-function profileDifficultyTerrainSection(data: Array<{ difficulty: number; terrain: number; count: number }> = []) {
-  if (!data.length) return "";
-  const values = ["1", "1.5", "2", "2.5", "3", "3.5", "4", "4.5", "5"];
-  const counts = new Map(data.map((cell) => [`${cell.difficulty}/${cell.terrain}`, cell.count]));
-  const header = `<tr><td style="background:#eef4ef;font-weight:bold">D/T</td>${values.map((value) => `<td style="background:#eef4ef;font-weight:bold">${value}</td>`).join("")}</tr>`;
-  const rows = values.map((difficulty) => `<tr><td style="background:#eef4ef;font-weight:bold">${difficulty}</td>${values.map((terrain) => { const count = counts.get(`${Number(difficulty)}/${Number(terrain)}`) ?? 0; return `<td style="background:${count ? "#dff0e4" : "#fff"}">${count || ""}</td>`; }).join("")}</tr>`).join("");
-  return profileSection("Difficulty / Terrain", `<table border="0" cellpadding="4" cellspacing="1" style="width:540px;max-width:100%;margin:0 auto 14px;background:#c8d6cc;font-size:11px;text-align:center">${header}${rows}</table>`);
-}
-
-function buildMobileProfileHtml(stats: any, profile: any, options: { ftf: boolean; hides: boolean; milestones: boolean }) {
-  const summary = stats?.summaryNumbers ?? {};
-  const ftf = stats?.ftfStats;
-  const hides = stats?.hideStats;
-  const milestoneRows = stats?.milestoneStats?.countMilestones ?? stats?.milestones ?? [];
-  const optional = [
-    options.milestones && milestoneRows.length
-      ? profileSection("Milestones", profileStatRows(milestoneRows.slice(-12).map((row: any) => [row.count, `${escapeMarkup(row.gcCode)} ${escapeMarkup(row.name)} · ${escapeMarkup(dateText(row.date))}`])))
-      : "",
-    options.ftf && ftf
-      ? profileSection("FTF Statistics", profileStatRows([["FTF finds", Number(ftf.total ?? 0).toLocaleString()], ["Percent of finds", `${Number(ftf.percentOfFinds ?? 0).toFixed(1)}%`], ["Average interval", ftf.averageIntervalDays == null ? "-" : `${Number(ftf.averageIntervalDays).toFixed(1)} days`]]))
-      : "",
-    options.hides && hides?.totalHides
-      ? profileSection("Owned Caches", profileStatRows([["Owned caches", hides.totalHides], ["Active / archived", `${hides.activeHides ?? 0} / ${hides.archivedHides ?? 0}`], ["Received logs", hides.totalReceivedLogs ?? 0], ["Unique finders", hides.totalUniqueFinders ?? 0]]))
-      : ""
-  ].join("");
-  return `<div id="geostats-profile" align="center" style="background:#e4ece6;font-family:Verdana,Arial,sans-serif;font-size:12px;color:#111;margin:1px;padding:12px;border:1px solid #8fa398"><div style="font-size:18px;font-weight:bold;color:#1f3329">${escapeMarkup(profile?.gcUsername || "Geocacher")} has ${Number(stats?.totalFinds ?? 0).toLocaleString()} finds</div><div style="margin:6px 0 18px;color:#42534a"><i>Statistics generated by Geostats on ${new Date().toLocaleDateString()}</i></div>${profileSection("Overview", profileStatRows([["Total finds", `<strong>${Number(stats?.totalFinds ?? 0).toLocaleString()}</strong>`], ["Countries cached in", stats?.countries?.length ?? 0], ["Caching days", summary.cachingDays ?? 0], ["Finds per caching day", Number(summary.findsPerCachingDay ?? 0).toFixed(2)], ["Best day", summary.bestDay ? `${summary.bestDay.count} on ${escapeMarkup(summary.bestDay.key)}` : "-"], ["Longest streak", `${stats?.streaks?.longest ?? 0} days`]]))}${profileMonthSection(stats?.findsByMonth)}${profileBucketSection("Countries", stats?.countries)}${profileBucketSection("Cache Types", stats?.cacheTypes, 12)}${profileBucketSection("Regions", stats?.regions)}${profileBucketSection("Counties / Municipalities", stats?.counties)}${profileDifficultyTerrainSection(stats?.difficultyTerrain)}${optional}<div style="max-width:740px;margin:18px auto 0;padding-top:10px;border-top:1px solid #b9c9bf;color:#42534a;font-size:11px">Generated with Geostats</div></div>`;
-}
-
-function powerShellString(value: string) {
-  return `'${value.replace(/'/g, "''")}'`;
-}
-
-function hidesCommand(baseUrl: string, token: string, csv = false) {
-  const parts = [`$env:GEOSTATS_COLLECTOR_TOKEN=${powerShellString(token)}`];
-  if (csv) parts.push("$env:GEOSTATS_COLLECTOR_NO_UPLOAD='1'");
-  parts.push(`irm ${powerShellString(`${baseUrl}/collector/hides.ps1`)} | iex`);
-  return parts.join("; ");
 }
 
 function mixColor(start: string, end: string, amount: number) {
@@ -495,6 +446,12 @@ function scratchColor(count: number, max: number) {
   if (count <= 0 || max <= 0) return "#263c2d";
   const intensity = Math.log1p(count) / Math.log1p(max);
   return mixColor("#dce88d", "#1f6f3b", intensity);
+}
+
+function scratchPolygonFill(count: number, max: number) {
+  // The web map keeps untouched areas visible as a pale scratch layer instead
+  // of exposing the ordinary basemap through them.
+  return count > 0 ? `${scratchColor(count, max)}cc` : "#edf4e81a";
 }
 
 function countForBucket(buckets: CountBucket[] | undefined, names: string[]) {
@@ -566,7 +523,7 @@ function mobileBadges(stats: any): MobileBadge[] {
   ];
 }
 
-function achievedIndex(badge: MobileBadge) {
+function achievedIndex(badge: { current: number | null; thresholds: number[] }) {
   if (badge.current == null) return -1;
   return badge.thresholds.reduce((latest, threshold, index) => badge.current! >= threshold ? index : latest, -1);
 }
@@ -1168,7 +1125,6 @@ function ScreenSwitch({ apiBaseUrl, screen, token, userId, username, onNavigate,
   if (screen === "milestones") return <MilestonesScreen apiBaseUrl={apiBaseUrl} token={token} />;
   if (screen === "ftf") return <FtfScreen apiBaseUrl={apiBaseUrl} token={token} />;
   if (screen === "hides") return <HidesScreen apiBaseUrl={apiBaseUrl} token={token} />;
-  if (screen === "profileHtml") return <ProfileHtmlScreen apiBaseUrl={apiBaseUrl} token={token} />;
   if (screen === "mysteries") return <MysteriesScreen apiBaseUrl={apiBaseUrl} token={token} userId={userId} />;
   if (screen === "travel") return <TravelScreen userId={userId} />;
   if (screen === "upload") return <UploadScreen apiBaseUrl={apiBaseUrl} token={token} />;
@@ -1284,12 +1240,6 @@ function DashboardScreen({ apiBaseUrl, token, username, onNavigate }: { apiBaseU
       <Panel title="At a glance" subtitle={`Last import: ${dateText(imports.data.imports[0]?.createdAt)}`}>
         <Bars data={latestTwelveMonths(s.findsByMonth ?? [])} />
         <KeyValue rows={[["Best day", s.summaryNumbers?.bestDay ? `${s.summaryNumbers.bestDay.count} on ${s.summaryNumbers.bestDay.key}` : "-"], ["Best month", s.summaryNumbers?.bestMonth ? `${s.summaryNumbers.bestMonth.count} in ${s.summaryNumbers.bestMonth.key}` : "-"], ["Cache days", s.summaryNumbers?.cachingDays ?? 0], ["Average/day", s.summaryNumbers?.findsPerDay?.toFixed(2) ?? "0.00"], ["Average distance", s.distanceStats?.averageDistanceKm == null ? "-" : `${Math.round(s.distanceStats.averageDistanceKm)} km`]]} />
-      </Panel>
-      <Panel title="Keep your archive moving" subtitle="Pick up where you left off.">
-        <WorkflowStep number="1" title="Import cache data" detail="Choose a My Finds GPX, My Hides GPX, or Pocket Query ZIP." done={imports.data.imports.length > 0} onPress={() => onNavigate("upload")} />
-        <WorkflowStep number="2" title="Watch processing" detail="Imports refresh automatically while the server parses and recalculates." done={imports.data.imports.some((item) => item.status === "COMPLETED")} onPress={() => onNavigate("imports")} />
-        <WorkflowStep number="3" title="Explore your archive" detail="Review statistics, maps, milestones, FTFs, and hides." done={(s.totalFinds ?? 0) > 0} onPress={() => onNavigate("stats")} />
-        <WorkflowStep number="4" title="Plan the next trip" detail="Solve mystery caches, group them into trips, and open directions." done={false} onPress={() => onNavigate("mysteries")} />
       </Panel>
       <BadgesPanel apiBaseUrl={apiBaseUrl} stats={s} token={token} />
       <LoadState loading={stats.loading || imports.loading} error={stats.error || imports.error} />
@@ -1488,7 +1438,7 @@ function ScratchScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: strin
         {configIsCurrent && boundaryError ? <Text style={styles.error}>{boundaryError}</Text> : null}
         {level !== "countries" && configIsCurrent && !supportsDetail ? <Text style={styles.muted}>Region and county polygons are not available for this country.</Text> : null}
       </Panel>
-      <Panel title="Continents"><Bars data={data.continents ?? []} /></Panel>
+      <Panel title="Continents"><Bars data={data.continents ?? []} nameKey="name" /></Panel>
       <Panel title="Countries">{countries.map((country) => <Pressable key={country.name} onPress={() => setSelected(country.name)} style={[styles.countryRow, active?.name === country.name && styles.countryRowActive]}><View style={[styles.countrySwatch, { opacity: 0.3 + Math.min(0.7, country.count / max) }]} /><View style={styles.flex}><Text style={styles.rowTitle}>{country.name}</Text><Text style={styles.muted}>{country.continent} - {country.count} finds</Text></View></Pressable>)}</Panel>
       <Panel title={active?.name ?? "No country yet"} subtitle="Regions and counties"><Text style={styles.sectionLabel}>Regions</Text><Bars data={active?.regions ?? []} nameKey="name" /><Text style={styles.sectionLabel}>Counties</Text><Bars data={active?.counties ?? []} nameKey="name" /></Panel>
       <LoadState loading={loading} error={error} />
@@ -1637,7 +1587,6 @@ function UploadScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string
     <>
       <PageTitle eyebrow="Import pipeline" title="Upload cache data" />
       <Panel title="GPX or ZIP"><PrimaryButton label={uploading ? "Uploading..." : "Choose GPX or ZIP"} onPress={() => pickAndUpload("cache")} /></Panel>
-      <Panel title="Owner log CSV"><PrimaryButton label={uploading ? "Uploading..." : "Choose CSV"} onPress={() => pickAndUpload("csv")} /><Text style={styles.muted}>Use the CSV command from Profile after importing My Hides data.</Text></Panel>
       {message ? <Text style={styles.note}>{message}</Text> : null}
       <Panel title="Latest imports"><ImportRows imports={imports.data.imports.slice(0, 8)} /></Panel>
       <LoadState loading={imports.loading} error={imports.error} />
@@ -1659,14 +1608,12 @@ function ImportsScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: strin
 
 function ProfileScreen({ apiBaseUrl, token, onLogout }: { apiBaseUrl: string; token: string; onLogout: () => void }) {
   const profile = useApi<{ profile: any }>(apiBaseUrl, token, "/profile", { profile: null });
-  const tokens = useApi<{ tokens: any[] }>(apiBaseUrl, token, "/collector/tokens", { tokens: [] });
   const [gcUsername, setGcUsername] = useState("");
   const [homeLatitude, setHomeLatitude] = useState("");
   const [homeLongitude, setHomeLongitude] = useState("");
   const [timeZone, setTimeZone] = useState(defaultTimeZone);
   const [ftfTerms, setFtfTerms] = useState(defaultFtfTerms.join("\n"));
   const [message, setMessage] = useState<string | null>(null);
-  const [copiedCommandId, setCopiedCommandId] = useState<string | null>(null);
   useEffect(() => {
     const p = profile.data.profile;
     if (!p) return;
@@ -1685,113 +1632,26 @@ function ProfileScreen({ apiBaseUrl, token, onLogout }: { apiBaseUrl: string; to
       setMessage(error instanceof Error ? error.message : "Could not save profile");
     }
   }
-  async function createToken() {
-    await apiFetch(apiBaseUrl, "/collector/tokens", token, { method: "POST", body: JSON.stringify({ name: "Owner logs collector" }) });
-    await tokens.refresh();
-  }
-  async function deleteToken(id: string) {
-    await apiFetch(apiBaseUrl, `/collector/tokens/${id}`, token, { method: "DELETE" });
-    await tokens.refresh();
-  }
-  async function copyCollectorCommand(item: any, mode: "direct" | "csv") {
-    if (!item.token) {
-      setMessage("Command unavailable for this older token. Delete it and create a new token once.");
-      return;
-    }
-    await Clipboard.setStringAsync(hidesCommand(apiBaseUrl, item.token, mode === "csv"));
-    setCopiedCommandId(`${item.id}:${mode}`);
-    setMessage(null);
-  }
   return (
     <>
       <PageTitle eyebrow="Per-user ownership" title="Geocaching profile" />
       <Panel title="Profile"><Field label="Geocaching username" value={gcUsername} onChangeText={setGcUsername} /><Field label="Home latitude" value={homeLatitude} onChangeText={setHomeLatitude} keyboardType="numeric" /><Field label="Home longitude" value={homeLongitude} onChangeText={setHomeLongitude} keyboardType="numeric" /><Field label="Time zone" value={timeZone} onChangeText={setTimeZone} /><Field label="FTF auto-detect phrases" value={ftfTerms} onChangeText={setFtfTerms} multiline /><PrimaryButton label="Save profile" onPress={save} /></Panel>
-      <Panel title="Owner log collector">
-        <Text style={styles.muted}>The direct command uploads owner logs automatically. The CSV command saves geostats-received-logs.csv in Downloads so it can be imported later from Upload.</Text>
-        <PrimaryButton label="Create collector token" onPress={createToken} />
-        {tokens.data.tokens.map((item) => (
-          <View key={item.id} style={styles.tokenCard}>
-            <View style={styles.tokenRow}>
-              <View style={styles.flex}><Text style={styles.rowTitle}>{item.name}</Text><Text style={styles.muted}>{item.tokenPrefix}...</Text></View>
-              <Pressable onPress={() => deleteToken(item.id)}><Text style={styles.danger}>Delete</Text></Pressable>
-            </View>
-            {item.token ? (
-              <>
-                <CommandCard
-                  label="Direct upload command"
-                  copied={copiedCommandId === `${item.id}:direct`}
-                  command={hidesCommand(apiBaseUrl, item.token)}
-                  onCopy={() => copyCollectorCommand(item, "direct")}
-                />
-                <CommandCard
-                  label="CSV to Downloads command"
-                  copied={copiedCommandId === `${item.id}:csv`}
-                  command={hidesCommand(apiBaseUrl, item.token, true)}
-                  onCopy={() => copyCollectorCommand(item, "csv")}
-                />
-              </>
-            ) : (
-              <Text style={styles.muted}>Command unavailable for this older token. Delete it and create a new token once.</Text>
-            )}
-          </View>
-        ))}
-      </Panel>
       {message ? <Text style={styles.note}>{message}</Text> : null}
       <Panel title="Account" subtitle="Your imported data remains on the selected Geostats server.">
         <SecondaryButton label="Sign out of Geostats" onPress={onLogout} danger />
       </Panel>
-      <LoadState loading={profile.loading || tokens.loading} error={profile.error || tokens.error} />
+      <LoadState loading={profile.loading} error={profile.error} />
     </>
   );
 }
 
-function ProfileHtmlScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
-  const stats = useApi<{ stats: any }>(apiBaseUrl, token, "/stats/summary", { stats: {} });
-  const profile = useApi<{ profile: any }>(apiBaseUrl, token, "/profile", { profile: null });
-  const [includeFtf, setIncludeFtf] = useState(true);
-  const [includeHides, setIncludeHides] = useState(true);
-  const [includeMilestones, setIncludeMilestones] = useState(true);
-  const [message, setMessage] = useState<string | null>(null);
-  const html = useMemo(
-    () => buildMobileProfileHtml(stats.data.stats, profile.data.profile, { ftf: includeFtf, hides: includeHides, milestones: includeMilestones }),
-    [includeFtf, includeHides, includeMilestones, profile.data.profile, stats.data.stats]
-  );
-  const username = profile.data.profile?.gcUsername;
-  const publicUrl = username ? `${apiBaseUrl}/public/profile-stats/${encodeURIComponent(username)}` : "";
-  const embed = username
-    ? `<a href="${publicUrl}" target="_top"><img src="${apiBaseUrl}/public/profile-stats-image/${encodeURIComponent(username)}" width="750"><br><img src="${apiBaseUrl}/public/profile-scratch-map-image/${encodeURIComponent(username)}" width="750"></a>`
-    : "";
-  async function copy(value: string, label: string) {
-    await Clipboard.setStringAsync(value);
-    setMessage(`${label} copied.`);
-  }
-  async function shareHtml() {
-    const file = new File(Paths.cache, "geostats-profile.html");
-    file.write(`<!doctype html><html><head><meta charset="utf-8"><title>Geostats profile</title></head><body>${html}</body></html>`);
-    await Sharing.shareAsync(file.uri, { dialogTitle: "Share Geostats profile HTML", mimeType: "text/html", UTI: "public.html" });
-  }
-  return (
-    <>
-      <PageTitle eyebrow="Geocaching profile export" title="Profile HTML" />
-      <Panel title="Include sections">
-        <ToggleOption label="Milestones" active={includeMilestones} onPress={() => setIncludeMilestones((value) => !value)} />
-        <ToggleOption label="FTF summary" active={includeFtf} onPress={() => setIncludeFtf((value) => !value)} />
-        <ToggleOption label="Owned cache summary" active={includeHides} onPress={() => setIncludeHides((value) => !value)} />
-      </Panel>
-      <Panel title="Dynamic profile snippet" subtitle="Updates whenever Geostats recalculates your statistics.">
-        <Text style={styles.codeText} selectable>{embed || "Set your geocaching username in Profile first."}</Text>
-        <PrimaryButton label="Copy dynamic snippet" onPress={() => copy(embed, "Dynamic snippet")} />
-        {publicUrl ? <Pressable onPress={() => Linking.openURL(publicUrl)}><Text style={styles.linkText}>Open public profile</Text></Pressable> : null}
-      </Panel>
-      <Panel title="Copyable HTML" subtitle={`${html.length.toLocaleString()} characters`}>
-        <Text style={styles.codePreview} selectable numberOfLines={12}>{html}</Text>
-        <PrimaryButton label="Copy HTML" onPress={() => copy(html, "Profile HTML")} />
-        <SecondaryButton label="Share HTML file" onPress={shareHtml} />
-      </Panel>
-      {message ? <Text style={styles.note}>{message}</Text> : null}
-      <LoadState loading={stats.loading || profile.loading} error={stats.error || profile.error} />
-    </>
-  );
+function badgeTierSummary(badges: Array<{ current: number | null; thresholds: number[] }>) {
+  const counts = badgeTiers.map(() => 0);
+  badges.forEach((badge) => {
+    const index = achievedIndex(badge);
+    if (index >= 0) counts[index] = (counts[index] ?? 0) + 1;
+  });
+  return badgeTiers.map((tier, index) => ({ tier, count: counts[index] ?? 0 })).reverse();
 }
 
 function MysteriesScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; token: string; userId: string }) {
@@ -2290,30 +2150,8 @@ function SecondaryButton({ label, onPress, danger = false }: { label: string; on
   return <Pressable onPress={onPress} style={[styles.secondaryButton, danger && styles.secondaryButtonDanger]}><Text style={[styles.secondaryButtonText, danger && styles.danger]}>{label}</Text></Pressable>;
 }
 
-function ToggleOption({ label, active, onPress }: { label: string; active: boolean; onPress: () => void }) {
-  return <Pressable onPress={onPress} style={styles.optionRow}><Text style={[styles.optionMark, active && styles.optionMarkActive]}>{active ? "✓" : ""}</Text><Text style={styles.rowTitle}>{label}</Text></Pressable>;
-}
-
 function Segmented({ values, active, onPress, disabled = false }: { values: readonly string[]; active: string; onPress: (value: string) => void; disabled?: boolean }) {
   return <View style={styles.segmented}>{values.map((value) => <Pressable disabled={disabled} key={value} onPress={() => onPress(value)} style={[styles.segmentButton, active === value && styles.segmentButtonActive]}><Text style={[styles.segmentText, active === value && styles.segmentTextActive]}>{value}</Text></Pressable>)}</View>;
-}
-
-function WorkflowStep({ number, title, detail, done, onPress }: { number: string; title: string; detail: string; done: boolean; onPress: () => void }) {
-  return <Pressable onPress={onPress} style={styles.workflowStep}><Text style={[styles.workflowNumber, done && styles.workflowNumberDone]}>{done ? "✓" : number}</Text><View style={styles.flex}><Text style={styles.rowTitle}>{title}</Text><Text style={styles.muted}>{detail}</Text></View><Text style={styles.linkText}>Open</Text></Pressable>;
-}
-
-function CommandCard({ label, command, copied, onCopy }: { label: string; command: string; copied: boolean; onCopy: () => void }) {
-  return (
-    <View style={styles.commandCard}>
-      <View style={styles.commandHeader}>
-        <Text style={styles.rowTitle}>{label}</Text>
-        <Pressable onPress={onCopy} style={styles.copyButton}>
-          <Text style={styles.copyButtonText}>{copied ? "Copied" : "Copy"}</Text>
-        </Pressable>
-      </View>
-      <Text selectable style={styles.commandText}>{command}</Text>
-    </View>
-  );
 }
 
 function Panel({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {
@@ -2361,7 +2199,37 @@ function DifficultyGrid({ data }: { data: Array<{ difficulty: number; terrain: n
   const byKey = new Map(data.map((cell) => [`${cell.difficulty}/${cell.terrain}`, cell.count]));
   const ratings = [1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5];
   const max = Math.max(1, ...data.map((cell) => cell.count));
-  return <View style={styles.dtGrid}>{ratings.flatMap((difficulty) => ratings.map((terrain) => { const count = byKey.get(`${difficulty}/${terrain}`) ?? 0; return <View key={`${difficulty}-${terrain}`} style={[styles.dtCell, { opacity: count ? 0.45 + (count / max) * 0.55 : 0.18 }]}><Text style={styles.dtText}>{count || ""}</Text></View>; }))}</View>;
+  return (
+    <View style={styles.dtChart}>
+      <Text style={styles.dtAxisTitle}>Difficulty ↑</Text>
+      <View style={styles.dtMatrix}>
+        <View style={styles.dtRow}>
+          <View style={styles.dtRowLabel} />
+          {ratings.map((terrain) => <Text key={terrain} style={styles.dtColumnLabel}>{terrain}</Text>)}
+        </View>
+        {[...ratings].reverse().map((difficulty) => (
+          <View key={difficulty} style={styles.dtRow}>
+            <Text style={styles.dtRowLabel}>{difficulty}</Text>
+            {ratings.map((terrain) => {
+              const count = byKey.get(`${difficulty}/${terrain}`) ?? 0;
+              const intensity = count / max;
+              return (
+                <View
+                  key={`${difficulty}-${terrain}`}
+                  accessible
+                  accessibilityLabel={`Difficulty ${difficulty}, terrain ${terrain}: ${count} finds`}
+                  style={[styles.dtCell, { backgroundColor: count ? mixColor("#3b5136", "#ffc052", intensity) : "#20382c" }]}
+                >
+                  <Text style={[styles.dtText, intensity > 0.55 && styles.dtTextStrong]}>{count || ""}</Text>
+                </View>
+              );
+            })}
+          </View>
+        ))}
+        <Text style={styles.dtTerrainTitle}>Terrain →</Text>
+      </View>
+    </View>
+  );
 }
 
 function CalendarHeatmap({ data }: { data: CountBucket[] }) {
@@ -2498,8 +2366,9 @@ function ScratchNativeMap({
       const bucket = byName.get(featureName);
       return { feature, featureName, bucket };
     })
-    .filter((item) => item.featureName && (level !== "countries" || item.bucket))
+    .filter((item) => item.featureName)
     .sort((left, right) => Number(Boolean(right.bucket)) - Number(Boolean(left.bucket)));
+  const geometryBudget = scratchMapGeometryBudget(level, Platform.OS);
   const polygonCandidates: Array<{
     coordinates: Array<{ latitude: number; longitude: number }>;
     featureName: string;
@@ -2509,7 +2378,10 @@ function ScratchNativeMap({
   }> = [];
   for (const { feature, featureName, bucket } of features) {
     const locationBucket = bucket ?? { name: featureName, count: 0 };
-    const rings = polygonOuterRings(feature, MAX_SCRATCH_RING_POINTS);
+    const highlighted = Boolean(bucket) || selectedName === featureName;
+    const rings = polygonOuterRings(feature, highlighted ? geometryBudget.maxHighlightedPointsPerRing : geometryBudget.maxPointsPerRing);
+    const ringAreas = rings.map(scratchRingArea);
+    const primaryRingIndex = ringAreas.reduce((largestIndex, area, index) => area > (ringAreas[largestIndex] ?? -1) ? index : largestIndex, 0);
     for (let ringIndex = 0; ringIndex < rings.length; ringIndex += 1) {
       const coordinates = rings[ringIndex]!;
       polygonCandidates.push({
@@ -2519,7 +2391,7 @@ function ScratchNativeMap({
         key: `${featureName}-${ringIndex}`,
         // Keep covered/selected locations first, then retain mainlands and the
         // largest islands if the native geometry budget is reached.
-        priority: (bucket ? 1_000_000 : 0) + (selectedName === featureName ? 1_000_000 : 0) + scratchRingArea(coordinates)
+        priority: (bucket ? 1_000_000 : 0) + (selectedName === featureName ? 1_000_000 : 0) + (ringIndex === primaryRingIndex ? 100_000 : 0) + ringAreas[ringIndex]!
       });
     }
   }
@@ -2527,22 +2399,31 @@ function ScratchNativeMap({
   const polygons: typeof polygonCandidates = [];
   let vertexCount = 0;
   for (const candidate of polygonCandidates) {
-    if (polygons.length >= MAX_SCRATCH_MAP_POLYGONS) break;
-    if (vertexCount + candidate.coordinates.length > MAX_SCRATCH_MAP_VERTICES) continue;
+    if (polygons.length >= geometryBudget.maxPolygons) break;
+    if (vertexCount + candidate.coordinates.length > geometryBudget.maxVertices) continue;
     polygons.push(candidate);
     vertexCount += candidate.coordinates.length;
   }
   const region = regionForScratch(level, boundaryData);
   return (
-    <View style={styles.nativeMapFrame}>
-      <MapView key={`${activeCountry?.name ?? "world"}:${level}`} style={styles.nativeMap} initialRegion={region} provider={ANDROID_MAP_PROVIDER} showsCompass showsScale>
+    <View style={styles.scratchNativeMapFrame}>
+      <MapView
+        key={`${activeCountry?.name ?? "world"}:${level}:${boundaryData.features.length}`}
+        style={styles.nativeMap}
+        initialRegion={region}
+        provider={ANDROID_MAP_PROVIDER}
+        customMapStyle={SCRATCH_GOOGLE_MAP_STYLE}
+        toolbarEnabled={false}
+        showsCompass
+        showsScale
+      >
         {polygons.map(({ coordinates, featureName, key, locationBucket }) => (
           <Polygon
             key={key}
             coordinates={coordinates}
-            fillColor={`${scratchColor(locationBucket.count, max)}aa`}
-            strokeColor={selectedName && namesForScratchBucket(locationBucket, level).includes(selectedName) ? "#f3b34d" : "#dce8df"}
-            strokeWidth={selectedName && namesForScratchBucket(locationBucket, level).includes(selectedName) ? 2 : 0.7}
+            fillColor={scratchPolygonFill(locationBucket.count, max)}
+            strokeColor={selectedName && namesForScratchBucket(locationBucket, level).includes(selectedName) ? "#fff7de" : "#07110bb8"}
+            strokeWidth={selectedName && namesForScratchBucket(locationBucket, level).includes(selectedName) ? 2.5 : 0.65}
             tappable
             onPress={() => onSelect(featureName)}
           />
@@ -2576,55 +2457,105 @@ function MilestoneList({ title, rows, labelKey = "label" }: { title: string; row
 
 function BadgesPanel({ apiBaseUrl, stats, token }: { apiBaseUrl: string; stats: any; token: string }) {
   const scratch = useApi<{ countries: any[] }>(apiBaseUrl, token, "/map/scratch", { countries: [] });
+  const points = useApi<{ points: CachePoint[] }>(apiBaseUrl, token, "/map/caches", { points: [] });
   const [showAll, setShowAll] = useState(false);
+  const [sortMode, setSortMode] = useState("Highest");
+  const [regionProgress, setRegionProgress] = useState<Record<string, { completed: number; total: number }>>({});
+  const [countryBadgesLoading, setCountryBadgesLoading] = useState(true);
+
+  useEffect(() => {
+    if (scratch.loading || points.loading) return;
+    let mounted = true;
+    setCountryBadgesLoading(true);
+    void Promise.all(scratch.data.countries.map(async (country) => {
+      const fallbackCompleted = (country.regions ?? []).filter((region: any) => region.name !== "Unknown" && region.count > 0).length;
+      const config = await boundaryConfigForLevel("regions", country.name);
+      if (!config.isDetail) return [country.name, { completed: fallbackCompleted, total: Math.max(1, fallbackCompleted) }] as const;
+      try {
+        const boundaries = await loadScratchGeoJson(config.url);
+        const total = new Set(boundaries.features
+          .map((feature) => String(feature.properties?.[config.propertyName] ?? "").trim())
+          .filter((name) => name && name !== "Unknown")).size;
+        const derived = await deriveBucketsFromBoundaries(points.data.points, config.url, config.propertyName);
+        return [country.name, { completed: derived.filter((region) => region.count > 0).length, total: Math.max(1, total) }] as const;
+      } catch {
+        return [country.name, { completed: fallbackCompleted, total: Math.max(1, fallbackCompleted) }] as const;
+      }
+    })).then((entries) => {
+      if (mounted) {
+        setRegionProgress(Object.fromEntries(entries));
+        setCountryBadgesLoading(false);
+      }
+    });
+    return () => {
+      mounted = false;
+    };
+  }, [points.data.points, points.loading, scratch.data.countries, scratch.loading]);
+
   const countryBadges = scratch.data.countries
     .map((country) => {
       const regions = country.regions?.filter((region: any) => region.name !== "Unknown") ?? [];
-      const completed = regions.filter((region: any) => region.count > 0).length;
-      const total = Math.max(1, regions.length);
+      const progress = regionProgress[country.name];
+      const completed = progress?.completed ?? regions.filter((region: any) => region.count > 0).length;
+      const total = progress?.total ?? Math.max(1, completed);
       return {
         name: country.name,
         current: total > 0 ? (completed / total) * 100 : 0,
         completed,
         total,
-        count: country.count
+        count: country.count,
+        thresholds: countryBadgeThresholds
       };
     })
     .filter((country) => country.completed > 0)
     .sort((a, b) => b.current - a.current || b.count - a.count || a.name.localeCompare(b.name));
-  const badges = mobileBadges(stats)
-    .map((badge) => ({ ...badge, level: achievedIndex(badge) }))
-    .sort((a, b) => b.level - a.level || (b.current ?? -1) - (a.current ?? -1) || a.name.localeCompare(b.name));
+  const badges = mobileBadges(stats).map((badge) => ({ ...badge, level: achievedIndex(badge) })).sort((a, b) => sortMode === "A-Z"
+    ? a.name.localeCompare(b.name)
+    : b.level - a.level || (b.current ?? -1) - (a.current ?? -1) || a.name.localeCompare(b.name));
   const achieved = badges.filter((badge) => badge.level >= 0).length;
+  const countryAchieved = countryBadges.filter((badge) => achievedIndex(badge) >= 0).length;
+  const highestLevel = badges.find((badge) => badge.level >= 0)?.level ?? -1;
   return (
-    <Panel title="Achievement badges" subtitle={`${achieved}/${badges.length} badges started`}>
+    <Panel title="Badges" subtitle={`${countryAchieved + achieved}/${countryBadges.length + badges.length} badges started`}>
+      <View style={styles.badgeOverview}>
+        <View><Text style={styles.badgeOverviewLabel}>Highest level</Text><Text style={styles.badgeOverviewValue}>{highestLevel >= 0 ? badgeTiers[highestLevel] : "Locked"}</Text></View>
+        <Segmented values={["Highest", "A-Z"]} active={sortMode} onPress={setSortMode} />
+      </View>
       {countryBadges.length > 0 ? (
         <View style={styles.countryBadgeBlock}>
-          <Text style={styles.sectionLabel}>Country badges</Text>
+          <View style={styles.badgeSectionHeading}><Text style={styles.sectionLabel}>Country badges</Text><Text style={styles.badgeSectionCount}>{countryAchieved}/{countryBadges.length}</Text></View>
+          <View style={styles.badgeTierStrip}>{badgeTierSummary(countryBadges).map(({ tier, count }) => <Text key={tier} style={styles.badgeTierChip}>{count} {tier.toLowerCase()}</Text>)}</View>
           {countryBadges.slice(0, showAll ? 30 : 3).map((country) => (
-            <View key={country.name} style={styles.countryBadgeRow}>
-              <View style={styles.flex}>
-                <Text style={styles.rowTitle}>{country.name}</Text>
-                <Text style={styles.muted}>{country.completed}/{country.total} regions - {country.count} finds</Text>
+            <View key={country.name} style={styles.countryBadgeCard}>
+              <View style={styles.countryBadgeTopline}>
+                <Text style={styles.countryBadgeTier}>{badgeTiers[Math.max(0, achievedIndex(country))]}</Text>
+                <Text style={styles.badgeNumber}>{Math.round(country.current)}%</Text>
               </View>
-              <Text style={styles.badgeNumber}>{Math.round(country.current)}%</Text>
+              <View style={styles.countryBadgeMain}>
+                <View style={styles.countryBadgeMedal}><Text style={styles.countryBadgeMedalText}>{country.name.slice(0, 2).toUpperCase()}</Text></View>
+                <View style={styles.flex}><Text style={styles.countryBadgeName}>{country.name}</Text><Text style={styles.muted}>{country.completed} of {country.total} regions · {country.count} finds</Text></View>
+              </View>
+              <View style={styles.countryBadgeProgress}><View style={[styles.countryBadgeProgressFill, { width: `${Math.min(100, country.current)}%` }]} /></View>
             </View>
           ))}
+          {countryBadgesLoading ? <ActivityIndicator color="#f3b34d" /> : null}
         </View>
       ) : null}
-      <Text style={styles.sectionLabel}>Achievement badges</Text>
+      <View style={styles.badgeSectionHeading}><Text style={styles.sectionLabel}>Achievement badges</Text><Text style={styles.badgeSectionCount}>{achieved}/{badges.length}</Text></View>
+      <View style={styles.badgeTierStrip}>{badgeTierSummary(badges).map(({ tier, count }) => <Text key={tier} style={styles.badgeTierChip}>{count} {tier.toLowerCase()}</Text>)}</View>
       {badges.slice(0, showAll ? badges.length : 6).map((badge) => {
         const tier = badge.level >= 0 ? badgeTiers[badge.level] : "Locked";
         return (
           <View key={badge.id} style={styles.badgeRow}>
             <View style={styles.badgeHeader}>
+              <View style={[styles.badgePortrait, badge.level >= 0 && styles.badgePortraitEarned]}><Text style={styles.badgePortraitMark}>{badgeMarks[badge.id] ?? "★"}</Text></View>
               <View style={styles.flex}>
                 <Text style={styles.rowTitle}>{badge.name}</Text>
                 <Text style={styles.muted}>{tier} - {badge.metric}</Text>
               </View>
               <View style={styles.badgeNumbers}>
-                <Text style={styles.badgeNumber}>{text(badge.current ?? "--")}</Text>
-                <Text style={styles.muted}>-{remainingForBadge(badge)}</Text>
+                <Text style={styles.badgeNumberLabel}>CURRENT</Text><Text style={styles.badgeNumber}>{text(badge.current ?? "--")}</Text>
+                <Text style={styles.badgeNumberLabel}>REMAINING</Text><Text style={styles.badgeRemaining}>{remainingForBadge(badge)}</Text>
               </View>
             </View>
             <View style={styles.badgeCells}>
@@ -2755,9 +2686,6 @@ const styles = StyleSheet.create({
   segmentText: { color: "#b9c8bf", fontWeight: "800", textTransform: "capitalize" },
   segmentTextActive: { color: "#172016" },
   actionRow: { flexDirection: "row", gap: 10, alignItems: "stretch" },
-  workflowStep: { flexDirection: "row", alignItems: "center", gap: 10, borderTopWidth: 1, borderColor: "#1b3729", paddingVertical: 11 },
-  workflowNumber: { width: 28, height: 28, borderRadius: 14, backgroundColor: "#244535", color: "#dce8df", textAlign: "center", lineHeight: 28, fontWeight: "900" },
-  workflowNumberDone: { backgroundColor: "#f3b34d", color: "#172016" },
   inlineForm: { flexDirection: "row", gap: 8, alignItems: "center" },
   smallButton: { backgroundColor: "#f3b34d", borderRadius: 8, paddingHorizontal: 15, paddingVertical: 12 },
   smallButtonText: { color: "#172016", fontWeight: "900" },
@@ -2766,15 +2694,17 @@ const styles = StyleSheet.create({
   attemptRow: { flexDirection: "row", gap: 10, alignItems: "center", borderTopWidth: 1, borderColor: "#1b3729", paddingVertical: 10 },
   routeGroup: { borderTopWidth: 1, borderColor: "#294839", paddingTop: 14, marginTop: 6, gap: 3 },
   mysteryImage: { width: "100%", height: 210, borderRadius: 8, backgroundColor: "#14271d" },
-  optionRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 5 },
-  optionMark: { width: 22, height: 22, borderWidth: 1, borderColor: "#668074", borderRadius: 5, color: "#172016", textAlign: "center", lineHeight: 20, fontWeight: "900" },
-  optionMarkActive: { backgroundColor: "#f3b34d", borderColor: "#f3b34d" },
-  codeText: { color: "#dce8df", backgroundColor: "#07110d", padding: 10, borderRadius: 6, fontFamily: Platform.select({ ios: "Menlo", android: "monospace", default: "monospace" }), fontSize: 11, lineHeight: 16 },
-  codePreview: { color: "#b9c8bf", backgroundColor: "#07110d", padding: 10, minHeight: 150, borderRadius: 6, fontFamily: Platform.select({ ios: "Menlo", android: "monospace", default: "monospace" }), fontSize: 10, lineHeight: 14 },
   linkText: { color: "#f3b34d", fontWeight: "800" },
-  dtGrid: { flexDirection: "row", flexWrap: "wrap", gap: 4 },
-  dtCell: { width: "10.5%", aspectRatio: 1, borderRadius: 4, backgroundColor: "#f3b34d", alignItems: "center", justifyContent: "center" },
-  dtText: { color: "#162016", fontSize: 10, fontWeight: "900" },
+  dtChart: { gap: 6 },
+  dtAxisTitle: { color: "#dce8df", fontSize: 12, fontWeight: "900" },
+  dtMatrix: { width: "100%", gap: 3 },
+  dtRow: { flexDirection: "row", alignItems: "center", gap: 3 },
+  dtRowLabel: { width: 28, color: "#b9c8bf", fontSize: 9, textAlign: "right", paddingRight: 3, fontWeight: "800" },
+  dtColumnLabel: { flex: 1, color: "#b9c8bf", fontSize: 8, textAlign: "center", fontWeight: "800" },
+  dtCell: { flex: 1, aspectRatio: 1, borderRadius: 4, alignItems: "center", justifyContent: "center" },
+  dtText: { color: "#dce8df", fontSize: 9, fontWeight: "800" },
+  dtTextStrong: { color: "#172016", fontWeight: "900" },
+  dtTerrainTitle: { color: "#dce8df", fontSize: 12, fontWeight: "900", textAlign: "right", marginTop: 3 },
   calendarWrap: { gap: 10 },
   calendarGrid: { gap: 8 },
   calendarMonth: { flexDirection: "row", alignItems: "center", gap: 8 },
@@ -2792,10 +2722,11 @@ const styles = StyleSheet.create({
   legendDot: { width: 8, height: 8, borderRadius: 4 },
   mapHint: { flex: 1, color: "#6f8a7c", fontSize: 10, textAlign: "right" },
   nativeMapFrame: { height: 320, borderRadius: 8, overflow: "hidden", backgroundColor: "#14271d" },
+  scratchNativeMapFrame: { height: 420, borderRadius: 8, overflow: "hidden", backgroundColor: "#14271d" },
   nativeMap: { position: "absolute", top: 0, right: 0, bottom: 0, left: 0 },
   mapUnavailable: { minHeight: 180, borderRadius: 14, padding: 18, justifyContent: "center", gap: 6, backgroundColor: "#14271d", borderWidth: 1, borderColor: "#294839" },
   mapUnavailableTitle: { color: "#edf7ef", fontSize: 17, fontWeight: "900" },
-  scratchMapLoading: { height: 320, borderRadius: 8, backgroundColor: "#14271d", alignItems: "center", justifyContent: "center" },
+  scratchMapLoading: { height: 420, borderRadius: 8, backgroundColor: "#14271d", alignItems: "center", justifyContent: "center" },
   scratchMapFallback: { minHeight: 320, borderRadius: 8, backgroundColor: "#14271d", padding: 12, gap: 9, justifyContent: "center" },
   scratchFallbackRow: { flexDirection: "row", alignItems: "center", gap: 8 },
   scratchFallbackLabel: { width: 92, color: "#dce8df", fontWeight: "800", fontSize: 12 },
@@ -2817,19 +2748,32 @@ const styles = StyleSheet.create({
   statusPillFailed: { color: "#ffe4df", backgroundColor: "#7a3128" },
   toggleRow: { borderTopWidth: 1, borderColor: "#1b3729", paddingVertical: 10 },
   toggleRowActive: { backgroundColor: "#172f23" },
-  tokenCard: { borderTopWidth: 1, borderColor: "#1b3729", paddingTop: 10, gap: 10 },
-  tokenRow: { flexDirection: "row", alignItems: "center", gap: 12 },
-  commandCard: { backgroundColor: "#10251b", borderColor: "#234536", borderWidth: 1, borderRadius: 8, padding: 10, gap: 8 },
-  commandHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12 },
-  copyButton: { backgroundColor: "#1a3327", borderRadius: 7, paddingHorizontal: 10, paddingVertical: 7 },
-  copyButtonText: { color: "#f3b34d", fontWeight: "900" },
-  commandText: { color: "#dce8df", fontSize: 12, lineHeight: 17 },
-  countryBadgeBlock: { gap: 8 },
-  countryBadgeRow: { flexDirection: "row", alignItems: "center", gap: 12, borderTopWidth: 1, borderColor: "#1b3729", paddingTop: 10 },
+  badgeOverview: { gap: 9, padding: 12, borderRadius: 12, backgroundColor: "#10251b" },
+  badgeOverviewLabel: { color: "#8fa398", fontSize: 11, fontWeight: "800", textTransform: "uppercase" },
+  badgeOverviewValue: { color: "#f3b34d", fontSize: 22, fontWeight: "900" },
+  badgeSectionHeading: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: 5 },
+  badgeSectionCount: { color: "#f3b34d", fontWeight: "900" },
+  badgeTierStrip: { flexDirection: "row", flexWrap: "wrap", gap: 5 },
+  badgeTierChip: { color: "#aebdb4", backgroundColor: "#152c21", borderRadius: 999, overflow: "hidden", paddingHorizontal: 7, paddingVertical: 4, fontSize: 9, fontWeight: "800" },
+  countryBadgeBlock: { gap: 9 },
+  countryBadgeCard: { gap: 9, borderWidth: 1, borderColor: "#294839", borderRadius: 14, backgroundColor: "#10251b", padding: 12 },
+  countryBadgeTopline: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  countryBadgeTier: { color: "#f3b34d", fontSize: 11, fontWeight: "900", textTransform: "uppercase" },
+  countryBadgeMain: { flexDirection: "row", alignItems: "center", gap: 12 },
+  countryBadgeMedal: { width: 48, height: 48, borderRadius: 24, backgroundColor: "#f3b34d", borderWidth: 4, borderColor: "#d6e4d9", alignItems: "center", justifyContent: "center" },
+  countryBadgeMedalText: { color: "#172016", fontSize: 13, fontWeight: "900" },
+  countryBadgeName: { color: "#edf7ef", fontSize: 17, fontWeight: "900" },
+  countryBadgeProgress: { height: 7, borderRadius: 999, overflow: "hidden", backgroundColor: "#1a3327" },
+  countryBadgeProgressFill: { height: "100%", borderRadius: 999, backgroundColor: "#f3b34d" },
   badgeRow: { borderTopWidth: 1, borderColor: "#1b3729", paddingTop: 11, gap: 8 },
   badgeHeader: { flexDirection: "row", alignItems: "center", gap: 12 },
-  badgeNumbers: { alignItems: "flex-end" },
+  badgePortrait: { width: 48, height: 48, borderRadius: 12, backgroundColor: "#1a3327", borderWidth: 1, borderColor: "#294839", alignItems: "center", justifyContent: "center" },
+  badgePortraitEarned: { backgroundColor: "#263c2d", borderColor: "#f3b34d" },
+  badgePortraitMark: { color: "#edf7ef", fontSize: 21, fontWeight: "900" },
+  badgeNumbers: { width: 63, alignItems: "flex-end" },
+  badgeNumberLabel: { color: "#71877b", fontSize: 7, fontWeight: "900" },
   badgeNumber: { color: "#f3b34d", fontWeight: "900" },
+  badgeRemaining: { color: "#b9c8bf", fontSize: 11, fontWeight: "800" },
   badgeCells: { flexDirection: "row", gap: 5 },
   badgeCell: { flex: 1, height: 8, borderRadius: 4, backgroundColor: "#1a3327" },
   badgeCellEarned: { backgroundColor: "#c88935" },

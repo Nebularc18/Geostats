@@ -120,6 +120,8 @@ function wallClockInTimeZoneToUtc(date: Date, timeZone: string): Date {
 }
 
 export class ImportProcessor {
+  private readonly statsRecalculationsByUser = new Map<string, Promise<void>>();
+
   constructor(
     private readonly prisma: PrismaClient,
     private readonly storage: ObjectStorage
@@ -376,6 +378,43 @@ export class ImportProcessor {
   }
 
   private async recalculateStats(userId: string) {
+    const previous = this.statsRecalculationsByUser.get(userId) ?? Promise.resolve();
+    const recalculation = previous
+      .catch(() => undefined)
+      .then(() => this.calculateAndStoreStats(userId));
+    this.statsRecalculationsByUser.set(userId, recalculation);
+
+    try {
+      await recalculation;
+    } finally {
+      if (this.statsRecalculationsByUser.get(userId) === recalculation) {
+        this.statsRecalculationsByUser.delete(userId);
+      }
+    }
+  }
+
+  private async calculateAndStoreStats(userId: string) {
+    await this.prisma.$transaction(async (tx) => {
+      // Serialise recalculations across worker processes before reading any
+      // stats inputs, then hold the lock until the snapshot is replaced.
+      if (typeof tx.$queryRaw === "function") {
+        await tx.$queryRaw`
+          SELECT pg_advisory_xact_lock(hashtext('stats-recalculation'), hashtext(${userId}))::text AS lock_result
+        `;
+      }
+
+      const stats = await this.buildStats(userId);
+      await tx.statSnapshot.deleteMany({ where: { userId } });
+      await tx.statSnapshot.create({
+        data: {
+          userId,
+          statsJson: stats as unknown as Prisma.InputJsonValue
+        }
+      });
+    }, { maxWait: 10_000, timeout: 120_000 });
+  }
+
+  private async buildStats(userId: string) {
     const profile = await this.prisma.geocachingProfile.findUnique({ where: { userId } });
     const hides = await this.prisma.hide.findMany({
       where: { userId },
@@ -463,15 +502,6 @@ export class ImportProcessor {
         finderCountryBuckets: ownerFinderCountryStats.map((row) => ({ key: row.country, count: row.count }))
       }
     );
-
-    await this.prisma.$transaction(async (tx) => {
-      await tx.statSnapshot.deleteMany({ where: { userId } });
-      await tx.statSnapshot.create({
-        data: {
-          userId,
-          statsJson: stats as unknown as Prisma.InputJsonValue
-        }
-      });
-    });
+    return stats;
   }
 }
