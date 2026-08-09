@@ -15,7 +15,7 @@ import * as Linking from "expo-linking";
 import * as WebBrowser from "expo-web-browser";
 import { parseCoordinate } from "@geostats/shared";
 import { pickAndUploadDocument, type UploadKind } from "./upload";
-import { selectNativeMapPoints } from "./mobile-map";
+import { hasNativeMapSupport, SCRATCH_WORLD_REGION, selectNativeMapPoints } from "./mobile-map";
 import { schedulePostImportStatsRefresh } from "./import-refresh";
 
 WebBrowser.maybeCompleteAuthSession();
@@ -97,6 +97,7 @@ type BoundaryFeatureCollection = { type: "FeatureCollection"; features: Boundary
 const HOSTED_API_URL = process.env.EXPO_PUBLIC_API_URL ?? "https://geostats-api.hampusek.com";
 const DEFAULT_API_URL = process.env.EXPO_PUBLIC_API_URL ?? (__DEV__ ? "http://10.0.2.2:3001" : HOSTED_API_URL);
 const ANDROID_MAP_PROVIDER = Platform.OS === "android" ? PROVIDER_GOOGLE : undefined;
+const NATIVE_MAP_AVAILABLE = hasNativeMapSupport(Platform.OS, process.env.EXPO_PUBLIC_GOOGLE_MAPS_ANDROID_API_KEY);
 const TOKEN_KEY = "geostats_session";
 const SERVER_URL_KEY = "geostats_server_url";
 const DEFAULT_AUTH_CONFIG: AuthConfig = __DEV__
@@ -613,7 +614,7 @@ function regionForPoints(points: CachePoint[]): Region {
 
 function regionForScratch(level: ScratchLevel, boundaryData: BoundaryFeatureCollection | null): Region {
   if (level === "countries" || !boundaryData) {
-    return { latitude: 24, longitude: 11, latitudeDelta: 140, longitudeDelta: 170 };
+    return SCRATCH_WORLD_REGION;
   }
 
   const positions = boundaryData.features.flatMap((feature) => {
@@ -623,7 +624,7 @@ function regionForScratch(level: ScratchLevel, boundaryData: BoundaryFeatureColl
     return polygons.flatMap((polygon) => polygon[0] ?? []);
   });
   if (positions.length === 0) {
-    return { latitude: 24, longitude: 11, latitudeDelta: 140, longitudeDelta: 170 };
+    return SCRATCH_WORLD_REGION;
   }
 
   let minLatitude = Infinity;
@@ -1465,7 +1466,7 @@ function ScratchScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: strin
             </Pressable>
           ))}
         </View>
-        {Platform.OS === "web" ? (
+        {Platform.OS === "web" || !NATIVE_MAP_AVAILABLE ? (
           <ScratchMapFallback buckets={levelBuckets} max={effectiveLevel === "countries" ? max : Math.max(1, ...levelBuckets.map((bucket: any) => bucket.count ?? 0))} />
         ) : (
           <ScratchNativeMap
@@ -2414,6 +2415,9 @@ function MonthMatrix({ data }: { data: CountBucket[] }) {
 function NativeMap({ points }: { points: CachePoint[] }) {
   const visible = selectNativeMapPoints(validMapPoints(points), MAX_NATIVE_MAP_MARKERS);
   if (visible.length === 0) return <Text style={styles.muted}>No coordinates yet.</Text>;
+  if (!NATIVE_MAP_AVAILABLE) {
+    return <View style={styles.mapUnavailable}><Text style={styles.mapUnavailableTitle}>Map preview unavailable</Text><Text style={styles.muted}>This Android build does not have a Google Maps key. Your cache locations remain available below.</Text></View>;
+  }
   return (
     <View style={styles.nativeMapFrame}>
       <MapView style={styles.nativeMap} initialRegion={regionForPoints(visible)} provider={ANDROID_MAP_PROVIDER} showsCompass showsScale>
@@ -2789,6 +2793,8 @@ const styles = StyleSheet.create({
   mapHint: { flex: 1, color: "#6f8a7c", fontSize: 10, textAlign: "right" },
   nativeMapFrame: { height: 320, borderRadius: 8, overflow: "hidden", backgroundColor: "#14271d" },
   nativeMap: { position: "absolute", top: 0, right: 0, bottom: 0, left: 0 },
+  mapUnavailable: { minHeight: 180, borderRadius: 14, padding: 18, justifyContent: "center", gap: 6, backgroundColor: "#14271d", borderWidth: 1, borderColor: "#294839" },
+  mapUnavailableTitle: { color: "#edf7ef", fontSize: 17, fontWeight: "900" },
   scratchMapLoading: { height: 320, borderRadius: 8, backgroundColor: "#14271d", alignItems: "center", justifyContent: "center" },
   scratchMapFallback: { minHeight: 320, borderRadius: 8, backgroundColor: "#14271d", padding: 12, gap: 9, justifyContent: "center" },
   scratchFallbackRow: { flexDirection: "row", alignItems: "center", gap: 8 },

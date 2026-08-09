@@ -1,5 +1,16 @@
 type MapPointKind = { isOwnHide?: boolean };
 
+export const SCRATCH_WORLD_REGION = {
+  latitude: 0,
+  longitude: 0,
+  latitudeDelta: 170,
+  longitudeDelta: 340
+} as const;
+
+export function hasNativeMapSupport(platform: string, androidGoogleMapsApiKey?: string) {
+  return platform !== "android" || Boolean(androidGoogleMapsApiKey?.trim());
+}
+
 function evenlySample<T>(items: T[], limit: number) {
   if (items.length <= limit) return items;
   return Array.from({ length: limit }, (_, index) => items[Math.floor((index * items.length) / limit)]!);
