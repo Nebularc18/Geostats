@@ -15,6 +15,7 @@ import * as Linking from "expo-linking";
 import * as WebBrowser from "expo-web-browser";
 import { parseCoordinate } from "@geostats/shared";
 import { pickAndUploadDocument, type UploadKind } from "./upload";
+import { selectNativeMapPoints } from "./mobile-map";
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -1244,7 +1245,20 @@ function DashboardScreen({ apiBaseUrl, token, username, onNavigate }: { apiBaseU
   const imports = useApi<{ imports: ImportListItem[] }>(apiBaseUrl, token, "/imports", { imports: [] });
   const s = stats.data.stats;
   const latestImport = imports.data.imports[0];
-  const importActive = latestImport && ACTIVE_IMPORT_STATUSES.has(latestImport.status);
+  const importActive = hasActiveImports(imports.data.imports);
+  const hadActiveImport = useRef(false);
+  useEffect(() => {
+    if (!importActive) {
+      if (hadActiveImport.current) void stats.refresh();
+      hadActiveImport.current = false;
+      return;
+    }
+    hadActiveImport.current = true;
+    const interval = setInterval(() => {
+      void imports.refresh();
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [importActive]);
   return (
     <>
       <PageTitle eyebrow={`Welcome back, ${username}`} title="Your cache archive" />
@@ -2394,7 +2408,7 @@ function MonthMatrix({ data }: { data: CountBucket[] }) {
 }
 
 function NativeMap({ points }: { points: CachePoint[] }) {
-  const visible = validMapPoints(points).slice(0, MAX_NATIVE_MAP_MARKERS);
+  const visible = selectNativeMapPoints(validMapPoints(points), MAX_NATIVE_MAP_MARKERS);
   if (visible.length === 0) return <Text style={styles.muted}>No coordinates yet.</Text>;
   return (
     <View style={styles.nativeMapFrame}>

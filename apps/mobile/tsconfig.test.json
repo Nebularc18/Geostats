@@ -3,6 +3,6 @@
   "compilerOptions": {
     "types": ["node"]
   },
-  "include": ["upload.ts", "upload.test.ts"],
+  "include": ["mobile-map.ts", "mobile-map.test.ts", "upload.ts", "upload.test.ts"],
   "exclude": []
 }
