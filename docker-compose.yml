@@ -135,7 +135,7 @@ services:
       S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD in .env}
       S3_FORCE_PATH_STYLE: "true"
     ports:
-      - "${API_BIND_ADDRESS:-127.0.0.1}:${API_PORT:-3001}:3001"
+      - "${API_BIND_ADDRESS:-127.0.0.1}:${API_PORT:-3001}:${API_PORT:-3001}"
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -144,7 +144,7 @@ services:
       minio-create-bucket:
         condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://localhost:3001/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      test: ["CMD", "node", "-e", "fetch('http://localhost:' + (process.env.API_PORT || 3001) + '/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 20s
       timeout: 5s
       retries: 5
