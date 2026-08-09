@@ -975,7 +975,10 @@ function AuthScreen({ apiBaseUrl, onApiBaseUrlChange, onSession }: { apiBaseUrl:
     <SafeAreaView style={styles.safe}>
       <StatusBar style="light" />
       <ScrollView contentContainerStyle={styles.authPage}>
-        <Text style={styles.brand}>Geostats</Text>
+        <View style={styles.authBrand}>
+          <Image accessible={false} source={require("./assets/icon.png")} style={styles.authBrandIcon} />
+          <Text style={styles.brand}>Geostats</Text>
+        </View>
         <Text style={styles.title}>{mode === "login" ? "Sign in" : "Create account"}</Text>
         <View style={styles.serverCard}>
           <View style={styles.serverSummary}>
@@ -1094,7 +1097,10 @@ export default function App() {
       <SafeAreaView style={styles.safe}>
         <StatusBar style="light" />
         <View style={styles.shellHeader}>
-          <View><Text style={styles.brandSmall}>Geostats</Text><Text style={styles.muted}>{session.user.username}</Text></View>
+          <View style={styles.headerBrand}>
+            <Image accessible={false} source={require("./assets/icon.png")} style={styles.headerBrandIcon} />
+            <View><Text style={styles.brandSmall}>Geostats</Text><Text style={styles.muted}>{session.user.username}</Text></View>
+          </View>
           <Pressable onPress={logout} style={styles.logoutButton}><Text style={styles.logoutText}>Logout</Text></Pressable>
         </View>
         <View style={styles.navWrap}>
@@ -2473,9 +2479,13 @@ const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: "#07110d" },
   safeCenter: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: "#07110d" },
   authPage: { flexGrow: 1, justifyContent: "center", padding: 22, gap: 14 },
+  authBrand: { flexDirection: "row", alignItems: "center", gap: 12 },
+  authBrandIcon: { width: 54, height: 54, borderRadius: 12 },
   brand: { color: "#f3b34d", fontSize: 42, fontWeight: "900" },
   brandSmall: { color: "#f3b34d", fontSize: 22, fontWeight: "900" },
   shellHeader: { paddingHorizontal: 18, paddingTop: 10, paddingBottom: 12, flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  headerBrand: { flexDirection: "row", alignItems: "center", gap: 10 },
+  headerBrandIcon: { width: 40, height: 40, borderRadius: 9 },
   logoutButton: { borderColor: "#365346", borderWidth: 1, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 8 },
   logoutText: { color: "#dce8df", fontWeight: "700" },
   navWrap: { borderTopWidth: 1, borderBottomWidth: 1, borderColor: "#173326" },
