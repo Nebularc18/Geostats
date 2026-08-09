@@ -3,5 +3,5 @@
   "compilerOptions": {
     "strict": true
   },
-  "exclude": ["upload.test.ts"]
+  "exclude": ["import-refresh.test.ts", "mobile-map.test.ts", "upload.test.ts"]
 }
