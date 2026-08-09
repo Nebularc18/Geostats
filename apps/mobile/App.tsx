@@ -108,6 +108,16 @@ const defaultTimeZone = "Europe/Stockholm";
 const defaultFtfTerms = ["FTF", "first to find"];
 const badgeTiers = ["Bronze", "Silver", "Gold", "Platinum", "Ruby", "Sapphire", "Emerald", "Diamond"];
 const countryBadgeThresholds = [1, 15, 20, 30, 40, 50, 75, 100];
+const badgeTierPalettes = [
+  { accent: "#b97545", light: "#e3a373", dark: "#754225", ink: "#10150f" },
+  { accent: "#c6ced0", light: "#f3f6f5", dark: "#778284", ink: "#10150f" },
+  { accent: "#e5b946", light: "#ffe58b", dark: "#8d6419", ink: "#10150f" },
+  { accent: "#dce5df", light: "#ffffff", dark: "#76847c", ink: "#10150f" },
+  { accent: "#c94b62", light: "#f58da0", dark: "#762334", ink: "#fff7f8" },
+  { accent: "#4d8dc7", light: "#8fc9fa", dark: "#24547d", ink: "#f3f9ff" },
+  { accent: "#44b884", light: "#8be0b6", dark: "#1f6949", ink: "#07110b" },
+  { accent: "#ccecff", light: "#ffffff", dark: "#5e91aa", ink: "#07110b" }
+] as const;
 const badgeMarks: Record<string, string> = {
   "long-distance": "🌍", attribute: "🎒", large: "🧰", matrix: "▦", jasmer: "🗓️", diverse: "🧩",
   brainiac: "💡", adventurous: "△", "all-around": "✦", traveling: "🛂", veteran: "🎂",
@@ -162,6 +172,7 @@ const COUNTRY_CODE_OVERRIDES: Record<string, string> = {
 };
 type ScratchBoundaryConfig = { url: string; propertyName: string; isDetail: boolean };
 const countryCodeCache = new Map<string, Promise<string | null>>();
+const countryFlagCodeCache = new Map<string, Promise<string | null>>();
 const boundarySupportCache = new Map<string, Promise<boolean>>();
 const scratchGeoJsonCache = new Map<string, Promise<BoundaryFeatureCollection>>();
 
@@ -1645,6 +1656,29 @@ function ProfileScreen({ apiBaseUrl, token, onLogout }: { apiBaseUrl: string; to
   );
 }
 
+async function countryFlagCodeForScratch(countryName: string) {
+  const key = countryName.trim().toLowerCase();
+  const cached = countryFlagCodeCache.get(key);
+  if (cached) return cached;
+
+  const request = loadScratchGeoJson(COUNTRY_GEOJSON_URL)
+    .then((geoJson) => {
+      const names = new Set([countryName, ...(COUNTRY_NAME_ALIASES[countryName] ?? [])].map((name) => name.toLowerCase()));
+      const feature = geoJson.features.find((candidate) =>
+        names.has(String(candidate.properties?.name ?? "").trim().toLowerCase())
+      );
+      const countryCode = String(feature?.properties?.["ISO3166-1-Alpha-2"] ?? "").trim().toLowerCase();
+      if (/^[a-z]{2}$/.test(countryCode)) return countryCode;
+      return ({ France: "fr", Kosovo: "xk", Norway: "no" } as Record<string, string>)[countryName] ?? null;
+    })
+    .catch(() => {
+      countryFlagCodeCache.delete(key);
+      return null;
+    });
+  countryFlagCodeCache.set(key, request);
+  return request;
+}
+
 function badgeTierSummary(badges: Array<{ current: number | null; thresholds: number[] }>) {
   const counts = badgeTiers.map(() => 0);
   badges.forEach((badge) => {
@@ -2460,7 +2494,10 @@ function BadgesPanel({ apiBaseUrl, stats, token }: { apiBaseUrl: string; stats: 
   const points = useApi<{ points: CachePoint[] }>(apiBaseUrl, token, "/map/caches", { points: [] });
   const [showAll, setShowAll] = useState(false);
   const [sortMode, setSortMode] = useState("Highest");
+  const [sortReversed, setSortReversed] = useState(false);
   const [regionProgress, setRegionProgress] = useState<Record<string, { completed: number; total: number }>>({});
+  const [countryFlagCodes, setCountryFlagCodes] = useState<Record<string, string>>({});
+  const [failedCountryFlags, setFailedCountryFlags] = useState<Set<string>>(() => new Set());
   const [countryBadgesLoading, setCountryBadgesLoading] = useState(true);
 
   useEffect(() => {
@@ -2492,6 +2529,18 @@ function BadgesPanel({ apiBaseUrl, stats, token }: { apiBaseUrl: string; stats: 
     };
   }, [points.data.points, points.loading, scratch.data.countries, scratch.loading]);
 
+  useEffect(() => {
+    let mounted = true;
+    void Promise.all(scratch.data.countries.map(async (country) => [country.name, await countryFlagCodeForScratch(country.name)] as const))
+      .then((entries) => {
+        if (!mounted) return;
+        setCountryFlagCodes(Object.fromEntries(entries.filter((entry): entry is readonly [string, string] => Boolean(entry[1]))));
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [scratch.data.countries]);
+
   const countryBadges = scratch.data.countries
     .map((country) => {
       const regions = country.regions?.filter((region: any) => region.name !== "Unknown") ?? [];
@@ -2507,37 +2556,63 @@ function BadgesPanel({ apiBaseUrl, stats, token }: { apiBaseUrl: string; stats: 
         thresholds: countryBadgeThresholds
       };
     })
-    .filter((country) => country.completed > 0)
-    .sort((a, b) => b.current - a.current || b.count - a.count || a.name.localeCompare(b.name));
-  const badges = mobileBadges(stats).map((badge) => ({ ...badge, level: achievedIndex(badge) })).sort((a, b) => sortMode === "A-Z"
+    .filter((country) => country.completed > 0);
+  const direction = sortReversed ? -1 : 1;
+  const sortedCountryBadges = [...countryBadges].sort((a, b) => direction * (sortMode === "A-Z"
     ? a.name.localeCompare(b.name)
-    : b.level - a.level || (b.current ?? -1) - (a.current ?? -1) || a.name.localeCompare(b.name));
+    : achievedIndex(b) - achievedIndex(a) || b.current - a.current || b.count - a.count || a.name.localeCompare(b.name)));
+  const badges = mobileBadges(stats).map((badge) => ({ ...badge, level: achievedIndex(badge) })).sort((a, b) => direction * (sortMode === "A-Z"
+    ? a.name.localeCompare(b.name)
+    : b.level - a.level || (b.current ?? -1) - (a.current ?? -1) || a.name.localeCompare(b.name)));
   const achieved = badges.filter((badge) => badge.level >= 0).length;
   const countryAchieved = countryBadges.filter((badge) => achievedIndex(badge) >= 0).length;
-  const highestLevel = badges.find((badge) => badge.level >= 0)?.level ?? -1;
   return (
-    <Panel title="Badges" subtitle={`${countryAchieved + achieved}/${countryBadges.length + badges.length} badges started`}>
-      <View style={styles.badgeOverview}>
-        <View><Text style={styles.badgeOverviewLabel}>Highest level</Text><Text style={styles.badgeOverviewValue}>{highestLevel >= 0 ? badgeTiers[highestLevel] : "Locked"}</Text></View>
-        <Segmented values={["Highest", "A-Z"]} active={sortMode} onPress={setSortMode} />
+    <Panel title="Badges" subtitle={`${countryAchieved + achieved}/${countryBadges.length + badges.length}`}>
+      <View style={styles.badgeSortControls}>
+        {["Highest", "A-Z"].map((option) => (
+          <Pressable key={option} onPress={() => setSortMode(option)} style={[styles.badgeSortButton, sortMode === option && styles.badgeSortButtonActive]}>
+            <Text style={[styles.badgeSortButtonText, sortMode === option && styles.badgeSortButtonTextActive]}>{option === "Highest" ? (sortReversed ? "Lowest level" : "Highest level") : (sortReversed ? "Z-A" : "A-Z")}</Text>
+          </Pressable>
+        ))}
+        <Pressable onPress={() => setSortReversed((current) => !current)} style={[styles.badgeSortButton, sortReversed && styles.badgeSortButtonActive]}>
+          <Text style={[styles.badgeSortButtonText, sortReversed && styles.badgeSortButtonTextActive]}>{sortReversed ? "Normal" : "Reverse"}</Text>
+        </Pressable>
       </View>
       {countryBadges.length > 0 ? (
         <View style={styles.countryBadgeBlock}>
-          <View style={styles.badgeSectionHeading}><Text style={styles.sectionLabel}>Country badges</Text><Text style={styles.badgeSectionCount}>{countryAchieved}/{countryBadges.length}</Text></View>
+          <View style={styles.badgeSectionHeading}><Text style={styles.sectionLabel}>Country badges</Text><Text style={styles.countryBadgeHeadingIcon}>◎</Text></View>
           <View style={styles.badgeTierStrip}>{badgeTierSummary(countryBadges).map(({ tier, count }) => <Text key={tier} style={styles.badgeTierChip}>{count} {tier.toLowerCase()}</Text>)}</View>
-          {countryBadges.slice(0, showAll ? 30 : 3).map((country) => (
-            <View key={country.name} style={styles.countryBadgeCard}>
+          {sortedCountryBadges.slice(0, showAll ? 30 : 3).map((country) => {
+            const level = Math.max(0, achievedIndex(country));
+            const palette = badgeTierPalettes[level];
+            const flagCode = countryFlagCodes[country.name];
+            return (
+            <View key={country.name} style={[styles.countryBadgeCard, { borderColor: palette.accent, shadowColor: palette.accent }]}>
               <View style={styles.countryBadgeTopline}>
-                <Text style={styles.countryBadgeTier}>{badgeTiers[Math.max(0, achievedIndex(country))]}</Text>
-                <Text style={styles.badgeNumber}>{Math.round(country.current)}%</Text>
+                <Text style={[styles.countryBadgeTier, { color: palette.light, borderColor: palette.accent, backgroundColor: `${palette.accent}22` }]}>{badgeTiers[level]}</Text>
+                <Text style={[styles.countryBadgePercent, { color: palette.light }]}>{Math.round(country.current)}%</Text>
               </View>
-              <View style={styles.countryBadgeMain}>
-                <View style={styles.countryBadgeMedal}><Text style={styles.countryBadgeMedalText}>{country.name.slice(0, 2).toUpperCase()}</Text></View>
-                <View style={styles.flex}><Text style={styles.countryBadgeName}>{country.name}</Text><Text style={styles.muted}>{country.completed} of {country.total} regions · {country.count} finds</Text></View>
+              <View style={[styles.countryBadgeMedal, { borderColor: palette.accent, backgroundColor: palette.dark, shadowColor: palette.light }]}>
+                <View style={[styles.countryBadgeMedalInner, { borderColor: palette.light }]}>
+                  {flagCode && !failedCountryFlags.has(country.name) ? (
+                    <Image
+                      accessible={false}
+                      source={{ uri: `https://flagcdn.com/w160/${flagCode}.png` }}
+                      style={styles.countryBadgeFlag}
+                      onError={() => setFailedCountryFlags((current) => new Set(current).add(country.name))}
+                    />
+                  ) : <Text style={[styles.countryBadgeGlobe, { color: palette.light }]}>◎</Text>}
+                </View>
               </View>
-              <View style={styles.countryBadgeProgress}><View style={[styles.countryBadgeProgressFill, { width: `${Math.min(100, country.current)}%` }]} /></View>
+              <View style={styles.countryBadgeRibbonWrap}>
+                <View style={[styles.countryBadgeRibbonTail, styles.countryBadgeRibbonTailLeft, { backgroundColor: palette.dark }]} />
+                <View style={[styles.countryBadgeRibbon, { backgroundColor: palette.light, borderColor: palette.dark }]}><Text numberOfLines={1} style={[styles.countryBadgeName, { color: palette.ink }]}>{country.name}</Text></View>
+                <View style={[styles.countryBadgeRibbonTail, styles.countryBadgeRibbonTailRight, { backgroundColor: palette.dark }]} />
+              </View>
+              <Text style={styles.countryBadgeRegions}>{country.completed} of {country.total} regions</Text>
+              <View style={styles.countryBadgeProgress}><View style={[styles.countryBadgeProgressFill, { width: `${Math.min(100, country.current)}%`, backgroundColor: palette.light }]} /></View>
             </View>
-          ))}
+          );})}
           {countryBadgesLoading ? <ActivityIndicator color="#f3b34d" /> : null}
         </View>
       ) : null}
@@ -2545,17 +2620,23 @@ function BadgesPanel({ apiBaseUrl, stats, token }: { apiBaseUrl: string; stats: 
       <View style={styles.badgeTierStrip}>{badgeTierSummary(badges).map(({ tier, count }) => <Text key={tier} style={styles.badgeTierChip}>{count} {tier.toLowerCase()}</Text>)}</View>
       {badges.slice(0, showAll ? badges.length : 6).map((badge) => {
         const tier = badge.level >= 0 ? badgeTiers[badge.level] : "Locked";
+        const palette = badge.level >= 0 ? badgeTierPalettes[badge.level] : { accent: "#3c473e", light: "#66736b", dark: "#26322a", ink: "#91a79c" };
         return (
-          <View key={badge.id} style={styles.badgeRow}>
+          <View key={badge.id} style={[styles.badgeRow, badge.level >= 0 && { backgroundColor: `${palette.accent}12`, borderColor: `${palette.accent}55` }]}>
             <View style={styles.badgeHeader}>
-              <View style={[styles.badgePortrait, badge.level >= 0 && styles.badgePortraitEarned]}><Text style={styles.badgePortraitMark}>{badgeMarks[badge.id] ?? "★"}</Text></View>
+              <View style={styles.badgePortraitWrap}>
+                <View style={[styles.badgePortrait, { backgroundColor: palette.accent, borderColor: palette.dark }]}>
+                  <View style={[styles.badgePortraitInner, { backgroundColor: palette.light }]}><Text style={[styles.badgePortraitMark, { color: palette.ink }]}>{badgeMarks[badge.id] ?? "★"}</Text></View>
+                </View>
+                <View style={[styles.badgePortraitRibbon, { backgroundColor: badge.level >= 0 ? "#efe4a6" : "#465248" }]}><Text numberOfLines={1} style={[styles.badgePortraitRibbonText, badge.level < 0 && styles.badgePortraitRibbonTextLocked]}>{badge.name.replace(/^The /, "")}</Text></View>
+              </View>
               <View style={styles.flex}>
                 <Text style={styles.rowTitle}>{badge.name}</Text>
                 <Text style={styles.muted}>{tier} - {badge.metric}</Text>
               </View>
               <View style={styles.badgeNumbers}>
-                <Text style={styles.badgeNumberLabel}>CURRENT</Text><Text style={styles.badgeNumber}>{text(badge.current ?? "--")}</Text>
-                <Text style={styles.badgeNumberLabel}>REMAINING</Text><Text style={styles.badgeRemaining}>{remainingForBadge(badge)}</Text>
+                <View style={styles.badgeNumberGroup}><Text style={styles.badgeNumberLabel}>CURRENT</Text><Text style={styles.badgeNumber}>{text(badge.current ?? "--")}</Text></View>
+                <View style={styles.badgeNumberGroup}><Text style={styles.badgeNumberLabel}>REMAINING</Text><Text style={styles.badgeRemaining}>{remainingForBadge(badge)}</Text></View>
               </View>
             </View>
             <View style={styles.badgeCells}>
@@ -2748,29 +2829,45 @@ const styles = StyleSheet.create({
   statusPillFailed: { color: "#ffe4df", backgroundColor: "#7a3128" },
   toggleRow: { borderTopWidth: 1, borderColor: "#1b3729", paddingVertical: 10 },
   toggleRowActive: { backgroundColor: "#172f23" },
-  badgeOverview: { gap: 9, padding: 12, borderRadius: 12, backgroundColor: "#10251b" },
-  badgeOverviewLabel: { color: "#8fa398", fontSize: 11, fontWeight: "800", textTransform: "uppercase" },
-  badgeOverviewValue: { color: "#f3b34d", fontSize: 22, fontWeight: "900" },
+  badgeSortControls: { flexDirection: "row", flexWrap: "wrap", justifyContent: "flex-end", gap: 6, marginTop: -42, marginBottom: 9, marginLeft: 95, minHeight: 34 },
+  badgeSortButton: { minHeight: 32, justifyContent: "center", paddingHorizontal: 10, paddingVertical: 6, borderWidth: 1, borderColor: "#294839", borderRadius: 8, backgroundColor: "#10251b" },
+  badgeSortButtonActive: { borderColor: "#4a8a65", backgroundColor: "#173b28" },
+  badgeSortButtonText: { color: "#c7d5cc", fontSize: 11, fontWeight: "800" },
+  badgeSortButtonTextActive: { color: "#edf7ef" },
   badgeSectionHeading: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: 5 },
   badgeSectionCount: { color: "#f3b34d", fontWeight: "900" },
-  badgeTierStrip: { flexDirection: "row", flexWrap: "wrap", gap: 5 },
-  badgeTierChip: { color: "#aebdb4", backgroundColor: "#152c21", borderRadius: 999, overflow: "hidden", paddingHorizontal: 7, paddingVertical: 4, fontSize: 9, fontWeight: "800" },
+  countryBadgeHeadingIcon: { color: "#cbd9d0", fontSize: 20, fontWeight: "900" },
+  badgeTierStrip: { flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between", columnGap: 8, rowGap: 3, paddingHorizontal: 8, paddingVertical: 7, borderWidth: 1, borderColor: "#523c20", borderRadius: 6, backgroundColor: "#211c12" },
+  badgeTierChip: { color: "#d6ab68", minWidth: "22%", fontSize: 9, fontWeight: "800" },
   countryBadgeBlock: { gap: 9 },
-  countryBadgeCard: { gap: 9, borderWidth: 1, borderColor: "#294839", borderRadius: 14, backgroundColor: "#10251b", padding: 12 },
-  countryBadgeTopline: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
-  countryBadgeTier: { color: "#f3b34d", fontSize: 11, fontWeight: "900", textTransform: "uppercase" },
-  countryBadgeMain: { flexDirection: "row", alignItems: "center", gap: 12 },
-  countryBadgeMedal: { width: 48, height: 48, borderRadius: 24, backgroundColor: "#f3b34d", borderWidth: 4, borderColor: "#d6e4d9", alignItems: "center", justifyContent: "center" },
-  countryBadgeMedalText: { color: "#172016", fontSize: 13, fontWeight: "900" },
-  countryBadgeName: { color: "#edf7ef", fontSize: 17, fontWeight: "900" },
-  countryBadgeProgress: { height: 7, borderRadius: 999, overflow: "hidden", backgroundColor: "#1a3327" },
+  countryBadgeCard: { minHeight: 205, alignItems: "center", gap: 7, overflow: "hidden", borderWidth: 1, borderRadius: 12, backgroundColor: "#10231a", paddingHorizontal: 14, paddingTop: 12, paddingBottom: 13, shadowOpacity: 0.13, shadowRadius: 12, elevation: 2 },
+  countryBadgeTopline: { width: "100%", flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  countryBadgeTier: { overflow: "hidden", borderWidth: 1, borderRadius: 999, paddingHorizontal: 7, paddingVertical: 3, fontSize: 10, fontWeight: "900", letterSpacing: 0.8, textTransform: "uppercase" },
+  countryBadgePercent: { fontSize: 11, fontWeight: "800" },
+  countryBadgeMedal: { width: 82, height: 82, marginTop: -1, marginBottom: -5, borderRadius: 41, borderWidth: 5, alignItems: "center", justifyContent: "center", shadowOpacity: 0.42, shadowRadius: 10, shadowOffset: { width: 0, height: 6 }, elevation: 6 },
+  countryBadgeMedalInner: { width: 66, height: 66, overflow: "hidden", borderRadius: 33, borderWidth: 2, alignItems: "center", justifyContent: "center", backgroundColor: "#e8eee9" },
+  countryBadgeFlag: { width: 66, height: 66, borderRadius: 33, resizeMode: "cover" },
+  countryBadgeGlobe: { fontSize: 32, fontWeight: "900" },
+  countryBadgeRibbonWrap: { width: "100%", minHeight: 29, flexDirection: "row", alignItems: "center", justifyContent: "center" },
+  countryBadgeRibbon: { width: "88%", minHeight: 27, zIndex: 2, alignItems: "center", justifyContent: "center", paddingHorizontal: 12, paddingVertical: 4, borderWidth: 1, shadowColor: "#000", shadowOpacity: 0.3, shadowRadius: 4, shadowOffset: { width: 0, height: 3 }, elevation: 3 },
+  countryBadgeRibbonTail: { position: "absolute", width: 24, height: 20, top: 7, zIndex: 1 },
+  countryBadgeRibbonTailLeft: { left: 0, transform: [{ rotate: "8deg" }] },
+  countryBadgeRibbonTailRight: { right: 0, transform: [{ rotate: "-8deg" }] },
+  countryBadgeName: { width: "100%", fontSize: 14, lineHeight: 17, fontWeight: "900", textAlign: "center" },
+  countryBadgeRegions: { width: "100%", marginTop: 1, color: "#91a79c", fontSize: 11, textAlign: "center" },
+  countryBadgeProgress: { width: "100%", height: 4, marginTop: 2, borderRadius: 999, overflow: "hidden", backgroundColor: "#1a3327" },
   countryBadgeProgressFill: { height: "100%", borderRadius: 999, backgroundColor: "#f3b34d" },
-  badgeRow: { borderTopWidth: 1, borderColor: "#1b3729", paddingTop: 11, gap: 8 },
-  badgeHeader: { flexDirection: "row", alignItems: "center", gap: 12 },
-  badgePortrait: { width: 48, height: 48, borderRadius: 12, backgroundColor: "#1a3327", borderWidth: 1, borderColor: "#294839", alignItems: "center", justifyContent: "center" },
-  badgePortraitEarned: { backgroundColor: "#263c2d", borderColor: "#f3b34d" },
-  badgePortraitMark: { color: "#edf7ef", fontSize: 21, fontWeight: "900" },
-  badgeNumbers: { width: 63, alignItems: "flex-end" },
+  badgeRow: { minHeight: 142, borderWidth: 1, borderColor: "#23392e", borderRadius: 8, backgroundColor: "#102119", padding: 12, gap: 10 },
+  badgeHeader: { flexDirection: "row", alignItems: "center", gap: 10 },
+  badgePortraitWrap: { width: 80, flexShrink: 0, alignItems: "center" },
+  badgePortrait: { width: 64, height: 64, borderRadius: 32, backgroundColor: "#1a3327", borderWidth: 2, alignItems: "center", justifyContent: "center", shadowColor: "#000", shadowOpacity: 0.25, shadowRadius: 5, shadowOffset: { width: 0, height: 4 }, elevation: 3 },
+  badgePortraitInner: { width: 42, height: 42, borderRadius: 21, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: "#07110b2e" },
+  badgePortraitMark: { fontSize: 24, fontWeight: "900" },
+  badgePortraitRibbon: { width: 80, minHeight: 17, marginTop: -8, zIndex: 2, justifyContent: "center", paddingHorizontal: 5, paddingVertical: 2, borderWidth: 1, borderColor: "#07110bb3", shadowColor: "#000", shadowOpacity: 0.25, shadowRadius: 2, elevation: 2 },
+  badgePortraitRibbonText: { color: "#07110b", fontSize: 7, lineHeight: 9, fontWeight: "900", textAlign: "center" },
+  badgePortraitRibbonTextLocked: { color: "#c0cec5" },
+  badgeNumbers: { width: 58, gap: 5, alignItems: "flex-end" },
+  badgeNumberGroup: { alignItems: "flex-end" },
   badgeNumberLabel: { color: "#71877b", fontSize: 7, fontWeight: "900" },
   badgeNumber: { color: "#f3b34d", fontWeight: "900" },
   badgeRemaining: { color: "#b9c8bf", fontSize: 11, fontWeight: "800" },
