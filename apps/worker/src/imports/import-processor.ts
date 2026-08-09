@@ -281,17 +281,17 @@ export class ImportProcessor {
         }
       });
 
-      await this.prisma.import.update({
-        where: { id: payload.importId },
-        data: { status: ImportStatus.COMPLETED, source: effectiveSource }
-      });
       if (shouldRecalculateStats) {
         try {
           await this.recalculateStats(payload.userId);
         } catch (error) {
-          console.error(`Stats recalculation failed after import ${payload.importId} completed`, error);
+          console.error(`Stats recalculation failed for committed import ${payload.importId}`, error);
         }
       }
+      await this.prisma.import.update({
+        where: { id: payload.importId },
+        data: { status: ImportStatus.COMPLETED, source: effectiveSource }
+      });
     } catch (error) {
       await this.prisma.import.update({
         where: { id: payload.importId },

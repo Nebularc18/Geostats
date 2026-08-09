@@ -16,6 +16,7 @@ import * as WebBrowser from "expo-web-browser";
 import { parseCoordinate } from "@geostats/shared";
 import { pickAndUploadDocument, type UploadKind } from "./upload";
 import { selectNativeMapPoints } from "./mobile-map";
+import { schedulePostImportStatsRefresh } from "./import-refresh";
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -1252,9 +1253,9 @@ function DashboardScreen({ apiBaseUrl, token, username, onNavigate }: { apiBaseU
   const hadActiveImport = useRef(false);
   useEffect(() => {
     if (!importActive) {
-      if (hadActiveImport.current) void stats.refresh();
+      if (!hadActiveImport.current) return;
       hadActiveImport.current = false;
-      return;
+      return schedulePostImportStatsRefresh(stats.refresh);
     }
     hadActiveImport.current = true;
     const interval = setInterval(() => {

@@ -396,6 +396,7 @@ test("process keeps a committed import completed when stats recalculation fails"
     objectKey: "user-1/original.gpx"
   };
   const importStatuses: ImportStatus[] = [];
+  const events: string[] = [];
   const originalError = console.error;
   console.error = () => {};
 
@@ -412,6 +413,7 @@ test("process keeps a committed import completed when stats recalculation fails"
       findFirst: async () => importRecord,
       update: async ({ data }: any) => {
         importStatuses.push(data.status);
+        events.push(data.status);
         return {};
       }
     },
@@ -421,6 +423,7 @@ test("process keeps a committed import completed when stats recalculation fails"
     $transaction: async (callback: (transaction: typeof tx) => Promise<unknown>) => callback(tx),
     geocachingProfile: {
       findUnique: async () => {
+        events.push("RECALCULATE");
         throw new Error("stats timeout");
       }
     }
@@ -442,6 +445,7 @@ test("process keeps a committed import completed when stats recalculation fails"
   }
 
   assert.deepEqual(importStatuses, [ImportStatus.PROCESSING, ImportStatus.COMPLETED]);
+  assert.deepEqual(events, [ImportStatus.PROCESSING, "RECALCULATE", ImportStatus.COMPLETED]);
 });
 
 test("process updates an existing find to the full GPX timestamp", async () => {
