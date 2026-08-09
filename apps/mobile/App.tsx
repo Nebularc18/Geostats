@@ -30,7 +30,7 @@ type ServerProbeState = {
   config: AuthConfig;
 };
 type ScratchLevel = "countries" | "regions" | "counties";
-type ScreenId = "dashboard" | "upload" | "imports" | "stats" | "ftf" | "hides" | "milestones" | "profileHtml" | "map" | "mysteries" | "travel" | "scratch" | "profile";
+type ScreenId = "dashboard" | "explore" | "upload" | "imports" | "stats" | "ftf" | "hides" | "milestones" | "profileHtml" | "map" | "mysteries" | "travel" | "scratch" | "profile";
 type Session = { token: string; user: { id: string; email: string; username: string } };
 type CheckState = "correct" | "wrong" | "unchecked";
 type MysteryStatus = "solving" | "solved" | "planned";
@@ -105,7 +105,13 @@ const defaultTimeZone = "Europe/Stockholm";
 const defaultFtfTerms = ["FTF", "first to find"];
 const badgeTiers = ["Bronze", "Silver", "Gold", "Platinum", "Ruby", "Sapphire", "Emerald", "Diamond"];
 const ACTIVE_IMPORT_STATUSES = new Set(["UPLOADED", "QUEUED", "PROCESSING"]);
-const MAX_SCRATCH_MAP_POLYGONS = 400;
+const MAX_NATIVE_MAP_MARKERS = Platform.OS === "android" ? 500 : 1_000;
+// Each Polygon is a native Google Maps view on Android. Large country and ADM2
+// datasets can otherwise enqueue hundreds of views and more than 100k points in
+// one render, which is enough to terminate the app on memory-constrained phones.
+const MAX_SCRATCH_MAP_POLYGONS = Platform.OS === "android" ? 80 : 160;
+const MAX_SCRATCH_MAP_VERTICES = Platform.OS === "android" ? 12_000 : 24_000;
+const MAX_SCRATCH_RING_POINTS = Platform.OS === "android" ? 150 : 250;
 const COUNTRY_GEOJSON_URL = "https://raw.githubusercontent.com/datasets/geo-countries/master/data/countries.geojson";
 const SWEDEN_REGION_GEOJSON_URL = "https://raw.githubusercontent.com/okfse/sweden-geojson/master/swedish_regions.geojson";
 const SWEDEN_COUNTY_GEOJSON_URL = "https://raw.githubusercontent.com/okfse/sweden-geojson/master/swedish_municipalities.geojson";
@@ -149,20 +155,28 @@ class ApiError extends Error {
   }
 }
 
-const screens: Array<{ id: ScreenId; label: string }> = [
-  { id: "dashboard", label: "Home" },
-  { id: "upload", label: "Upload" },
-  { id: "imports", label: "Imports" },
-  { id: "stats", label: "Stats" },
-  { id: "ftf", label: "FTF" },
-  { id: "hides", label: "Hides" },
-  { id: "milestones", label: "Marks" },
-  { id: "profileHtml", label: "HTML" },
-  { id: "map", label: "Map" },
-  { id: "mysteries", label: "Mysteries" },
-  { id: "travel", label: "Travel" },
-  { id: "scratch", label: "Scratch" },
-  { id: "profile", label: "Profile" }
+const screenDetails: Record<ScreenId, { label: string; eyebrow: string; icon: string }> = {
+  dashboard: { label: "Home", eyebrow: "Your geocaching overview", icon: "⌂" },
+  stats: { label: "Stats", eyebrow: "Patterns and progress", icon: "▥" },
+  map: { label: "Map", eyebrow: "Every find in context", icon: "⌖" },
+  explore: { label: "Explore", eyebrow: "All Geostats tools", icon: "✦" },
+  profile: { label: "Profile", eyebrow: "Account and collectors", icon: "●" },
+  scratch: { label: "Scratch Map", eyebrow: "Coverage around the world", icon: "◎" },
+  milestones: { label: "Milestones", eyebrow: "Memorable firsts", icon: "◇" },
+  ftf: { label: "First to Find", eyebrow: "Track your FTF history", icon: "⚑" },
+  hides: { label: "Owned Caches", eyebrow: "Your hides and finders", icon: "△" },
+  mysteries: { label: "Mysteries", eyebrow: "Solve and collaborate", icon: "?" },
+  travel: { label: "Trip Planner", eyebrow: "Build a caching route", icon: "↗" },
+  upload: { label: "Import Data", eyebrow: "Add caches to your archive", icon: "+" },
+  imports: { label: "Import History", eyebrow: "Processing and recent files", icon: "↻" },
+  profileHtml: { label: "Profile HTML", eyebrow: "Publish your statistics", icon: "</>" }
+};
+
+const primaryScreens: ScreenId[] = ["dashboard", "stats", "map", "explore", "profile"];
+const exploreGroups: Array<{ title: string; subtitle: string; screens: ScreenId[] }> = [
+  { title: "Maps & progress", subtitle: "See where you have cached and what comes next.", screens: ["scratch", "milestones", "ftf"] },
+  { title: "Caching tools", subtitle: "Manage hides, puzzles, and upcoming trips.", screens: ["hides", "mysteries", "travel"] },
+  { title: "Data & publishing", subtitle: "Keep your archive current and share your stats.", screens: ["upload", "imports", "profileHtml"] }
 ];
 
 function normalizeServerUrl(value: string) {
@@ -748,6 +762,21 @@ function polygonOuterRings(feature: BoundaryFeature, maxPoints = 350) {
     .map((ring) => ring.map(([longitude, latitude]) => ({ latitude, longitude })));
 }
 
+function scratchRingArea(coordinates: Array<{ latitude: number; longitude: number }>) {
+  if (coordinates.length === 0) return 0;
+  let minLatitude = Infinity;
+  let maxLatitude = -Infinity;
+  let minLongitude = Infinity;
+  let maxLongitude = -Infinity;
+  for (const coordinate of coordinates) {
+    minLatitude = Math.min(minLatitude, coordinate.latitude);
+    maxLatitude = Math.max(maxLatitude, coordinate.latitude);
+    minLongitude = Math.min(minLongitude, coordinate.longitude);
+    maxLongitude = Math.max(maxLongitude, coordinate.longitude);
+  }
+  return (maxLatitude - minLatitude) * (maxLongitude - minLongitude);
+}
+
 function pointInRing(longitude: number, latitude: number, ring: Position[]) {
   let inside = false;
   for (let current = 0, previous = ring.length - 1; current < ring.length; previous = current++) {
@@ -1090,33 +1119,43 @@ export default function App() {
   } else if (needsOnboarding) {
     content = <OnboardingScreen apiBaseUrl={apiBaseUrl} token={session.token} onComplete={() => setNeedsOnboarding(false)} onLogout={logout} />;
   } else {
+    const activePrimaryScreen = primaryScreens.includes(screen) ? screen : "explore";
     content = (
       <SafeAreaView style={styles.safe}>
         <StatusBar style="light" />
         <View style={styles.shellHeader}>
-          <View><Text style={styles.brandSmall}>Geostats</Text><Text style={styles.muted}>{session.user.username}</Text></View>
-          <Pressable onPress={logout} style={styles.logoutButton}><Text style={styles.logoutText}>Logout</Text></Pressable>
+          <View style={styles.brandLockup}>
+            <View style={styles.brandMark}><Text style={styles.brandMarkText}>G</Text></View>
+            <View><Text style={styles.brandSmall}>Geostats</Text><Text style={styles.shellContext}>{screenDetails[screen].label}</Text></View>
+          </View>
+          <Pressable accessibilityRole="button" accessibilityLabel="Open profile" onPress={() => setScreen("profile")} style={styles.avatarButton}>
+            <Text style={styles.avatarText}>{session.user.username.slice(0, 1).toUpperCase()}</Text>
+          </Pressable>
         </View>
-        <View style={styles.navWrap}>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.nav}>
-            {screens.map((item) => (
-              <Pressable key={item.id} onPress={() => setScreen(item.id)} style={[styles.navItem, screen === item.id && styles.navItemActive]}>
-                <Text style={[styles.navText, screen === item.id && styles.navTextActive]}>{item.label}</Text>
-              </Pressable>
-            ))}
-          </ScrollView>
-        </View>
-        <ScrollView style={styles.content} contentContainerStyle={styles.contentInner}>
-          <ScreenSwitch apiBaseUrl={apiBaseUrl} screen={screen} token={session.token} userId={session.user.id} onNavigate={setScreen} />
+        <ScrollView key={screen} style={styles.content} contentContainerStyle={styles.contentInner} showsVerticalScrollIndicator={false}>
+          <ScreenSwitch apiBaseUrl={apiBaseUrl} screen={screen} token={session.token} userId={session.user.id} username={session.user.username} onNavigate={setScreen} onLogout={logout} />
         </ScrollView>
+        <View style={styles.bottomNav}>
+          {primaryScreens.map((item) => {
+            const detail = screenDetails[item];
+            const active = activePrimaryScreen === item;
+            return (
+              <Pressable accessibilityRole="tab" accessibilityState={{ selected: active }} key={item} onPress={() => setScreen(item)} style={styles.bottomNavItem}>
+                <View style={[styles.bottomNavIcon, active && styles.bottomNavIconActive]}><Text style={[styles.bottomNavGlyph, active && styles.bottomNavGlyphActive]}>{detail.icon}</Text></View>
+                <Text style={[styles.bottomNavLabel, active && styles.bottomNavLabelActive]}>{detail.label}</Text>
+              </Pressable>
+            );
+          })}
+        </View>
       </SafeAreaView>
     );
   }
   return <SafeAreaProvider>{content}</SafeAreaProvider>;
 }
 
-function ScreenSwitch({ apiBaseUrl, screen, token, userId, onNavigate }: { apiBaseUrl: string; screen: ScreenId; token: string; userId: string; onNavigate: (screen: ScreenId) => void }) {
-  if (screen === "dashboard") return <DashboardScreen apiBaseUrl={apiBaseUrl} token={token} onNavigate={onNavigate} />;
+function ScreenSwitch({ apiBaseUrl, screen, token, userId, username, onNavigate, onLogout }: { apiBaseUrl: string; screen: ScreenId; token: string; userId: string; username: string; onNavigate: (screen: ScreenId) => void; onLogout: () => void }) {
+  if (screen === "dashboard") return <DashboardScreen apiBaseUrl={apiBaseUrl} token={token} username={username} onNavigate={onNavigate} />;
+  if (screen === "explore") return <ExploreScreen username={username} onNavigate={onNavigate} />;
   if (screen === "stats") return <StatsScreen apiBaseUrl={apiBaseUrl} token={token} />;
   if (screen === "map") return <MapScreen apiBaseUrl={apiBaseUrl} token={token} />;
   if (screen === "scratch") return <ScratchScreen apiBaseUrl={apiBaseUrl} token={token} />;
@@ -1128,7 +1167,7 @@ function ScreenSwitch({ apiBaseUrl, screen, token, userId, onNavigate }: { apiBa
   if (screen === "travel") return <TravelScreen userId={userId} />;
   if (screen === "upload") return <UploadScreen apiBaseUrl={apiBaseUrl} token={token} />;
   if (screen === "imports") return <ImportsScreen apiBaseUrl={apiBaseUrl} token={token} />;
-  return <ProfileScreen apiBaseUrl={apiBaseUrl} token={token} />;
+  return <ProfileScreen apiBaseUrl={apiBaseUrl} token={token} onLogout={onLogout} />;
 }
 
 function OnboardingScreen({ apiBaseUrl, token, onComplete, onLogout }: { apiBaseUrl: string; token: string; onComplete: () => void; onLogout: () => void }) {
@@ -1177,19 +1216,57 @@ function OnboardingScreen({ apiBaseUrl, token, onComplete, onLogout }: { apiBase
   );
 }
 
-function DashboardScreen({ apiBaseUrl, token, onNavigate }: { apiBaseUrl: string; token: string; onNavigate: (screen: ScreenId) => void }) {
+function ExploreScreen({ username, onNavigate }: { username: string; onNavigate: (screen: ScreenId) => void }) {
+  return (
+    <>
+      <PageTitle eyebrow="Everything in one place" title="Explore Geostats" />
+      <View style={styles.exploreIntro}>
+        <Text style={styles.exploreIntroTitle}>Where to next, {username}?</Text>
+        <Text style={styles.exploreIntroText}>Your maps, cache management, imports, puzzles, and publishing tools are organized below.</Text>
+      </View>
+      {exploreGroups.map((group) => (
+        <View key={group.title} style={styles.exploreGroup}>
+          <View style={styles.exploreGroupHeading}>
+            <Text style={styles.exploreGroupTitle}>{group.title}</Text>
+            <Text style={styles.muted}>{group.subtitle}</Text>
+          </View>
+          <View style={styles.featureGrid}>
+            {group.screens.map((item) => <FeatureCard key={item} screen={item} onPress={() => onNavigate(item)} />)}
+          </View>
+        </View>
+      ))}
+    </>
+  );
+}
+
+function DashboardScreen({ apiBaseUrl, token, username, onNavigate }: { apiBaseUrl: string; token: string; username: string; onNavigate: (screen: ScreenId) => void }) {
   const stats = useApi<{ stats: any }>(apiBaseUrl, token, "/stats/summary", { stats: {} });
   const imports = useApi<{ imports: ImportListItem[] }>(apiBaseUrl, token, "/imports", { imports: [] });
   const s = stats.data.stats;
+  const latestImport = imports.data.imports[0];
+  const importActive = latestImport && ACTIVE_IMPORT_STATUSES.has(latestImport.status);
   return (
     <>
-      <PageTitle eyebrow="Private profile stats" title="Your cache archive" />
+      <PageTitle eyebrow={`Welcome back, ${username}`} title="Your cache archive" />
+      <View style={styles.heroCard}>
+        <View style={styles.heroGlow} />
+        <Text style={styles.heroKicker}>{importActive ? "IMPORT IN PROGRESS" : "ARCHIVE AT A GLANCE"}</Text>
+        <Text style={styles.heroValue}>{Number(s.totalFinds ?? 0).toLocaleString()}</Text>
+        <Text style={styles.heroLabel}>lifetime finds across {s.countries?.length ?? 0} countries</Text>
+        <View style={styles.heroActions}>
+          <Pressable onPress={() => onNavigate("upload")} style={styles.heroPrimaryAction}><Text style={styles.heroPrimaryActionText}>＋ Import finds</Text></Pressable>
+          <Pressable onPress={() => onNavigate("map")} style={styles.heroSecondaryAction}><Text style={styles.heroSecondaryActionText}>Open map  ›</Text></Pressable>
+        </View>
+      </View>
       <StatGrid rows={[["Total finds", s.totalFinds ?? 0], ["Cache types", s.cacheTypes?.length ?? 0], ["Countries", s.countries?.length ?? 0], ["Longest streak", `${s.streaks?.longest ?? 0} days`]]} />
+      <View style={styles.quickActions}>
+        {(["scratch", "milestones", "mysteries", "travel"] as ScreenId[]).map((item) => <QuickAction key={item} screen={item} onPress={() => onNavigate(item)} />)}
+      </View>
       <Panel title="At a glance" subtitle={`Last import: ${dateText(imports.data.imports[0]?.createdAt)}`}>
         <Bars data={latestTwelveMonths(s.findsByMonth ?? [])} />
         <KeyValue rows={[["Best day", s.summaryNumbers?.bestDay ? `${s.summaryNumbers.bestDay.count} on ${s.summaryNumbers.bestDay.key}` : "-"], ["Best month", s.summaryNumbers?.bestMonth ? `${s.summaryNumbers.bestMonth.count} in ${s.summaryNumbers.bestMonth.key}` : "-"], ["Cache days", s.summaryNumbers?.cachingDays ?? 0], ["Average/day", s.summaryNumbers?.findsPerDay?.toFixed(2) ?? "0.00"], ["Average distance", s.distanceStats?.averageDistanceKm == null ? "-" : `${Math.round(s.distanceStats.averageDistanceKm)} km`]]} />
       </Panel>
-      <Panel title="Your Geostats workflow" subtitle="Pick up at the step that matches what you want to do.">
+      <Panel title="Keep your archive moving" subtitle="Pick up where you left off.">
         <WorkflowStep number="1" title="Import cache data" detail="Choose a My Finds GPX, My Hides GPX, or Pocket Query ZIP." done={imports.data.imports.length > 0} onPress={() => onNavigate("upload")} />
         <WorkflowStep number="2" title="Watch processing" detail="Imports refresh automatically while the server parses and recalculates." done={imports.data.imports.some((item) => item.status === "COMPLETED")} onPress={() => onNavigate("imports")} />
         <WorkflowStep number="3" title="Explore your archive" detail="Review statistics, maps, milestones, FTFs, and hides." done={(s.totalFinds ?? 0) > 0} onPress={() => onNavigate("stats")} />
@@ -1203,22 +1280,30 @@ function DashboardScreen({ apiBaseUrl, token, onNavigate }: { apiBaseUrl: string
 
 function StatsScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
   const { data, loading, error } = useApi<{ stats: any }>(apiBaseUrl, token, "/stats/summary", { stats: {} });
+  const [section, setSection] = useState("Overview");
   const s = data.stats;
   return (
     <>
-      <PageTitle eyebrow="Reusable stats package" title="Statistics" />
+      <PageTitle eyebrow="Your caching story" title="Statistics" />
       <StatGrid rows={[["Total finds", s.totalFinds ?? 0], ["Longest streak", `${s.streaks?.longest ?? 0} days`], ["Current streak", `${s.streaks?.current ?? 0} days`], ["Milestones", s.milestoneStats?.countMilestones?.length ?? 0]]} />
-      <Panel title="Finds by month" subtitle="Rolling latest 12 months"><Bars data={latestTwelveMonths(s.findsByMonth ?? [])} /></Panel>
-      <BreakdownPanel title="Core breakdowns" groups={[["Cache types", s.cacheTypes ?? []], ["Sizes", s.sizes ?? []], ["Countries", s.countries ?? []], ["Regions", s.regions ?? []], ["Counties / municipalities", s.counties ?? []], ["Finds by difficulty", s.findsByDifficulty ?? []], ["Finds by terrain", s.findsByTerrain ?? []], ["Finds by calendar month", s.findsByCalendarMonth ?? []], ["Finds by weekday", s.findsByWeekday ?? []], ["Finds by year placed", s.findsByPlacedYear ?? []], ["Finds to today for each year", s.findsToTodayByYear ?? []], ["Average difficulty per year", s.averageDifficultyByYear ?? []], ["Average terrain per year", s.averageTerrainByYear ?? []], ["Top hiders", (s.ownerBuckets ?? []).slice(0, 20)]]} />
-      <Panel title="Difficulty / Terrain"><DifficultyGrid data={s.difficultyTerrain ?? []} /></Panel>
-      <Panel title="Summary numbers"><KeyValue rows={[["Total days", s.summaryNumbers?.totalDays ?? 0], ["Finds/caching day", s.summaryNumbers?.findsPerCachingDay?.toFixed(2) ?? "0.00"], ["Finds/week", s.summaryNumbers?.findsPerWeek?.toFixed(2) ?? "0.00"], ["Last 365 finds", s.summaryNumbers?.last365Finds ?? 0]]} /></Panel>
-      <Panel title="Home distance">{s.distanceStats ? <><KeyValue rows={[["Average distance", s.distanceStats.averageDistanceKm == null ? "-" : `${Math.round(s.distanceStats.averageDistanceKm)} km`], ["Maximum distance", s.distanceStats.maxDistanceKm == null ? "-" : `${Math.round(s.distanceStats.maxDistanceKm)} km`], ["Bearing degrees", s.distanceStats.bearingBuckets?.filter((x: PercentBucket) => x.count > 0).length ?? 0]]} /><Text style={styles.sectionLabel}>Distance buckets</Text><Bars data={s.distanceStats.distanceBuckets ?? []} /><Text style={styles.sectionLabel}>Bearings from home</Text><Bars data={s.distanceStats.bearingBuckets ?? []} /></> : <Text style={styles.muted}>Set home coordinates in Profile to show distance and bearing stats.</Text>}</Panel>
-      <Panel title="Way to 81"><Rows rows={(s.wayTo81 ?? []).map((entry: any) => [String(entry.index), `${entry.gcCode} ${entry.name}`, `${entry.difficulty}/${entry.terrain}`])} /></Panel>
-      <Panel title="Finds by found date"><CalendarHeatmap data={s.foundDateMatrix ?? []} /></Panel>
-      <Panel title="Finds by hidden date"><CalendarHeatmap data={s.hiddenDateMatrix ?? []} /></Panel>
-      <Panel title="Finds by hidden month"><MonthMatrix data={s.hiddenMonthMatrix ?? []} /></Panel>
-      <Panel title="Elevation chart"><Bars data={s.elevationBuckets ?? []} /></Panel>
-      <Panel title="Finds per month and year"><MonthMatrix data={s.findsByMonth ?? []} /></Panel>
+      <Segmented values={["Overview", "Patterns", "History"]} active={section} onPress={setSection} />
+      {section === "Overview" ? <>
+        <Panel title="Finds by month" subtitle="Rolling latest 12 months"><Bars data={latestTwelveMonths(s.findsByMonth ?? [])} /></Panel>
+        <Panel title="Summary numbers"><KeyValue rows={[["Total days", s.summaryNumbers?.totalDays ?? 0], ["Finds/caching day", s.summaryNumbers?.findsPerCachingDay?.toFixed(2) ?? "0.00"], ["Finds/week", s.summaryNumbers?.findsPerWeek?.toFixed(2) ?? "0.00"], ["Last 365 finds", s.summaryNumbers?.last365Finds ?? 0]]} /></Panel>
+        <Panel title="Difficulty / Terrain"><DifficultyGrid data={s.difficultyTerrain ?? []} /></Panel>
+        <Panel title="Home distance">{s.distanceStats ? <><KeyValue rows={[["Average distance", s.distanceStats.averageDistanceKm == null ? "-" : `${Math.round(s.distanceStats.averageDistanceKm)} km`], ["Maximum distance", s.distanceStats.maxDistanceKm == null ? "-" : `${Math.round(s.distanceStats.maxDistanceKm)} km`], ["Bearing degrees", s.distanceStats.bearingBuckets?.filter((x: PercentBucket) => x.count > 0).length ?? 0]]} /><Text style={styles.sectionLabel}>Distance buckets</Text><Bars data={s.distanceStats.distanceBuckets ?? []} /><Text style={styles.sectionLabel}>Bearings from home</Text><Bars data={s.distanceStats.bearingBuckets ?? []} /></> : <Text style={styles.muted}>Set home coordinates in Profile to show distance and bearing stats.</Text>}</Panel>
+      </> : null}
+      {section === "Patterns" ? <>
+        <BreakdownPanel title="Cache breakdowns" groups={[["Cache types", s.cacheTypes ?? []], ["Sizes", s.sizes ?? []], ["Countries", s.countries ?? []], ["Regions", s.regions ?? []], ["Counties / municipalities", s.counties ?? []], ["Finds by difficulty", s.findsByDifficulty ?? []], ["Finds by terrain", s.findsByTerrain ?? []], ["Finds by calendar month", s.findsByCalendarMonth ?? []], ["Finds by weekday", s.findsByWeekday ?? []], ["Finds by year placed", s.findsByPlacedYear ?? []], ["Finds to today for each year", s.findsToTodayByYear ?? []], ["Average difficulty per year", s.averageDifficultyPerYear ?? s.averageDifficultyByYear ?? []], ["Average terrain per year", s.averageTerrainPerYear ?? s.averageTerrainByYear ?? []], ["Top hiders", (s.ownerBuckets ?? []).slice(0, 20)]]} />
+        <Panel title="Elevation"><Bars data={s.elevationBuckets ?? []} /></Panel>
+      </> : null}
+      {section === "History" ? <>
+        <Panel title="Way to 81"><Rows rows={(s.wayTo81 ?? []).map((entry: any) => [String(entry.index), `${entry.gcCode} ${entry.name}`, `${entry.difficulty}/${entry.terrain}`])} /></Panel>
+        <Panel title="Finds by found date"><CalendarHeatmap data={s.foundDateMatrix ?? []} /></Panel>
+        <Panel title="Finds by hidden date"><CalendarHeatmap data={s.hiddenDateMatrix ?? []} /></Panel>
+        <Panel title="Finds by hidden month"><MonthMatrix data={s.hiddenMonthMatrix ?? []} /></Panel>
+        <Panel title="Finds per month and year"><MonthMatrix data={s.findsByMonth ?? []} /></Panel>
+      </> : null}
       <LoadState loading={loading} error={error} />
     </>
   );
@@ -1227,6 +1312,7 @@ function StatsScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string 
 function MapScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
   const [points, setPoints] = useState<CachePoint[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [mapFilter, setMapFilter] = useState("All");
   useEffect(() => {
     void Promise.allSettled([apiFetch<{ points: CachePoint[] }>(apiBaseUrl, "/map/caches", token), apiFetch<{ points: CachePoint[] }>(apiBaseUrl, "/map/hides", token)]).then(([finds, hides]) => {
       const findPoints = finds.status === "fulfilled" ? finds.value.points : [];
@@ -1236,12 +1322,22 @@ function MapScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
     });
   }, [apiBaseUrl, token]);
   const findCount = points.filter((p) => !p.isOwnHide).length;
-  const recent = [...points].sort((a, b) => Date.parse(b.foundAt ?? b.placedAt ?? "") - Date.parse(a.foundAt ?? a.placedAt ?? "")).slice(0, 40);
+  const visiblePoints = mapFilter === "Finds" ? points.filter((point) => !point.isOwnHide) : mapFilter === "Hides" ? points.filter((point) => point.isOwnHide) : points;
+  const recent = [...visiblePoints].sort((a, b) => Date.parse(b.foundAt ?? b.placedAt ?? "") - Date.parse(a.foundAt ?? a.placedAt ?? "")).slice(0, 24);
   return (
     <>
-      <PageTitle eyebrow="PostGIS-ready coordinates" title="Map" />
-      <Panel title={`${findCount} plotted finds`} subtitle={`${points.length - findCount} own hides`}><NativeMap points={points} /></Panel>
-      <Panel title="Recent map points">{recent.map((point) => <CacheRow key={`${point.isOwnHide ? "h" : "f"}-${point.gcCode}-${point.id}`} point={point} />)}</Panel>
+      <PageTitle eyebrow="Your caching footprint" title="Map" />
+      <StatGrid rows={[["Finds", findCount], ["Own hides", points.length - findCount]]} />
+      <Segmented values={["All", "Finds", "Hides"]} active={mapFilter} onPress={setMapFilter} />
+      <Panel title={`${visiblePoints.length.toLocaleString()} points in view`} subtitle="Tap a marker for cache details">
+        <NativeMap key={mapFilter} points={visiblePoints} />
+        <View style={styles.mapLegend}>
+          <View style={styles.legendItem}><View style={[styles.legendDot, { backgroundColor: "#4ec878" }]} /><Text style={styles.muted}>Finds</Text></View>
+          <View style={styles.legendItem}><View style={[styles.legendDot, { backgroundColor: "#64d2a4" }]} /><Text style={styles.muted}>Own hides</Text></View>
+          <Text style={styles.mapHint}>Showing up to {MAX_NATIVE_MAP_MARKERS.toLocaleString()} markers</Text>
+        </View>
+      </Panel>
+      <Panel title="Recent locations" subtitle={`Latest ${mapFilter.toLowerCase()} in your archive`}>{recent.map((point) => <CacheRow key={`${point.isOwnHide ? "h" : "f"}-${point.gcCode}-${point.id}`} point={point} />)}</Panel>
       <LoadState loading={points.length === 0 && !error} error={error} />
     </>
   );
@@ -1542,7 +1638,7 @@ function ImportsScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: strin
   return <><PageTitle eyebrow="Background jobs" title="Import history" /><PrimaryButton label="Refresh" onPress={refresh} /><Panel title="Imports"><ImportRows imports={data.imports} /></Panel><LoadState loading={loading} error={error} /></>;
 }
 
-function ProfileScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
+function ProfileScreen({ apiBaseUrl, token, onLogout }: { apiBaseUrl: string; token: string; onLogout: () => void }) {
   const profile = useApi<{ profile: any }>(apiBaseUrl, token, "/profile", { profile: null });
   const tokens = useApi<{ tokens: any[] }>(apiBaseUrl, token, "/collector/tokens", { tokens: [] });
   const [gcUsername, setGcUsername] = useState("");
@@ -1622,6 +1718,9 @@ function ProfileScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: strin
         ))}
       </Panel>
       {message ? <Text style={styles.note}>{message}</Text> : null}
+      <Panel title="Account" subtitle="Your imported data remains on the selected Geostats server.">
+        <SecondaryButton label="Sign out of Geostats" onPress={onLogout} danger />
+      </Panel>
       <LoadState loading={profile.loading || tokens.loading} error={profile.error || tokens.error} />
     </>
   );
@@ -2135,6 +2234,30 @@ function PageTitle({ eyebrow, title }: { eyebrow: string; title: string }) {
   return <View style={styles.pageTitle}><Text style={styles.eyebrow}>{eyebrow}</Text><Text style={styles.title}>{title}</Text></View>;
 }
 
+function FeatureCard({ screen, onPress }: { screen: ScreenId; onPress: () => void }) {
+  const detail = screenDetails[screen];
+  return (
+    <Pressable accessibilityRole="button" onPress={onPress} style={({ pressed }) => [styles.featureCard, pressed && styles.pressed]}>
+      <View style={styles.featureCardTop}>
+        <View style={styles.featureIcon}><Text style={styles.featureIconText}>{detail.icon}</Text></View>
+        <Text style={styles.featureArrow}>↗</Text>
+      </View>
+      <Text style={styles.featureTitle}>{detail.label}</Text>
+      <Text style={styles.featureSubtitle} numberOfLines={2}>{detail.eyebrow}</Text>
+    </Pressable>
+  );
+}
+
+function QuickAction({ screen, onPress }: { screen: ScreenId; onPress: () => void }) {
+  const detail = screenDetails[screen];
+  return (
+    <Pressable accessibilityRole="button" onPress={onPress} style={({ pressed }) => [styles.quickAction, pressed && styles.pressed]}>
+      <Text style={styles.quickActionIcon}>{detail.icon}</Text>
+      <Text style={styles.quickActionLabel}>{detail.label}</Text>
+    </Pressable>
+  );
+}
+
 function Field(props: React.ComponentProps<typeof TextInput> & { label: string }) {
   const { label, style, ...rest } = props;
   return <View style={styles.field}><Text style={styles.fieldLabel}>{label}</Text><TextInput placeholderTextColor="#76827c" style={[styles.input, rest.multiline && styles.textArea, style]} {...rest} /></View>;
@@ -2199,7 +2322,20 @@ function Rows({ rows }: { rows: Array<Array<unknown>> }) {
 }
 
 function BreakdownPanel({ title, groups }: { title: string; groups: Array<[string, any[]]> }) {
-  return <Panel title={title}>{groups.map(([label, data]) => <View key={label} style={styles.breakdownGroup}><Text style={styles.sectionLabel}>{label}</Text><Bars data={data} /></View>)}</Panel>;
+  return <Panel title={title} subtitle="Tap a category to expand it">{groups.map(([label, data]) => <BreakdownGroup key={label} label={label} data={data} />)}</Panel>;
+}
+
+function BreakdownGroup({ label, data }: { label: string; data: any[] }) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <View style={styles.breakdownGroup}>
+      <Pressable accessibilityRole="button" accessibilityState={{ expanded }} onPress={() => setExpanded((current) => !current)} style={styles.breakdownToggle}>
+        <View style={styles.flex}><Text style={styles.sectionLabel}>{label}</Text><Text style={styles.muted}>{data.length} categories</Text></View>
+        <Text style={styles.breakdownChevron}>{expanded ? "−" : "+"}</Text>
+      </Pressable>
+      {expanded ? <View style={styles.breakdownContent}><Bars data={data} /></View> : null}
+    </View>
+  );
 }
 
 function DifficultyGrid({ data }: { data: Array<{ difficulty: number; terrain: number; count: number }> }) {
@@ -2258,7 +2394,7 @@ function MonthMatrix({ data }: { data: CountBucket[] }) {
 }
 
 function NativeMap({ points }: { points: CachePoint[] }) {
-  const visible = validMapPoints(points).slice(0, 1500);
+  const visible = validMapPoints(points).slice(0, MAX_NATIVE_MAP_MARKERS);
   if (visible.length === 0) return <Text style={styles.muted}>No coordinates yet.</Text>;
   return (
     <View style={styles.nativeMapFrame}>
@@ -2342,24 +2478,37 @@ function ScratchNativeMap({
     })
     .filter((item) => item.featureName && (level !== "countries" || item.bucket))
     .sort((left, right) => Number(Boolean(right.bucket)) - Number(Boolean(left.bucket)));
-  const polygons: Array<{
+  const polygonCandidates: Array<{
     coordinates: Array<{ latitude: number; longitude: number }>;
     featureName: string;
     locationBucket: LocationBucket;
     key: string;
+    priority: number;
   }> = [];
   for (const { feature, featureName, bucket } of features) {
     const locationBucket = bucket ?? { name: featureName, count: 0 };
-    const rings = polygonOuterRings(feature);
-    for (let ringIndex = 0; ringIndex < rings.length && polygons.length < MAX_SCRATCH_MAP_POLYGONS; ringIndex += 1) {
-      polygons.push({
-        coordinates: rings[ringIndex]!,
+    const rings = polygonOuterRings(feature, MAX_SCRATCH_RING_POINTS);
+    for (let ringIndex = 0; ringIndex < rings.length; ringIndex += 1) {
+      const coordinates = rings[ringIndex]!;
+      polygonCandidates.push({
+        coordinates,
         featureName,
         locationBucket,
-        key: `${featureName}-${polygons.length}-${ringIndex}`
+        key: `${featureName}-${ringIndex}`,
+        // Keep covered/selected locations first, then retain mainlands and the
+        // largest islands if the native geometry budget is reached.
+        priority: (bucket ? 1_000_000 : 0) + (selectedName === featureName ? 1_000_000 : 0) + scratchRingArea(coordinates)
       });
     }
+  }
+  polygonCandidates.sort((left, right) => right.priority - left.priority);
+  const polygons: typeof polygonCandidates = [];
+  let vertexCount = 0;
+  for (const candidate of polygonCandidates) {
     if (polygons.length >= MAX_SCRATCH_MAP_POLYGONS) break;
+    if (vertexCount + candidate.coordinates.length > MAX_SCRATCH_MAP_VERTICES) continue;
+    polygons.push(candidate);
+    vertexCount += candidate.coordinates.length;
   }
   const region = regionForScratch(level, boundaryData);
   return (
@@ -2392,7 +2541,11 @@ function CacheRow({ point }: { point: CachePoint }) {
 
 function ImportRows({ imports }: { imports: ImportListItem[] }) {
   if (imports.length === 0) return <Text style={styles.muted}>No import history yet.</Text>;
-  return <View>{imports.map((item) => <View key={item.id} style={styles.importRow}><View style={styles.flex}><Text style={styles.rowTitle}>{item.fileName}</Text><Text style={styles.muted}>{dateText(item.createdAt)} - {item.source}</Text>{item.errorMessage ? <Text style={styles.error}>{item.errorMessage}</Text> : null}</View><Text style={styles.statusPill}>{item.status}</Text></View>)}</View>;
+  return <View>{imports.map((item) => {
+    const completed = item.status === "COMPLETED";
+    const failed = item.status === "FAILED";
+    return <View key={item.id} style={styles.importRow}><View style={styles.flex}><Text style={styles.rowTitle} numberOfLines={1}>{item.fileName}</Text><Text style={styles.muted}>{dateText(item.createdAt)} · {item.source}</Text>{item.errorMessage ? <Text style={styles.importError}>{item.errorMessage}</Text> : null}</View><Text style={[styles.statusPill, completed && styles.statusPillComplete, failed && styles.statusPillFailed]}>{completed ? "DONE" : item.status}</Text></View>;
+  })}</View>;
 }
 
 function MilestoneList({ title, rows, labelKey = "label" }: { title: string; rows: any[]; labelKey?: string }) {
@@ -2401,6 +2554,7 @@ function MilestoneList({ title, rows, labelKey = "label" }: { title: string; row
 
 function BadgesPanel({ apiBaseUrl, stats, token }: { apiBaseUrl: string; stats: any; token: string }) {
   const scratch = useApi<{ countries: any[] }>(apiBaseUrl, token, "/map/scratch", { countries: [] });
+  const [showAll, setShowAll] = useState(false);
   const countryBadges = scratch.data.countries
     .map((country) => {
       const regions = country.regions?.filter((region: any) => region.name !== "Unknown") ?? [];
@@ -2425,7 +2579,7 @@ function BadgesPanel({ apiBaseUrl, stats, token }: { apiBaseUrl: string; stats: 
       {countryBadges.length > 0 ? (
         <View style={styles.countryBadgeBlock}>
           <Text style={styles.sectionLabel}>Country badges</Text>
-          {countryBadges.slice(0, 30).map((country) => (
+          {countryBadges.slice(0, showAll ? 30 : 3).map((country) => (
             <View key={country.name} style={styles.countryBadgeRow}>
               <View style={styles.flex}>
                 <Text style={styles.rowTitle}>{country.name}</Text>
@@ -2437,7 +2591,7 @@ function BadgesPanel({ apiBaseUrl, stats, token }: { apiBaseUrl: string; stats: 
         </View>
       ) : null}
       <Text style={styles.sectionLabel}>Achievement badges</Text>
-      {badges.map((badge) => {
+      {badges.slice(0, showAll ? badges.length : 6).map((badge) => {
         const tier = badge.level >= 0 ? badgeTiers[badge.level] : "Locked";
         return (
           <View key={badge.id} style={styles.badgeRow}>
@@ -2459,6 +2613,7 @@ function BadgesPanel({ apiBaseUrl, stats, token }: { apiBaseUrl: string; stats: 
           </View>
         );
       })}
+      {badges.length > 6 || countryBadges.length > 3 ? <SecondaryButton label={showAll ? "Show highlights only" : `View all ${badges.length} badges`} onPress={() => setShowAll((current) => !current)} /> : null}
     </Panel>
   );
 }
@@ -2470,33 +2625,68 @@ function LoadState({ loading, error }: { loading: boolean; error: string | null 
 }
 
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: "#07110d" },
-  safeCenter: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: "#07110d" },
+  safe: { flex: 1, backgroundColor: "#08120e" },
+  safeCenter: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: "#08120e" },
   authPage: { flexGrow: 1, justifyContent: "center", padding: 22, gap: 14 },
   brand: { color: "#f3b34d", fontSize: 42, fontWeight: "900" },
-  brandSmall: { color: "#f3b34d", fontSize: 22, fontWeight: "900" },
-  shellHeader: { paddingHorizontal: 18, paddingTop: 10, paddingBottom: 12, flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
-  logoutButton: { borderColor: "#365346", borderWidth: 1, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 8 },
-  logoutText: { color: "#dce8df", fontWeight: "700" },
-  navWrap: { borderTopWidth: 1, borderBottomWidth: 1, borderColor: "#173326" },
-  nav: { paddingHorizontal: 12, paddingVertical: 10, gap: 8 },
-  navItem: { borderRadius: 8, paddingHorizontal: 13, paddingVertical: 8, backgroundColor: "#10251b" },
-  navItemActive: { backgroundColor: "#f3b34d" },
-  navText: { color: "#b9c8bf", fontWeight: "800" },
-  navTextActive: { color: "#162016" },
+  brandSmall: { color: "#f2f8f4", fontSize: 19, fontWeight: "900", letterSpacing: -0.5 },
+  shellHeader: { minHeight: 62, paddingHorizontal: 18, paddingVertical: 9, flexDirection: "row", alignItems: "center", justifyContent: "space-between", borderBottomWidth: 1, borderColor: "#193126" },
+  brandLockup: { flexDirection: "row", alignItems: "center", gap: 10 },
+  brandMark: { width: 35, height: 35, borderRadius: 12, alignItems: "center", justifyContent: "center", backgroundColor: "#f3b34d" },
+  brandMarkText: { color: "#122018", fontSize: 19, fontWeight: "900" },
+  shellContext: { color: "#799387", fontSize: 11, fontWeight: "700", marginTop: 1 },
+  avatarButton: { width: 38, height: 38, borderRadius: 19, alignItems: "center", justifyContent: "center", backgroundColor: "#173126", borderWidth: 1, borderColor: "#345444" },
+  avatarText: { color: "#f3b34d", fontSize: 15, fontWeight: "900" },
+  bottomNav: { minHeight: 68, flexDirection: "row", alignItems: "center", justifyContent: "space-around", paddingHorizontal: 6, paddingTop: 6, paddingBottom: 4, backgroundColor: "#0b1812", borderTopWidth: 1, borderColor: "#1b3629" },
+  bottomNavItem: { flex: 1, alignItems: "center", justifyContent: "center", gap: 2 },
+  bottomNavIcon: { minWidth: 38, height: 27, paddingHorizontal: 10, borderRadius: 14, alignItems: "center", justifyContent: "center" },
+  bottomNavIconActive: { backgroundColor: "#f3b34d" },
+  bottomNavGlyph: { color: "#8fa69a", fontSize: 18, lineHeight: 21, fontWeight: "900" },
+  bottomNavGlyphActive: { color: "#142018" },
+  bottomNavLabel: { color: "#778e82", fontSize: 10, fontWeight: "700" },
+  bottomNavLabelActive: { color: "#e9f2ec" },
   content: { flex: 1 },
-  contentInner: { padding: 16, paddingBottom: 32, gap: 14 },
-  pageTitle: { marginBottom: 2 },
-  eyebrow: { color: "#85a696", fontSize: 12, textTransform: "uppercase", letterSpacing: 0, fontWeight: "800" },
-  title: { color: "#edf7ef", fontSize: 34, fontWeight: "900" },
+  contentInner: { paddingHorizontal: 17, paddingTop: 20, paddingBottom: 30, gap: 15 },
+  pageTitle: { marginBottom: 3, gap: 3 },
+  eyebrow: { color: "#83a393", fontSize: 11, textTransform: "uppercase", letterSpacing: 1.1, fontWeight: "900" },
+  title: { color: "#f1f8f3", fontSize: 32, lineHeight: 37, letterSpacing: -1, fontWeight: "900" },
   muted: { color: "#91a79c", fontSize: 13 },
+  heroCard: { minHeight: 238, overflow: "hidden", borderRadius: 24, padding: 20, justifyContent: "flex-end", backgroundColor: "#1d5534", borderWidth: 1, borderColor: "#34714d" },
+  heroGlow: { position: "absolute", width: 210, height: 210, borderRadius: 105, right: -60, top: -85, backgroundColor: "#377a4e", opacity: 0.72 },
+  heroKicker: { color: "#c9e2d3", fontSize: 11, fontWeight: "900", letterSpacing: 1.2 },
+  heroValue: { color: "#fff8e9", fontSize: 62, lineHeight: 68, letterSpacing: -2.5, fontWeight: "900" },
+  heroLabel: { color: "#d2e4d8", fontSize: 14, fontWeight: "700" },
+  heroActions: { flexDirection: "row", gap: 9, marginTop: 19 },
+  heroPrimaryAction: { backgroundColor: "#f3b34d", borderRadius: 13, paddingHorizontal: 15, paddingVertical: 12 },
+  heroPrimaryActionText: { color: "#172016", fontWeight: "900" },
+  heroSecondaryAction: { backgroundColor: "#143b25", borderRadius: 13, paddingHorizontal: 15, paddingVertical: 12 },
+  heroSecondaryActionText: { color: "#ecf7ef", fontWeight: "900" },
+  quickActions: { flexDirection: "row", gap: 8 },
+  quickAction: { flex: 1, minWidth: 0, minHeight: 72, alignItems: "center", justifyContent: "center", gap: 6, borderRadius: 15, backgroundColor: "#0f2119", borderWidth: 1, borderColor: "#203c2f" },
+  quickActionIcon: { color: "#f3b34d", fontSize: 19, fontWeight: "900" },
+  quickActionLabel: { color: "#c8d7ce", fontSize: 10, fontWeight: "800", textAlign: "center" },
+  exploreIntro: { borderRadius: 18, backgroundColor: "#163525", borderWidth: 1, borderColor: "#28543b", padding: 17, gap: 4 },
+  exploreIntroTitle: { color: "#f1f8f3", fontSize: 19, fontWeight: "900" },
+  exploreIntroText: { color: "#a8bdb1", fontSize: 13, lineHeight: 19 },
+  exploreGroup: { gap: 11, marginTop: 4 },
+  exploreGroupHeading: { gap: 2, paddingHorizontal: 2 },
+  exploreGroupTitle: { color: "#e8f2eb", fontSize: 17, fontWeight: "900" },
+  featureGrid: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
+  featureCard: { width: "48%", minHeight: 145, borderRadius: 18, padding: 15, justifyContent: "flex-end", backgroundColor: "#0e2118", borderWidth: 1, borderColor: "#234234" },
+  featureCardTop: { position: "absolute", left: 14, right: 14, top: 14, flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  featureIcon: { width: 38, height: 38, borderRadius: 12, backgroundColor: "#1b422d", alignItems: "center", justifyContent: "center" },
+  featureIconText: { color: "#f3b34d", fontSize: 17, fontWeight: "900" },
+  featureArrow: { color: "#6f8d7d", fontSize: 17, fontWeight: "900" },
+  featureTitle: { color: "#edf6f0", fontSize: 15, fontWeight: "900" },
+  featureSubtitle: { color: "#839b8f", fontSize: 11, lineHeight: 15, marginTop: 3 },
+  pressed: { opacity: 0.68, transform: [{ scale: 0.98 }] },
   authAlternative: { color: "#91a79c", fontSize: 13, textAlign: "center" },
   note: { color: "#dce8df", backgroundColor: "#10251b", borderRadius: 8, padding: 12 },
   error: { color: "#ffb4a8", backgroundColor: "#421c17", borderRadius: 8, padding: 12 },
   field: { gap: 6 },
   fieldLabel: { color: "#c9d8cf", fontWeight: "800" },
-  input: { borderWidth: 1, borderColor: "#294839", borderRadius: 8, color: "#eef8f0", backgroundColor: "#0c1b14", paddingHorizontal: 12, paddingVertical: 11 },
-  serverCard: { backgroundColor: "#0d1f17", borderColor: "#1d3a2c", borderWidth: 1, borderRadius: 10, padding: 14, gap: 10 },
+  input: { borderWidth: 1, borderColor: "#294839", borderRadius: 13, color: "#eef8f0", backgroundColor: "#0c1b14", paddingHorizontal: 14, paddingVertical: 13 },
+  serverCard: { backgroundColor: "#0d1f17", borderColor: "#1d3a2c", borderWidth: 1, borderRadius: 18, padding: 16, gap: 11 },
   serverSummary: { flexDirection: "row", alignItems: "center", gap: 12 },
   serverLabel: { color: "#91a79c", fontSize: 12, fontWeight: "800", textTransform: "uppercase" },
   serverHost: { color: "#edf7ef", fontSize: 16, fontWeight: "900", marginTop: 2 },
@@ -2507,19 +2697,19 @@ const styles = StyleSheet.create({
   serverChangeButton: { alignSelf: "flex-start", paddingVertical: 4 },
   serverEditor: { borderTopWidth: 1, borderColor: "#294839", paddingTop: 12, gap: 10 },
   textArea: { minHeight: 110, textAlignVertical: "top" },
-  primaryButton: { backgroundColor: "#f3b34d", borderRadius: 8, paddingVertical: 13, alignItems: "center", marginTop: 4 },
+  primaryButton: { backgroundColor: "#f3b34d", borderRadius: 13, paddingVertical: 14, alignItems: "center", marginTop: 4 },
   primaryButtonText: { color: "#172016", fontWeight: "900" },
-  secondaryButton: { borderColor: "#365346", borderWidth: 1, borderRadius: 8, paddingVertical: 12, paddingHorizontal: 12, alignItems: "center", marginTop: 4 },
+  secondaryButton: { borderColor: "#365346", borderWidth: 1, borderRadius: 13, paddingVertical: 13, paddingHorizontal: 12, alignItems: "center", marginTop: 4 },
   secondaryButtonDanger: { borderColor: "#8d4339" },
   secondaryButtonText: { color: "#dce8df", fontWeight: "900" },
   textButton: { padding: 8, alignItems: "center" },
   textButtonText: { color: "#f3b34d", fontWeight: "800" },
-  panel: { backgroundColor: "#0d1f17", borderColor: "#1d3a2c", borderWidth: 1, borderRadius: 8, padding: 14, gap: 12 },
+  panel: { backgroundColor: "#0d1f17", borderColor: "#1d3a2c", borderWidth: 1, borderRadius: 18, padding: 16, gap: 13 },
   panelHeading: { gap: 2 },
-  panelTitle: { color: "#edf7ef", fontSize: 19, fontWeight: "900" },
+  panelTitle: { color: "#edf7ef", fontSize: 18, letterSpacing: -0.3, fontWeight: "900" },
   statGrid: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
-  statCard: { width: "48%", backgroundColor: "#10251b", borderColor: "#234536", borderWidth: 1, borderRadius: 8, padding: 13 },
-  statValue: { color: "#f3b34d", fontSize: 24, fontWeight: "900" },
+  statCard: { width: "48%", minHeight: 83, justifyContent: "center", backgroundColor: "#10251b", borderColor: "#234536", borderWidth: 1, borderRadius: 16, padding: 14 },
+  statValue: { color: "#f3b34d", fontSize: 25, letterSpacing: -0.6, fontWeight: "900" },
   bars: { gap: 8 },
   barRow: { flexDirection: "row", alignItems: "center", gap: 8 },
   barLabel: { color: "#c9d8cf", width: 88, fontSize: 12, fontWeight: "700" },
@@ -2530,10 +2720,13 @@ const styles = StyleSheet.create({
   keyValueText: { color: "#edf7ef", fontWeight: "800" },
   rowLine: { borderTopWidth: 1, borderColor: "#1b3729", paddingVertical: 10, gap: 3 },
   rowTitle: { color: "#edf7ef", fontWeight: "800" },
-  breakdownGroup: { gap: 8, marginTop: 4 },
+  breakdownGroup: { borderTopWidth: 1, borderColor: "#1b3729" },
+  breakdownToggle: { minHeight: 58, flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 9 },
+  breakdownChevron: { width: 28, height: 28, borderRadius: 14, overflow: "hidden", color: "#f3b34d", backgroundColor: "#173326", textAlign: "center", lineHeight: 27, fontSize: 19, fontWeight: "700" },
+  breakdownContent: { paddingBottom: 14 },
   sectionLabel: { color: "#dce8df", fontWeight: "900", marginTop: 6 },
-  segmented: { flexDirection: "row", gap: 6, backgroundColor: "#10251b", borderRadius: 8, padding: 4 },
-  segmentButton: { flex: 1, borderRadius: 6, paddingVertical: 9, alignItems: "center" },
+  segmented: { flexDirection: "row", gap: 5, backgroundColor: "#10251b", borderRadius: 14, padding: 4 },
+  segmentButton: { flex: 1, borderRadius: 11, paddingVertical: 10, alignItems: "center" },
   segmentButtonActive: { backgroundColor: "#f3b34d" },
   segmentText: { color: "#b9c8bf", fontWeight: "800", textTransform: "capitalize" },
   segmentTextActive: { color: "#172016" },
@@ -2570,6 +2763,10 @@ const styles = StyleSheet.create({
   monthMatrixYear: { width: 42, color: "#c9d8cf", fontWeight: "800" },
   monthMatrixCells: { flex: 1, flexDirection: "row", gap: 4 },
   monthMatrixCell: { flex: 1, aspectRatio: 1, borderRadius: 3, backgroundColor: "#244535" },
+  mapLegend: { flexDirection: "row", alignItems: "center", gap: 13, paddingHorizontal: 2 },
+  legendItem: { flexDirection: "row", alignItems: "center", gap: 5 },
+  legendDot: { width: 8, height: 8, borderRadius: 4 },
+  mapHint: { flex: 1, color: "#6f8a7c", fontSize: 10, textAlign: "right" },
   nativeMapFrame: { height: 320, borderRadius: 8, overflow: "hidden", backgroundColor: "#14271d" },
   nativeMap: { position: "absolute", top: 0, right: 0, bottom: 0, left: 0 },
   scratchMapLoading: { height: 320, borderRadius: 8, backgroundColor: "#14271d", alignItems: "center", justifyContent: "center" },
@@ -2588,7 +2785,10 @@ const styles = StyleSheet.create({
   countryRowActive: { backgroundColor: "#132c20" },
   countrySwatch: { width: 18, height: 32, borderRadius: 4, backgroundColor: "#f3b34d" },
   importRow: { flexDirection: "row", alignItems: "center", gap: 10, borderTopWidth: 1, borderColor: "#1b3729", paddingVertical: 10 },
-  statusPill: { color: "#162016", backgroundColor: "#f3b34d", borderRadius: 8, overflow: "hidden", paddingHorizontal: 8, paddingVertical: 4, fontSize: 11, fontWeight: "900" },
+  importError: { color: "#ffb4a8", fontSize: 12, marginTop: 3 },
+  statusPill: { color: "#3c2d0c", backgroundColor: "#f3b34d", borderRadius: 999, overflow: "hidden", paddingHorizontal: 9, paddingVertical: 5, fontSize: 10, fontWeight: "900" },
+  statusPillComplete: { color: "#dff8e8", backgroundColor: "#22613b" },
+  statusPillFailed: { color: "#ffe4df", backgroundColor: "#7a3128" },
   toggleRow: { borderTopWidth: 1, borderColor: "#1b3729", paddingVertical: 10 },
   toggleRowActive: { backgroundColor: "#172f23" },
   tokenCard: { borderTopWidth: 1, borderColor: "#1b3729", paddingTop: 10, gap: 10 },
