@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from "react";
 import { FileDown, KeyRound, Trash2, UploadCloud } from "lucide-react";
 import { AppShell } from "../../../components/app-shell";
 import { API_URL, apiFetch } from "../../../lib/api";
@@ -52,6 +52,11 @@ export default function ProfilePage() {
   const [message, setMessage] = useState<string | null>(null);
   const [projectGcText, setProjectGcText] = useState("");
   const [copiedCommandId, setCopiedCommandId] = useState<string | null>(null);
+  const [portableFile, setPortableFile] = useState<File | null>(null);
+  const [portabilityBusy, setPortabilityBusy] = useState<"export" | "import" | null>(null);
+  const [portabilityMessage, setPortabilityMessage] = useState<string | null>(null);
+  const [deleteConfirmation, setDeleteConfirmation] = useState("");
+  const [deletingAccount, setDeletingAccount] = useState(false);
   const selectedTimeZone = profile?.timeZone || defaultTimeZone;
   const timeZoneOptions = useMemo(() => supportedTimeZones(selectedTimeZone), [selectedTimeZone]);
 
@@ -123,6 +128,87 @@ export default function ProfilePage() {
     }
   }
 
+  async function exportAllData() {
+    setPortabilityBusy("export");
+    setPortabilityMessage(null);
+    try {
+      const response = await fetch(`${API_URL}/portability/export`, { credentials: "include" });
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.message ?? "Export failed");
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `geostats-export-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      setPortabilityMessage("Your portable Geostats export was downloaded.");
+    } catch (error) {
+      setPortabilityMessage(error instanceof Error ? error.message : "Export failed.");
+    } finally {
+      setPortabilityBusy(null);
+    }
+  }
+
+  function selectPortableFile(event: ChangeEvent<HTMLInputElement>) {
+    setPortableFile(event.target.files?.[0] ?? null);
+  }
+
+  async function importAllData(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!portableFile) return;
+    const formElement = event.currentTarget;
+    setPortabilityBusy("import");
+    setPortabilityMessage(null);
+    try {
+      const upload = new FormData();
+      upload.append("file", portableFile);
+      const result = await apiFetch<{ imported: Record<string, number> }>("/portability/import", { method: "POST", body: upload });
+      setPortabilityMessage(`Import complete: ${result.imported.finds} finds, ${result.imported.hides} hides, and ${result.imported.mysteryWorkspaces} mysteries processed.`);
+      const refreshed = await apiFetch<{ profile: any }>("/profile");
+      setProfile(refreshed.profile);
+      setPortableFile(null);
+      formElement.reset();
+    } catch (error) {
+      setPortabilityMessage(error instanceof Error ? error.message : "Import failed.");
+    } finally {
+      setPortabilityBusy(null);
+    }
+  }
+
+  async function deleteAccount(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (deleteConfirmation !== "DELETE") return;
+    setDeletingAccount(true);
+    setPortabilityMessage(null);
+    try {
+      await apiFetch<{ deleted: true }>("/portability/account", {
+        method: "DELETE",
+        body: JSON.stringify({ confirmation: deleteConfirmation })
+      });
+      for (const key of [
+        "geostats-mysteries-v1",
+        "geostats-mystery-sync-metadata-v1",
+        "geostats-mysteries-backup-before-dedup-v1",
+        "geostats-mystery-deletions-v1"
+      ]) {
+        try {
+          localStorage.removeItem(key);
+        } catch {
+          // The server account is already deleted; continue to signed-out state.
+        }
+      }
+      window.location.assign("/login");
+    } catch (error) {
+      setPortabilityMessage(error instanceof Error ? error.message : "Account deletion failed.");
+      setDeletingAccount(false);
+    }
+  }
+
   return (
     <AppShell>
       <header className="page-header">
@@ -184,6 +270,44 @@ export default function ProfilePage() {
             Save profile
           </button>
           {message ? <p className="muted">{message}</p> : null}
+        </form>
+      </section>
+      <section className="panel narrow">
+        <h2>Move or back up all your data</h2>
+        <p className="muted">
+          Download a portable JSON file containing your profile, finds, hides, cache details, corrected coordinates, statistics, and mystery workspaces. You can import it into any Geostats server while signed in to your destination account.
+        </p>
+        <button className="primary-button" type="button" disabled={portabilityBusy !== null} onClick={() => void exportAllData()}>
+          <FileDown size={18} />
+          {portabilityBusy === "export" ? "Preparing export…" : "Export all data"}
+        </button>
+        <form className="form portability-import-form" onSubmit={importAllData}>
+          <label>
+            <span className="field-label">Geostats export file</span>
+            <input type="file" accept="application/json,.json" onChange={selectPortableFile} />
+          </label>
+          <p className="muted">
+            Import merges records into this account. Matching profile settings, hides, corrected coordinates, and mystery workspaces are updated; unrelated data already on this server stays in place. Passwords, sign-in connections, access tokens, and sharing permissions never leave their original server.
+          </p>
+          <button className="secondary-button" type="submit" disabled={!portableFile || portabilityBusy !== null}>
+            <UploadCloud size={18} />
+            {portabilityBusy === "import" ? "Importing…" : "Import all data"}
+          </button>
+        </form>
+        {portabilityMessage ? <p className="muted">{portabilityMessage}</p> : null}
+        <form className="form portability-delete-form" onSubmit={deleteAccount}>
+          <h3>Delete account and all data</h3>
+          <p className="muted">
+            This permanently removes your account, imported files, profile, finds, hides, corrected coordinates, statistics, mystery workspaces, access tokens, and sharing relationships. Export first if you may want this data later.
+          </p>
+          <label>
+            <span className="field-label">Type DELETE to confirm</span>
+            <input value={deleteConfirmation} onChange={(event) => setDeleteConfirmation(event.target.value)} autoComplete="off" spellCheck={false} />
+          </label>
+          <button className="primary-button danger-button" type="submit" disabled={deleteConfirmation !== "DELETE" || deletingAccount}>
+            <Trash2 size={18} />
+            {deletingAccount ? "Deleting account…" : "Permanently delete account"}
+          </button>
         </form>
       </section>
       <section className="panel narrow">
