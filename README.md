@@ -235,7 +235,10 @@ ghcr.io/OWNER/REPO/web:latest
 ```
 
 Each image is also tagged with the commit SHA as `sha-<commit>`.
-Each workflow run also publishes a shared timestamp release tag for all app images, for example `release-20260613-173045-utc`.
+Each workflow run dispatched from `main` also publishes a shared timestamp
+release tag for all app images, for example
+`release-20260613-173045-utc`; runs dispatched from other branches publish only
+the commit SHA tag.
 
 Optionally configure this GitHub Actions repository variable to override the Next.js `web` image API URL default (`http://localhost:3001`):
 
