@@ -132,6 +132,20 @@ Example body:
 
 Kinds are `approach`, `keyword`, and `coordinate`. States are `planned` (not tried), `wrong`, `correct`, and `unchecked`. Coordinate entries use numeric `latitude` and `longitude`; an optional solved result uses `finalLatitude` and `finalLongitude`. Reposting the same approach, keyword, or coordinate updates its state instead of creating a duplicate, making it safe for several solver jobs to coordinate through the journal.
 
+## Data portability
+
+Every signed-in user can download a server-independent JSON backup from **Settings → Profile → Move or back up all your data** and import it into an account on another Geostats server.
+
+The versioned `geostats-portable-data` format contains the geocaching profile, finds and log text, hides and received logs, associated cache metadata, corrected coordinates, finder-country statistics, generated stat snapshots, and owned mystery workspaces. Import is transactional and can safely be repeated. It merges by stable cache code and record identity, updates matching user-owned records, and keeps unrelated records already in the destination account.
+
+Authentication secrets and server-local capabilities are intentionally not portable: password hashes, OAuth links, login sessions, collector tokens, object-storage keys, and mystery sharing grants remain on the server that issued them. The export includes account identity only as informational metadata and never changes the destination account's email or username.
+
+The authenticated endpoints are:
+
+- `GET /portability/export` — download the current version of the JSON archive.
+- `POST /portability/import` — upload the archive in a multipart `file` field (50 MiB hard maximum, optionally lowered with `PORTABILITY_MAX_BYTES`). The API spools uploads to temporary disk and processes one archive at a time per API process.
+- `DELETE /portability/account` — permanently delete the authenticated account and its data after sending `{"confirmation":"DELETE"}`. Uploaded objects are removed through a durable retry queue.
+
 ## Docker Compose
 
 For a full local deployment:

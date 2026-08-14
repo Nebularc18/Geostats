@@ -217,6 +217,23 @@ nav a:hover {
   font-size: 0.72rem;
 }
 
+.portability-import-form {
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+}
+
+.portability-delete-form {
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px solid rgba(255, 123, 114, 0.3);
+}
+
+.portability-delete-form h3 {
+  margin: 0;
+  color: var(--danger);
+}
+
 .badge-summary-strip span {
   white-space: nowrap;
 }

@@ -157,10 +157,10 @@ export class ImportProcessor {
         importRecord.fileType === ImportFileType.ZIP && parsed.finds.length > 0
           ? ImportSource.MY_FINDS_GPX
           : importSource;
-      const cachesByCode = await this.resolveCaches([
-        ...parsed.caches,
-        ...parsed.finds.map((find) => find.cache)
-      ]);
+      const cachesByCode = await this.resolveCaches(
+        payload.userId,
+        [...parsed.caches, ...parsed.finds.map((find) => find.cache)]
+      );
       let shouldRecalculateStats = importRecord.source === ImportSource.MY_HIDES_GPX && parsed.caches.length > 0;
 
       await this.prisma.$transaction(async (tx) => {
@@ -302,8 +302,9 @@ export class ImportProcessor {
     }
   }
 
-  private cacheCreateInput(cache: any): Prisma.CacheCreateInput {
+  private cacheCreateInput(userId: string, cache: any): Prisma.CacheUncheckedCreateInput {
     return {
+      userId,
       gcCode: cache.gcCode,
       name: cache.name,
       cacheType: cache.cacheType,
@@ -321,7 +322,7 @@ export class ImportProcessor {
     };
   }
 
-  private async resolveCaches(caches: any[]): Promise<Map<string, Cache>> {
+  private async resolveCaches(userId: string, caches: any[]): Promise<Map<string, Cache>> {
     const uniqueCaches = new Map<string, any>();
     for (const cache of caches) {
       if (!uniqueCaches.has(cache.gcCode)) {
@@ -330,30 +331,30 @@ export class ImportProcessor {
     }
 
     const resolvedCaches = await Promise.all(
-      Array.from(uniqueCaches.values()).map(async (cache) => [cache.gcCode, await this.findOrCreateCache(cache)] as const)
+      Array.from(uniqueCaches.values()).map(async (cache) => [cache.gcCode, await this.findOrCreateCache(userId, cache)] as const)
     );
     const byCode = new Map<string, Cache>(resolvedCaches);
     return byCode;
   }
 
-  private async findOrCreateCache(cache: any): Promise<Cache> {
+  private async findOrCreateCache(userId: string, cache: any): Promise<Cache> {
     try {
       return await this.prisma.cache.upsert({
-        where: { gcCode: cache.gcCode },
-        create: this.cacheCreateInput(cache),
+        where: { userId_gcCode: { userId, gcCode: cache.gcCode } },
+        create: this.cacheCreateInput(userId, cache),
         update: {}
       });
     } catch (error) {
       if (this.isUniqueConstraintError(error)) {
-        return this.findExistingCache(cache.gcCode);
+        return this.findExistingCache(userId, cache.gcCode);
       }
       throw error;
     }
   }
 
-  private async findExistingCache(gcCode: string): Promise<Cache> {
+  private async findExistingCache(userId: string, gcCode: string): Promise<Cache> {
     const existing = await this.prisma.cache.findUnique({
-      where: { gcCode }
+      where: { userId_gcCode: { userId, gcCode } }
     });
     if (!existing) {
       throw new Error(`Cache ${gcCode} was not resolved after a unique constraint conflict`);
