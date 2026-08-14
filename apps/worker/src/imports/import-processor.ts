@@ -120,6 +120,8 @@ function wallClockInTimeZoneToUtc(date: Date, timeZone: string): Date {
 }
 
 export class ImportProcessor {
+  private readonly statsRecalculationsByUser = new Map<string, Promise<void>>();
+
   constructor(
     private readonly prisma: PrismaClient,
     private readonly storage: ObjectStorage
@@ -281,17 +283,13 @@ export class ImportProcessor {
         }
       });
 
+      if (shouldRecalculateStats) {
+        await this.recalculateStats(payload.userId);
+      }
       await this.prisma.import.update({
         where: { id: payload.importId },
         data: { status: ImportStatus.COMPLETED, source: effectiveSource }
       });
-      if (shouldRecalculateStats) {
-        try {
-          await this.recalculateStats(payload.userId);
-        } catch (error) {
-          console.error(`Stats recalculation failed after import ${payload.importId} completed`, error);
-        }
-      }
     } catch (error) {
       await this.prisma.import.update({
         where: { id: payload.importId },
@@ -377,8 +375,49 @@ export class ImportProcessor {
   }
 
   private async recalculateStats(userId: string) {
-    const profile = await this.prisma.geocachingProfile.findUnique({ where: { userId } });
-    const hides = await this.prisma.hide.findMany({
+    const previous = this.statsRecalculationsByUser.get(userId) ?? Promise.resolve();
+    const recalculation = previous
+      .catch(() => undefined)
+      .then(() => this.calculateAndStoreStats(userId));
+    this.statsRecalculationsByUser.set(userId, recalculation);
+
+    try {
+      await recalculation;
+    } finally {
+      if (this.statsRecalculationsByUser.get(userId) === recalculation) {
+        this.statsRecalculationsByUser.delete(userId);
+      }
+    }
+  }
+
+  private async calculateAndStoreStats(userId: string) {
+    await this.prisma.$transaction(async (tx) => {
+      // Serialise recalculations across worker processes before reading any
+      // stats inputs, then hold the lock until the snapshot is replaced.
+      const holdsDatabaseLock = typeof tx.$queryRaw === "function";
+      if (holdsDatabaseLock) {
+        await tx.$queryRaw`
+          SELECT pg_advisory_xact_lock(hashtext('stats-recalculation'), hashtext(${userId}))::text AS lock_result
+        `;
+      }
+
+      // Real Prisma transactions always expose $queryRaw. The fallback keeps
+      // lightweight unit-test transaction doubles working without weakening
+      // the locked production path.
+      const stats = await this.buildStats(userId, holdsDatabaseLock ? tx : this.prisma);
+      await tx.statSnapshot.deleteMany({ where: { userId } });
+      await tx.statSnapshot.create({
+        data: {
+          userId,
+          statsJson: stats as unknown as Prisma.InputJsonValue
+        }
+      });
+    }, { maxWait: 10_000, timeout: 120_000 });
+  }
+
+  private async buildStats(userId: string, prisma: Prisma.TransactionClient | PrismaClient = this.prisma) {
+    const profile = await prisma.geocachingProfile.findUnique({ where: { userId } });
+    const hides = await prisma.hide.findMany({
       where: { userId },
       include: {
         cache: {
@@ -391,12 +430,12 @@ export class ImportProcessor {
       },
       orderBy: { placedAt: "asc" }
     });
-    const ownerFinderCountryStats = await this.prisma.ownerFinderCountryStat.findMany({
+    const ownerFinderCountryStats = await prisma.ownerFinderCountryStat.findMany({
       where: { userId },
       orderBy: [{ count: "desc" }, { country: "asc" }]
     });
     const gcUsername = normalizedGcUsername(profile);
-    const finds = await this.prisma.find.findMany({
+    const finds = await prisma.find.findMany({
       where: countableFindWhere(userId, gcUsername),
       include: {
         cache: {
@@ -464,15 +503,6 @@ export class ImportProcessor {
         finderCountryBuckets: ownerFinderCountryStats.map((row) => ({ key: row.country, count: row.count }))
       }
     );
-
-    await this.prisma.$transaction(async (tx) => {
-      await tx.statSnapshot.deleteMany({ where: { userId } });
-      await tx.statSnapshot.create({
-        data: {
-          userId,
-          statsJson: stats as unknown as Prisma.InputJsonValue
-        }
-      });
-    });
+    return stats;
   }
 }

@@ -24,6 +24,11 @@ type CountryFeatureCollection = {
   }>;
 };
 
+type CountryCodeOverride = {
+  alpha2: string;
+  alpha3: string;
+};
+
 const UNKNOWN_LOCATION_NAMES = new Set(["", "none", "unknown", "not chosen"]);
 const countryGeoJsonCache = new Map<string, Promise<CountryFeatureCollection>>();
 const countryCodeCache = new Map<string, Promise<string | null>>();
@@ -56,13 +61,19 @@ const COUNTRY_NAME_ALIASES: Record<string, string[]> = {
   "Venezuela": ["Venezuela (Bolivarian Republic of)"]
 };
 
-// The Natural Earth-derived country file uses "-99" when an ISO code is
-// missing, including for these countries with geoBoundaries coverage.
-const COUNTRY_CODE_OVERRIDES: Record<string, string> = {
-  France: "FRA",
-  Kosovo: "XKX",
-  Norway: "NOR"
+// The Natural Earth-derived country file has missing or non-standard ISO
+// codes for these countries. Keep both boundary and flag lookups on the same
+// correction table so one UI cannot silently diverge from the other.
+const COUNTRY_CODE_OVERRIDES: Record<string, CountryCodeOverride> = {
+  france: { alpha2: "FR", alpha3: "FRA" },
+  kosovo: { alpha2: "XK", alpha3: "XKX" },
+  norway: { alpha2: "NO", alpha3: "NOR" },
+  taiwan: { alpha2: "TW", alpha3: "TWN" }
 };
+
+function countryCodeOverride(countryName: string) {
+  return COUNTRY_CODE_OVERRIDES[countryName.trim().toLowerCase()];
+}
 
 export function countryNamesForBoundary(countryName: string) {
   return [countryName, ...(COUNTRY_NAME_ALIASES[countryName] ?? [])];
@@ -74,6 +85,16 @@ export function isUnknownLocationName(name: string | null | undefined) {
 
 export function filterKnownLocationBuckets<T extends { name: string }>(buckets: T[]) {
   return buckets.filter((bucket) => !isUnknownLocationName(bucket.name));
+}
+
+export function countryFlagCodeFromProperties(countryName: string, properties: Record<string, unknown>) {
+  const override = countryCodeOverride(countryName)?.alpha2;
+  if (override) {
+    return override.toLowerCase();
+  }
+
+  const countryCode = String(properties["ISO3166-1-Alpha-2"] ?? "").trim();
+  return /^[A-Z]{2}$/.test(countryCode) ? countryCode.toLowerCase() : null;
 }
 
 function geoBoundariesUrl(countryCode: string, level: Extract<ScratchMapLevel, "regions" | "counties">) {
@@ -124,7 +145,7 @@ async function loadCountryCode(countryName: string) {
 
   const request = loadCountryGeoJson(COUNTRY_GEOJSON_URL)
     .then((geoJson) => {
-      const override = COUNTRY_CODE_OVERRIDES[countryName];
+      const override = countryCodeOverride(countryName)?.alpha3;
       if (override) {
         return override;
       }
@@ -155,7 +176,7 @@ export async function loadCountryFlagCode(countryName: string) {
       const feature = geoJson.features.find((candidate) =>
         names.has(String(candidate.properties?.name ?? "").trim().toLowerCase())
       );
-      return String(feature?.properties?.["ISO3166-1-Alpha-2"] ?? "").trim().toLowerCase() || null;
+      return countryFlagCodeFromProperties(countryName, feature?.properties ?? {});
     })
     .catch(() => null);
 

@@ -157,6 +157,8 @@ docker compose up --build
 
 The local Compose file includes a one-shot `migrate` service, so fresh databases run Prisma migrations before `api`, `worker`, and `web` start.
 
+The web and API ports bind to `127.0.0.1` by default. If the reverse proxy or Cloudflare Tunnel runs on another trusted machine, set `WEB_BIND_ADDRESS=0.0.0.0` and `API_BIND_ADDRESS=0.0.0.0` so it can reach them over the LAN, and restrict ports 3000 and 3001 with the host firewall.
+
 ## Dockhand
 
 For Dockhand, use `docker-compose.dockhand.yml` as the Compose file and paste the environment values from `.env.dockhand.example` into Dockhand's environment editor.

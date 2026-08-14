@@ -10,11 +10,13 @@ import * as Clipboard from "expo-clipboard";
 import * as Crypto from "expo-crypto";
 import * as Sharing from "expo-sharing";
 import * as Updates from "expo-updates";
-import MapView, { Callout, Marker, Polygon, PROVIDER_GOOGLE, type Region } from "react-native-maps";
+import MapView, { Callout, Marker, Polygon, PROVIDER_GOOGLE, type MapStyleElement, type Region } from "react-native-maps";
 import * as Linking from "expo-linking";
 import * as WebBrowser from "expo-web-browser";
 import { parseCoordinate } from "@geostats/shared";
 import { pickAndUploadDocument, type UploadKind } from "./upload";
+import { hasNativeMapSupport, scratchMapGeometryBudget, SCRATCH_WORLD_REGION, selectNativeMapPoints } from "./mobile-map";
+import { schedulePostImportStatsRefresh } from "./import-refresh";
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -30,7 +32,7 @@ type ServerProbeState = {
   config: AuthConfig;
 };
 type ScratchLevel = "countries" | "regions" | "counties";
-type ScreenId = "dashboard" | "upload" | "imports" | "stats" | "ftf" | "hides" | "milestones" | "profileHtml" | "map" | "mysteries" | "travel" | "scratch" | "profile";
+type ScreenId = "dashboard" | "explore" | "upload" | "imports" | "stats" | "ftf" | "hides" | "milestones" | "map" | "mysteries" | "travel" | "scratch" | "profile";
 type Session = { token: string; user: { id: string; email: string; username: string } };
 type CheckState = "correct" | "wrong" | "unchecked";
 type MysteryStatus = "solving" | "solved" | "planned";
@@ -95,6 +97,7 @@ type BoundaryFeatureCollection = { type: "FeatureCollection"; features: Boundary
 const HOSTED_API_URL = process.env.EXPO_PUBLIC_API_URL ?? "https://geostats-api.hampusek.com";
 const DEFAULT_API_URL = process.env.EXPO_PUBLIC_API_URL ?? (__DEV__ ? "http://10.0.2.2:3001" : HOSTED_API_URL);
 const ANDROID_MAP_PROVIDER = Platform.OS === "android" ? PROVIDER_GOOGLE : undefined;
+const NATIVE_MAP_AVAILABLE = hasNativeMapSupport(Platform.OS, process.env.EXPO_PUBLIC_GOOGLE_MAPS_ANDROID_API_KEY);
 const TOKEN_KEY = "geostats_session";
 const SERVER_URL_KEY = "geostats_server_url";
 const DEFAULT_AUTH_CONFIG: AuthConfig = __DEV__
@@ -104,13 +107,45 @@ const monthLabels = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Se
 const defaultTimeZone = "Europe/Stockholm";
 const defaultFtfTerms = ["FTF", "first to find"];
 const badgeTiers = ["Bronze", "Silver", "Gold", "Platinum", "Ruby", "Sapphire", "Emerald", "Diamond"];
+const countryBadgeThresholds = [1, 15, 20, 30, 40, 50, 75, 100];
+const badgeTierPalettes = [
+  { accent: "#b97545", light: "#e3a373", dark: "#754225", ink: "#10150f" },
+  { accent: "#c6ced0", light: "#f3f6f5", dark: "#778284", ink: "#10150f" },
+  { accent: "#e5b946", light: "#ffe58b", dark: "#8d6419", ink: "#10150f" },
+  { accent: "#dce5df", light: "#ffffff", dark: "#76847c", ink: "#10150f" },
+  { accent: "#c94b62", light: "#f58da0", dark: "#762334", ink: "#fff7f8" },
+  { accent: "#4d8dc7", light: "#8fc9fa", dark: "#24547d", ink: "#f3f9ff" },
+  { accent: "#44b884", light: "#8be0b6", dark: "#1f6949", ink: "#07110b" },
+  { accent: "#ccecff", light: "#ffffff", dark: "#5e91aa", ink: "#07110b" }
+] as const;
+const badgeMarks: Record<string, string> = {
+  "long-distance": "🌍", attribute: "🎒", large: "🧰", matrix: "▦", jasmer: "🗓️", diverse: "🧩",
+  brainiac: "💡", adventurous: "△", "all-around": "✦", traveling: "🛂", veteran: "🎂",
+  traditional: "📍", multi: "⌁", mystery: "?", letterboxer: "✉", earth: "🌐", wherigo: "◉",
+  virtual: "👻", photogenic: "📷", event: "☻", environmental: "♻", "mega-social": "🎉",
+  "giga-social": "★", "gps-maze": "◈", "odd-sized": "◇", micro: "•", small: "▪", regular: "■",
+  rugged: "⛰", ftf: "1st", geocacher: "🏆", calendar: "📅", daily: "✓", busy: "⚡",
+  challenge: "🏅", trackable: "🔎", author: "✒", owner: "👑", "favorited-owner": "★", "event-host": "🎤"
+};
 const ACTIVE_IMPORT_STATUSES = new Set(["UPLOADED", "QUEUED", "PROCESSING"]);
-const MAX_SCRATCH_MAP_POLYGONS = 400;
+const MAX_NATIVE_MAP_MARKERS = Platform.OS === "android" ? 500 : 1_000;
 const COUNTRY_GEOJSON_URL = "https://raw.githubusercontent.com/datasets/geo-countries/master/data/countries.geojson";
 const SWEDEN_REGION_GEOJSON_URL = "https://raw.githubusercontent.com/okfse/sweden-geojson/master/swedish_regions.geojson";
 const SWEDEN_COUNTY_GEOJSON_URL = "https://raw.githubusercontent.com/okfse/sweden-geojson/master/swedish_municipalities.geojson";
 const GEOBOUNDARIES_BASE_URL =
   "https://media.githubusercontent.com/media/wmgeolab/geoBoundaries/9469f09592ced973a3448cf66b6100b741b64c0d/releaseData/gbOpen";
+const SCRATCH_GOOGLE_MAP_STYLE: MapStyleElement[] = [
+  { elementType: "geometry", stylers: [{ color: "#9ca7aa" }] },
+  { elementType: "labels.text.fill", stylers: [{ color: "#26382f" }] },
+  { elementType: "labels.text.stroke", stylers: [{ color: "#cbd2ce" }] },
+  { featureType: "administrative", elementType: "geometry.stroke", stylers: [{ color: "#64716b" }] },
+  { featureType: "landscape", elementType: "geometry", stylers: [{ color: "#a9b3b0" }] },
+  { featureType: "poi", stylers: [{ visibility: "off" }] },
+  { featureType: "road", stylers: [{ saturation: -100 }, { lightness: 18 }] },
+  { featureType: "transit", stylers: [{ visibility: "off" }] },
+  { featureType: "water", elementType: "geometry", stylers: [{ color: "#879599" }] },
+  { featureType: "water", elementType: "labels.text.fill", stylers: [{ color: "#40524a" }] }
+];
 const COUNTRY_NAME_ALIASES: Record<string, string[]> = {
   "United States": ["United States of America"],
   "Russia": ["Russian Federation"],
@@ -137,6 +172,7 @@ const COUNTRY_CODE_OVERRIDES: Record<string, string> = {
 };
 type ScratchBoundaryConfig = { url: string; propertyName: string; isDetail: boolean };
 const countryCodeCache = new Map<string, Promise<string | null>>();
+const countryFlagCodeCache = new Map<string, Promise<string | null>>();
 const boundarySupportCache = new Map<string, Promise<boolean>>();
 const scratchGeoJsonCache = new Map<string, Promise<BoundaryFeatureCollection>>();
 
@@ -149,20 +185,27 @@ class ApiError extends Error {
   }
 }
 
-const screens: Array<{ id: ScreenId; label: string }> = [
-  { id: "dashboard", label: "Home" },
-  { id: "upload", label: "Upload" },
-  { id: "imports", label: "Imports" },
-  { id: "stats", label: "Stats" },
-  { id: "ftf", label: "FTF" },
-  { id: "hides", label: "Hides" },
-  { id: "milestones", label: "Marks" },
-  { id: "profileHtml", label: "HTML" },
-  { id: "map", label: "Map" },
-  { id: "mysteries", label: "Mysteries" },
-  { id: "travel", label: "Travel" },
-  { id: "scratch", label: "Scratch" },
-  { id: "profile", label: "Profile" }
+const screenDetails: Record<ScreenId, { label: string; eyebrow: string; icon: string }> = {
+  dashboard: { label: "Home", eyebrow: "Your geocaching overview", icon: "⌂" },
+  stats: { label: "Stats", eyebrow: "Patterns and progress", icon: "▥" },
+  map: { label: "Map", eyebrow: "Every find in context", icon: "⌖" },
+  explore: { label: "Explore", eyebrow: "All Geostats tools", icon: "✦" },
+  profile: { label: "Profile", eyebrow: "Account settings", icon: "●" },
+  scratch: { label: "Scratch Map", eyebrow: "Coverage around the world", icon: "◎" },
+  milestones: { label: "Milestones", eyebrow: "Memorable firsts", icon: "◇" },
+  ftf: { label: "First to Find", eyebrow: "Track your FTF history", icon: "⚑" },
+  hides: { label: "Owned Caches", eyebrow: "Your hides and finders", icon: "△" },
+  mysteries: { label: "Mysteries", eyebrow: "Solve and collaborate", icon: "?" },
+  travel: { label: "Trip Planner", eyebrow: "Build a caching route", icon: "↗" },
+  upload: { label: "Import Data", eyebrow: "Add caches to your archive", icon: "+" },
+  imports: { label: "Import History", eyebrow: "Processing and recent files", icon: "↻" }
+};
+
+const primaryScreens: ScreenId[] = ["dashboard", "stats", "map", "explore", "profile"];
+const exploreGroups: Array<{ title: string; subtitle: string; screens: ScreenId[] }> = [
+  { title: "Maps & progress", subtitle: "See where you have cached and what comes next.", screens: ["scratch", "milestones", "ftf"] },
+  { title: "Caching tools", subtitle: "Manage hides, puzzles, and upcoming trips.", screens: ["hides", "mysteries", "travel"] },
+  { title: "Data", subtitle: "Keep your archive current and review recent imports.", screens: ["upload", "imports"] }
 ];
 
 function normalizeServerUrl(value: string) {
@@ -385,6 +428,12 @@ function finalCoordinate(cache: MysteryCache) {
   return null;
 }
 
+function escapeMarkup(value: unknown) {
+  return String(value ?? "").replace(/[<>&"']/g, (character) => (
+    { "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;", "'": "&#39;" }[character] ?? character
+  ));
+}
+
 function attemptLabel(attempt: CoordinateAttempt) {
   if (attempt.kind === "keyword") return attempt.answer?.trim() || "Keyword";
   const coordinate = inputCoordinate(attempt);
@@ -394,76 +443,6 @@ function attemptLabel(attempt: CoordinateAttempt) {
 function shareableMystery(cache: MysteryCache) {
   const { sharedBy: _sharedBy, sharedWorkspaceId: _workspace, ...mystery } = cache;
   return mystery;
-}
-
-function escapeMarkup(value: unknown) {
-  return String(value ?? "").replace(/[<>&"']/g, (character) => (
-    { "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;", "'": "&#39;" }[character] ?? character
-  ));
-}
-
-function profileStatRows(rows: Array<[string, unknown]>) {
-  return `<table border="0" cellpadding="6" cellspacing="1" style="width:740px;max-width:100%;margin:0 auto 14px;background:#c8d6cc;font-size:12px">${rows.map(([label, value]) => `<tr><td style="width:42%;background:#eef4ef;font-weight:bold">${escapeMarkup(label)}</td><td style="background:#fff">${value}</td></tr>`).join("")}</table>`;
-}
-
-function profileSection(title: string, body: string) {
-  return `<div style="margin:18px auto 8px;max-width:740px;background:#426052;color:#fff;border:1px solid #23362d;font-weight:bold;line-height:24px;text-align:center">${escapeMarkup(title)}</div>${body}`;
-}
-
-function profileBucketSection(title: string, buckets: any[] = [], limit = 16) {
-  if (!buckets.length) return "";
-  return profileSection(title, profileStatRows(buckets.slice(0, limit).map((row) => [row.key ?? row.name, Number(row.count ?? 0).toLocaleString()])));
-}
-
-function profileMonthSection(buckets: CountBucket[] = []) {
-  if (!buckets.length) return "";
-  const counts = new Map(buckets.map((bucket) => [bucket.key, bucket.count]));
-  const years = [...new Set(buckets.map((bucket) => bucket.key.slice(0, 4)))].sort((a, b) => b.localeCompare(a));
-  const header = `<tr><td style="background:#eef4ef;font-weight:bold">Year</td>${monthLabels.map((month) => `<td style="background:#eef4ef;font-weight:bold">${month}</td>`).join("")}<td style="background:#eef4ef;font-weight:bold">Total</td></tr>`;
-  const rows = years.map((year) => {
-    const values = monthLabels.map((_, index) => counts.get(`${year}-${String(index + 1).padStart(2, "0")}`) ?? 0);
-    return `<tr><td style="background:#eef4ef;font-weight:bold">${year}</td>${values.map((value) => `<td style="background:#fff">${value || ""}</td>`).join("")}<td style="background:#eef4ef;font-weight:bold">${values.reduce((sum, value) => sum + value, 0)}</td></tr>`;
-  }).join("");
-  return profileSection("Finds by Month", `<table border="0" cellpadding="5" cellspacing="1" style="width:740px;max-width:100%;margin:0 auto 14px;background:#c8d6cc;font-size:11px;text-align:center">${header}${rows}</table>`);
-}
-
-function profileDifficultyTerrainSection(data: Array<{ difficulty: number; terrain: number; count: number }> = []) {
-  if (!data.length) return "";
-  const values = ["1", "1.5", "2", "2.5", "3", "3.5", "4", "4.5", "5"];
-  const counts = new Map(data.map((cell) => [`${cell.difficulty}/${cell.terrain}`, cell.count]));
-  const header = `<tr><td style="background:#eef4ef;font-weight:bold">D/T</td>${values.map((value) => `<td style="background:#eef4ef;font-weight:bold">${value}</td>`).join("")}</tr>`;
-  const rows = values.map((difficulty) => `<tr><td style="background:#eef4ef;font-weight:bold">${difficulty}</td>${values.map((terrain) => { const count = counts.get(`${Number(difficulty)}/${Number(terrain)}`) ?? 0; return `<td style="background:${count ? "#dff0e4" : "#fff"}">${count || ""}</td>`; }).join("")}</tr>`).join("");
-  return profileSection("Difficulty / Terrain", `<table border="0" cellpadding="4" cellspacing="1" style="width:540px;max-width:100%;margin:0 auto 14px;background:#c8d6cc;font-size:11px;text-align:center">${header}${rows}</table>`);
-}
-
-function buildMobileProfileHtml(stats: any, profile: any, options: { ftf: boolean; hides: boolean; milestones: boolean }) {
-  const summary = stats?.summaryNumbers ?? {};
-  const ftf = stats?.ftfStats;
-  const hides = stats?.hideStats;
-  const milestoneRows = stats?.milestoneStats?.countMilestones ?? stats?.milestones ?? [];
-  const optional = [
-    options.milestones && milestoneRows.length
-      ? profileSection("Milestones", profileStatRows(milestoneRows.slice(-12).map((row: any) => [row.count, `${escapeMarkup(row.gcCode)} ${escapeMarkup(row.name)} · ${escapeMarkup(dateText(row.date))}`])))
-      : "",
-    options.ftf && ftf
-      ? profileSection("FTF Statistics", profileStatRows([["FTF finds", Number(ftf.total ?? 0).toLocaleString()], ["Percent of finds", `${Number(ftf.percentOfFinds ?? 0).toFixed(1)}%`], ["Average interval", ftf.averageIntervalDays == null ? "-" : `${Number(ftf.averageIntervalDays).toFixed(1)} days`]]))
-      : "",
-    options.hides && hides?.totalHides
-      ? profileSection("Owned Caches", profileStatRows([["Owned caches", hides.totalHides], ["Active / archived", `${hides.activeHides ?? 0} / ${hides.archivedHides ?? 0}`], ["Received logs", hides.totalReceivedLogs ?? 0], ["Unique finders", hides.totalUniqueFinders ?? 0]]))
-      : ""
-  ].join("");
-  return `<div id="geostats-profile" align="center" style="background:#e4ece6;font-family:Verdana,Arial,sans-serif;font-size:12px;color:#111;margin:1px;padding:12px;border:1px solid #8fa398"><div style="font-size:18px;font-weight:bold;color:#1f3329">${escapeMarkup(profile?.gcUsername || "Geocacher")} has ${Number(stats?.totalFinds ?? 0).toLocaleString()} finds</div><div style="margin:6px 0 18px;color:#42534a"><i>Statistics generated by Geostats on ${new Date().toLocaleDateString()}</i></div>${profileSection("Overview", profileStatRows([["Total finds", `<strong>${Number(stats?.totalFinds ?? 0).toLocaleString()}</strong>`], ["Countries cached in", stats?.countries?.length ?? 0], ["Caching days", summary.cachingDays ?? 0], ["Finds per caching day", Number(summary.findsPerCachingDay ?? 0).toFixed(2)], ["Best day", summary.bestDay ? `${summary.bestDay.count} on ${escapeMarkup(summary.bestDay.key)}` : "-"], ["Longest streak", `${stats?.streaks?.longest ?? 0} days`]]))}${profileMonthSection(stats?.findsByMonth)}${profileBucketSection("Countries", stats?.countries)}${profileBucketSection("Cache Types", stats?.cacheTypes, 12)}${profileBucketSection("Regions", stats?.regions)}${profileBucketSection("Counties / Municipalities", stats?.counties)}${profileDifficultyTerrainSection(stats?.difficultyTerrain)}${optional}<div style="max-width:740px;margin:18px auto 0;padding-top:10px;border-top:1px solid #b9c9bf;color:#42534a;font-size:11px">Generated with Geostats</div></div>`;
-}
-
-function powerShellString(value: string) {
-  return `'${value.replace(/'/g, "''")}'`;
-}
-
-function hidesCommand(baseUrl: string, token: string, csv = false) {
-  const parts = [`$env:GEOSTATS_COLLECTOR_TOKEN=${powerShellString(token)}`];
-  if (csv) parts.push("$env:GEOSTATS_COLLECTOR_NO_UPLOAD='1'");
-  parts.push(`irm ${powerShellString(`${baseUrl}/collector/hides.ps1`)} | iex`);
-  return parts.join("; ");
 }
 
 function mixColor(start: string, end: string, amount: number) {
@@ -478,6 +457,12 @@ function scratchColor(count: number, max: number) {
   if (count <= 0 || max <= 0) return "#263c2d";
   const intensity = Math.log1p(count) / Math.log1p(max);
   return mixColor("#dce88d", "#1f6f3b", intensity);
+}
+
+function scratchPolygonFill(count: number, max: number) {
+  // The web map keeps untouched areas visible as a pale scratch layer instead
+  // of exposing the ordinary basemap through them.
+  return count > 0 ? `${scratchColor(count, max)}cc` : "#edf4e81a";
 }
 
 function countForBucket(buckets: CountBucket[] | undefined, names: string[]) {
@@ -549,7 +534,7 @@ function mobileBadges(stats: any): MobileBadge[] {
   ];
 }
 
-function achievedIndex(badge: MobileBadge) {
+function achievedIndex(badge: { current: number | null; thresholds: number[] }) {
   if (badge.current == null) return -1;
   return badge.thresholds.reduce((latest, threshold, index) => badge.current! >= threshold ? index : latest, -1);
 }
@@ -597,7 +582,7 @@ function regionForPoints(points: CachePoint[]): Region {
 
 function regionForScratch(level: ScratchLevel, boundaryData: BoundaryFeatureCollection | null): Region {
   if (level === "countries" || !boundaryData) {
-    return { latitude: 24, longitude: 11, latitudeDelta: 140, longitudeDelta: 170 };
+    return SCRATCH_WORLD_REGION;
   }
 
   const positions = boundaryData.features.flatMap((feature) => {
@@ -607,7 +592,7 @@ function regionForScratch(level: ScratchLevel, boundaryData: BoundaryFeatureColl
     return polygons.flatMap((polygon) => polygon[0] ?? []);
   });
   if (positions.length === 0) {
-    return { latitude: 24, longitude: 11, latitudeDelta: 140, longitudeDelta: 170 };
+    return SCRATCH_WORLD_REGION;
   }
 
   let minLatitude = Infinity;
@@ -746,6 +731,21 @@ function polygonOuterRings(feature: BoundaryFeature, maxPoints = 350) {
     .map((ring) => sampledRing(ring, maxPoints))
     .filter((ring) => ring.length >= 4)
     .map((ring) => ring.map(([longitude, latitude]) => ({ latitude, longitude })));
+}
+
+function scratchRingArea(coordinates: Array<{ latitude: number; longitude: number }>) {
+  if (coordinates.length === 0) return 0;
+  let minLatitude = Infinity;
+  let maxLatitude = -Infinity;
+  let minLongitude = Infinity;
+  let maxLongitude = -Infinity;
+  for (const coordinate of coordinates) {
+    minLatitude = Math.min(minLatitude, coordinate.latitude);
+    maxLatitude = Math.max(maxLatitude, coordinate.latitude);
+    minLongitude = Math.min(minLongitude, coordinate.longitude);
+    maxLongitude = Math.max(maxLongitude, coordinate.longitude);
+  }
+  return (maxLatitude - minLatitude) * (maxLongitude - minLongitude);
 }
 
 function pointInRing(longitude: number, latitude: number, ring: Position[]) {
@@ -975,7 +975,10 @@ function AuthScreen({ apiBaseUrl, onApiBaseUrlChange, onSession }: { apiBaseUrl:
     <SafeAreaView style={styles.safe}>
       <StatusBar style="light" />
       <ScrollView contentContainerStyle={styles.authPage}>
-        <Text style={styles.brand}>Geostats</Text>
+        <View style={styles.authBrand}>
+          <Image accessible={false} source={require("./assets/icon.png")} style={styles.authBrandIcon} />
+          <Text style={styles.brand}>Geostats</Text>
+        </View>
         <Text style={styles.title}>{mode === "login" ? "Sign in" : "Create account"}</Text>
         <View style={styles.serverCard}>
           <View style={styles.serverSummary}>
@@ -1090,45 +1093,54 @@ export default function App() {
   } else if (needsOnboarding) {
     content = <OnboardingScreen apiBaseUrl={apiBaseUrl} token={session.token} onComplete={() => setNeedsOnboarding(false)} onLogout={logout} />;
   } else {
+    const activePrimaryScreen = primaryScreens.includes(screen) ? screen : "explore";
     content = (
       <SafeAreaView style={styles.safe}>
         <StatusBar style="light" />
         <View style={styles.shellHeader}>
-          <View><Text style={styles.brandSmall}>Geostats</Text><Text style={styles.muted}>{session.user.username}</Text></View>
-          <Pressable onPress={logout} style={styles.logoutButton}><Text style={styles.logoutText}>Logout</Text></Pressable>
+          <View style={styles.brandLockup}>
+            <Image accessible={false} source={require("./assets/icon.png")} style={styles.headerBrandIcon} />
+            <View style={styles.headerBrandText}><Text style={styles.brandSmall}>Geostats</Text><Text numberOfLines={1} ellipsizeMode="tail" style={styles.shellContext}>{screenDetails[screen].label}</Text></View>
+          </View>
+          <Pressable accessibilityRole="button" accessibilityLabel="Open profile" onPress={() => setScreen("profile")} style={styles.avatarButton}>
+            <Text style={styles.avatarText}>{session.user.username.slice(0, 1).toUpperCase()}</Text>
+          </Pressable>
         </View>
-        <View style={styles.navWrap}>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.nav}>
-            {screens.map((item) => (
-              <Pressable key={item.id} onPress={() => setScreen(item.id)} style={[styles.navItem, screen === item.id && styles.navItemActive]}>
-                <Text style={[styles.navText, screen === item.id && styles.navTextActive]}>{item.label}</Text>
-              </Pressable>
-            ))}
-          </ScrollView>
-        </View>
-        <ScrollView style={styles.content} contentContainerStyle={styles.contentInner}>
-          <ScreenSwitch apiBaseUrl={apiBaseUrl} screen={screen} token={session.token} userId={session.user.id} onNavigate={setScreen} />
+        <ScrollView key={screen} style={styles.content} contentContainerStyle={styles.contentInner} showsVerticalScrollIndicator={false}>
+          <ScreenSwitch apiBaseUrl={apiBaseUrl} screen={screen} token={session.token} userId={session.user.id} username={session.user.username} onNavigate={setScreen} onLogout={logout} />
         </ScrollView>
+        <View style={styles.bottomNav}>
+          {primaryScreens.map((item) => {
+            const detail = screenDetails[item];
+            const active = activePrimaryScreen === item;
+            return (
+              <Pressable accessibilityRole="tab" accessibilityState={{ selected: active }} key={item} onPress={() => setScreen(item)} style={styles.bottomNavItem}>
+                <View style={[styles.bottomNavIcon, active && styles.bottomNavIconActive]}><Text style={[styles.bottomNavGlyph, active && styles.bottomNavGlyphActive]}>{detail.icon}</Text></View>
+                <Text style={[styles.bottomNavLabel, active && styles.bottomNavLabelActive]}>{detail.label}</Text>
+              </Pressable>
+            );
+          })}
+        </View>
       </SafeAreaView>
     );
   }
   return <SafeAreaProvider>{content}</SafeAreaProvider>;
 }
 
-function ScreenSwitch({ apiBaseUrl, screen, token, userId, onNavigate }: { apiBaseUrl: string; screen: ScreenId; token: string; userId: string; onNavigate: (screen: ScreenId) => void }) {
-  if (screen === "dashboard") return <DashboardScreen apiBaseUrl={apiBaseUrl} token={token} onNavigate={onNavigate} />;
+function ScreenSwitch({ apiBaseUrl, screen, token, userId, username, onNavigate, onLogout }: { apiBaseUrl: string; screen: ScreenId; token: string; userId: string; username: string; onNavigate: (screen: ScreenId) => void; onLogout: () => void }) {
+  if (screen === "dashboard") return <DashboardScreen apiBaseUrl={apiBaseUrl} token={token} username={username} onNavigate={onNavigate} />;
+  if (screen === "explore") return <ExploreScreen username={username} onNavigate={onNavigate} />;
   if (screen === "stats") return <StatsScreen apiBaseUrl={apiBaseUrl} token={token} />;
   if (screen === "map") return <MapScreen apiBaseUrl={apiBaseUrl} token={token} />;
   if (screen === "scratch") return <ScratchScreen apiBaseUrl={apiBaseUrl} token={token} />;
   if (screen === "milestones") return <MilestonesScreen apiBaseUrl={apiBaseUrl} token={token} />;
   if (screen === "ftf") return <FtfScreen apiBaseUrl={apiBaseUrl} token={token} />;
   if (screen === "hides") return <HidesScreen apiBaseUrl={apiBaseUrl} token={token} />;
-  if (screen === "profileHtml") return <ProfileHtmlScreen apiBaseUrl={apiBaseUrl} token={token} />;
   if (screen === "mysteries") return <MysteriesScreen apiBaseUrl={apiBaseUrl} token={token} userId={userId} />;
   if (screen === "travel") return <TravelScreen userId={userId} />;
   if (screen === "upload") return <UploadScreen apiBaseUrl={apiBaseUrl} token={token} />;
   if (screen === "imports") return <ImportsScreen apiBaseUrl={apiBaseUrl} token={token} />;
-  return <ProfileScreen apiBaseUrl={apiBaseUrl} token={token} />;
+  return <ProfileScreen apiBaseUrl={apiBaseUrl} token={token} onLogout={onLogout} />;
 }
 
 function OnboardingScreen({ apiBaseUrl, token, onComplete, onLogout }: { apiBaseUrl: string; token: string; onComplete: () => void; onLogout: () => void }) {
@@ -1177,23 +1189,68 @@ function OnboardingScreen({ apiBaseUrl, token, onComplete, onLogout }: { apiBase
   );
 }
 
-function DashboardScreen({ apiBaseUrl, token, onNavigate }: { apiBaseUrl: string; token: string; onNavigate: (screen: ScreenId) => void }) {
+function ExploreScreen({ username, onNavigate }: { username: string; onNavigate: (screen: ScreenId) => void }) {
+  return (
+    <>
+      <PageTitle eyebrow="Everything in one place" title="Explore Geostats" />
+      <View style={styles.exploreIntro}>
+        <Text style={styles.exploreIntroTitle}>Where to next, {username}?</Text>
+        <Text style={styles.exploreIntroText}>Your maps, cache management, imports, puzzles, and publishing tools are organized below.</Text>
+      </View>
+      {exploreGroups.map((group) => (
+        <View key={group.title} style={styles.exploreGroup}>
+          <View style={styles.exploreGroupHeading}>
+            <Text style={styles.exploreGroupTitle}>{group.title}</Text>
+            <Text style={styles.muted}>{group.subtitle}</Text>
+          </View>
+          <View style={styles.featureGrid}>
+            {group.screens.map((item) => <FeatureCard key={item} screen={item} onPress={() => onNavigate(item)} />)}
+          </View>
+        </View>
+      ))}
+    </>
+  );
+}
+
+function DashboardScreen({ apiBaseUrl, token, username, onNavigate }: { apiBaseUrl: string; token: string; username: string; onNavigate: (screen: ScreenId) => void }) {
   const stats = useApi<{ stats: any }>(apiBaseUrl, token, "/stats/summary", { stats: {} });
   const imports = useApi<{ imports: ImportListItem[] }>(apiBaseUrl, token, "/imports", { imports: [] });
   const s = stats.data.stats;
+  const latestImport = imports.data.imports[0];
+  const importActive = hasActiveImports(imports.data.imports);
+  const hadActiveImport = useRef(false);
+  useEffect(() => {
+    if (!importActive) {
+      if (!hadActiveImport.current) return;
+      hadActiveImport.current = false;
+      return schedulePostImportStatsRefresh(stats.refresh);
+    }
+    hadActiveImport.current = true;
+    const interval = setInterval(() => {
+      void imports.refresh();
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [importActive]);
   return (
     <>
-      <PageTitle eyebrow="Private profile stats" title="Your cache archive" />
+      <PageTitle eyebrow={`Welcome back, ${username}`} title="Your cache archive" />
+      <View style={styles.heroCard}>
+        <View style={styles.heroGlow} />
+        <Text style={styles.heroKicker}>{importActive ? "IMPORT IN PROGRESS" : "ARCHIVE AT A GLANCE"}</Text>
+        <Text style={styles.heroValue}>{Number(s.totalFinds ?? 0).toLocaleString()}</Text>
+        <Text style={styles.heroLabel}>lifetime finds across {s.countries?.length ?? 0} countries</Text>
+        <View style={styles.heroActions}>
+          <Pressable onPress={() => onNavigate("upload")} style={styles.heroPrimaryAction}><Text style={styles.heroPrimaryActionText}>＋ Import finds</Text></Pressable>
+          <Pressable onPress={() => onNavigate("map")} style={styles.heroSecondaryAction}><Text style={styles.heroSecondaryActionText}>Open map  ›</Text></Pressable>
+        </View>
+      </View>
       <StatGrid rows={[["Total finds", s.totalFinds ?? 0], ["Cache types", s.cacheTypes?.length ?? 0], ["Countries", s.countries?.length ?? 0], ["Longest streak", `${s.streaks?.longest ?? 0} days`]]} />
+      <View style={styles.quickActions}>
+        {(["scratch", "milestones", "mysteries", "travel"] as ScreenId[]).map((item) => <QuickAction key={item} screen={item} onPress={() => onNavigate(item)} />)}
+      </View>
       <Panel title="At a glance" subtitle={`Last import: ${dateText(imports.data.imports[0]?.createdAt)}`}>
         <Bars data={latestTwelveMonths(s.findsByMonth ?? [])} />
         <KeyValue rows={[["Best day", s.summaryNumbers?.bestDay ? `${s.summaryNumbers.bestDay.count} on ${s.summaryNumbers.bestDay.key}` : "-"], ["Best month", s.summaryNumbers?.bestMonth ? `${s.summaryNumbers.bestMonth.count} in ${s.summaryNumbers.bestMonth.key}` : "-"], ["Cache days", s.summaryNumbers?.cachingDays ?? 0], ["Average/day", s.summaryNumbers?.findsPerDay?.toFixed(2) ?? "0.00"], ["Average distance", s.distanceStats?.averageDistanceKm == null ? "-" : `${Math.round(s.distanceStats.averageDistanceKm)} km`]]} />
-      </Panel>
-      <Panel title="Your Geostats workflow" subtitle="Pick up at the step that matches what you want to do.">
-        <WorkflowStep number="1" title="Import cache data" detail="Choose a My Finds GPX, My Hides GPX, or Pocket Query ZIP." done={imports.data.imports.length > 0} onPress={() => onNavigate("upload")} />
-        <WorkflowStep number="2" title="Watch processing" detail="Imports refresh automatically while the server parses and recalculates." done={imports.data.imports.some((item) => item.status === "COMPLETED")} onPress={() => onNavigate("imports")} />
-        <WorkflowStep number="3" title="Explore your archive" detail="Review statistics, maps, milestones, FTFs, and hides." done={(s.totalFinds ?? 0) > 0} onPress={() => onNavigate("stats")} />
-        <WorkflowStep number="4" title="Plan the next trip" detail="Solve mystery caches, group them into trips, and open directions." done={false} onPress={() => onNavigate("mysteries")} />
       </Panel>
       <BadgesPanel apiBaseUrl={apiBaseUrl} stats={s} token={token} />
       <LoadState loading={stats.loading || imports.loading} error={stats.error || imports.error} />
@@ -1203,22 +1260,30 @@ function DashboardScreen({ apiBaseUrl, token, onNavigate }: { apiBaseUrl: string
 
 function StatsScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
   const { data, loading, error } = useApi<{ stats: any }>(apiBaseUrl, token, "/stats/summary", { stats: {} });
+  const [section, setSection] = useState("Overview");
   const s = data.stats;
   return (
     <>
-      <PageTitle eyebrow="Reusable stats package" title="Statistics" />
+      <PageTitle eyebrow="Your caching story" title="Statistics" />
       <StatGrid rows={[["Total finds", s.totalFinds ?? 0], ["Longest streak", `${s.streaks?.longest ?? 0} days`], ["Current streak", `${s.streaks?.current ?? 0} days`], ["Milestones", s.milestoneStats?.countMilestones?.length ?? 0]]} />
-      <Panel title="Finds by month" subtitle="Rolling latest 12 months"><Bars data={latestTwelveMonths(s.findsByMonth ?? [])} /></Panel>
-      <BreakdownPanel title="Core breakdowns" groups={[["Cache types", s.cacheTypes ?? []], ["Sizes", s.sizes ?? []], ["Countries", s.countries ?? []], ["Regions", s.regions ?? []], ["Counties / municipalities", s.counties ?? []], ["Finds by difficulty", s.findsByDifficulty ?? []], ["Finds by terrain", s.findsByTerrain ?? []], ["Finds by calendar month", s.findsByCalendarMonth ?? []], ["Finds by weekday", s.findsByWeekday ?? []], ["Finds by year placed", s.findsByPlacedYear ?? []], ["Finds to today for each year", s.findsToTodayByYear ?? []], ["Average difficulty per year", s.averageDifficultyByYear ?? []], ["Average terrain per year", s.averageTerrainByYear ?? []], ["Top hiders", (s.ownerBuckets ?? []).slice(0, 20)]]} />
-      <Panel title="Difficulty / Terrain"><DifficultyGrid data={s.difficultyTerrain ?? []} /></Panel>
-      <Panel title="Summary numbers"><KeyValue rows={[["Total days", s.summaryNumbers?.totalDays ?? 0], ["Finds/caching day", s.summaryNumbers?.findsPerCachingDay?.toFixed(2) ?? "0.00"], ["Finds/week", s.summaryNumbers?.findsPerWeek?.toFixed(2) ?? "0.00"], ["Last 365 finds", s.summaryNumbers?.last365Finds ?? 0]]} /></Panel>
-      <Panel title="Home distance">{s.distanceStats ? <><KeyValue rows={[["Average distance", s.distanceStats.averageDistanceKm == null ? "-" : `${Math.round(s.distanceStats.averageDistanceKm)} km`], ["Maximum distance", s.distanceStats.maxDistanceKm == null ? "-" : `${Math.round(s.distanceStats.maxDistanceKm)} km`], ["Bearing degrees", s.distanceStats.bearingBuckets?.filter((x: PercentBucket) => x.count > 0).length ?? 0]]} /><Text style={styles.sectionLabel}>Distance buckets</Text><Bars data={s.distanceStats.distanceBuckets ?? []} /><Text style={styles.sectionLabel}>Bearings from home</Text><Bars data={s.distanceStats.bearingBuckets ?? []} /></> : <Text style={styles.muted}>Set home coordinates in Profile to show distance and bearing stats.</Text>}</Panel>
-      <Panel title="Way to 81"><Rows rows={(s.wayTo81 ?? []).map((entry: any) => [String(entry.index), `${entry.gcCode} ${entry.name}`, `${entry.difficulty}/${entry.terrain}`])} /></Panel>
-      <Panel title="Finds by found date"><CalendarHeatmap data={s.foundDateMatrix ?? []} /></Panel>
-      <Panel title="Finds by hidden date"><CalendarHeatmap data={s.hiddenDateMatrix ?? []} /></Panel>
-      <Panel title="Finds by hidden month"><MonthMatrix data={s.hiddenMonthMatrix ?? []} /></Panel>
-      <Panel title="Elevation chart"><Bars data={s.elevationBuckets ?? []} /></Panel>
-      <Panel title="Finds per month and year"><MonthMatrix data={s.findsByMonth ?? []} /></Panel>
+      <Segmented values={["Overview", "Patterns", "History"]} active={section} onPress={setSection} />
+      {section === "Overview" ? <>
+        <Panel title="Finds by month" subtitle="Rolling latest 12 months"><Bars data={latestTwelveMonths(s.findsByMonth ?? [])} /></Panel>
+        <Panel title="Summary numbers"><KeyValue rows={[["Total days", s.summaryNumbers?.totalDays ?? 0], ["Finds/caching day", s.summaryNumbers?.findsPerCachingDay?.toFixed(2) ?? "0.00"], ["Finds/week", s.summaryNumbers?.findsPerWeek?.toFixed(2) ?? "0.00"], ["Last 365 finds", s.summaryNumbers?.last365Finds ?? 0]]} /></Panel>
+        <Panel title="Difficulty / Terrain"><DifficultyGrid data={s.difficultyTerrain ?? []} /></Panel>
+        <Panel title="Home distance">{s.distanceStats ? <><KeyValue rows={[["Average distance", s.distanceStats.averageDistanceKm == null ? "-" : `${Math.round(s.distanceStats.averageDistanceKm)} km`], ["Maximum distance", s.distanceStats.maxDistanceKm == null ? "-" : `${Math.round(s.distanceStats.maxDistanceKm)} km`], ["Bearing degrees", s.distanceStats.bearingBuckets?.filter((x: PercentBucket) => x.count > 0).length ?? 0]]} /><Text style={styles.sectionLabel}>Distance buckets</Text><Bars data={s.distanceStats.distanceBuckets ?? []} /><Text style={styles.sectionLabel}>Bearings from home</Text><Bars data={s.distanceStats.bearingBuckets ?? []} /></> : <Text style={styles.muted}>Set home coordinates in Profile to show distance and bearing stats.</Text>}</Panel>
+      </> : null}
+      {section === "Patterns" ? <>
+        <BreakdownPanel title="Cache breakdowns" groups={[["Cache types", s.cacheTypes ?? []], ["Sizes", s.sizes ?? []], ["Countries", s.countries ?? []], ["Regions", s.regions ?? []], ["Counties / municipalities", s.counties ?? []], ["Finds by difficulty", s.findsByDifficulty ?? []], ["Finds by terrain", s.findsByTerrain ?? []], ["Finds by calendar month", s.findsByCalendarMonth ?? []], ["Finds by weekday", s.findsByWeekday ?? []], ["Finds by year placed", s.findsByPlacedYear ?? []], ["Finds to today for each year", s.findsToTodayByYear ?? []], ["Average difficulty per year", s.averageDifficultyPerYear ?? s.averageDifficultyByYear ?? []], ["Average terrain per year", s.averageTerrainPerYear ?? s.averageTerrainByYear ?? []], ["Top hiders", (s.ownerBuckets ?? []).slice(0, 20)]]} />
+        <Panel title="Elevation"><Bars data={s.elevationBuckets ?? []} /></Panel>
+      </> : null}
+      {section === "History" ? <>
+        <Panel title="Way to 81"><Rows rows={(s.wayTo81 ?? []).map((entry: any) => [String(entry.index), `${entry.gcCode} ${entry.name}`, `${entry.difficulty}/${entry.terrain}`])} /></Panel>
+        <Panel title="Finds by found date"><CalendarHeatmap data={s.foundDateMatrix ?? []} /></Panel>
+        <Panel title="Finds by hidden date"><CalendarHeatmap data={s.hiddenDateMatrix ?? []} /></Panel>
+        <Panel title="Finds by hidden month"><MonthMatrix data={s.hiddenMonthMatrix ?? []} /></Panel>
+        <Panel title="Finds per month and year"><MonthMatrix data={s.findsByMonth ?? []} /></Panel>
+      </> : null}
       <LoadState loading={loading} error={error} />
     </>
   );
@@ -1227,6 +1292,7 @@ function StatsScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string 
 function MapScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
   const [points, setPoints] = useState<CachePoint[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [mapFilter, setMapFilter] = useState("All");
   useEffect(() => {
     void Promise.allSettled([apiFetch<{ points: CachePoint[] }>(apiBaseUrl, "/map/caches", token), apiFetch<{ points: CachePoint[] }>(apiBaseUrl, "/map/hides", token)]).then(([finds, hides]) => {
       const findPoints = finds.status === "fulfilled" ? finds.value.points : [];
@@ -1236,12 +1302,22 @@ function MapScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
     });
   }, [apiBaseUrl, token]);
   const findCount = points.filter((p) => !p.isOwnHide).length;
-  const recent = [...points].sort((a, b) => Date.parse(b.foundAt ?? b.placedAt ?? "") - Date.parse(a.foundAt ?? a.placedAt ?? "")).slice(0, 40);
+  const visiblePoints = mapFilter === "Finds" ? points.filter((point) => !point.isOwnHide) : mapFilter === "Hides" ? points.filter((point) => point.isOwnHide) : points;
+  const recent = [...visiblePoints].sort((a, b) => Date.parse(b.foundAt ?? b.placedAt ?? "") - Date.parse(a.foundAt ?? a.placedAt ?? "")).slice(0, 24);
   return (
     <>
-      <PageTitle eyebrow="PostGIS-ready coordinates" title="Map" />
-      <Panel title={`${findCount} plotted finds`} subtitle={`${points.length - findCount} own hides`}><NativeMap points={points} /></Panel>
-      <Panel title="Recent map points">{recent.map((point) => <CacheRow key={`${point.isOwnHide ? "h" : "f"}-${point.gcCode}-${point.id}`} point={point} />)}</Panel>
+      <PageTitle eyebrow="Your caching footprint" title="Map" />
+      <StatGrid rows={[["Finds", findCount], ["Own hides", points.length - findCount]]} />
+      <Segmented values={["All", "Finds", "Hides"]} active={mapFilter} onPress={setMapFilter} />
+      <Panel title={`${visiblePoints.length.toLocaleString()} points in view`} subtitle="Tap a marker for cache details">
+        <NativeMap key={mapFilter} points={visiblePoints} />
+        <View style={styles.mapLegend}>
+          <View style={styles.legendItem}><View style={[styles.legendDot, { backgroundColor: "#4ec878" }]} /><Text style={styles.muted}>Finds</Text></View>
+          <View style={styles.legendItem}><View style={[styles.legendDot, { backgroundColor: "#64d2a4" }]} /><Text style={styles.muted}>Own hides</Text></View>
+          <Text style={styles.mapHint}>Showing up to {MAX_NATIVE_MAP_MARKERS.toLocaleString()} markers</Text>
+        </View>
+      </Panel>
+      <Panel title="Recent locations" subtitle={`Latest ${mapFilter.toLowerCase()} in your archive`}>{recent.map((point) => <CacheRow key={`${point.isOwnHide ? "h" : "f"}-${point.gcCode}-${point.id}`} point={point} />)}</Panel>
       <LoadState loading={points.length === 0 && !error} error={error} />
     </>
   );
@@ -1351,7 +1427,7 @@ function ScratchScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: strin
             </Pressable>
           ))}
         </View>
-        {Platform.OS === "web" ? (
+        {Platform.OS === "web" || !NATIVE_MAP_AVAILABLE ? (
           <ScratchMapFallback buckets={levelBuckets} max={effectiveLevel === "countries" ? max : Math.max(1, ...levelBuckets.map((bucket: any) => bucket.count ?? 0))} />
         ) : (
           <ScratchNativeMap
@@ -1373,7 +1449,7 @@ function ScratchScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: strin
         {configIsCurrent && boundaryError ? <Text style={styles.error}>{boundaryError}</Text> : null}
         {level !== "countries" && configIsCurrent && !supportsDetail ? <Text style={styles.muted}>Region and county polygons are not available for this country.</Text> : null}
       </Panel>
-      <Panel title="Continents"><Bars data={data.continents ?? []} /></Panel>
+      <Panel title="Continents"><Bars data={data.continents ?? []} nameKey="name" /></Panel>
       <Panel title="Countries">{countries.map((country) => <Pressable key={country.name} onPress={() => setSelected(country.name)} style={[styles.countryRow, active?.name === country.name && styles.countryRowActive]}><View style={[styles.countrySwatch, { opacity: 0.3 + Math.min(0.7, country.count / max) }]} /><View style={styles.flex}><Text style={styles.rowTitle}>{country.name}</Text><Text style={styles.muted}>{country.continent} - {country.count} finds</Text></View></Pressable>)}</Panel>
       <Panel title={active?.name ?? "No country yet"} subtitle="Regions and counties"><Text style={styles.sectionLabel}>Regions</Text><Bars data={active?.regions ?? []} nameKey="name" /><Text style={styles.sectionLabel}>Counties</Text><Bars data={active?.counties ?? []} nameKey="name" /></Panel>
       <LoadState loading={loading} error={error} />
@@ -1522,7 +1598,6 @@ function UploadScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string
     <>
       <PageTitle eyebrow="Import pipeline" title="Upload cache data" />
       <Panel title="GPX or ZIP"><PrimaryButton label={uploading ? "Uploading..." : "Choose GPX or ZIP"} onPress={() => pickAndUpload("cache")} /></Panel>
-      <Panel title="Owner log CSV"><PrimaryButton label={uploading ? "Uploading..." : "Choose CSV"} onPress={() => pickAndUpload("csv")} /><Text style={styles.muted}>Use the CSV command from Profile after importing My Hides data.</Text></Panel>
       {message ? <Text style={styles.note}>{message}</Text> : null}
       <Panel title="Latest imports"><ImportRows imports={imports.data.imports.slice(0, 8)} /></Panel>
       <LoadState loading={imports.loading} error={imports.error} />
@@ -1542,16 +1617,14 @@ function ImportsScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: strin
   return <><PageTitle eyebrow="Background jobs" title="Import history" /><PrimaryButton label="Refresh" onPress={refresh} /><Panel title="Imports"><ImportRows imports={data.imports} /></Panel><LoadState loading={loading} error={error} /></>;
 }
 
-function ProfileScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
+function ProfileScreen({ apiBaseUrl, token, onLogout }: { apiBaseUrl: string; token: string; onLogout: () => void }) {
   const profile = useApi<{ profile: any }>(apiBaseUrl, token, "/profile", { profile: null });
-  const tokens = useApi<{ tokens: any[] }>(apiBaseUrl, token, "/collector/tokens", { tokens: [] });
   const [gcUsername, setGcUsername] = useState("");
   const [homeLatitude, setHomeLatitude] = useState("");
   const [homeLongitude, setHomeLongitude] = useState("");
   const [timeZone, setTimeZone] = useState(defaultTimeZone);
   const [ftfTerms, setFtfTerms] = useState(defaultFtfTerms.join("\n"));
   const [message, setMessage] = useState<string | null>(null);
-  const [copiedCommandId, setCopiedCommandId] = useState<string | null>(null);
   useEffect(() => {
     const p = profile.data.profile;
     if (!p) return;
@@ -1570,110 +1643,49 @@ function ProfileScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: strin
       setMessage(error instanceof Error ? error.message : "Could not save profile");
     }
   }
-  async function createToken() {
-    await apiFetch(apiBaseUrl, "/collector/tokens", token, { method: "POST", body: JSON.stringify({ name: "Owner logs collector" }) });
-    await tokens.refresh();
-  }
-  async function deleteToken(id: string) {
-    await apiFetch(apiBaseUrl, `/collector/tokens/${id}`, token, { method: "DELETE" });
-    await tokens.refresh();
-  }
-  async function copyCollectorCommand(item: any, mode: "direct" | "csv") {
-    if (!item.token) {
-      setMessage("Command unavailable for this older token. Delete it and create a new token once.");
-      return;
-    }
-    await Clipboard.setStringAsync(hidesCommand(apiBaseUrl, item.token, mode === "csv"));
-    setCopiedCommandId(`${item.id}:${mode}`);
-    setMessage(null);
-  }
   return (
     <>
       <PageTitle eyebrow="Per-user ownership" title="Geocaching profile" />
       <Panel title="Profile"><Field label="Geocaching username" value={gcUsername} onChangeText={setGcUsername} /><Field label="Home latitude" value={homeLatitude} onChangeText={setHomeLatitude} keyboardType="numeric" /><Field label="Home longitude" value={homeLongitude} onChangeText={setHomeLongitude} keyboardType="numeric" /><Field label="Time zone" value={timeZone} onChangeText={setTimeZone} /><Field label="FTF auto-detect phrases" value={ftfTerms} onChangeText={setFtfTerms} multiline /><PrimaryButton label="Save profile" onPress={save} /></Panel>
-      <Panel title="Owner log collector">
-        <Text style={styles.muted}>The direct command uploads owner logs automatically. The CSV command saves geostats-received-logs.csv in Downloads so it can be imported later from Upload.</Text>
-        <PrimaryButton label="Create collector token" onPress={createToken} />
-        {tokens.data.tokens.map((item) => (
-          <View key={item.id} style={styles.tokenCard}>
-            <View style={styles.tokenRow}>
-              <View style={styles.flex}><Text style={styles.rowTitle}>{item.name}</Text><Text style={styles.muted}>{item.tokenPrefix}...</Text></View>
-              <Pressable onPress={() => deleteToken(item.id)}><Text style={styles.danger}>Delete</Text></Pressable>
-            </View>
-            {item.token ? (
-              <>
-                <CommandCard
-                  label="Direct upload command"
-                  copied={copiedCommandId === `${item.id}:direct`}
-                  command={hidesCommand(apiBaseUrl, item.token)}
-                  onCopy={() => copyCollectorCommand(item, "direct")}
-                />
-                <CommandCard
-                  label="CSV to Downloads command"
-                  copied={copiedCommandId === `${item.id}:csv`}
-                  command={hidesCommand(apiBaseUrl, item.token, true)}
-                  onCopy={() => copyCollectorCommand(item, "csv")}
-                />
-              </>
-            ) : (
-              <Text style={styles.muted}>Command unavailable for this older token. Delete it and create a new token once.</Text>
-            )}
-          </View>
-        ))}
-      </Panel>
       {message ? <Text style={styles.note}>{message}</Text> : null}
-      <LoadState loading={profile.loading || tokens.loading} error={profile.error || tokens.error} />
+      <Panel title="Account" subtitle="Your imported data remains on the selected Geostats server.">
+        <SecondaryButton label="Sign out of Geostats" onPress={onLogout} danger />
+      </Panel>
+      <LoadState loading={profile.loading} error={profile.error} />
     </>
   );
 }
 
-function ProfileHtmlScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
-  const stats = useApi<{ stats: any }>(apiBaseUrl, token, "/stats/summary", { stats: {} });
-  const profile = useApi<{ profile: any }>(apiBaseUrl, token, "/profile", { profile: null });
-  const [includeFtf, setIncludeFtf] = useState(true);
-  const [includeHides, setIncludeHides] = useState(true);
-  const [includeMilestones, setIncludeMilestones] = useState(true);
-  const [message, setMessage] = useState<string | null>(null);
-  const html = useMemo(
-    () => buildMobileProfileHtml(stats.data.stats, profile.data.profile, { ftf: includeFtf, hides: includeHides, milestones: includeMilestones }),
-    [includeFtf, includeHides, includeMilestones, profile.data.profile, stats.data.stats]
-  );
-  const username = profile.data.profile?.gcUsername;
-  const publicUrl = username ? `${apiBaseUrl}/public/profile-stats/${encodeURIComponent(username)}` : "";
-  const embed = username
-    ? `<a href="${publicUrl}" target="_top"><img src="${apiBaseUrl}/public/profile-stats-image/${encodeURIComponent(username)}" width="750"><br><img src="${apiBaseUrl}/public/profile-scratch-map-image/${encodeURIComponent(username)}" width="750"></a>`
-    : "";
-  async function copy(value: string, label: string) {
-    await Clipboard.setStringAsync(value);
-    setMessage(`${label} copied.`);
-  }
-  async function shareHtml() {
-    const file = new File(Paths.cache, "geostats-profile.html");
-    file.write(`<!doctype html><html><head><meta charset="utf-8"><title>Geostats profile</title></head><body>${html}</body></html>`);
-    await Sharing.shareAsync(file.uri, { dialogTitle: "Share Geostats profile HTML", mimeType: "text/html", UTI: "public.html" });
-  }
-  return (
-    <>
-      <PageTitle eyebrow="Geocaching profile export" title="Profile HTML" />
-      <Panel title="Include sections">
-        <ToggleOption label="Milestones" active={includeMilestones} onPress={() => setIncludeMilestones((value) => !value)} />
-        <ToggleOption label="FTF summary" active={includeFtf} onPress={() => setIncludeFtf((value) => !value)} />
-        <ToggleOption label="Owned cache summary" active={includeHides} onPress={() => setIncludeHides((value) => !value)} />
-      </Panel>
-      <Panel title="Dynamic profile snippet" subtitle="Updates whenever Geostats recalculates your statistics.">
-        <Text style={styles.codeText} selectable>{embed || "Set your geocaching username in Profile first."}</Text>
-        <PrimaryButton label="Copy dynamic snippet" onPress={() => copy(embed, "Dynamic snippet")} />
-        {publicUrl ? <Pressable onPress={() => Linking.openURL(publicUrl)}><Text style={styles.linkText}>Open public profile</Text></Pressable> : null}
-      </Panel>
-      <Panel title="Copyable HTML" subtitle={`${html.length.toLocaleString()} characters`}>
-        <Text style={styles.codePreview} selectable numberOfLines={12}>{html}</Text>
-        <PrimaryButton label="Copy HTML" onPress={() => copy(html, "Profile HTML")} />
-        <SecondaryButton label="Share HTML file" onPress={shareHtml} />
-      </Panel>
-      {message ? <Text style={styles.note}>{message}</Text> : null}
-      <LoadState loading={stats.loading || profile.loading} error={stats.error || profile.error} />
-    </>
-  );
+async function countryFlagCodeForScratch(countryName: string) {
+  const key = countryName.trim().toLowerCase();
+  const cached = countryFlagCodeCache.get(key);
+  if (cached) return cached;
+
+  const request = loadScratchGeoJson(COUNTRY_GEOJSON_URL)
+    .then((geoJson) => {
+      const names = new Set([countryName, ...(COUNTRY_NAME_ALIASES[countryName] ?? [])].map((name) => name.toLowerCase()));
+      const feature = geoJson.features.find((candidate) =>
+        names.has(String(candidate.properties?.name ?? "").trim().toLowerCase())
+      );
+      const countryCode = String(feature?.properties?.["ISO3166-1-Alpha-2"] ?? "").trim().toLowerCase();
+      if (/^[a-z]{2}$/.test(countryCode)) return countryCode;
+      return ({ France: "fr", Kosovo: "xk", Norway: "no" } as Record<string, string>)[countryName] ?? null;
+    })
+    .catch(() => {
+      countryFlagCodeCache.delete(key);
+      return null;
+    });
+  countryFlagCodeCache.set(key, request);
+  return request;
+}
+
+function badgeTierSummary(badges: Array<{ current: number | null; thresholds: number[] }>) {
+  const counts = badgeTiers.map(() => 0);
+  badges.forEach((badge) => {
+    const index = achievedIndex(badge);
+    if (index >= 0) counts[index] = (counts[index] ?? 0) + 1;
+  });
+  return badgeTiers.map((tier, index) => ({ tier, count: counts[index] ?? 0 })).reverse();
 }
 
 function MysteriesScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; token: string; userId: string }) {
@@ -2135,6 +2147,30 @@ function PageTitle({ eyebrow, title }: { eyebrow: string; title: string }) {
   return <View style={styles.pageTitle}><Text style={styles.eyebrow}>{eyebrow}</Text><Text style={styles.title}>{title}</Text></View>;
 }
 
+function FeatureCard({ screen, onPress }: { screen: ScreenId; onPress: () => void }) {
+  const detail = screenDetails[screen];
+  return (
+    <Pressable accessibilityRole="button" onPress={onPress} style={({ pressed }) => [styles.featureCard, pressed && styles.pressed]}>
+      <View style={styles.featureCardTop}>
+        <View style={styles.featureIcon}><Text style={styles.featureIconText}>{detail.icon}</Text></View>
+        <Text style={styles.featureArrow}>↗</Text>
+      </View>
+      <Text style={styles.featureTitle}>{detail.label}</Text>
+      <Text style={styles.featureSubtitle} numberOfLines={2}>{detail.eyebrow}</Text>
+    </Pressable>
+  );
+}
+
+function QuickAction({ screen, onPress }: { screen: ScreenId; onPress: () => void }) {
+  const detail = screenDetails[screen];
+  return (
+    <Pressable accessibilityRole="button" onPress={onPress} style={({ pressed }) => [styles.quickAction, pressed && styles.pressed]}>
+      <Text style={styles.quickActionIcon}>{detail.icon}</Text>
+      <Text style={styles.quickActionLabel}>{detail.label}</Text>
+    </Pressable>
+  );
+}
+
 function Field(props: React.ComponentProps<typeof TextInput> & { label: string }) {
   const { label, style, ...rest } = props;
   return <View style={styles.field}><Text style={styles.fieldLabel}>{label}</Text><TextInput placeholderTextColor="#76827c" style={[styles.input, rest.multiline && styles.textArea, style]} {...rest} /></View>;
@@ -2148,30 +2184,8 @@ function SecondaryButton({ label, onPress, danger = false }: { label: string; on
   return <Pressable onPress={onPress} style={[styles.secondaryButton, danger && styles.secondaryButtonDanger]}><Text style={[styles.secondaryButtonText, danger && styles.danger]}>{label}</Text></Pressable>;
 }
 
-function ToggleOption({ label, active, onPress }: { label: string; active: boolean; onPress: () => void }) {
-  return <Pressable onPress={onPress} style={styles.optionRow}><Text style={[styles.optionMark, active && styles.optionMarkActive]}>{active ? "✓" : ""}</Text><Text style={styles.rowTitle}>{label}</Text></Pressable>;
-}
-
 function Segmented({ values, active, onPress, disabled = false }: { values: readonly string[]; active: string; onPress: (value: string) => void; disabled?: boolean }) {
   return <View style={styles.segmented}>{values.map((value) => <Pressable disabled={disabled} key={value} onPress={() => onPress(value)} style={[styles.segmentButton, active === value && styles.segmentButtonActive]}><Text style={[styles.segmentText, active === value && styles.segmentTextActive]}>{value}</Text></Pressable>)}</View>;
-}
-
-function WorkflowStep({ number, title, detail, done, onPress }: { number: string; title: string; detail: string; done: boolean; onPress: () => void }) {
-  return <Pressable onPress={onPress} style={styles.workflowStep}><Text style={[styles.workflowNumber, done && styles.workflowNumberDone]}>{done ? "✓" : number}</Text><View style={styles.flex}><Text style={styles.rowTitle}>{title}</Text><Text style={styles.muted}>{detail}</Text></View><Text style={styles.linkText}>Open</Text></Pressable>;
-}
-
-function CommandCard({ label, command, copied, onCopy }: { label: string; command: string; copied: boolean; onCopy: () => void }) {
-  return (
-    <View style={styles.commandCard}>
-      <View style={styles.commandHeader}>
-        <Text style={styles.rowTitle}>{label}</Text>
-        <Pressable onPress={onCopy} style={styles.copyButton}>
-          <Text style={styles.copyButtonText}>{copied ? "Copied" : "Copy"}</Text>
-        </Pressable>
-      </View>
-      <Text selectable style={styles.commandText}>{command}</Text>
-    </View>
-  );
 }
 
 function Panel({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {
@@ -2199,14 +2213,57 @@ function Rows({ rows }: { rows: Array<Array<unknown>> }) {
 }
 
 function BreakdownPanel({ title, groups }: { title: string; groups: Array<[string, any[]]> }) {
-  return <Panel title={title}>{groups.map(([label, data]) => <View key={label} style={styles.breakdownGroup}><Text style={styles.sectionLabel}>{label}</Text><Bars data={data} /></View>)}</Panel>;
+  return <Panel title={title} subtitle="Tap a category to expand it">{groups.map(([label, data]) => <BreakdownGroup key={label} label={label} data={data} />)}</Panel>;
+}
+
+function BreakdownGroup({ label, data }: { label: string; data: any[] }) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <View style={styles.breakdownGroup}>
+      <Pressable accessibilityRole="button" accessibilityState={{ expanded }} onPress={() => setExpanded((current) => !current)} style={styles.breakdownToggle}>
+        <View style={styles.flex}><Text style={styles.sectionLabel}>{label}</Text><Text style={styles.muted}>{data.length} categories</Text></View>
+        <Text style={styles.breakdownChevron}>{expanded ? "−" : "+"}</Text>
+      </Pressable>
+      {expanded ? <View style={styles.breakdownContent}><Bars data={data} /></View> : null}
+    </View>
+  );
 }
 
 function DifficultyGrid({ data }: { data: Array<{ difficulty: number; terrain: number; count: number }> }) {
   const byKey = new Map(data.map((cell) => [`${cell.difficulty}/${cell.terrain}`, cell.count]));
   const ratings = [1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5];
   const max = Math.max(1, ...data.map((cell) => cell.count));
-  return <View style={styles.dtGrid}>{ratings.flatMap((difficulty) => ratings.map((terrain) => { const count = byKey.get(`${difficulty}/${terrain}`) ?? 0; return <View key={`${difficulty}-${terrain}`} style={[styles.dtCell, { opacity: count ? 0.45 + (count / max) * 0.55 : 0.18 }]}><Text style={styles.dtText}>{count || ""}</Text></View>; }))}</View>;
+  return (
+    <View style={styles.dtChart}>
+      <Text style={styles.dtAxisTitle}>Difficulty ↑</Text>
+      <View style={styles.dtMatrix}>
+        <View style={styles.dtRow}>
+          <View style={styles.dtRowLabel} />
+          {ratings.map((terrain) => <Text key={terrain} style={styles.dtColumnLabel}>{terrain}</Text>)}
+        </View>
+        {[...ratings].reverse().map((difficulty) => (
+          <View key={difficulty} style={styles.dtRow}>
+            <Text style={styles.dtRowLabel}>{difficulty}</Text>
+            {ratings.map((terrain) => {
+              const count = byKey.get(`${difficulty}/${terrain}`) ?? 0;
+              const intensity = count / max;
+              return (
+                <View
+                  key={`${difficulty}-${terrain}`}
+                  accessible
+                  accessibilityLabel={`Difficulty ${difficulty}, terrain ${terrain}: ${count} finds`}
+                  style={[styles.dtCell, { backgroundColor: count ? mixColor("#3b5136", "#ffc052", intensity) : "#20382c" }]}
+                >
+                  <Text style={[styles.dtText, intensity > 0.55 && styles.dtTextStrong]}>{count || ""}</Text>
+                </View>
+              );
+            })}
+          </View>
+        ))}
+        <Text style={styles.dtTerrainTitle}>Terrain →</Text>
+      </View>
+    </View>
+  );
 }
 
 function CalendarHeatmap({ data }: { data: CountBucket[] }) {
@@ -2258,8 +2315,11 @@ function MonthMatrix({ data }: { data: CountBucket[] }) {
 }
 
 function NativeMap({ points }: { points: CachePoint[] }) {
-  const visible = validMapPoints(points).slice(0, 1500);
+  const visible = selectNativeMapPoints(validMapPoints(points), MAX_NATIVE_MAP_MARKERS);
   if (visible.length === 0) return <Text style={styles.muted}>No coordinates yet.</Text>;
+  if (!NATIVE_MAP_AVAILABLE) {
+    return <View style={styles.mapUnavailable}><Text style={styles.mapUnavailableTitle}>Map preview unavailable</Text><Text style={styles.muted}>This Android build does not have a Google Maps key. Your cache locations remain available below.</Text></View>;
+  }
   return (
     <View style={styles.nativeMapFrame}>
       <MapView style={styles.nativeMap} initialRegion={regionForPoints(visible)} provider={ANDROID_MAP_PROVIDER} showsCompass showsScale>
@@ -2340,38 +2400,64 @@ function ScratchNativeMap({
       const bucket = byName.get(featureName);
       return { feature, featureName, bucket };
     })
-    .filter((item) => item.featureName && (level !== "countries" || item.bucket))
+    .filter((item) => item.featureName)
     .sort((left, right) => Number(Boolean(right.bucket)) - Number(Boolean(left.bucket)));
-  const polygons: Array<{
+  const geometryBudget = scratchMapGeometryBudget(level, Platform.OS);
+  const polygonCandidates: Array<{
     coordinates: Array<{ latitude: number; longitude: number }>;
     featureName: string;
     locationBucket: LocationBucket;
     key: string;
+    priority: number;
   }> = [];
   for (const { feature, featureName, bucket } of features) {
     const locationBucket = bucket ?? { name: featureName, count: 0 };
-    const rings = polygonOuterRings(feature);
-    for (let ringIndex = 0; ringIndex < rings.length && polygons.length < MAX_SCRATCH_MAP_POLYGONS; ringIndex += 1) {
-      polygons.push({
-        coordinates: rings[ringIndex]!,
+    const highlighted = Boolean(bucket) || selectedName === featureName;
+    const rings = polygonOuterRings(feature, highlighted ? geometryBudget.maxHighlightedPointsPerRing : geometryBudget.maxPointsPerRing);
+    const ringAreas = rings.map(scratchRingArea);
+    const primaryRingIndex = ringAreas.reduce((largestIndex, area, index) => area > (ringAreas[largestIndex] ?? -1) ? index : largestIndex, 0);
+    for (let ringIndex = 0; ringIndex < rings.length; ringIndex += 1) {
+      const coordinates = rings[ringIndex]!;
+      polygonCandidates.push({
+        coordinates,
         featureName,
         locationBucket,
-        key: `${featureName}-${polygons.length}-${ringIndex}`
+        key: `${featureName}-${ringIndex}`,
+        // Keep covered/selected locations first, then retain mainlands and the
+        // largest islands if the native geometry budget is reached.
+        priority: (bucket ? 1_000_000 : 0) + (selectedName === featureName ? 1_000_000 : 0) + (ringIndex === primaryRingIndex ? 100_000 : 0) + ringAreas[ringIndex]!
       });
     }
-    if (polygons.length >= MAX_SCRATCH_MAP_POLYGONS) break;
+  }
+  polygonCandidates.sort((left, right) => right.priority - left.priority);
+  const polygons: typeof polygonCandidates = [];
+  let vertexCount = 0;
+  for (const candidate of polygonCandidates) {
+    if (polygons.length >= geometryBudget.maxPolygons) break;
+    if (vertexCount + candidate.coordinates.length > geometryBudget.maxVertices) continue;
+    polygons.push(candidate);
+    vertexCount += candidate.coordinates.length;
   }
   const region = regionForScratch(level, boundaryData);
   return (
-    <View style={styles.nativeMapFrame}>
-      <MapView key={`${activeCountry?.name ?? "world"}:${level}`} style={styles.nativeMap} initialRegion={region} provider={ANDROID_MAP_PROVIDER} showsCompass showsScale>
+    <View style={styles.scratchNativeMapFrame}>
+      <MapView
+        key={`${activeCountry?.name ?? "world"}:${level}:${boundaryData.features.length}`}
+        style={styles.nativeMap}
+        initialRegion={region}
+        provider={ANDROID_MAP_PROVIDER}
+        customMapStyle={SCRATCH_GOOGLE_MAP_STYLE}
+        toolbarEnabled={false}
+        showsCompass
+        showsScale
+      >
         {polygons.map(({ coordinates, featureName, key, locationBucket }) => (
           <Polygon
             key={key}
             coordinates={coordinates}
-            fillColor={`${scratchColor(locationBucket.count, max)}aa`}
-            strokeColor={selectedName && namesForScratchBucket(locationBucket, level).includes(selectedName) ? "#f3b34d" : "#dce8df"}
-            strokeWidth={selectedName && namesForScratchBucket(locationBucket, level).includes(selectedName) ? 2 : 0.7}
+            fillColor={scratchPolygonFill(locationBucket.count, max)}
+            strokeColor={selectedName && namesForScratchBucket(locationBucket, level).includes(selectedName) ? "#fff7de" : "#07110bb8"}
+            strokeWidth={selectedName && namesForScratchBucket(locationBucket, level).includes(selectedName) ? 2.5 : 0.65}
             tappable
             onPress={() => onSelect(featureName)}
           />
@@ -2392,7 +2478,11 @@ function CacheRow({ point }: { point: CachePoint }) {
 
 function ImportRows({ imports }: { imports: ImportListItem[] }) {
   if (imports.length === 0) return <Text style={styles.muted}>No import history yet.</Text>;
-  return <View>{imports.map((item) => <View key={item.id} style={styles.importRow}><View style={styles.flex}><Text style={styles.rowTitle}>{item.fileName}</Text><Text style={styles.muted}>{dateText(item.createdAt)} - {item.source}</Text>{item.errorMessage ? <Text style={styles.error}>{item.errorMessage}</Text> : null}</View><Text style={styles.statusPill}>{item.status}</Text></View>)}</View>;
+  return <View>{imports.map((item) => {
+    const completed = item.status === "COMPLETED";
+    const failed = item.status === "FAILED";
+    return <View key={item.id} style={styles.importRow}><View style={styles.flex}><Text style={styles.rowTitle} numberOfLines={1}>{item.fileName}</Text><Text style={styles.muted}>{dateText(item.createdAt)} · {item.source}</Text>{item.errorMessage ? <Text style={styles.importError}>{item.errorMessage}</Text> : null}</View><Text style={[styles.statusPill, completed && styles.statusPillComplete, failed && styles.statusPillFailed]}>{completed ? "DONE" : item.status}</Text></View>;
+  })}</View>;
 }
 
 function MilestoneList({ title, rows, labelKey = "label" }: { title: string; rows: any[]; labelKey?: string }) {
@@ -2401,54 +2491,152 @@ function MilestoneList({ title, rows, labelKey = "label" }: { title: string; row
 
 function BadgesPanel({ apiBaseUrl, stats, token }: { apiBaseUrl: string; stats: any; token: string }) {
   const scratch = useApi<{ countries: any[] }>(apiBaseUrl, token, "/map/scratch", { countries: [] });
+  const points = useApi<{ points: CachePoint[] }>(apiBaseUrl, token, "/map/caches", { points: [] });
+  const [showAll, setShowAll] = useState(false);
+  const [sortMode, setSortMode] = useState("Highest");
+  const [sortReversed, setSortReversed] = useState(false);
+  const [regionProgress, setRegionProgress] = useState<Record<string, { completed: number; total: number }>>({});
+  const [countryFlagCodes, setCountryFlagCodes] = useState<Record<string, string>>({});
+  const [failedCountryFlags, setFailedCountryFlags] = useState<Set<string>>(() => new Set());
+  const [countryBadgesLoading, setCountryBadgesLoading] = useState(true);
+
+  useEffect(() => {
+    if (scratch.loading || points.loading) return;
+    let mounted = true;
+    setCountryBadgesLoading(true);
+    void Promise.all(scratch.data.countries.map(async (country) => {
+      const fallbackCompleted = (country.regions ?? []).filter((region: any) => region.name !== "Unknown" && region.count > 0).length;
+      const config = await boundaryConfigForLevel("regions", country.name);
+      if (!config.isDetail) return [country.name, { completed: fallbackCompleted, total: Math.max(1, fallbackCompleted) }] as const;
+      try {
+        const boundaries = await loadScratchGeoJson(config.url);
+        const total = new Set(boundaries.features
+          .map((feature) => String(feature.properties?.[config.propertyName] ?? "").trim())
+          .filter((name) => name && name !== "Unknown")).size;
+        const derived = await deriveBucketsFromBoundaries(points.data.points, config.url, config.propertyName);
+        return [country.name, { completed: derived.filter((region) => region.count > 0).length, total: Math.max(1, total) }] as const;
+      } catch {
+        return [country.name, { completed: fallbackCompleted, total: Math.max(1, fallbackCompleted) }] as const;
+      }
+    })).then((entries) => {
+      if (mounted) {
+        setRegionProgress(Object.fromEntries(entries));
+        setCountryBadgesLoading(false);
+      }
+    });
+    return () => {
+      mounted = false;
+    };
+  }, [points.data.points, points.loading, scratch.data.countries, scratch.loading]);
+
+  useEffect(() => {
+    let mounted = true;
+    void Promise.all(scratch.data.countries.map(async (country) => [country.name, await countryFlagCodeForScratch(country.name)] as const))
+      .then((entries) => {
+        if (!mounted) return;
+        setCountryFlagCodes(Object.fromEntries(entries.filter((entry): entry is readonly [string, string] => Boolean(entry[1]))));
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [scratch.data.countries]);
+
   const countryBadges = scratch.data.countries
     .map((country) => {
       const regions = country.regions?.filter((region: any) => region.name !== "Unknown") ?? [];
-      const completed = regions.filter((region: any) => region.count > 0).length;
-      const total = Math.max(1, regions.length);
+      const progress = regionProgress[country.name];
+      const completed = progress?.completed ?? regions.filter((region: any) => region.count > 0).length;
+      const total = progress?.total ?? Math.max(1, completed);
       return {
         name: country.name,
         current: total > 0 ? (completed / total) * 100 : 0,
         completed,
         total,
-        count: country.count
+        count: country.count,
+        thresholds: countryBadgeThresholds
       };
     })
-    .filter((country) => country.completed > 0)
-    .sort((a, b) => b.current - a.current || b.count - a.count || a.name.localeCompare(b.name));
-  const badges = mobileBadges(stats)
-    .map((badge) => ({ ...badge, level: achievedIndex(badge) }))
-    .sort((a, b) => b.level - a.level || (b.current ?? -1) - (a.current ?? -1) || a.name.localeCompare(b.name));
+    .filter((country) => country.completed > 0);
+  const direction = sortReversed ? -1 : 1;
+  const sortedCountryBadges = [...countryBadges].sort((a, b) => direction * (sortMode === "A-Z"
+    ? a.name.localeCompare(b.name)
+    : achievedIndex(b) - achievedIndex(a) || b.current - a.current || b.count - a.count || a.name.localeCompare(b.name)));
+  const badges = mobileBadges(stats).map((badge) => ({ ...badge, level: achievedIndex(badge) })).sort((a, b) => direction * (sortMode === "A-Z"
+    ? a.name.localeCompare(b.name)
+    : b.level - a.level || (b.current ?? -1) - (a.current ?? -1) || a.name.localeCompare(b.name)));
   const achieved = badges.filter((badge) => badge.level >= 0).length;
+  const countryAchieved = countryBadges.filter((badge) => achievedIndex(badge) >= 0).length;
   return (
-    <Panel title="Achievement badges" subtitle={`${achieved}/${badges.length} badges started`}>
+    <Panel title="Badges" subtitle={`${countryAchieved + achieved}/${countryBadges.length + badges.length}`}>
+      <View style={styles.badgeSortControls}>
+        {["Highest", "A-Z"].map((option) => (
+          <Pressable key={option} onPress={() => setSortMode(option)} style={[styles.badgeSortButton, sortMode === option && styles.badgeSortButtonActive]}>
+            <Text style={[styles.badgeSortButtonText, sortMode === option && styles.badgeSortButtonTextActive]}>{option === "Highest" ? (sortReversed ? "Lowest level" : "Highest level") : (sortReversed ? "Z-A" : "A-Z")}</Text>
+          </Pressable>
+        ))}
+        <Pressable onPress={() => setSortReversed((current) => !current)} style={[styles.badgeSortButton, sortReversed && styles.badgeSortButtonActive]}>
+          <Text style={[styles.badgeSortButtonText, sortReversed && styles.badgeSortButtonTextActive]}>{sortReversed ? "Normal" : "Reverse"}</Text>
+        </Pressable>
+      </View>
       {countryBadges.length > 0 ? (
         <View style={styles.countryBadgeBlock}>
-          <Text style={styles.sectionLabel}>Country badges</Text>
-          {countryBadges.slice(0, 30).map((country) => (
-            <View key={country.name} style={styles.countryBadgeRow}>
-              <View style={styles.flex}>
-                <Text style={styles.rowTitle}>{country.name}</Text>
-                <Text style={styles.muted}>{country.completed}/{country.total} regions - {country.count} finds</Text>
+          <View style={styles.badgeSectionHeading}><Text style={styles.sectionLabel}>Country badges</Text><Text style={styles.countryBadgeHeadingIcon}>◎</Text></View>
+          <View style={styles.badgeTierStrip}>{badgeTierSummary(countryBadges).map(({ tier, count }) => <Text key={tier} style={styles.badgeTierChip}>{count} {tier.toLowerCase()}</Text>)}</View>
+          {sortedCountryBadges.slice(0, showAll ? 30 : 3).map((country) => {
+            const level = Math.max(0, achievedIndex(country));
+            const palette = badgeTierPalettes[level];
+            const flagCode = countryFlagCodes[country.name];
+            return (
+            <View key={country.name} style={[styles.countryBadgeCard, { borderColor: palette.accent, shadowColor: palette.accent }]}>
+              <View style={styles.countryBadgeTopline}>
+                <Text style={[styles.countryBadgeTier, { color: palette.light, borderColor: palette.accent, backgroundColor: `${palette.accent}22` }]}>{badgeTiers[level]}</Text>
+                <Text style={[styles.countryBadgePercent, { color: palette.light }]}>{Math.round(country.current)}%</Text>
               </View>
-              <Text style={styles.badgeNumber}>{Math.round(country.current)}%</Text>
+              <View style={[styles.countryBadgeMedal, { borderColor: palette.accent, backgroundColor: palette.dark, shadowColor: palette.light }]}>
+                <View style={[styles.countryBadgeMedalInner, { borderColor: palette.light }]}>
+                  {flagCode && !failedCountryFlags.has(country.name) ? (
+                    <Image
+                      accessible={false}
+                      source={{ uri: `https://flagcdn.com/w160/${flagCode}.png` }}
+                      style={styles.countryBadgeFlag}
+                      onError={() => setFailedCountryFlags((current) => new Set(current).add(country.name))}
+                    />
+                  ) : <Text style={[styles.countryBadgeGlobe, { color: palette.light }]}>◎</Text>}
+                </View>
+              </View>
+              <View style={styles.countryBadgeRibbonWrap}>
+                <View style={[styles.countryBadgeRibbonTail, styles.countryBadgeRibbonTailLeft, { backgroundColor: palette.dark }]} />
+                <View style={[styles.countryBadgeRibbon, { backgroundColor: palette.light, borderColor: palette.dark }]}><Text numberOfLines={1} style={[styles.countryBadgeName, { color: palette.ink }]}>{country.name}</Text></View>
+                <View style={[styles.countryBadgeRibbonTail, styles.countryBadgeRibbonTailRight, { backgroundColor: palette.dark }]} />
+              </View>
+              <Text style={styles.countryBadgeRegions}>{country.completed} of {country.total} regions</Text>
+              <View style={styles.countryBadgeProgress}><View style={[styles.countryBadgeProgressFill, { width: `${Math.min(100, country.current)}%`, backgroundColor: palette.light }]} /></View>
             </View>
-          ))}
+          );})}
+          {countryBadgesLoading ? <ActivityIndicator color="#f3b34d" /> : null}
         </View>
       ) : null}
-      <Text style={styles.sectionLabel}>Achievement badges</Text>
-      {badges.map((badge) => {
+      <View style={styles.badgeSectionHeading}><Text style={styles.sectionLabel}>Achievement badges</Text><Text style={styles.badgeSectionCount}>{achieved}/{badges.length}</Text></View>
+      <View style={styles.badgeTierStrip}>{badgeTierSummary(badges).map(({ tier, count }) => <Text key={tier} style={styles.badgeTierChip}>{count} {tier.toLowerCase()}</Text>)}</View>
+      {badges.slice(0, showAll ? badges.length : 6).map((badge) => {
         const tier = badge.level >= 0 ? badgeTiers[badge.level] : "Locked";
+        const palette = badge.level >= 0 ? badgeTierPalettes[badge.level] : { accent: "#3c473e", light: "#66736b", dark: "#26322a", ink: "#91a79c" };
         return (
-          <View key={badge.id} style={styles.badgeRow}>
+          <View key={badge.id} style={[styles.badgeRow, badge.level >= 0 && { backgroundColor: `${palette.accent}12`, borderColor: `${palette.accent}55` }]}>
             <View style={styles.badgeHeader}>
+              <View style={styles.badgePortraitWrap}>
+                <View style={[styles.badgePortrait, { backgroundColor: palette.accent, borderColor: palette.dark }]}>
+                  <View style={[styles.badgePortraitInner, { backgroundColor: palette.light }]}><Text style={[styles.badgePortraitMark, { color: palette.ink }]}>{badgeMarks[badge.id] ?? "★"}</Text></View>
+                </View>
+                <View style={[styles.badgePortraitRibbon, { backgroundColor: badge.level >= 0 ? "#efe4a6" : "#465248" }]}><Text numberOfLines={1} style={[styles.badgePortraitRibbonText, badge.level < 0 && styles.badgePortraitRibbonTextLocked]}>{badge.name.replace(/^The /, "")}</Text></View>
+              </View>
               <View style={styles.flex}>
                 <Text style={styles.rowTitle}>{badge.name}</Text>
                 <Text style={styles.muted}>{tier} - {badge.metric}</Text>
               </View>
               <View style={styles.badgeNumbers}>
-                <Text style={styles.badgeNumber}>{text(badge.current ?? "--")}</Text>
-                <Text style={styles.muted}>-{remainingForBadge(badge)}</Text>
+                <View style={styles.badgeNumberGroup}><Text style={styles.badgeNumberLabel}>CURRENT</Text><Text style={styles.badgeNumber}>{text(badge.current ?? "--")}</Text></View>
+                <View style={styles.badgeNumberGroup}><Text style={styles.badgeNumberLabel}>REMAINING</Text><Text style={styles.badgeRemaining}>{remainingForBadge(badge)}</Text></View>
               </View>
             </View>
             <View style={styles.badgeCells}>
@@ -2459,6 +2647,7 @@ function BadgesPanel({ apiBaseUrl, stats, token }: { apiBaseUrl: string; stats: 
           </View>
         );
       })}
+      {badges.length > 6 || countryBadges.length > 3 ? <SecondaryButton label={showAll ? "Show highlights only" : `View all ${badges.length} badges`} onPress={() => setShowAll((current) => !current)} /> : null}
     </Panel>
   );
 }
@@ -2470,33 +2659,70 @@ function LoadState({ loading, error }: { loading: boolean; error: string | null 
 }
 
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: "#07110d" },
-  safeCenter: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: "#07110d" },
+  safe: { flex: 1, backgroundColor: "#08120e" },
+  safeCenter: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: "#08120e" },
   authPage: { flexGrow: 1, justifyContent: "center", padding: 22, gap: 14 },
+  authBrand: { flexDirection: "row", alignItems: "center", gap: 12 },
+  authBrandIcon: { width: 54, height: 54, borderRadius: 12 },
   brand: { color: "#f3b34d", fontSize: 42, fontWeight: "900" },
-  brandSmall: { color: "#f3b34d", fontSize: 22, fontWeight: "900" },
-  shellHeader: { paddingHorizontal: 18, paddingTop: 10, paddingBottom: 12, flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
-  logoutButton: { borderColor: "#365346", borderWidth: 1, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 8 },
-  logoutText: { color: "#dce8df", fontWeight: "700" },
-  navWrap: { borderTopWidth: 1, borderBottomWidth: 1, borderColor: "#173326" },
-  nav: { paddingHorizontal: 12, paddingVertical: 10, gap: 8 },
-  navItem: { borderRadius: 8, paddingHorizontal: 13, paddingVertical: 8, backgroundColor: "#10251b" },
-  navItemActive: { backgroundColor: "#f3b34d" },
-  navText: { color: "#b9c8bf", fontWeight: "800" },
-  navTextActive: { color: "#162016" },
+  brandSmall: { color: "#f2f8f4", fontSize: 19, fontWeight: "900", letterSpacing: -0.5 },
+  shellHeader: { minHeight: 62, paddingHorizontal: 18, paddingVertical: 9, flexDirection: "row", alignItems: "center", justifyContent: "space-between", borderBottomWidth: 1, borderColor: "#193126" },
+  brandLockup: { flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: 10, marginRight: 12 },
+  headerBrandIcon: { width: 35, height: 35, borderRadius: 10 },
+  headerBrandText: { flex: 1, minWidth: 0 },
+  shellContext: { color: "#799387", fontSize: 11, fontWeight: "700", marginTop: 1 },
+  avatarButton: { width: 38, height: 38, borderRadius: 19, alignItems: "center", justifyContent: "center", backgroundColor: "#173126", borderWidth: 1, borderColor: "#345444" },
+  avatarText: { color: "#f3b34d", fontSize: 15, fontWeight: "900" },
+  bottomNav: { minHeight: 68, flexDirection: "row", alignItems: "center", justifyContent: "space-around", paddingHorizontal: 6, paddingTop: 6, paddingBottom: 4, backgroundColor: "#0b1812", borderTopWidth: 1, borderColor: "#1b3629" },
+  bottomNavItem: { flex: 1, alignItems: "center", justifyContent: "center", gap: 2 },
+  bottomNavIcon: { minWidth: 38, height: 27, paddingHorizontal: 10, borderRadius: 14, alignItems: "center", justifyContent: "center" },
+  bottomNavIconActive: { backgroundColor: "#f3b34d" },
+  bottomNavGlyph: { color: "#8fa69a", fontSize: 18, lineHeight: 21, fontWeight: "900" },
+  bottomNavGlyphActive: { color: "#142018" },
+  bottomNavLabel: { color: "#778e82", fontSize: 10, fontWeight: "700" },
+  bottomNavLabelActive: { color: "#e9f2ec" },
   content: { flex: 1 },
-  contentInner: { padding: 16, paddingBottom: 32, gap: 14 },
-  pageTitle: { marginBottom: 2 },
-  eyebrow: { color: "#85a696", fontSize: 12, textTransform: "uppercase", letterSpacing: 0, fontWeight: "800" },
-  title: { color: "#edf7ef", fontSize: 34, fontWeight: "900" },
+  contentInner: { paddingHorizontal: 17, paddingTop: 20, paddingBottom: 30, gap: 15 },
+  pageTitle: { marginBottom: 3, gap: 3 },
+  eyebrow: { color: "#83a393", fontSize: 11, textTransform: "uppercase", letterSpacing: 1.1, fontWeight: "900" },
+  title: { color: "#f1f8f3", fontSize: 32, lineHeight: 37, letterSpacing: -1, fontWeight: "900" },
   muted: { color: "#91a79c", fontSize: 13 },
+  heroCard: { minHeight: 238, overflow: "hidden", borderRadius: 24, padding: 20, justifyContent: "flex-end", backgroundColor: "#1d5534", borderWidth: 1, borderColor: "#34714d" },
+  heroGlow: { position: "absolute", width: 210, height: 210, borderRadius: 105, right: -60, top: -85, backgroundColor: "#377a4e", opacity: 0.72 },
+  heroKicker: { color: "#c9e2d3", fontSize: 11, fontWeight: "900", letterSpacing: 1.2 },
+  heroValue: { color: "#fff8e9", fontSize: 62, lineHeight: 68, letterSpacing: -2.5, fontWeight: "900" },
+  heroLabel: { color: "#d2e4d8", fontSize: 14, fontWeight: "700" },
+  heroActions: { flexDirection: "row", gap: 9, marginTop: 19 },
+  heroPrimaryAction: { backgroundColor: "#f3b34d", borderRadius: 13, paddingHorizontal: 15, paddingVertical: 12 },
+  heroPrimaryActionText: { color: "#172016", fontWeight: "900" },
+  heroSecondaryAction: { backgroundColor: "#143b25", borderRadius: 13, paddingHorizontal: 15, paddingVertical: 12 },
+  heroSecondaryActionText: { color: "#ecf7ef", fontWeight: "900" },
+  quickActions: { flexDirection: "row", gap: 8 },
+  quickAction: { flex: 1, minWidth: 0, minHeight: 72, alignItems: "center", justifyContent: "center", gap: 6, borderRadius: 15, backgroundColor: "#0f2119", borderWidth: 1, borderColor: "#203c2f" },
+  quickActionIcon: { color: "#f3b34d", fontSize: 19, fontWeight: "900" },
+  quickActionLabel: { color: "#c8d7ce", fontSize: 10, fontWeight: "800", textAlign: "center" },
+  exploreIntro: { borderRadius: 18, backgroundColor: "#163525", borderWidth: 1, borderColor: "#28543b", padding: 17, gap: 4 },
+  exploreIntroTitle: { color: "#f1f8f3", fontSize: 19, fontWeight: "900" },
+  exploreIntroText: { color: "#a8bdb1", fontSize: 13, lineHeight: 19 },
+  exploreGroup: { gap: 11, marginTop: 4 },
+  exploreGroupHeading: { gap: 2, paddingHorizontal: 2 },
+  exploreGroupTitle: { color: "#e8f2eb", fontSize: 17, fontWeight: "900" },
+  featureGrid: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
+  featureCard: { width: "48%", minHeight: 145, borderRadius: 18, padding: 15, justifyContent: "flex-end", backgroundColor: "#0e2118", borderWidth: 1, borderColor: "#234234" },
+  featureCardTop: { position: "absolute", left: 14, right: 14, top: 14, flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  featureIcon: { width: 38, height: 38, borderRadius: 12, backgroundColor: "#1b422d", alignItems: "center", justifyContent: "center" },
+  featureIconText: { color: "#f3b34d", fontSize: 17, fontWeight: "900" },
+  featureArrow: { color: "#6f8d7d", fontSize: 17, fontWeight: "900" },
+  featureTitle: { color: "#edf6f0", fontSize: 15, fontWeight: "900" },
+  featureSubtitle: { color: "#839b8f", fontSize: 11, lineHeight: 15, marginTop: 3 },
+  pressed: { opacity: 0.68, transform: [{ scale: 0.98 }] },
   authAlternative: { color: "#91a79c", fontSize: 13, textAlign: "center" },
   note: { color: "#dce8df", backgroundColor: "#10251b", borderRadius: 8, padding: 12 },
   error: { color: "#ffb4a8", backgroundColor: "#421c17", borderRadius: 8, padding: 12 },
   field: { gap: 6 },
   fieldLabel: { color: "#c9d8cf", fontWeight: "800" },
-  input: { borderWidth: 1, borderColor: "#294839", borderRadius: 8, color: "#eef8f0", backgroundColor: "#0c1b14", paddingHorizontal: 12, paddingVertical: 11 },
-  serverCard: { backgroundColor: "#0d1f17", borderColor: "#1d3a2c", borderWidth: 1, borderRadius: 10, padding: 14, gap: 10 },
+  input: { borderWidth: 1, borderColor: "#294839", borderRadius: 13, color: "#eef8f0", backgroundColor: "#0c1b14", paddingHorizontal: 14, paddingVertical: 13 },
+  serverCard: { backgroundColor: "#0d1f17", borderColor: "#1d3a2c", borderWidth: 1, borderRadius: 18, padding: 16, gap: 11 },
   serverSummary: { flexDirection: "row", alignItems: "center", gap: 12 },
   serverLabel: { color: "#91a79c", fontSize: 12, fontWeight: "800", textTransform: "uppercase" },
   serverHost: { color: "#edf7ef", fontSize: 16, fontWeight: "900", marginTop: 2 },
@@ -2507,19 +2733,19 @@ const styles = StyleSheet.create({
   serverChangeButton: { alignSelf: "flex-start", paddingVertical: 4 },
   serverEditor: { borderTopWidth: 1, borderColor: "#294839", paddingTop: 12, gap: 10 },
   textArea: { minHeight: 110, textAlignVertical: "top" },
-  primaryButton: { backgroundColor: "#f3b34d", borderRadius: 8, paddingVertical: 13, alignItems: "center", marginTop: 4 },
+  primaryButton: { backgroundColor: "#f3b34d", borderRadius: 13, paddingVertical: 14, alignItems: "center", marginTop: 4 },
   primaryButtonText: { color: "#172016", fontWeight: "900" },
-  secondaryButton: { borderColor: "#365346", borderWidth: 1, borderRadius: 8, paddingVertical: 12, paddingHorizontal: 12, alignItems: "center", marginTop: 4 },
+  secondaryButton: { borderColor: "#365346", borderWidth: 1, borderRadius: 13, paddingVertical: 13, paddingHorizontal: 12, alignItems: "center", marginTop: 4 },
   secondaryButtonDanger: { borderColor: "#8d4339" },
   secondaryButtonText: { color: "#dce8df", fontWeight: "900" },
   textButton: { padding: 8, alignItems: "center" },
   textButtonText: { color: "#f3b34d", fontWeight: "800" },
-  panel: { backgroundColor: "#0d1f17", borderColor: "#1d3a2c", borderWidth: 1, borderRadius: 8, padding: 14, gap: 12 },
+  panel: { backgroundColor: "#0d1f17", borderColor: "#1d3a2c", borderWidth: 1, borderRadius: 18, padding: 16, gap: 13 },
   panelHeading: { gap: 2 },
-  panelTitle: { color: "#edf7ef", fontSize: 19, fontWeight: "900" },
+  panelTitle: { color: "#edf7ef", fontSize: 18, letterSpacing: -0.3, fontWeight: "900" },
   statGrid: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
-  statCard: { width: "48%", backgroundColor: "#10251b", borderColor: "#234536", borderWidth: 1, borderRadius: 8, padding: 13 },
-  statValue: { color: "#f3b34d", fontSize: 24, fontWeight: "900" },
+  statCard: { width: "48%", minHeight: 83, justifyContent: "center", backgroundColor: "#10251b", borderColor: "#234536", borderWidth: 1, borderRadius: 16, padding: 14 },
+  statValue: { color: "#f3b34d", fontSize: 25, letterSpacing: -0.6, fontWeight: "900" },
   bars: { gap: 8 },
   barRow: { flexDirection: "row", alignItems: "center", gap: 8 },
   barLabel: { color: "#c9d8cf", width: 88, fontSize: 12, fontWeight: "700" },
@@ -2530,17 +2756,17 @@ const styles = StyleSheet.create({
   keyValueText: { color: "#edf7ef", fontWeight: "800" },
   rowLine: { borderTopWidth: 1, borderColor: "#1b3729", paddingVertical: 10, gap: 3 },
   rowTitle: { color: "#edf7ef", fontWeight: "800" },
-  breakdownGroup: { gap: 8, marginTop: 4 },
+  breakdownGroup: { borderTopWidth: 1, borderColor: "#1b3729" },
+  breakdownToggle: { minHeight: 58, flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 9 },
+  breakdownChevron: { width: 28, height: 28, borderRadius: 14, overflow: "hidden", color: "#f3b34d", backgroundColor: "#173326", textAlign: "center", lineHeight: 27, fontSize: 19, fontWeight: "700" },
+  breakdownContent: { paddingBottom: 14 },
   sectionLabel: { color: "#dce8df", fontWeight: "900", marginTop: 6 },
-  segmented: { flexDirection: "row", gap: 6, backgroundColor: "#10251b", borderRadius: 8, padding: 4 },
-  segmentButton: { flex: 1, borderRadius: 6, paddingVertical: 9, alignItems: "center" },
+  segmented: { flexDirection: "row", gap: 5, backgroundColor: "#10251b", borderRadius: 14, padding: 4 },
+  segmentButton: { flex: 1, borderRadius: 11, paddingVertical: 10, alignItems: "center" },
   segmentButtonActive: { backgroundColor: "#f3b34d" },
   segmentText: { color: "#b9c8bf", fontWeight: "800", textTransform: "capitalize" },
   segmentTextActive: { color: "#172016" },
   actionRow: { flexDirection: "row", gap: 10, alignItems: "stretch" },
-  workflowStep: { flexDirection: "row", alignItems: "center", gap: 10, borderTopWidth: 1, borderColor: "#1b3729", paddingVertical: 11 },
-  workflowNumber: { width: 28, height: 28, borderRadius: 14, backgroundColor: "#244535", color: "#dce8df", textAlign: "center", lineHeight: 28, fontWeight: "900" },
-  workflowNumberDone: { backgroundColor: "#f3b34d", color: "#172016" },
   inlineForm: { flexDirection: "row", gap: 8, alignItems: "center" },
   smallButton: { backgroundColor: "#f3b34d", borderRadius: 8, paddingHorizontal: 15, paddingVertical: 12 },
   smallButtonText: { color: "#172016", fontWeight: "900" },
@@ -2549,15 +2775,17 @@ const styles = StyleSheet.create({
   attemptRow: { flexDirection: "row", gap: 10, alignItems: "center", borderTopWidth: 1, borderColor: "#1b3729", paddingVertical: 10 },
   routeGroup: { borderTopWidth: 1, borderColor: "#294839", paddingTop: 14, marginTop: 6, gap: 3 },
   mysteryImage: { width: "100%", height: 210, borderRadius: 8, backgroundColor: "#14271d" },
-  optionRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 5 },
-  optionMark: { width: 22, height: 22, borderWidth: 1, borderColor: "#668074", borderRadius: 5, color: "#172016", textAlign: "center", lineHeight: 20, fontWeight: "900" },
-  optionMarkActive: { backgroundColor: "#f3b34d", borderColor: "#f3b34d" },
-  codeText: { color: "#dce8df", backgroundColor: "#07110d", padding: 10, borderRadius: 6, fontFamily: Platform.select({ ios: "Menlo", android: "monospace", default: "monospace" }), fontSize: 11, lineHeight: 16 },
-  codePreview: { color: "#b9c8bf", backgroundColor: "#07110d", padding: 10, minHeight: 150, borderRadius: 6, fontFamily: Platform.select({ ios: "Menlo", android: "monospace", default: "monospace" }), fontSize: 10, lineHeight: 14 },
   linkText: { color: "#f3b34d", fontWeight: "800" },
-  dtGrid: { flexDirection: "row", flexWrap: "wrap", gap: 4 },
-  dtCell: { width: "10.5%", aspectRatio: 1, borderRadius: 4, backgroundColor: "#f3b34d", alignItems: "center", justifyContent: "center" },
-  dtText: { color: "#162016", fontSize: 10, fontWeight: "900" },
+  dtChart: { gap: 6 },
+  dtAxisTitle: { color: "#dce8df", fontSize: 12, fontWeight: "900" },
+  dtMatrix: { width: "100%", gap: 3 },
+  dtRow: { flexDirection: "row", alignItems: "center", gap: 3 },
+  dtRowLabel: { width: 28, color: "#b9c8bf", fontSize: 9, textAlign: "right", paddingRight: 3, fontWeight: "800" },
+  dtColumnLabel: { flex: 1, color: "#b9c8bf", fontSize: 8, textAlign: "center", fontWeight: "800" },
+  dtCell: { flex: 1, aspectRatio: 1, borderRadius: 4, alignItems: "center", justifyContent: "center" },
+  dtText: { color: "#dce8df", fontSize: 9, fontWeight: "800" },
+  dtTextStrong: { color: "#172016", fontWeight: "900" },
+  dtTerrainTitle: { color: "#dce8df", fontSize: 12, fontWeight: "900", textAlign: "right", marginTop: 3 },
   calendarWrap: { gap: 10 },
   calendarGrid: { gap: 8 },
   calendarMonth: { flexDirection: "row", alignItems: "center", gap: 8 },
@@ -2570,9 +2798,16 @@ const styles = StyleSheet.create({
   monthMatrixYear: { width: 42, color: "#c9d8cf", fontWeight: "800" },
   monthMatrixCells: { flex: 1, flexDirection: "row", gap: 4 },
   monthMatrixCell: { flex: 1, aspectRatio: 1, borderRadius: 3, backgroundColor: "#244535" },
+  mapLegend: { flexDirection: "row", alignItems: "center", gap: 13, paddingHorizontal: 2 },
+  legendItem: { flexDirection: "row", alignItems: "center", gap: 5 },
+  legendDot: { width: 8, height: 8, borderRadius: 4 },
+  mapHint: { flex: 1, color: "#6f8a7c", fontSize: 10, textAlign: "right" },
   nativeMapFrame: { height: 320, borderRadius: 8, overflow: "hidden", backgroundColor: "#14271d" },
+  scratchNativeMapFrame: { height: 420, borderRadius: 8, overflow: "hidden", backgroundColor: "#14271d" },
   nativeMap: { position: "absolute", top: 0, right: 0, bottom: 0, left: 0 },
-  scratchMapLoading: { height: 320, borderRadius: 8, backgroundColor: "#14271d", alignItems: "center", justifyContent: "center" },
+  mapUnavailable: { minHeight: 180, borderRadius: 14, padding: 18, justifyContent: "center", gap: 6, backgroundColor: "#14271d", borderWidth: 1, borderColor: "#294839" },
+  mapUnavailableTitle: { color: "#edf7ef", fontSize: 17, fontWeight: "900" },
+  scratchMapLoading: { height: 420, borderRadius: 8, backgroundColor: "#14271d", alignItems: "center", justifyContent: "center" },
   scratchMapFallback: { minHeight: 320, borderRadius: 8, backgroundColor: "#14271d", padding: 12, gap: 9, justifyContent: "center" },
   scratchFallbackRow: { flexDirection: "row", alignItems: "center", gap: 8 },
   scratchFallbackLabel: { width: 92, color: "#dce8df", fontWeight: "800", fontSize: 12 },
@@ -2588,22 +2823,54 @@ const styles = StyleSheet.create({
   countryRowActive: { backgroundColor: "#132c20" },
   countrySwatch: { width: 18, height: 32, borderRadius: 4, backgroundColor: "#f3b34d" },
   importRow: { flexDirection: "row", alignItems: "center", gap: 10, borderTopWidth: 1, borderColor: "#1b3729", paddingVertical: 10 },
-  statusPill: { color: "#162016", backgroundColor: "#f3b34d", borderRadius: 8, overflow: "hidden", paddingHorizontal: 8, paddingVertical: 4, fontSize: 11, fontWeight: "900" },
+  importError: { color: "#ffb4a8", fontSize: 12, marginTop: 3 },
+  statusPill: { color: "#3c2d0c", backgroundColor: "#f3b34d", borderRadius: 999, overflow: "hidden", paddingHorizontal: 9, paddingVertical: 5, fontSize: 10, fontWeight: "900" },
+  statusPillComplete: { color: "#dff8e8", backgroundColor: "#22613b" },
+  statusPillFailed: { color: "#ffe4df", backgroundColor: "#7a3128" },
   toggleRow: { borderTopWidth: 1, borderColor: "#1b3729", paddingVertical: 10 },
   toggleRowActive: { backgroundColor: "#172f23" },
-  tokenCard: { borderTopWidth: 1, borderColor: "#1b3729", paddingTop: 10, gap: 10 },
-  tokenRow: { flexDirection: "row", alignItems: "center", gap: 12 },
-  commandCard: { backgroundColor: "#10251b", borderColor: "#234536", borderWidth: 1, borderRadius: 8, padding: 10, gap: 8 },
-  commandHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12 },
-  copyButton: { backgroundColor: "#1a3327", borderRadius: 7, paddingHorizontal: 10, paddingVertical: 7 },
-  copyButtonText: { color: "#f3b34d", fontWeight: "900" },
-  commandText: { color: "#dce8df", fontSize: 12, lineHeight: 17 },
-  countryBadgeBlock: { gap: 8 },
-  countryBadgeRow: { flexDirection: "row", alignItems: "center", gap: 12, borderTopWidth: 1, borderColor: "#1b3729", paddingTop: 10 },
-  badgeRow: { borderTopWidth: 1, borderColor: "#1b3729", paddingTop: 11, gap: 8 },
-  badgeHeader: { flexDirection: "row", alignItems: "center", gap: 12 },
-  badgeNumbers: { alignItems: "flex-end" },
+  badgeSortControls: { flexDirection: "row", flexWrap: "wrap", justifyContent: "flex-end", gap: 6, marginTop: -42, marginBottom: 9, marginLeft: 95, minHeight: 34 },
+  badgeSortButton: { minHeight: 32, justifyContent: "center", paddingHorizontal: 10, paddingVertical: 6, borderWidth: 1, borderColor: "#294839", borderRadius: 8, backgroundColor: "#10251b" },
+  badgeSortButtonActive: { borderColor: "#4a8a65", backgroundColor: "#173b28" },
+  badgeSortButtonText: { color: "#c7d5cc", fontSize: 11, fontWeight: "800" },
+  badgeSortButtonTextActive: { color: "#edf7ef" },
+  badgeSectionHeading: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: 5 },
+  badgeSectionCount: { color: "#f3b34d", fontWeight: "900" },
+  countryBadgeHeadingIcon: { color: "#cbd9d0", fontSize: 20, fontWeight: "900" },
+  badgeTierStrip: { flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between", columnGap: 8, rowGap: 3, paddingHorizontal: 8, paddingVertical: 7, borderWidth: 1, borderColor: "#523c20", borderRadius: 6, backgroundColor: "#211c12" },
+  badgeTierChip: { color: "#d6ab68", minWidth: "22%", fontSize: 9, fontWeight: "800" },
+  countryBadgeBlock: { gap: 9 },
+  countryBadgeCard: { minHeight: 205, alignItems: "center", gap: 7, overflow: "hidden", borderWidth: 1, borderRadius: 12, backgroundColor: "#10231a", paddingHorizontal: 14, paddingTop: 12, paddingBottom: 13, shadowOpacity: 0.13, shadowRadius: 12, elevation: 2 },
+  countryBadgeTopline: { width: "100%", flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  countryBadgeTier: { overflow: "hidden", borderWidth: 1, borderRadius: 999, paddingHorizontal: 7, paddingVertical: 3, fontSize: 10, fontWeight: "900", letterSpacing: 0.8, textTransform: "uppercase" },
+  countryBadgePercent: { fontSize: 11, fontWeight: "800" },
+  countryBadgeMedal: { width: 82, height: 82, marginTop: -1, marginBottom: -5, borderRadius: 41, borderWidth: 5, alignItems: "center", justifyContent: "center", shadowOpacity: 0.42, shadowRadius: 10, shadowOffset: { width: 0, height: 6 }, elevation: 6 },
+  countryBadgeMedalInner: { width: 66, height: 66, overflow: "hidden", borderRadius: 33, borderWidth: 2, alignItems: "center", justifyContent: "center", backgroundColor: "#e8eee9" },
+  countryBadgeFlag: { width: 66, height: 66, borderRadius: 33, resizeMode: "cover" },
+  countryBadgeGlobe: { fontSize: 32, fontWeight: "900" },
+  countryBadgeRibbonWrap: { width: "100%", minHeight: 29, flexDirection: "row", alignItems: "center", justifyContent: "center" },
+  countryBadgeRibbon: { width: "88%", minHeight: 27, zIndex: 2, alignItems: "center", justifyContent: "center", paddingHorizontal: 12, paddingVertical: 4, borderWidth: 1, shadowColor: "#000", shadowOpacity: 0.3, shadowRadius: 4, shadowOffset: { width: 0, height: 3 }, elevation: 3 },
+  countryBadgeRibbonTail: { position: "absolute", width: 24, height: 20, top: 7, zIndex: 1 },
+  countryBadgeRibbonTailLeft: { left: 0, transform: [{ rotate: "8deg" }] },
+  countryBadgeRibbonTailRight: { right: 0, transform: [{ rotate: "-8deg" }] },
+  countryBadgeName: { width: "100%", fontSize: 14, lineHeight: 17, fontWeight: "900", textAlign: "center" },
+  countryBadgeRegions: { width: "100%", marginTop: 1, color: "#91a79c", fontSize: 11, textAlign: "center" },
+  countryBadgeProgress: { width: "100%", height: 4, marginTop: 2, borderRadius: 999, overflow: "hidden", backgroundColor: "#1a3327" },
+  countryBadgeProgressFill: { height: "100%", borderRadius: 999, backgroundColor: "#f3b34d" },
+  badgeRow: { minHeight: 142, borderWidth: 1, borderColor: "#23392e", borderRadius: 8, backgroundColor: "#102119", padding: 12, gap: 10 },
+  badgeHeader: { flexDirection: "row", alignItems: "center", gap: 10 },
+  badgePortraitWrap: { width: 80, flexShrink: 0, alignItems: "center" },
+  badgePortrait: { width: 64, height: 64, borderRadius: 32, backgroundColor: "#1a3327", borderWidth: 2, alignItems: "center", justifyContent: "center", shadowColor: "#000", shadowOpacity: 0.25, shadowRadius: 5, shadowOffset: { width: 0, height: 4 }, elevation: 3 },
+  badgePortraitInner: { width: 42, height: 42, borderRadius: 21, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: "#07110b2e" },
+  badgePortraitMark: { fontSize: 24, fontWeight: "900" },
+  badgePortraitRibbon: { width: 80, minHeight: 17, marginTop: -8, zIndex: 2, justifyContent: "center", paddingHorizontal: 5, paddingVertical: 2, borderWidth: 1, borderColor: "#07110bb3", shadowColor: "#000", shadowOpacity: 0.25, shadowRadius: 2, elevation: 2 },
+  badgePortraitRibbonText: { color: "#07110b", fontSize: 7, lineHeight: 9, fontWeight: "900", textAlign: "center" },
+  badgePortraitRibbonTextLocked: { color: "#c0cec5" },
+  badgeNumbers: { width: 58, gap: 5, alignItems: "flex-end" },
+  badgeNumberGroup: { alignItems: "flex-end" },
+  badgeNumberLabel: { color: "#71877b", fontSize: 7, fontWeight: "900" },
   badgeNumber: { color: "#f3b34d", fontWeight: "900" },
+  badgeRemaining: { color: "#b9c8bf", fontSize: 11, fontWeight: "800" },
   badgeCells: { flexDirection: "row", gap: 5 },
   badgeCell: { flex: 1, height: 8, borderRadius: 4, backgroundColor: "#1a3327" },
   badgeCellEarned: { backgroundColor: "#c88935" },

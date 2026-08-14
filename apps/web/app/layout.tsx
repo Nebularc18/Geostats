@@ -9,10 +9,12 @@ export const metadata: Metadata = {
   manifest: "/manifest.webmanifest",
   icons: {
     icon: [
+      { url: "/geostats-icon-192.png", type: "image/png", sizes: "192x192" },
       { url: "/geostats-favicon.svg", type: "image/svg+xml" },
       { url: "/geostats-icon.svg", type: "image/svg+xml", sizes: "1024x1024" }
     ],
-    apple: [{ url: "/geostats-icon.svg", type: "image/svg+xml" }]
+    shortcut: [{ url: "/favicon.ico" }],
+    apple: [{ url: "/geostats-apple-touch-icon.png", type: "image/png", sizes: "180x180" }]
   }
 };
 

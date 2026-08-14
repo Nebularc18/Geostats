@@ -33,7 +33,12 @@
     "web": "expo start --web",
     "prebuild:android": "expo prebuild --platform android",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsc -p tsconfig.test.json --noEmit && tsx --test upload.test.ts"
+    "test": "tsc -p tsconfig.test.json --noEmit && tsx --test import-refresh.test.ts mobile-map.test.ts upload.test.ts"
+  },
+  "expo": {
+    "autolinking": {
+      "searchPaths": ["../../node_modules"]
+    }
   },
   "private": true
 }
