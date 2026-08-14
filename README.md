@@ -1,18 +1,39 @@
 # Geostats
 
-Local-first, cloud-ready geocaching statistics for GPX and Pocket Query imports.
+Self-hosted geocaching statistics for the web and Android, built around GPX,
+Pocket Query, and owner-log imports.
+
+## Features
+
+- Import My Finds GPX files, Pocket Query ZIP archives, and owner-log CSV files.
+- Explore find statistics, milestones, achievement badges, FTF history, hides,
+  and received logs.
+- Browse finds and hides on a map, or track country, region, and county coverage
+  with the scratch map.
+- Plan caching trips and keep a synchronized mystery-solving journal, including
+  computer access tokens for AI-assisted workflows.
+- Use the responsive web app or the Expo-based Android app against the same API.
+- Export, import, or permanently delete all account data from profile settings.
 
 ## Stack
 
 - `pnpm` workspaces and Turborepo
 - Next.js web app in `apps/web`
+- Expo/React Native mobile app in `apps/mobile`
 - NestJS API in `apps/api`
 - BullMQ worker in `apps/worker`
+- Collector utilities in `apps/tools`
 - Prisma schema and migrations in `packages/db`
 - Shared types in `packages/shared`
 - Reusable statistics logic in `packages/stats`
 - GPX/ZIP parsing in `packages/gpx-parser`
 - PostgreSQL/PostGIS, Redis, and MinIO through Docker Compose
+
+## Requirements
+
+- Docker Engine with Docker Compose for the full local stack
+- Node.js 22 and Corepack when running workspace commands on the host
+- PowerShell for the automated agent/dev bootstrap script
 
 ## Local Setup
 
@@ -203,7 +224,9 @@ The Dockhand Compose file includes a one-shot `migrate` service, so fresh databa
 
 ## GitHub Container Images
 
-Every push to `main` builds and publishes multi-platform `linux/amd64` and `linux/arm64` app images to GitHub Container Registry:
+Run the **Docker Images** workflow manually in GitHub Actions to build and
+publish multi-platform `linux/amd64` and `linux/arm64` app images to GitHub
+Container Registry:
 
 ```text
 ghcr.io/OWNER/REPO/api:latest
@@ -212,7 +235,10 @@ ghcr.io/OWNER/REPO/web:latest
 ```
 
 Each image is also tagged with the commit SHA as `sha-<commit>`.
-Each workflow run also publishes a shared timestamp release tag for all app images, for example `release-20260613-173045-utc`.
+Each workflow run dispatched from `main` also publishes a shared timestamp
+release tag for all app images, for example
+`release-20260613-173045-utc`; runs dispatched from other branches publish only
+the commit SHA tag.
 
 Optionally configure this GitHub Actions repository variable to override the Next.js `web` image API URL default (`http://localhost:3001`):
 
@@ -244,25 +270,29 @@ Replace `OWNER/REPO` with the lowercase GitHub repository path. If the package v
 docker login ghcr.io
 ```
 
-## MVP Workflow
+## Import Workflow
 
 1. Register a local account.
 2. Create a geocaching profile with your GC username and optional home coordinates.
 3. Upload a `.gpx` My Finds file or `.zip` Pocket Query.
 4. The API stores the original file in MinIO and queues a BullMQ import job.
 5. The worker parses GPX data, upserts cache metadata, stores finds when found-log data is present, and recalculates stats.
-6. The web dashboard, stats page, import history, and map placeholder read from the API.
+6. The web and mobile dashboards, statistics, import history, and maps read from
+   the API.
 
 ## Useful Commands
 
 ```powershell
 corepack pnpm build
+corepack pnpm lint
+corepack pnpm test
 corepack pnpm typecheck
 corepack pnpm db:generate
 corepack pnpm db:migrate
 corepack pnpm --filter @geostats/api dev
 corepack pnpm --filter @geostats/worker dev
 corepack pnpm --filter @geostats/web dev
+corepack pnpm mobile:start
 ```
 
 ## Mobile
@@ -343,7 +373,10 @@ Configure the following before the first workflow run:
 
 The repository does not contain signing keystores or service-account credentials. Preview and production signing credentials and Play submission credentials remain managed by EAS.
 
-After a successful `preview-release` run, open the repository's **Releases** page in GitHub and select the newest **Geostats Mobile ... Preview** prerelease. Expand **Assets** in the GitHub mobile app, then tap the `.apk` file. A failed build never creates a release, which is why the earlier failed 0.2.0 run left only the 0.1.0 release visible.
+After a successful `preview-release` run, open the repository's **Releases**
+page in GitHub and select the newest **Geostats Mobile ... Preview** prerelease.
+Expand **Assets** in the GitHub mobile app, then tap the `.apk` file. Failed
+builds do not create a release.
 
 ## Architecture Notes
 
@@ -353,7 +386,7 @@ After a successful `preview-release` run, open the repository's **Releases** pag
 - Object storage uses S3-compatible environment variables so MinIO can be replaced with cloud S3 later.
 - The mobile app uses the same API contracts and shared packages as web.
 
-## Not In The MVP
+## Not Yet Included
 
 - public profile sharing
 - friend comparison
