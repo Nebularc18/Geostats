@@ -14,13 +14,13 @@ import {
 import { FileInterceptor } from "@nestjs/platform-express";
 import { AuthUser } from "@geostats/shared";
 import { Response } from "express";
-import { randomUUID } from "node:crypto";
-import { mkdtemp, rmdir, unlink } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { diskStorage } from "multer";
+import { unlink } from "node:fs/promises";
 import { AuthGuard } from "../auth/auth.guard";
 import { CurrentUser } from "../auth/current-user.decorator";
+import {
+  portabilityDiskStorage,
+  PortabilityUploadAdmissionInterceptor,
+} from "./portability-upload.interceptor";
 import { PortabilityService } from "./portability.service";
 
 const MAX_ARCHIVE_BYTES = 50 * 1024 * 1024;
@@ -46,17 +46,10 @@ export class PortabilityController {
 
   @Post("import")
   @UseInterceptors(
+    PortabilityUploadAdmissionInterceptor,
     FileInterceptor("file", {
       limits: { fileSize: portabilityMaxBytes(), files: 1 },
-      storage: diskStorage({
-        destination: (_request, _file, callback) => {
-          void mkdtemp(join(tmpdir(), "geostats-portability-"))
-            .then((path) => callback(null, path))
-            .catch((error) => callback(error, ""));
-        },
-        filename: (_request, _file, callback) =>
-          callback(null, `geostats-portability-${randomUUID()}.json`),
-      }),
+      storage: portabilityDiskStorage,
     }),
   )
   async importData(
@@ -70,7 +63,6 @@ export class PortabilityController {
       return await this.portability.importFile(user, file.path);
     } finally {
       await unlink(file.path).catch(() => undefined);
-      await rmdir(dirname(file.path)).catch(() => undefined);
     }
   }
 

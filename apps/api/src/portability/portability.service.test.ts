@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { BadRequestException } from "@nestjs/common";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  BadRequestException,
+  ServiceUnavailableException,
+} from "@nestjs/common";
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { lastValueFrom, of, Subject, throwError } from "rxjs";
 import {
   parsePortableArchive,
   PortabilityService,
@@ -12,6 +16,10 @@ import {
   portabilityMaxBytes,
   PortabilityController,
 } from "./portability.controller";
+import {
+  PortabilityUploadAdmissionInterceptor,
+  preparePortabilityTempRoot,
+} from "./portability-upload.interceptor";
 
 const user = {
   id: "user-1",
@@ -215,6 +223,63 @@ test("archive limits are hard-clamped and imports are serialized per API process
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("portability uploads are rejected before a concurrent upload can start", async () => {
+  const interceptor = new PortabilityUploadAdmissionInterceptor();
+  const firstUpload = new Subject<string>();
+  const firstResult = lastValueFrom(
+    interceptor.intercept({} as any, {
+      handle: () => firstUpload,
+    }),
+  );
+  let rejectedUploadStarted = false;
+
+  assert.throws(
+    () =>
+      interceptor.intercept({} as any, {
+        handle: () => {
+          rejectedUploadStarted = true;
+          return of("should not run");
+        },
+      }),
+    ServiceUnavailableException,
+  );
+  assert.equal(rejectedUploadStarted, false);
+
+  firstUpload.next("imported");
+  firstUpload.complete();
+  assert.equal(await firstResult, "imported");
+  assert.equal(
+    await lastValueFrom(
+      interceptor.intercept({} as any, { handle: () => of("next upload") }),
+    ),
+    "next upload",
+  );
+});
+
+test("portability upload artifacts are removed when an inner interceptor fails", async () => {
+  const interceptor = new PortabilityUploadAdmissionInterceptor();
+  const directory = await preparePortabilityTempRoot();
+  await writeFile(join(directory, "partial-upload.json"), archive());
+
+  await assert.rejects(
+    lastValueFrom(
+      interceptor.intercept({} as any, {
+        handle: () => throwError(() => new Error("upload rejected")),
+      }),
+    ),
+    /upload rejected/,
+  );
+  await assert.rejects(access(directory), /ENOENT/);
+  assert.equal(
+    await lastValueFrom(
+      interceptor.intercept({} as any, {
+        handle: () => of("upload after rejection"),
+      }),
+    ),
+    "upload after rejection",
+  );
 });
 
 test("controller removes a spooled archive even when import fails", async () => {
