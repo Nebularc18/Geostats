@@ -64,16 +64,17 @@ export class PortabilityUploadAdmissionInterceptor
       const finish = (notify: () => void) => {
         if (finished) return;
         finished = true;
-        void cleanupPortabilityTempRoot()
+        void this.cleanupTempRoot()
           .then(() => {
             this.uploadInProgress = false;
             notify();
           })
           .catch((error: unknown) => {
             this.logger.error(
-              "Failed to clean the portability upload directory; uploads remain disabled",
+              "Failed to clean the portability upload directory",
               error,
             );
+            this.uploadInProgress = false;
             notify();
           });
       };
@@ -94,6 +95,10 @@ export class PortabilityUploadAdmissionInterceptor
         finish(() => undefined);
       };
     });
+  }
+
+  protected cleanupTempRoot() {
+    return cleanupPortabilityTempRoot();
   }
 
   async onModuleDestroy() {

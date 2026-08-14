@@ -282,6 +282,30 @@ test("portability upload artifacts are removed when an inner interceptor fails",
   );
 });
 
+test("portability uploads remain available when temporary cleanup fails", async () => {
+  class CleanupFailureInterceptor extends PortabilityUploadAdmissionInterceptor {
+    protected override cleanupTempRoot() {
+      return Promise.reject(new Error("temporary filesystem error"));
+    }
+  }
+
+  const interceptor = new CleanupFailureInterceptor();
+  (interceptor as any).logger.error = () => undefined;
+
+  assert.equal(
+    await lastValueFrom(
+      interceptor.intercept({} as any, { handle: () => of("first upload") }),
+    ),
+    "first upload",
+  );
+  assert.equal(
+    await lastValueFrom(
+      interceptor.intercept({} as any, { handle: () => of("next upload") }),
+    ),
+    "next upload",
+  );
+});
+
 test("controller removes a spooled archive even when import fails", async () => {
   const directory = await mkdtemp(join(tmpdir(), "geostats-portability-test-"));
   const path = join(directory, "archive.json");
