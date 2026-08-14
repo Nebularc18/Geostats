@@ -48,6 +48,7 @@ model User {
   mysteryWorkspaces       MysteryWorkspace[]       @relation("MysteryOwner")
   mysteryShares           MysteryShare[]           @relation("MysteryRecipient")
   mysteryDeletions        MysteryWorkspaceDeletion[]
+  caches                  Cache[]
 
   @@map("users")
 }
@@ -183,7 +184,8 @@ model Import {
 
 model Cache {
   id         String    @id @default(cuid())
-  gcCode     String    @unique @map("gc_code")
+  userId     String    @map("user_id")
+  gcCode     String    @map("gc_code")
   name       String
   cacheType  String?   @map("cache_type")
   difficulty Decimal?  @db.Decimal(2, 1)
@@ -203,7 +205,10 @@ model Cache {
   finds       Find[]
   hides       Hide[]
   corrections CorrectedCoordinate[]
+  user        User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@unique([userId, gcCode])
+  @@index([userId])
   @@index([country, region, county])
   @@map("caches")
 }
@@ -277,4 +282,16 @@ model StatSnapshot {
 
   @@index([userId, generatedAt])
   @@map("stat_snapshots")
+}
+
+model PendingObjectDeletion {
+  id           String   @id @default(cuid())
+  objectKey    String   @unique @map("object_key")
+  attempts     Int      @default(0)
+  lastError    String?  @map("last_error")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@index([createdAt])
+  @@map("pending_object_deletions")
 }

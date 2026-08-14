@@ -1,11 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { BadRequestException } from "@nestjs/common";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   parsePortableArchive,
   PortabilityService,
 } from "./portability.service";
-import { PortabilityController } from "./portability.controller";
+import {
+  portabilityMaxBytes,
+  PortabilityController,
+} from "./portability.controller";
 
 const user = {
   id: "user-1",
@@ -65,6 +71,170 @@ test("portable parser rejects malformed JSON", () => {
     () => parsePortableArchive(Buffer.from("not json")),
     /not valid JSON/,
   );
+});
+
+function archiveWithCache(gcCode = "GCPOISON") {
+  return archive({
+    data: {
+      profile: null,
+      caches: [
+        {
+          gcCode,
+          name: "Archive controlled name",
+          cacheType: "Traditional Cache",
+          difficulty: 1,
+          terrain: 1,
+          size: "Micro",
+          latitude: 0,
+          longitude: 0,
+          country: "Nowhere",
+          region: "Poisoned",
+          county: null,
+          hiddenDate: null,
+          ownerName: "Attacker",
+          raw: { attackerControlled: true },
+        },
+      ],
+      finds: [],
+      hides: [],
+      correctedCoordinates: [],
+      ownerFinderCountryStats: [],
+      statSnapshots: [],
+      mysteryWorkspaces: [],
+    },
+  });
+}
+
+function importTransaction(
+  storedCaches: Array<{ id: string; gcCode: string }>,
+  cacheWrites: any[] = [],
+) {
+  return {
+    geocachingProfile: { upsert: async () => undefined },
+    cache: {
+      createMany: async (input: any) => {
+        cacheWrites.push(input);
+      },
+      findMany: async (input: any) => {
+        assert.equal(input.where.userId, user.id);
+        return storedCaches;
+      },
+    },
+    find: {
+      deleteMany: async () => undefined,
+      createMany: async () => undefined,
+    },
+    hide: {
+      deleteMany: async () => undefined,
+      createMany: async () => undefined,
+    },
+    correctedCoordinate: {
+      deleteMany: async () => undefined,
+      createMany: async () => undefined,
+    },
+    ownerFinderCountryStat: {
+      deleteMany: async () => undefined,
+      createMany: async () => undefined,
+    },
+    statSnapshot: {
+      deleteMany: async () => undefined,
+      createMany: async () => undefined,
+    },
+    mysteryWorkspace: { upsert: async () => undefined },
+    mysteryWorkspaceDeletion: { deleteMany: async () => undefined },
+  };
+}
+
+test("import creates archive cache metadata only inside the authenticated user's scope", async () => {
+  const cacheWrites: any[] = [];
+  const tx = importTransaction(
+    [{ id: "user-cache-1", gcCode: "GCPOISON" }],
+    cacheWrites,
+  );
+  const prisma = {
+    $transaction: async (callback: (transaction: typeof tx) => unknown) =>
+      callback(tx),
+  };
+  const service = new PortabilityService(prisma as any, {} as any);
+
+  await service.importData(user, archiveWithCache());
+
+  assert.equal(cacheWrites.length, 1);
+  assert.equal(cacheWrites[0].data[0].userId, user.id);
+  assert.equal(cacheWrites[0].data[0].gcCode, "GCPOISON");
+});
+
+test("import can attach portable records to cache metadata already owned by the user", async () => {
+  const tx = importTransaction([
+    { id: "trusted-cache-1", gcCode: "GCTRUSTED" },
+  ]);
+  const prisma = {
+    $transaction: async (callback: (transaction: typeof tx) => unknown) =>
+      callback(tx),
+  };
+  const service = new PortabilityService(prisma as any, {} as any);
+
+  assert.deepEqual(
+    await service.importData(user, archiveWithCache("GCTRUSTED")),
+    {
+      imported: {
+        caches: 1,
+        finds: 0,
+        hides: 0,
+        correctedCoordinates: 0,
+        mysteryWorkspaces: 0,
+      },
+    },
+  );
+});
+
+test("archive limits are hard-clamped and imports are serialized per API process", async () => {
+  const previousLimit = process.env.PORTABILITY_MAX_BYTES;
+  process.env.PORTABILITY_MAX_BYTES = String(250 * 1024 * 1024);
+  assert.equal(portabilityMaxBytes(), 50 * 1024 * 1024);
+  if (previousLimit === undefined) delete process.env.PORTABILITY_MAX_BYTES;
+  else process.env.PORTABILITY_MAX_BYTES = previousLimit;
+
+  const directory = await mkdtemp(join(tmpdir(), "geostats-portability-test-"));
+  const path = join(directory, "archive.json");
+  await writeFile(path, archive());
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const service = new PortabilityService({} as any, {} as any);
+  (service as any).importData = async () => {
+    await gate;
+    return { imported: {} };
+  };
+  try {
+    const first = service.importFile(user, path);
+    await assert.rejects(service.importFile(user, path), /already in progress/);
+    release();
+    await first;
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("controller removes a spooled archive even when import fails", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "geostats-portability-test-"));
+  const path = join(directory, "archive.json");
+  await writeFile(path, archive());
+  const controller = new PortabilityController({
+    importFile: async () => {
+      throw new BadRequestException("invalid archive");
+    },
+  } as any);
+  try {
+    await assert.rejects(
+      controller.importData(user, { path } as Express.Multer.File),
+      /invalid archive/,
+    );
+    await assert.rejects(readFile(path), /ENOENT/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("export includes every portable user data category and excludes server secrets", async () => {
@@ -307,31 +477,35 @@ test("export includes every portable user data category and excludes server secr
   assert.equal(serialized.includes("import-1"), false);
 });
 
-test("account deletion removes uploaded objects, the user, and only orphaned caches", async () => {
+test("account deletion commits a durable object-cleanup outbox before touching storage", async () => {
   const deletedObjects: string[] = [];
   const operations: Array<{ operation: string; input: any }> = [];
+  const pending = [
+    { objectKey: "user-1/first.gpx", createdAt: new Date() },
+    { objectKey: "user-1/second.zip", createdAt: new Date() },
+  ];
   const tx = {
+    import: { findMany: async () => pending },
+    pendingObjectDeletion: {
+      createMany: async (input: any) =>
+        operations.push({ operation: "outbox", input }),
+    },
     user: {
       delete: async (input: any) =>
         operations.push({ operation: "user", input }),
     },
-    cache: {
-      deleteMany: async (input: any) =>
-        operations.push({ operation: "caches", input }),
-    },
   };
   const prisma = {
-    import: {
-      findMany: async () => [
-        { objectKey: "user-1/first.gpx" },
-        { objectKey: "user-1/second.zip" },
-      ],
+    pendingObjectDeletion: {
+      findMany: async () => [...pending],
+      deleteMany: async ({ where }: any) => {
+        const index = pending.findIndex(
+          (item) => item.objectKey === where.objectKey,
+        );
+        if (index >= 0) pending.splice(index, 1);
+      },
+      update: async () => undefined,
     },
-    find: { findMany: async () => [{ cacheId: "cache-1" }] },
-    hide: {
-      findMany: async () => [{ cacheId: "cache-1" }, { cacheId: "cache-2" }],
-    },
-    correctedCoordinate: { findMany: async () => [{ cacheId: "cache-2" }] },
     $transaction: async (callback: (transaction: typeof tx) => unknown) =>
       callback(tx),
   };
@@ -344,15 +518,78 @@ test("account deletion removes uploaded objects, the user, and only orphaned cac
 
   assert.deepEqual(deletedObjects, ["user-1/first.gpx", "user-1/second.zip"]);
   assert.deepEqual(operations[0], {
+    operation: "outbox",
+    input: {
+      data: [
+        { objectKey: "user-1/first.gpx" },
+        { objectKey: "user-1/second.zip" },
+      ],
+      skipDuplicates: true,
+    },
+  });
+  assert.deepEqual(operations[1], {
     operation: "user",
     input: { where: { id: user.id } },
   });
-  assert.deepEqual(operations[1].input.where, {
-    id: { in: ["cache-1", "cache-2"] },
-    finds: { none: {} },
-    hides: { none: {} },
-    corrections: { none: {} },
-  });
+  assert.deepEqual(pending, []);
+});
+
+test("a failed account transaction never deletes import objects", async () => {
+  const deletedObjects: string[] = [];
+  const tx = {
+    import: {
+      findMany: async () => [{ objectKey: "user-1/upload.gpx" }],
+    },
+    pendingObjectDeletion: { createMany: async () => undefined },
+    user: { delete: async () => undefined },
+  };
+  const prisma = {
+    $transaction: async (callback: (transaction: typeof tx) => unknown) => {
+      await callback(tx);
+      throw new Error("database commit failed");
+    },
+  };
+  const storage = {
+    deleteObject: async (key: string) => deletedObjects.push(key),
+  };
+  const service = new PortabilityService(prisma as any, storage as any);
+
+  await assert.rejects(service.deleteAccount(user), /database commit failed/);
+  assert.deepEqual(deletedObjects, []);
+});
+
+test("failed object cleanup remains queued for a later retry after account deletion", async () => {
+  const updates: any[] = [];
+  const pending = [{ objectKey: "user-1/upload.gpx", createdAt: new Date() }];
+  const tx = {
+    import: { findMany: async () => pending },
+    pendingObjectDeletion: { createMany: async () => undefined },
+    user: { delete: async () => undefined },
+  };
+  const prisma = {
+    pendingObjectDeletion: {
+      findMany: async () => pending,
+      deleteMany: async () => {
+        throw new Error("must not remove failed cleanup work");
+      },
+      update: async (input: any) => updates.push(input),
+    },
+    $transaction: async (callback: (transaction: typeof tx) => unknown) =>
+      callback(tx),
+  };
+  const storage = {
+    deleteObject: async () => {
+      throw new Error("S3 unavailable");
+    },
+  };
+  const service = new PortabilityService(prisma as any, storage as any);
+
+  await service.deleteAccount(user);
+
+  assert.equal(updates.length, 1);
+  assert.deepEqual(updates[0].where, { objectKey: "user-1/upload.gpx" });
+  assert.deepEqual(updates[0].data.attempts, { increment: 1 });
+  assert.match(updates[0].data.lastError, /S3 unavailable/);
 });
 
 test("account deletion requires exact confirmation and clears the session after deletion", async () => {

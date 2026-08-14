@@ -143,8 +143,8 @@ Authentication secrets and server-local capabilities are intentionally not porta
 The authenticated endpoints are:
 
 - `GET /portability/export` — download the current version of the JSON archive.
-- `POST /portability/import` — upload the archive in a multipart `file` field (250 MiB by default, configurable with `PORTABILITY_MAX_BYTES`).
-- `DELETE /portability/account` — permanently delete the authenticated account and its data after sending `{"confirmation":"DELETE"}`. Uploaded objects are removed and cache rows are cleaned up only when no other account references them.
+- `POST /portability/import` — upload the archive in a multipart `file` field (50 MiB hard maximum, optionally lowered with `PORTABILITY_MAX_BYTES`). The API spools uploads to temporary disk and processes one archive at a time per API process.
+- `DELETE /portability/account` — permanently delete the authenticated account and its data after sending `{"confirmation":"DELETE"}`. Uploaded objects are removed through a durable retry queue.
 
 ## Docker Compose
 

@@ -1,6 +1,14 @@
-import { BadRequestException, Injectable } from "@nestjs/common";
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  OnModuleDestroy,
+  OnModuleInit,
+  ServiceUnavailableException,
+} from "@nestjs/common";
 import { Prisma } from "@geostats/db";
 import { AuthUser } from "@geostats/shared";
+import { readFile } from "node:fs/promises";
 import { PrismaService } from "../common/prisma.service";
 import { StorageService } from "../storage/storage.service";
 
@@ -17,6 +25,8 @@ const IMPORT_SOURCES = new Set([
 const WRITE_BATCH_SIZE = 500;
 const MAX_MYSTERY_WORKSPACES = 500;
 const MAX_MYSTERY_BYTES = 256 * 1024;
+const OBJECT_CLEANUP_INTERVAL_MS = 60_000;
+const OBJECT_CLEANUP_BATCH_SIZE = 100;
 
 type PortableArchive = {
   format: typeof FORMAT;
@@ -113,10 +123,12 @@ function batches<T>(values: T[]): T[][] {
   return result;
 }
 
-export function parsePortableArchive(buffer: Buffer): PortableArchive {
+export function parsePortableArchive(input: Buffer | string): PortableArchive {
   let raw: unknown;
   try {
-    raw = JSON.parse(buffer.toString("utf8"));
+    raw = JSON.parse(
+      typeof input === "string" ? input : input.toString("utf8"),
+    );
   } catch {
     throw new BadRequestException("The selected file is not valid JSON");
   }
@@ -162,11 +174,29 @@ export function parsePortableArchive(buffer: Buffer): PortableArchive {
 }
 
 @Injectable()
-export class PortabilityService {
+export class PortabilityService implements OnModuleInit, OnModuleDestroy {
+  private readonly logger = new Logger(PortabilityService.name);
+  private importInProgress = false;
+  private cleanupInProgress = false;
+  private cleanupTimer?: NodeJS.Timeout;
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly storage: StorageService,
   ) {}
+
+  onModuleInit() {
+    void this.cleanupPendingObjects();
+    this.cleanupTimer = setInterval(
+      () => void this.cleanupPendingObjects(),
+      OBJECT_CLEANUP_INTERVAL_MS,
+    );
+    this.cleanupTimer.unref();
+  }
+
+  onModuleDestroy() {
+    if (this.cleanupTimer) clearInterval(this.cleanupTimer);
+  }
 
   async exportData(user: AuthUser): Promise<PortableArchive> {
     const [
@@ -294,51 +324,36 @@ export class PortabilityService {
   }
 
   async deleteAccount(user: AuthUser) {
-    const [imports, finds, hides, corrections] = await Promise.all([
-      this.prisma.import.findMany({
+    await this.prisma.$transaction(async (tx) => {
+      const imports = await tx.import.findMany({
         where: { userId: user.id },
         select: { objectKey: true },
-      }),
-      this.prisma.find.findMany({
-        where: { userId: user.id },
-        select: { cacheId: true },
-      }),
-      this.prisma.hide.findMany({
-        where: { userId: user.id },
-        select: { cacheId: true },
-      }),
-      this.prisma.correctedCoordinate.findMany({
-        where: { userId: user.id },
-        select: { cacheId: true },
-      }),
-    ]);
-
-    for (const { objectKey } of imports) {
-      await this.storage.deleteObject(objectKey);
-    }
-
-    const cacheIds = [
-      ...new Set(
-        [...finds, ...hides, ...corrections].map((row) => row.cacheId),
-      ),
-    ];
-    await this.prisma.$transaction(async (tx) => {
+      });
+      await tx.pendingObjectDeletion.createMany({
+        data: imports.map(({ objectKey }) => ({ objectKey })),
+        skipDuplicates: true,
+      });
       await tx.user.delete({ where: { id: user.id } });
-      if (cacheIds.length > 0) {
-        await tx.cache.deleteMany({
-          where: {
-            id: { in: cacheIds },
-            finds: { none: {} },
-            hides: { none: {} },
-            corrections: { none: {} },
-          },
-        });
-      }
     });
+    await this.cleanupPendingObjects();
   }
 
-  async importData(user: AuthUser, buffer: Buffer) {
-    const archive = parsePortableArchive(buffer);
+  async importFile(user: AuthUser, path: string) {
+    if (this.importInProgress) {
+      throw new ServiceUnavailableException(
+        "Another data import is already in progress; try again shortly",
+      );
+    }
+    this.importInProgress = true;
+    try {
+      return await this.importData(user, await readFile(path, "utf8"));
+    } finally {
+      this.importInProgress = false;
+    }
+  }
+
+  async importData(user: AuthUser, input: Buffer | string) {
+    const archive = parsePortableArchive(input);
     const data = archive.data;
     try {
       return await this.prisma.$transaction(
@@ -404,6 +419,7 @@ export class PortabilityService {
               throw new BadRequestException(`Duplicate cache ${gcCode}`);
             gcCodes.add(gcCode);
             return {
+              userId: user.id,
               gcCode,
               name: text(cache.name, `${label}.name`, 1000),
               cacheType: optionalText(
@@ -444,13 +460,14 @@ export class PortabilityService {
                 : { raw: cache.raw as Prisma.InputJsonValue }),
             };
           });
-          for (const batch of batches(cacheRows))
+          for (const batch of batches(cacheRows)) {
             await tx.cache.createMany({ data: batch, skipDuplicates: true });
+          }
           const storedCaches = (
             await Promise.all(
               batches([...gcCodes]).map((batch) =>
                 tx.cache.findMany({
-                  where: { gcCode: { in: batch } },
+                  where: { userId: user.id, gcCode: { in: batch } },
                   select: { id: true, gcCode: true },
                 }),
               ),
@@ -675,6 +692,46 @@ export class PortabilityService {
       throw new BadRequestException(
         "The export could not be imported. It may contain invalid or conflicting data.",
       );
+    }
+  }
+
+  private async cleanupPendingObjects() {
+    if (this.cleanupInProgress) return;
+    this.cleanupInProgress = true;
+    try {
+      const pending = await this.prisma.pendingObjectDeletion.findMany({
+        orderBy: { createdAt: "asc" },
+        take: OBJECT_CLEANUP_BATCH_SIZE,
+      });
+      for (const item of pending) {
+        try {
+          await this.storage.deleteObject(item.objectKey);
+          await this.prisma.pendingObjectDeletion.deleteMany({
+            where: { objectKey: item.objectKey },
+          });
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : "Unknown storage error";
+          await this.prisma.pendingObjectDeletion
+            .update({
+              where: { objectKey: item.objectKey },
+              data: {
+                attempts: { increment: 1 },
+                lastError: message.slice(0, 2_000),
+              },
+            })
+            .catch(() => undefined);
+          this.logger.warn(
+            `Object deletion for ${item.objectKey} will be retried: ${message}`,
+          );
+        }
+      }
+    } catch (error) {
+      this.logger.warn(
+        `Pending object cleanup could not run: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    } finally {
+      this.cleanupInProgress = false;
     }
   }
 }

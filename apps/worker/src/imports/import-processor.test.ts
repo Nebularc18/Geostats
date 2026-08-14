@@ -66,7 +66,7 @@ TFTC</groundspeak:text>
   </wpt>
 </gpx>`;
 
-test("process uses database object metadata without overwriting existing shared cache rows", async () => {
+test("process uses the user's existing cache metadata without overwriting it", async () => {
   const existingCache = {
     id: "cache-1",
     gcCode: "GC12345",
@@ -155,7 +155,10 @@ test("process uses database object metadata without overwriting existing shared 
 
   assert.deepEqual(seenObjectKeys, ["user-1/original.gpx"]);
   assert.equal(cacheUpserts.length, 1);
-  assert.deepEqual(cacheUpserts[0].where, { gcCode: "GC12345" });
+  assert.deepEqual(cacheUpserts[0].where, {
+    userId_gcCode: { userId: "user-1", gcCode: "GC12345" }
+  });
+  assert.equal(cacheUpserts[0].create.userId, "user-1");
   assert.equal(cacheUpserts[0].create.name, "Attacker Cache Name");
   assert.deepEqual(cacheUpserts[0].update, {});
 });
@@ -218,7 +221,9 @@ test("process recovers from concurrent cache upsert conflict by reading the exis
         });
       },
       findUnique: async (input: any) => {
-        assert.deepEqual(input.where, { gcCode: "GC12345" });
+        assert.deepEqual(input.where, {
+          userId_gcCode: { userId: "user-1", gcCode: "GC12345" }
+        });
         cacheFindCalls += 1;
         return createdCache;
       }
