@@ -5,15 +5,21 @@ Pocket Query, and owner-log imports.
 
 ## Features
 
-- Import My Finds GPX files, Pocket Query ZIP archives, and owner-log CSV files.
+- Import My Finds and My Hides GPX files, Pocket Query ZIP archives, and
+  owner-log CSV files.
 - Explore find statistics, milestones, achievement badges, FTF history, hides,
   and received logs.
 - Browse finds and hides on a map, or track country, region, and county coverage
   with the scratch map.
 - Plan caching trips and keep a synchronized mystery-solving journal, including
   computer access tokens for AI-assisted workflows.
+- Generate downloadable profile HTML and public, dynamically updated statistics
+  and scratch-map embeds.
+- Use browser-assisted collectors for received Geocaching.com logs and
+  Project-GC finder-country statistics.
 - Use the responsive web app or the Expo-based Android app against the same API.
-- Export, import, or permanently delete all account data from profile settings.
+- Export or import portable geocaching data, or permanently delete the account
+  and its server-side data, from profile settings.
 
 ## Stack
 
@@ -37,62 +43,106 @@ Pocket Query, and owner-log imports.
 
 ## Local Setup
 
+### Full Docker stack
+
+Copy the example environment file:
+
+```bash
+cp .env.example .env
+```
+
+PowerShell equivalent:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Replace the `replace-with-*` values in `.env`, then start the application:
+
+```bash
+docker compose up --build
+```
+
+Compose starts PostgreSQL, Redis, MinIO, the API, worker, and web app. It also
+runs database migrations and creates the object-storage bucket. The web app is
+available at `http://localhost:3000` and the API at `http://localhost:3001`.
+
 ### Agent/dev quick start
 
-For a disposable local instance that boots without asking the user for auth or secret values:
+For an automated local Docker startup:
 
 ```powershell
 corepack pnpm agent:up
 ```
 
-That command creates `.env` from `.env.agent.example` if needed, builds the Docker services, runs database migrations inside Compose, and starts the web app at `http://localhost:3000`. Protected pages auto-login as `dev@local.geostats`.
+If `.env` does not exist, that command copies `.env.agent.example`, enabling
+automatic login as `dev@local.geostats`. It preserves an existing `.env`. The
+command then builds and starts the Compose stack in the foreground; migrations
+run before the API, worker, and web services start.
 
 Use `.env.agent.example` only for local development. Its secrets are intentionally fixed so automation can launch the app without extra prompts.
 
-1. Copy the environment file:
-
-   ```powershell
-   Copy-Item .env.example .env
-   ```
-
-2. Install dependencies:
-
-   ```powershell
-   corepack pnpm install
-   ```
-
-3. Start infrastructure:
-
-   ```powershell
-   docker compose up postgres redis minio minio-create-bucket
-   ```
-
-4. Run the database migration:
-
-   ```powershell
-   corepack pnpm db:migrate
-   ```
-
-5. Start the apps:
-
-   ```powershell
-   corepack pnpm dev
-   ```
-
-The web app runs on `http://localhost:3000`, and the API runs on `http://localhost:3001`.
-
 ## Authentication
 
-Fresh installs use local email and password login by default:
+Geostats supports password, external, and development authentication. The API's
+runtime environment determines the effective mode:
+
+| Environment | `AUTH_MODE` | Sign-in options |
+| --- | --- | --- |
+| Development | unset or `password` | Local email and password |
+| Development | `external` | External provider plus local email and password |
+| Development | `dev` | Automatic disposable development user; password auth is disabled |
+| Production | `password` | Local email and password |
+| Production | unset, `external`, or any other value | External provider plus local email and password |
+
+Production deliberately ignores `AUTH_MODE=dev`. When production selects
+external auth, Shoo is the provider unless `EXTERNAL_AUTH_PROVIDER_ID` names a
+different provider.
+
+The web app normally gets this mode from `GET /auth/config` at runtime.
+`NEXT_PUBLIC_AUTH_MODE` is its build-time fallback when that request fails, so
+keep it aligned with `AUTH_MODE`. `NEXT_PUBLIC_AUTH_PROVIDER_NAME` controls the
+provider label shown by the web and mobile login screens.
+
+### Password authentication
+
+The example development environment uses local email and password login:
 
 ```env
 AUTH_MODE=password
 NEXT_PUBLIC_AUTH_MODE=password
 ```
 
-This makes the app usable without any external identity provider. For an internet-facing deployment, prefer putting Better Auth or another OIDC-compatible provider in front of login so you can centralize account security, MFA, password policies, and session controls outside the app.
+Accounts can register and sign in without an external identity provider. Set
+`AUTH_MODE=password` explicitly to use password-only authentication in
+production.
 
-To use Better Auth or another OIDC provider, set:
+### Shoo authentication
+
+Shoo is the built-in external provider and the default in production:
+
+```env
+AUTH_MODE=external
+NEXT_PUBLIC_AUTH_MODE=external
+NEXT_PUBLIC_AUTH_PROVIDER_NAME=Shoo
+EXTERNAL_AUTH_PROVIDER_ID=shoo
+EXTERNAL_AUTH_CALLBACK_URL=https://api.example.com/auth/external/callback
+SHOO_BASE_URL=https://shoo.dev
+SHOO_ISSUER=https://shoo.dev
+SHOO_REQUEST_PII=true
+```
+
+Set `EXTERNAL_AUTH_CALLBACK_URL` to the callback on the public API origin. Shoo
+derives its client ID from that callback origin and does not use
+`EXTERNAL_AUTH_CLIENT_ID`, `EXTERNAL_AUTH_CLIENT_SECRET`, or the generic
+authorize, token, and user-info URL settings. Email consent and a verified email
+are required when signing in with Shoo.
+
+### Generic external authentication
+
+To use another OIDC-compatible provider that supports authorization code flow
+with PKCE and a user-info endpoint, choose a provider ID other than `shoo` and
+set:
 
 ```env
 AUTH_MODE=external
@@ -108,16 +158,12 @@ EXTERNAL_AUTH_CALLBACK_URL=https://api.example.com/auth/external/callback
 EXTERNAL_AUTH_REQUIRE_VERIFIED_EMAIL=true
 ```
 
-When external auth is enabled, the provider is the primary sign-in action and the local password form remains available as an alternative. Production deployments should use Shoo by default:
+The client secret is optional for public clients. Unless
+`EXTERNAL_AUTH_REQUIRE_VERIFIED_EMAIL=false`, the user-info response must contain
+`email_verified: true`; it must always provide `sub` and `email`. External mode
+keeps local password registration and sign-in available as an alternative.
 
-```env
-AUTH_MODE=external
-NEXT_PUBLIC_AUTH_MODE=external
-NEXT_PUBLIC_AUTH_PROVIDER_NAME=Shoo
-EXTERNAL_AUTH_PROVIDER_ID=shoo
-```
-
-In production, external authentication defaults to Shoo and `AUTH_MODE=password` is the only override. Development auth is ignored, so production presents only Shoo and password authentication.
+### Development authentication
 
 For local Docker development where you want the app to boot without signing in, enable dev auth and rebuild the web image so its public auth flags are baked in:
 
@@ -169,16 +215,15 @@ The authenticated endpoints are:
 
 ## Docker Compose
 
-For a full local deployment:
+The local Compose workflow is described in [Local Setup](#local-setup). The
+Compose file includes a one-shot `migrate` service, so fresh databases run
+Prisma migrations before `api`, `worker`, and `web` start.
 
-```powershell
-Copy-Item .env.example .env
-docker compose up --build
-```
-
-The local Compose file includes a one-shot `migrate` service, so fresh databases run Prisma migrations before `api`, `worker`, and `web` start.
-
-The web and API ports bind to `127.0.0.1` by default. If the reverse proxy or Cloudflare Tunnel runs on another trusted machine, set `WEB_BIND_ADDRESS=0.0.0.0` and `API_BIND_ADDRESS=0.0.0.0` so it can reach them over the LAN, and restrict ports 3000 and 3001 with the host firewall.
+The web and API ports bind to `127.0.0.1` by default. If the reverse proxy or
+Cloudflare Tunnel runs on another trusted machine, set
+`WEB_BIND_ADDRESS=0.0.0.0` and `API_BIND_ADDRESS=0.0.0.0` so it can reach them
+over the LAN, and restrict the configured web and API ports (3000 and 3001 by
+default) with the host firewall.
 
 ## Dockhand
 
@@ -201,7 +246,7 @@ REDIS_PASSWORD
 MINIO_ROOT_PASSWORD
 JWT_SECRET
 COLLECTOR_TOKEN_ENCRYPTION_KEY
-EXTERNAL_AUTH_CLIENT_SECRET
+EXTERNAL_AUTH_CLIENT_SECRET (when configured)
 ```
 
 For a Git-backed Dockhand stack that builds this repo, keep:
@@ -229,22 +274,24 @@ publish multi-platform `linux/amd64` and `linux/arm64` app images to GitHub
 Container Registry:
 
 ```text
-ghcr.io/OWNER/REPO/api:latest
-ghcr.io/OWNER/REPO/worker:latest
-ghcr.io/OWNER/REPO/web:latest
+ghcr.io/OWNER/REPO/api:<tag>
+ghcr.io/OWNER/REPO/worker:<tag>
+ghcr.io/OWNER/REPO/web:<tag>
 ```
 
-Each image is also tagged with the commit SHA as `sha-<commit>`.
-Each workflow run dispatched from `main` also publishes a shared timestamp
-release tag for all app images, for example
-`release-20260613-173045-utc`; runs dispatched from other branches publish only
-the commit SHA tag.
+Every run publishes `sha-<commit>`. A run dispatched from `main` additionally
+publishes `latest` and a shared timestamp release tag for all app images, for
+example `release-20260613-173045-utc`.
 
-Optionally configure this GitHub Actions repository variable to override the Next.js `web` image API URL default (`http://localhost:3001`):
+The workflow accepts these GitHub Actions repository variables as web-image
+build settings:
 
-```text
-NEXT_PUBLIC_API_URL=https://api.example.com
-```
+- `NEXT_PUBLIC_API_URL` — public API URL embedded in the web image; defaults to
+  `http://localhost:3001` and must be changed for a remote deployment.
+- `NEXT_PUBLIC_AUTH_MODE` — fallback login mode if `/auth/config` cannot be
+  reached; defaults to `external`.
+- `NEXT_PUBLIC_AUTH_PROVIDER_NAME` — fallback provider label; defaults to
+  `Shoo`.
 
 On deployment hardware, set the image prefix and pull the prebuilt app images before starting Compose:
 
@@ -272,15 +319,19 @@ docker login ghcr.io
 
 ## Import Workflow
 
-1. Register a local account.
+1. Sign in with the configured provider or register a local password account.
 2. Create a geocaching profile with your GC username and optional home coordinates.
-3. Upload a `.gpx` My Finds file or `.zip` Pocket Query.
+3. Upload a `.gpx` My Finds/My Hides file or a `.zip` Pocket Query.
 4. The API stores the original file in MinIO and queues a BullMQ import job.
 5. The worker parses GPX data, upserts cache metadata, stores finds when found-log data is present, and recalculates stats.
 6. The web and mobile dashboards, statistics, import history, and maps read from
    the API.
 
 ## Useful Commands
+
+Install workspace dependencies before running these commands. API, worker, and
+database commands run on the host only when their required environment variables
+are exported; the `.env` values supplied for Compose use container hostnames.
 
 ```powershell
 corepack pnpm build
@@ -331,7 +382,7 @@ corepack pnpm mobile:build:apk
 
 That produces an installable Android APK you can download and sideload onto your phone.
 
-Preview builds reuse the EAS-managed Android signing key and remotely increment the Android version code. Each new APK can therefore update the previous installation without uninstalling it. Do not replace or reset the Android credentials in EAS, because Android rejects an in-place update signed with a different key. After installing a 0.2.0-or-newer APK once, JavaScript, styling, and asset-only revisions can be delivered over the air:
+Preview builds reuse the EAS-managed Android signing key and remotely increment the Android version code. Each new APK can therefore update the previous installation without uninstalling it. Do not replace or reset the Android credentials in EAS, because Android rejects an in-place update signed with a different key. After installing a preview APK with OTA updates enabled, compatible JavaScript, styling, and asset-only revisions can be delivered over the air:
 
 ```powershell
 corepack pnpm mobile:update:preview
@@ -361,6 +412,9 @@ The **Mobile Release** workflow in GitHub Actions provides three manually select
 - `production-update`: publishes a JavaScript/assets update to installed production builds.
 - `play-internal`: builds an Android App Bundle and submits it to Google Play internal testing.
 
+Preview releases may be dispatched from any branch. `production-update` and
+`play-internal` are accepted only when dispatched from `main`.
+
 Android does not allow a sideloaded app to silently replace its installed APK. The automatic part of `preview-release` therefore covers JavaScript, styling, and asset changes. Changes to native packages, plugins, permissions, or Android configuration require the user to install the new APK from the release page; use Google Play distribution when automatic native-binary updates are required.
 
 Configure the following before the first workflow run:
@@ -380,18 +434,19 @@ builds do not create a release.
 
 ## Architecture Notes
 
-- The backend API is the source of truth. The frontend never reads from Prisma directly.
-- All user-owned data is scoped by `user_id`.
+- The API is the source of truth for accounts, imported cache records, and
+  calculated statistics. Web and mobile clients never read from Prisma
+  directly.
+- User-owned records are scoped through user or owner relations. Cache metadata
+  is user-scoped by the `(user_id, gc_code)` pair.
 - Cache coordinates are stored as scalar latitude/longitude and as a PostGIS geography point.
 - Object storage uses S3-compatible environment variables so MinIO can be replaced with cloud S3 later.
 - The mobile app uses the same API contracts and shared packages as web.
 
 ## Not Yet Included
 
-- public profile sharing
 - friend comparison
 - challenge checker
-- Geocaching.com scraping
 - live Geocaching.com sync
 - advanced map filtering
 - cloud deployment automation
