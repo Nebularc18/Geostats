@@ -242,23 +242,62 @@ test("shared grants matching automatic access without per-Mystery rows", async (
   }]);
 });
 
-test("sharing preferences accept any non-empty combination of Myst statuses", async () => {
+test("recreating a sharing preference clears stale exclusions and normalizes statuses", async () => {
   let stored: unknown;
-  const prisma = {
-    user: { findUnique: async () => recipient },
+  let cleared: unknown;
+  const transaction = {
+    $queryRaw: async () => [],
     mysterySharingPreference: {
+      findUnique: async () => null,
       upsert: async (input: unknown) => {
         stored = input;
         return { statuses: ["solving", "planned"] };
       }
+    },
+    mysterySharingExclusion: {
+      deleteMany: async (input: unknown) => {
+        cleared = input;
+        return { count: 2 };
+      }
     }
+  };
+  const prisma = {
+    user: { findUnique: async () => recipient },
+    $transaction: async (callback: (tx: typeof transaction) => unknown) => callback(transaction)
   };
   const controller = new MysteriesController(prisma as any);
 
   const result = await controller.setSharingPreference(owner, recipient.id, { statuses: ["planned", "solving", "planned"] });
 
   assert.deepEqual((stored as any).create.statuses, ["solving", "planned"]);
+  assert.deepEqual((cleared as any).where, { recipientId: recipient.id, mystery: { ownerId: owner.id } });
   assert.deepEqual(result.preference, { recipient, statuses: ["solving", "planned"] });
+});
+
+test("editing an existing sharing preference preserves per-Mystery exclusions", async () => {
+  let exclusionDeletes = 0;
+  const transaction = {
+    $queryRaw: async () => [],
+    mysterySharingPreference: {
+      findUnique: async () => ({ id: "preference-1" }),
+      upsert: async () => ({ statuses: ["solved"] })
+    },
+    mysterySharingExclusion: {
+      deleteMany: async () => {
+        exclusionDeletes += 1;
+        return { count: 0 };
+      }
+    }
+  };
+  const prisma = {
+    user: { findUnique: async () => recipient },
+    $transaction: async (callback: (tx: typeof transaction) => unknown) => callback(transaction)
+  };
+  const controller = new MysteriesController(prisma as any);
+
+  await controller.setSharingPreference(owner, recipient.id, { statuses: ["solved"] });
+
+  assert.equal(exclusionDeletes, 0);
 });
 
 test("share rejects a snapshot that does not match the requested mystery", async () => {

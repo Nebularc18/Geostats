@@ -289,18 +289,34 @@ export class MysteriesController {
       select: { id: true, username: true }
     });
     if (!recipient) throw new NotFoundException("Recipient was not found");
-    const preference = await this.prisma.mysterySharingPreference.upsert({
-      where: { ownerId_recipientId: { ownerId: user.id, recipientId } },
-      create: { ownerId: user.id, recipientId, statuses },
-      update: { statuses },
-      select: { statuses: true }
+    const preference = await this.prisma.$transaction(async (tx) => {
+      await lockMystery(tx, user.id, `sharing-preference:${recipientId}`);
+      const existing = await tx.mysterySharingPreference.findUnique({
+        where: { ownerId_recipientId: { ownerId: user.id, recipientId } },
+        select: { id: true }
+      });
+      const stored = await tx.mysterySharingPreference.upsert({
+        where: { ownerId_recipientId: { ownerId: user.id, recipientId } },
+        create: { ownerId: user.id, recipientId, statuses },
+        update: { statuses },
+        select: { statuses: true }
+      });
+      if (!existing) {
+        await tx.mysterySharingExclusion.deleteMany({
+          where: { recipientId, mystery: { ownerId: user.id } }
+        });
+      }
+      return stored;
     });
     return { preference: { recipient, statuses: preference.statuses } };
   }
 
   @Delete("sharing-preferences/:recipientId")
   async deleteSharingPreference(@CurrentUser() user: AuthUser, @Param("recipientId") recipientId: string) {
-    await this.prisma.mysterySharingPreference.deleteMany({ where: { ownerId: user.id, recipientId } });
+    await this.prisma.$transaction(async (tx) => {
+      await lockMystery(tx, user.id, `sharing-preference:${recipientId}`);
+      await tx.mysterySharingPreference.deleteMany({ where: { ownerId: user.id, recipientId } });
+    });
     return { ok: true };
   }
 
