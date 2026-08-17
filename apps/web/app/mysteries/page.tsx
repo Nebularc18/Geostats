@@ -15,6 +15,7 @@ import {
   MapPin,
   Plus,
   Search,
+  Settings2,
   Share2,
   Sparkles,
   Trash2,
@@ -108,6 +109,11 @@ type OwnedMysterySnapshot = {
   mystery: MysteryCache;
   revision: number;
   sharedWith: AppUser[];
+};
+
+type MysterySharingPreference = {
+  recipient: AppUser;
+  statuses: MysteryStatus[];
 };
 
 type MysterySyncMetadata = {
@@ -440,12 +446,15 @@ export default function MysteriesPage() {
   const [bulkCsvName, setBulkCsvName] = useState("");
   const [bulkCsvSummary, setBulkCsvSummary] = useState("");
   const [showShare, setShowShare] = useState(false);
+  const [showSharingSettings, setShowSharingSettings] = useState(false);
+  const [sharingPreferences, setSharingPreferences] = useState<MysterySharingPreference[]>([]);
   const [cacheToDelete, setCacheToDelete] = useState<MysteryCache | null>(null);
   const [deletingCache, setDeletingCache] = useState(false);
   const [userQuery, setUserQuery] = useState("");
   const [userResults, setUserResults] = useState<AppUser[]>([]);
   const [userSearchState, setUserSearchState] = useState<"idle" | "loading" | "error">("idle");
   const [sharingUserId, setSharingUserId] = useState("");
+  const [savingPreferenceId, setSavingPreferenceId] = useState("");
   const [userscript, setUserscript] = useState("");
   const [userscriptError, setUserscriptError] = useState("");
   const [scriptCopied, setScriptCopied] = useState(false);
@@ -930,7 +939,7 @@ export default function MysteriesPage() {
 
   useEffect(() => {
     const normalizedQuery = userQuery.trim();
-    if (!showShare || normalizedQuery.length < 2) {
+    if ((!showShare && !showSharingSettings) || normalizedQuery.length < 2) {
       setUserResults([]);
       setUserSearchState("idle");
       return;
@@ -956,7 +965,21 @@ export default function MysteriesPage() {
       active = false;
       window.clearTimeout(timeout);
     };
-  }, [showShare, userQuery]);
+  }, [showShare, showSharingSettings, userQuery]);
+
+  useEffect(() => {
+    if (!ready) return;
+    let active = true;
+    void apiFetch<{ preferences: MysterySharingPreference[] }>("/mysteries/sharing-preferences")
+      .then(({ preferences }) => {
+        if (!active) return;
+        setSharingPreferences(preferences.filter((preference) =>
+          isAppUser(preference.recipient) && Array.isArray(preference.statuses)
+        ));
+      })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, [ready, serverLoadAttempt]);
 
   const selected = caches.find((cache) => cache.id === selectedId) ?? caches[0];
   const selectedCacheId = selected?.id;
@@ -1343,6 +1366,56 @@ export default function MysteriesPage() {
     setShowShare(true);
   }
 
+  function openSharingSettings() {
+    setUserQuery("");
+    setUserResults([]);
+    setUserSearchState("idle");
+    setShowSharingSettings(true);
+  }
+
+  async function saveSharingPreference(user: AppUser, statuses: MysteryStatus[]) {
+    if (!statuses.length) return;
+    setSavingPreferenceId(user.id);
+    try {
+      const { preference } = await apiFetch<{ preference: MysterySharingPreference }>(`/mysteries/sharing-preferences/${encodeURIComponent(user.id)}`, {
+        method: "PUT",
+        body: JSON.stringify({ statuses })
+      });
+      setSharingPreferences((current) => [
+        ...current.filter((item) => item.recipient.id !== user.id),
+        preference
+      ]);
+      setUserQuery("");
+      setUserResults([]);
+      setServerLoadAttempt((attempt) => attempt + 1);
+      setNotice(`Automatic Myst sharing updated for ${user.username}`);
+    } catch {
+      setNotice(`Could not update automatic sharing for ${user.username}`);
+    } finally {
+      setSavingPreferenceId("");
+    }
+  }
+
+  async function removeSharingPreference(preference: MysterySharingPreference) {
+    setSavingPreferenceId(preference.recipient.id);
+    try {
+      await apiFetch(`/mysteries/sharing-preferences/${encodeURIComponent(preference.recipient.id)}`, { method: "DELETE" });
+      setSharingPreferences((current) => current.filter((item) => item.recipient.id !== preference.recipient.id));
+      setServerLoadAttempt((attempt) => attempt + 1);
+      setNotice(`Stopped automatic Myst sharing with ${preference.recipient.username}`);
+    } catch {
+      setNotice(`Could not update automatic sharing for ${preference.recipient.username}`);
+    } finally {
+      setSavingPreferenceId("");
+    }
+  }
+
+  function automaticallySharedWith(userId: string, status: MysteryStatus) {
+    return sharingPreferences.some((preference) =>
+      preference.recipient.id === userId && preference.statuses.includes(status)
+    );
+  }
+
   async function addSharedUser(user: AppUser) {
     if (!selected || selected.sharedWith.some((person) => person.id === user.id)) return;
     setSharingUserId(user.id);
@@ -1498,6 +1571,7 @@ export default function MysteriesPage() {
           <button className="secondary-button" type="button" disabled={!syncableCaches.length} onClick={() => syncAttempts(syncableCaches)}><ExternalLink size={17} /> Sync solved{syncableCaches.length ? ` (${syncableCaches.length})` : ""}</button>
           <button className="secondary-button" type="button" onClick={() => setShowBrowserImport(true)}><Import size={17} /> Browser import</button>
           <button className="secondary-button" type="button" onClick={exportGpx}><Download size={17} /> Export GPX</button>
+          <button className="secondary-button" type="button" onClick={openSharingSettings}><Settings2 size={17} /> Sharing settings</button>
           <button className="primary-button icon-button" type="button" onClick={() => setShowAdd(true)}><Plus size={18} /> Add mystery</button>
         </div>
       </header>
@@ -1636,7 +1710,10 @@ export default function MysteriesPage() {
                   <div className="section-heading"><div><p className="eyebrow">Team</p><h3>Shared with</h3></div><Users size={18} /></div>
                   <div className="people-list">
                     {selected.sharedBy && <small>Shared by {selected.sharedBy.username}</small>}
-                    {selected.sharedWith.map((person) => <button title={selected.sharedBy ? person.username : `Remove ${person.username}`} type="button" disabled={Boolean(selected.sharedBy)} key={person.id} onClick={() => void removeSharedUser(person)}><span>{person.username.charAt(0).toUpperCase()}</span>{person.username}{!selected.sharedBy && <X size={12} />}</button>)}
+                    {selected.sharedWith.map((person) => {
+                      const automatic = !selected.sharedBy && automaticallySharedWith(person.id, selected.status);
+                      return <button title={selected.sharedBy ? person.username : automatic ? "Managed by your Myst sharing settings" : `Remove ${person.username}`} type="button" disabled={Boolean(selected.sharedBy) || automatic} key={person.id} onClick={() => void removeSharedUser(person)}><span>{person.username.charAt(0).toUpperCase()}</span>{person.username}{automatic ? <small>Auto</small> : !selected.sharedBy && <X size={12} />}</button>;
+                    })}
                     {!selected.sharedWith.length && <small>Only you can see this cache.</small>}
                   </div>
                   {!selected.sharedBy && <button className="text-button" type="button" onClick={openShare}><Plus size={15} /> Share with a Geostats user</button>}
@@ -1693,7 +1770,42 @@ export default function MysteriesPage() {
                 return <button key={user.id} type="button" disabled={alreadyShared || Boolean(sharingUserId)} onClick={() => void addSharedUser(user)}><span>{user.username.charAt(0).toUpperCase()}</span><strong>{user.username}</strong><small>{alreadyShared ? "Already shared" : sharing ? "Sharing…" : "Add user"}</small></button>;
               })}
             </div>
-            <div className="modal-actions"><button className="secondary-button" type="button" onClick={() => setShowShare(false)}>Cancel</button></div>
+            <div className="modal-actions"><button className="text-button" type="button" onClick={() => { setShowShare(false); openSharingSettings(); }}><Settings2 size={15} /> Share multiple Mysts</button><button className="secondary-button" type="button" onClick={() => setShowShare(false)}>Cancel</button></div>
+          </div>
+        </div>
+      )}
+
+      {showSharingSettings && (
+        <div className="mystery-modal-backdrop" role="presentation" onMouseDown={() => setShowSharingSettings(false)}>
+          <div className="mystery-modal share-user-modal sharing-settings-modal" role="dialog" aria-modal="true" aria-labelledby="sharing-settings-title" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="section-heading"><div><p className="eyebrow">Automatic access</p><h2 id="sharing-settings-title">Myst sharing settings</h2></div><button className="row-delete" type="button" aria-label="Close" onClick={() => setShowSharingSettings(false)}><X /></button></div>
+            <p className="share-user-lead">Choose who can automatically see your Myst workspaces and which stages you want to share. New Mysts and status changes follow these settings too.</p>
+            <div className="sharing-preference-list">
+              {sharingPreferences.map((preference) => (
+                <div className="sharing-preference" key={preference.recipient.id}>
+                  <div className="sharing-preference-person"><span>{preference.recipient.username.charAt(0).toUpperCase()}</span><strong>{preference.recipient.username}</strong><button className="text-button" type="button" disabled={savingPreferenceId === preference.recipient.id} onClick={() => void removeSharingPreference(preference)}>Stop sharing</button></div>
+                  <div className="sharing-statuses" aria-label={`Myst statuses shared with ${preference.recipient.username}`}>
+                    {(["solving", "solved", "planned"] as const).map((status) => {
+                      const checked = preference.statuses.includes(status);
+                      const nextStatuses = checked ? preference.statuses.filter((item) => item !== status) : [...preference.statuses, status];
+                      return <label key={status}><input type="checkbox" checked={checked} disabled={Boolean(savingPreferenceId) || (checked && preference.statuses.length === 1)} onChange={() => void saveSharingPreference(preference.recipient, nextStatuses)} /><span>{status}</span></label>;
+                    })}
+                  </div>
+                </div>
+              ))}
+              {!sharingPreferences.length && <small>No automatic sharing yet. Add a Geostats user below.</small>}
+            </div>
+            <label className="share-user-search"><span>Add a person</span><span><Search size={17} /><input value={userQuery} onChange={(event) => setUserQuery(event.target.value)} placeholder="Search by username" /></span></label>
+            <div className="share-user-results" aria-live="polite">
+              {userSearchState === "loading" && <small>Searching registered users…</small>}
+              {userSearchState === "error" && <small className="share-user-error">Could not search users. Try again.</small>}
+              {userQuery.trim().length >= 2 && userSearchState === "idle" && !userResults.length && <small>No registered users found.</small>}
+              {userResults.map((user) => {
+                const preference = sharingPreferences.find((item) => item.recipient.id === user.id);
+                return <button key={user.id} type="button" disabled={Boolean(preference) || Boolean(savingPreferenceId)} onClick={() => void saveSharingPreference(user, ["solving", "solved", "planned"])}><span>{user.username.charAt(0).toUpperCase()}</span><strong>{user.username}</strong><small>{preference ? "Already added" : savingPreferenceId === user.id ? "Adding…" : "Share all Mysts"}</small></button>;
+              })}
+            </div>
+            <div className="modal-actions"><button className="secondary-button" type="button" onClick={() => setShowSharingSettings(false)}>Done</button></div>
           </div>
         </div>
       )}

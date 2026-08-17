@@ -3780,6 +3780,91 @@ select:focus {
   white-space: nowrap;
 }
 
+.sharing-settings-modal {
+  width: min(580px, 100%);
+  max-height: calc(100vh - 44px);
+  overflow-y: auto;
+}
+
+.sharing-preference-list {
+  display: grid;
+  gap: 9px;
+}
+
+.sharing-preference-list > small {
+  padding: 12px 4px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.sharing-preference {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(237, 244, 232, 0.035);
+}
+
+.sharing-preference-person {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+}
+
+.sharing-preference-person > span {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border-radius: 999px;
+  color: #07110b;
+  background: var(--green);
+  font-weight: 700;
+}
+
+.sharing-statuses {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.sharing-statuses label {
+  cursor: pointer;
+}
+
+.sharing-statuses input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.sharing-statuses span {
+  display: block;
+  padding: 5px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  text-transform: capitalize;
+}
+
+.sharing-statuses input:checked + span {
+  border-color: rgba(95, 191, 133, 0.52);
+  color: var(--green);
+  background: rgba(95, 191, 133, 0.1);
+}
+
+.sharing-statuses input:focus-visible + span {
+  outline: 3px solid var(--focus);
+}
+
+.sharing-statuses input:disabled + span {
+  cursor: default;
+  opacity: 0.55;
+}
+
 .browser-import-modal {
   gap: 18px;
   width: min(720px, 100%);
