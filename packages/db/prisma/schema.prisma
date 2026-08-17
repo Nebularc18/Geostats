@@ -13,6 +13,7 @@ enum ImportSource {
   POCKET_QUERY
   MANUAL_GPX
   GEOCACHING_API
+  GEOSTATS_EXPORT
 }
 
 enum ImportStatus {
@@ -26,6 +27,7 @@ enum ImportStatus {
 enum ImportFileType {
   GPX
   ZIP
+  JSON
 }
 
 model User {

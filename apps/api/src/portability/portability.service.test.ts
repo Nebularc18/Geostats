@@ -116,6 +116,7 @@ function archiveWithCache(gcCode = "GCPOISON") {
 function importTransaction(
   storedCaches: Array<{ id: string; gcCode: string }>,
   cacheWrites: any[] = [],
+  importWrites: any[] = [],
 ) {
   return {
     geocachingProfile: { upsert: async () => undefined },
@@ -150,6 +151,11 @@ function importTransaction(
     },
     mysteryWorkspace: { upsert: async () => undefined },
     mysteryWorkspaceDeletion: { deleteMany: async () => undefined },
+    import: {
+      create: async (input: any) => {
+        importWrites.push(input);
+      },
+    },
   };
 }
 
@@ -173,9 +179,10 @@ test("import creates archive cache metadata only inside the authenticated user's
 });
 
 test("import can attach portable records to cache metadata already owned by the user", async () => {
+  const importWrites: any[] = [];
   const tx = importTransaction([
     { id: "trusted-cache-1", gcCode: "GCTRUSTED" },
-  ]);
+  ], [], importWrites);
   const prisma = {
     $transaction: async (callback: (transaction: typeof tx) => unknown) =>
       callback(tx),
@@ -183,7 +190,7 @@ test("import can attach portable records to cache metadata already owned by the 
   const service = new PortabilityService(prisma as any, {} as any);
 
   assert.deepEqual(
-    await service.importData(user, archiveWithCache("GCTRUSTED")),
+    await service.importData(user, archiveWithCache("GCTRUSTED"), "old-server.json"),
     {
       imported: {
         caches: 1,
@@ -192,6 +199,21 @@ test("import can attach portable records to cache metadata already owned by the 
         correctedCoordinates: 0,
         mysteryWorkspaces: 0,
       },
+    },
+  );
+  assert.equal(importWrites.length, 1);
+  assert.deepEqual(
+    {
+      fileName: importWrites[0].data.fileName,
+      fileType: importWrites[0].data.fileType,
+      source: importWrites[0].data.source,
+      status: importWrites[0].data.status,
+    },
+    {
+      fileName: "old-server.json",
+      fileType: "JSON",
+      source: "GEOSTATS_EXPORT",
+      status: "COMPLETED",
     },
   );
 });

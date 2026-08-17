@@ -60,7 +60,7 @@ export class PortabilityController {
       throw new BadRequestException("Choose a Geostats JSON export to import");
     }
     try {
-      return await this.portability.importFile(user, file.path);
+      return await this.portability.importFile(user, file.path, file.originalname);
     } finally {
       await unlink(file.path).catch(() => undefined);
     }
