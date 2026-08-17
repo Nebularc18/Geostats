@@ -16,8 +16,8 @@
     "lucide-react": "^0.468.0",
     "maplibre-gl": "^5.24.0",
     "next": "^15.1.2",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
     "recharts": "^2.15.0"
   },
   "devDependencies": {
