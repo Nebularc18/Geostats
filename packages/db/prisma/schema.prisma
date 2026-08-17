@@ -49,6 +49,8 @@ model User {
   ownerFinderCountryStats OwnerFinderCountryStat[]
   mysteryWorkspaces       MysteryWorkspace[]       @relation("MysteryOwner")
   mysteryShares           MysteryShare[]           @relation("MysteryRecipient")
+  mysterySharingPreferencesOwned MysterySharingPreference[] @relation("MysterySharingOwner")
+  mysterySharingPreferencesReceived MysterySharingPreference[] @relation("MysterySharingRecipient")
   mysteryDeletions        MysteryWorkspaceDeletion[]
   caches                  Cache[]
 
@@ -86,6 +88,22 @@ model MysteryShare {
   @@unique([mysteryId, recipientId])
   @@index([recipientId, createdAt])
   @@map("mystery_shares")
+}
+
+model MysterySharingPreference {
+  id          String   @id @default(cuid())
+  ownerId     String   @map("owner_id")
+  recipientId String   @map("recipient_id")
+  statuses    String[]
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  owner     User @relation("MysterySharingOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  recipient User @relation("MysterySharingRecipient", fields: [recipientId], references: [id], onDelete: Cascade)
+
+  @@unique([ownerId, recipientId])
+  @@index([recipientId])
+  @@map("mystery_sharing_preferences")
 }
 
 model MysteryWorkspaceDeletion {

@@ -16,6 +16,13 @@ type UpdateMysteryBody = {
   revision?: unknown;
 };
 
+type SharingPreferenceBody = {
+  statuses?: unknown;
+};
+
+const MYSTERY_STATUSES = ["solving", "solved", "planned"] as const;
+type MysteryStatus = typeof MYSTERY_STATUSES[number];
+
 const MAX_MYSTERY_NAME_LENGTH = 300;
 const MAX_MYSTERY_SNAPSHOT_BYTES = 256 * 1024;
 const MAX_MYSTERY_WORKSPACES_PER_OWNER = 500;
@@ -47,6 +54,36 @@ function snapshotRevision(value: unknown): number {
   return value as number;
 }
 
+function sharingStatuses(value: unknown): MysteryStatus[] {
+  if (!Array.isArray(value)) throw new BadRequestException("Choose at least one Mystery status");
+  const statuses = [...new Set(value)];
+  if (!statuses.length || statuses.some((status) => !MYSTERY_STATUSES.includes(status as MysteryStatus))) {
+    throw new BadRequestException("Choose one or more valid Mystery statuses");
+  }
+  return MYSTERY_STATUSES.filter((status) => statuses.includes(status));
+}
+
+function mysteryStatus(value: Prisma.JsonValue): MysteryStatus | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const status = (value as Prisma.JsonObject).status;
+  return MYSTERY_STATUSES.includes(status as MysteryStatus) ? status as MysteryStatus : null;
+}
+
+function effectiveRecipients(
+  data: Prisma.JsonValue,
+  explicit: Array<{ id: string; username: string }>,
+  preferences: Array<{ statuses: string[]; recipient: { id: string; username: string } }>
+) {
+  const status = mysteryStatus(data);
+  const recipients = new Map(explicit.map((recipient) => [recipient.id, recipient]));
+  if (status) {
+    preferences.forEach((preference) => {
+      if (preference.statuses.includes(status)) recipients.set(preference.recipient.id, preference.recipient);
+    });
+  }
+  return [...recipients.values()];
+}
+
 export async function lockMystery(tx: Prisma.TransactionClient, ownerId: string, ...keys: string[]) {
   for (const key of [...new Set(keys)].sort()) {
     await tx.$queryRaw`
@@ -62,7 +99,7 @@ export class MysteriesController {
 
   @Get("owned")
   async owned(@CurrentUser() user: AuthUser) {
-    const [mysteries, deletions] = await Promise.all([
+    const [mysteries, deletions, preferences] = await Promise.all([
       this.prisma.mysteryWorkspace.findMany({
         where: { ownerId: user.id },
         select: {
@@ -79,6 +116,14 @@ export class MysteriesController {
       this.prisma.mysteryWorkspaceDeletion.findMany({
         where: { ownerId: user.id },
         select: { clientId: true }
+      }),
+      this.prisma.mysterySharingPreference.findMany({
+        where: { ownerId: user.id },
+        select: {
+          statuses: true,
+          recipient: { select: { id: true, username: true } }
+        },
+        orderBy: { createdAt: "asc" }
       })
     ]);
     return {
@@ -86,7 +131,7 @@ export class MysteriesController {
         clientId: mystery.clientId,
         mystery: mystery.data,
         revision: mystery.snapshotRevision,
-        sharedWith: mystery.shares.map(({ recipient }) => recipient)
+        sharedWith: effectiveRecipients(mystery.data, mystery.shares.map(({ recipient }) => recipient), preferences)
       })),
       deletedClientIds: deletions.map(({ clientId }) => clientId)
     };
@@ -94,11 +139,12 @@ export class MysteriesController {
 
   @Get("owned-shares")
   async ownedShares(@CurrentUser() user: AuthUser) {
-    const [mysteries, deletions] = await Promise.all([
+    const [mysteries, deletions, preferences] = await Promise.all([
       this.prisma.mysteryWorkspace.findMany({
-        where: { ownerId: user.id, shares: { some: {} } },
+        where: { ownerId: user.id },
         select: {
           clientId: true,
+          data: true,
           snapshotRevision: true,
           shares: {
             select: { recipient: { select: { id: true, username: true } } },
@@ -109,21 +155,28 @@ export class MysteriesController {
       this.prisma.mysteryWorkspaceDeletion.findMany({
         where: { ownerId: user.id },
         select: { clientId: true }
+      }),
+      this.prisma.mysterySharingPreference.findMany({
+        where: { ownerId: user.id },
+        select: {
+          statuses: true,
+          recipient: { select: { id: true, username: true } }
+        },
+        orderBy: { createdAt: "asc" }
       })
     ]);
     return {
-      mysteries: mysteries.map((mystery) => ({
-        clientId: mystery.clientId,
-        revision: mystery.snapshotRevision,
-        sharedWith: mystery.shares.map(({ recipient }) => recipient)
-      })),
+      mysteries: mysteries.flatMap((mystery) => {
+        const sharedWith = effectiveRecipients(mystery.data, mystery.shares.map(({ recipient }) => recipient), preferences);
+        return sharedWith.length ? [{ clientId: mystery.clientId, revision: mystery.snapshotRevision, sharedWith }] : [];
+      }),
       deletedClientIds: deletions.map(({ clientId }) => clientId)
     };
   }
 
   @Get("shared")
   async shared(@CurrentUser() user: AuthUser) {
-    const grants = await this.prisma.mysteryShare.findMany({
+    const [grants, receivedPreferences] = await Promise.all([this.prisma.mysteryShare.findMany({
       where: { recipientId: user.id },
       include: {
         mystery: {
@@ -137,16 +190,96 @@ export class MysteriesController {
         }
       },
       orderBy: { createdAt: "asc" }
+    }), this.prisma.mysterySharingPreference.findMany({
+      where: { recipientId: user.id },
+      select: { ownerId: true }
+    })]);
+
+    const preferenceOwnerIds = [...new Set(receivedPreferences.map(({ ownerId }) => ownerId))];
+    const preferenceMysteries = preferenceOwnerIds.length ? await this.prisma.mysteryWorkspace.findMany({
+      where: { ownerId: { in: preferenceOwnerIds } },
+      include: {
+        owner: { select: { id: true, username: true } },
+        shares: {
+          include: { recipient: { select: { id: true, username: true } } },
+          orderBy: { createdAt: "asc" }
+        }
+      },
+      orderBy: { createdAt: "asc" }
+    }) : [];
+    const ownerIds = [...new Set([...grants.map(({ mystery }) => mystery.owner.id), ...preferenceOwnerIds])];
+    const allPreferences = ownerIds.length ? await this.prisma.mysterySharingPreference.findMany({
+      where: { ownerId: { in: ownerIds } },
+      select: {
+        ownerId: true,
+        statuses: true,
+        recipient: { select: { id: true, username: true } }
+      },
+      orderBy: { createdAt: "asc" }
+    }) : [];
+    const workspaces = new Map<string, (typeof preferenceMysteries)[number]>();
+    grants.forEach(({ mystery }) => workspaces.set(mystery.id, mystery));
+    preferenceMysteries.forEach((mystery) => {
+      const status = mysteryStatus(mystery.data);
+      const visible = status && allPreferences.some((preference) =>
+        preference.ownerId === mystery.owner.id && preference.recipient.id === user.id && preference.statuses.includes(status)
+      );
+      if (visible) workspaces.set(mystery.id, mystery);
     });
 
     return {
-      mysteries: grants.map(({ mystery }) => ({
+      mysteries: [...workspaces.values()].map((mystery) => ({
         workspaceId: mystery.id,
         mystery: mystery.data,
         owner: mystery.owner,
-        sharedWith: mystery.shares.map(({ recipient }) => recipient)
+        sharedWith: effectiveRecipients(
+          mystery.data,
+          mystery.shares.map(({ recipient }) => recipient),
+          allPreferences.filter((preference) => preference.ownerId === mystery.owner.id)
+        )
       }))
     };
+  }
+
+  @Get("sharing-preferences")
+  async sharingPreferences(@CurrentUser() user: AuthUser) {
+    const preferences = await this.prisma.mysterySharingPreference.findMany({
+      where: { ownerId: user.id },
+      select: {
+        statuses: true,
+        recipient: { select: { id: true, username: true } }
+      },
+      orderBy: { createdAt: "asc" }
+    });
+    return { preferences };
+  }
+
+  @Put("sharing-preferences/:recipientId")
+  async setSharingPreference(
+    @CurrentUser() user: AuthUser,
+    @Param("recipientId") recipientId: string,
+    @Body() body: SharingPreferenceBody
+  ) {
+    if (!recipientId || recipientId === user.id) throw new BadRequestException("Choose another registered user");
+    const statuses = sharingStatuses(body.statuses);
+    const recipient = await this.prisma.user.findUnique({
+      where: { id: recipientId },
+      select: { id: true, username: true }
+    });
+    if (!recipient) throw new NotFoundException("Recipient was not found");
+    const preference = await this.prisma.mysterySharingPreference.upsert({
+      where: { ownerId_recipientId: { ownerId: user.id, recipientId } },
+      create: { ownerId: user.id, recipientId, statuses },
+      update: { statuses },
+      select: { statuses: true }
+    });
+    return { preference: { recipient, statuses: preference.statuses } };
+  }
+
+  @Delete("sharing-preferences/:recipientId")
+  async deleteSharingPreference(@CurrentUser() user: AuthUser, @Param("recipientId") recipientId: string) {
+    await this.prisma.mysterySharingPreference.deleteMany({ where: { ownerId: user.id, recipientId } });
+    return { ok: true };
   }
 
   @Post(":clientId/shares")

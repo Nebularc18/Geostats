@@ -79,7 +79,8 @@ test("shared returns the granted snapshot through the recipient lookup", async (
           shares: [{ recipient }]
         }
       }]
-    }
+    },
+    mysterySharingPreference: { findMany: async () => [] }
   };
   const controller = new MysteriesController(prisma as any);
 
@@ -98,13 +99,15 @@ test("ownedShares returns the server-authoritative recipient list", async () => 
     mysteryWorkspace: {
       findMany: async () => [{
         clientId: mystery.id,
+        data: mystery,
         snapshotRevision: 4,
         shares: [{ recipient }]
       }]
     },
     mysteryWorkspaceDeletion: {
       findMany: async () => [{ clientId: "deleted-local-1" }]
-    }
+    },
+    mysterySharingPreference: { findMany: async () => [] }
   };
   const controller = new MysteriesController(prisma as any);
 
@@ -137,7 +140,8 @@ test("owned returns every server-backed mystery, including unshared mysteries", 
     },
     mysteryWorkspaceDeletion: {
       findMany: async () => [{ clientId: "deleted-local-1" }]
-    }
+    },
+    mysterySharingPreference: { findMany: async () => [] }
   };
   const controller = new MysteriesController(prisma as any);
 
@@ -150,6 +154,77 @@ test("owned returns every server-backed mystery, including unshared mysteries", 
     ],
     deletedClientIds: ["deleted-local-1"]
   });
+});
+
+test("owned applies status-based automatic sharing preferences", async () => {
+  const solvingRecipient = { id: "recipient-2", username: "solver" };
+  const prisma = {
+    mysteryWorkspace: {
+      findMany: async () => [{ clientId: mystery.id, data: { ...mystery, status: "solving" }, snapshotRevision: 2, shares: [] }]
+    },
+    mysteryWorkspaceDeletion: { findMany: async () => [] },
+    mysterySharingPreference: {
+      findMany: async () => [{ statuses: ["solving"], recipient: solvingRecipient }]
+    }
+  };
+  const controller = new MysteriesController(prisma as any);
+
+  const result = await controller.owned(owner);
+
+  assert.deepEqual(result.mysteries[0].sharedWith, [solvingRecipient]);
+});
+
+test("shared grants matching automatic access without per-Mystery rows", async () => {
+  const automaticMystery = { ...mystery, status: "solved" };
+  let preferenceRead = 0;
+  const prisma = {
+    mysteryShare: { findMany: async () => [] },
+    mysteryWorkspace: {
+      findMany: async () => [{
+        id: "workspace-automatic",
+        data: automaticMystery,
+        owner: { id: owner.id, username: owner.username },
+        shares: []
+      }]
+    },
+    mysterySharingPreference: {
+      findMany: async () => {
+        preferenceRead += 1;
+        return preferenceRead === 1
+          ? [{ ownerId: owner.id }]
+          : [{ ownerId: owner.id, statuses: ["solved"], recipient }];
+      }
+    }
+  };
+  const controller = new MysteriesController(prisma as any);
+
+  const result = await controller.shared({ ...recipient, email: "recipient@example.com" });
+
+  assert.deepEqual(result.mysteries, [{
+    workspaceId: "workspace-automatic",
+    mystery: automaticMystery,
+    owner: { id: owner.id, username: owner.username },
+    sharedWith: [recipient]
+  }]);
+});
+
+test("sharing preferences accept any non-empty combination of Myst statuses", async () => {
+  let stored: unknown;
+  const prisma = {
+    user: { findUnique: async () => recipient },
+    mysterySharingPreference: {
+      upsert: async (input: unknown) => {
+        stored = input;
+        return { statuses: ["solving", "planned"] };
+      }
+    }
+  };
+  const controller = new MysteriesController(prisma as any);
+
+  const result = await controller.setSharingPreference(owner, recipient.id, { statuses: ["planned", "solving", "planned"] });
+
+  assert.deepEqual((stored as any).create.statuses, ["solving", "planned"]);
+  assert.deepEqual(result.preference, { recipient, statuses: ["solving", "planned"] });
 });
 
 test("share rejects a snapshot that does not match the requested mystery", async () => {
