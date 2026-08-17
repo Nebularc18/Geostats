@@ -5,6 +5,15 @@ import { AppShell } from "../../components/app-shell";
 import { apiFetch } from "../../lib/api";
 import { hasActiveImports, type ImportListItem, type ImportsResponse } from "../../lib/imports";
 
+const sourceLabels: Record<string, string> = {
+  MY_FINDS_GPX: "My Finds GPX",
+  MY_HIDES_GPX: "My Hides GPX",
+  POCKET_QUERY: "Pocket Query",
+  MANUAL_GPX: "Manual GPX",
+  GEOCACHING_API: "Geocaching API",
+  GEOSTATS_EXPORT: "Geostats transfer"
+};
+
 export default function ImportsPage() {
   const [imports, setImports] = useState<ImportListItem[]>([]);
 
@@ -45,7 +54,7 @@ export default function ImportsPage() {
                 <small>{new Date(item.createdAt).toLocaleString()}</small>
                 {item.errorMessage ? <small className="error">{item.errorMessage}</small> : null}
               </span>
-              <span>{item.source}</span>
+              <span>{sourceLabels[item.source] ?? item.source}</span>
               <strong>{item.status}</strong>
             </div>
           ))}

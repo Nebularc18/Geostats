@@ -7,7 +7,13 @@ import {
   ServiceUnavailableException,
 } from "@nestjs/common";
 import { Prisma } from "@geostats/db";
-import { AuthUser } from "@geostats/shared";
+import {
+  AuthUser,
+  ImportFileType,
+  ImportSource,
+  ImportStatus,
+} from "@geostats/shared";
+import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { PrismaService } from "../common/prisma.service";
 import { StorageService } from "../storage/storage.service";
@@ -338,7 +344,7 @@ export class PortabilityService implements OnModuleInit, OnModuleDestroy {
     await this.cleanupPendingObjects();
   }
 
-  async importFile(user: AuthUser, path: string) {
+  async importFile(user: AuthUser, path: string, fileName = "geostats-export.json") {
     if (this.importInProgress) {
       throw new ServiceUnavailableException(
         "Another data import is already in progress; try again shortly",
@@ -346,13 +352,17 @@ export class PortabilityService implements OnModuleInit, OnModuleDestroy {
     }
     this.importInProgress = true;
     try {
-      return await this.importData(user, await readFile(path, "utf8"));
+      return await this.importData(user, await readFile(path, "utf8"), fileName);
     } finally {
       this.importInProgress = false;
     }
   }
 
-  async importData(user: AuthUser, input: Buffer | string) {
+  async importData(
+    user: AuthUser,
+    input: Buffer | string,
+    fileName = "geostats-export.json",
+  ) {
     const archive = parsePortableArchive(input);
     const data = archive.data;
     try {
@@ -675,6 +685,16 @@ export class PortabilityService implements OnModuleInit, OnModuleDestroy {
               where: { ownerId: user.id, clientId: { in: batch } },
             });
           }
+          await tx.import.create({
+            data: {
+              userId: user.id,
+              fileName: fileName.trim().slice(0, 255) || "geostats-export.json",
+              fileType: ImportFileType.JSON,
+              source: ImportSource.GEOSTATS_EXPORT,
+              status: ImportStatus.COMPLETED,
+              objectKey: `portability-history/${user.id}/${randomUUID()}`,
+            },
+          });
           return {
             imported: {
               caches: cacheRows.length,

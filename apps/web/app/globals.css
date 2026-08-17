@@ -257,7 +257,9 @@ nav a:hover {
 .badge-row {
   display: grid;
   gap: 10px;
+  min-width: 0;
   padding: 12px;
+  overflow: hidden;
   border: 1px solid rgba(237, 244, 232, 0.1);
   border-radius: 8px;
   background:
@@ -306,9 +308,9 @@ nav a:hover {
 }
 
 .country-badge-row.platinum {
-  --country-tier: #dce5df;
-  --country-tier-light: #ffffff;
-  --country-tier-dark: #76847c;
+  --country-tier: #79cfc9;
+  --country-tier-light: #d8fffb;
+  --country-tier-dark: #287c7d;
 }
 
 .country-badge-row.ruby {
@@ -561,8 +563,8 @@ nav a:hover {
   overflow: hidden;
   font-size: 0.82rem;
   line-height: 1.15;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .badge-row-main small {
@@ -771,7 +773,14 @@ nav a:hover {
 }
 
 .badge-picture.platinum {
-  --badge-tier: #e1e7dd;
+  --badge-tier: #79cfc9;
+  --badge-tier-ink: #052726;
+  box-shadow:
+    inset 0 0 0 3px rgba(225, 255, 252, 0.48),
+    inset 0 0 0 8px rgba(5, 39, 38, 0.2),
+    0 2px 0 rgba(5, 39, 38, 0.72),
+    0 0 14px rgba(121, 207, 201, 0.24),
+    0 7px 14px rgba(0, 0, 0, 0.2);
 }
 
 .badge-picture.ruby {
@@ -1477,6 +1486,31 @@ select:focus {
 .auth-panel h1 {
   margin-bottom: 16px;
   font-size: clamp(2.5rem, 8vw, 5rem);
+}
+
+.onboarding-options {
+  display: grid;
+}
+
+.onboarding-import-form {
+  margin-top: 8px;
+  padding: 16px;
+  border: 1px solid rgba(95, 191, 133, 0.22);
+  border-radius: 8px;
+  background: rgba(95, 191, 133, 0.055);
+}
+
+.onboarding-import-form p {
+  margin: 5px 0 0;
+  line-height: 1.4;
+}
+
+.onboarding-import-form .secondary-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
 }
 
 .upload-zone {
@@ -3355,6 +3389,11 @@ select:focus {
 .attempt-list {
   display: grid;
   gap: 7px;
+  max-height: 42rem;
+  padding-right: 4px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 
 .attempt-row {

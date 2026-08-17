@@ -3,7 +3,8 @@ export enum ImportSource {
   MY_HIDES_GPX = "MY_HIDES_GPX",
   POCKET_QUERY = "POCKET_QUERY",
   MANUAL_GPX = "MANUAL_GPX",
-  GEOCACHING_API = "GEOCACHING_API"
+  GEOCACHING_API = "GEOCACHING_API",
+  GEOSTATS_EXPORT = "GEOSTATS_EXPORT"
 }
 
 export enum ImportStatus {
@@ -16,7 +17,8 @@ export enum ImportStatus {
 
 export enum ImportFileType {
   GPX = "GPX",
-  ZIP = "ZIP"
+  ZIP = "ZIP",
+  JSON = "JSON"
 }
 
 export const IMPORT_QUEUE_NAME = "imports";
