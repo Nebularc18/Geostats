@@ -72,13 +72,17 @@ function mysteryStatus(value: Prisma.JsonValue): MysteryStatus | null {
 function effectiveRecipients(
   data: Prisma.JsonValue,
   explicit: Array<{ id: string; username: string }>,
-  preferences: Array<{ statuses: string[]; recipient: { id: string; username: string } }>
+  preferences: Array<{ statuses: string[]; recipient: { id: string; username: string } }>,
+  excludedRecipientIds: string[] = []
 ) {
   const status = mysteryStatus(data);
+  const excluded = new Set(excludedRecipientIds);
   const recipients = new Map(explicit.map((recipient) => [recipient.id, recipient]));
   if (status) {
     preferences.forEach((preference) => {
-      if (preference.statuses.includes(status)) recipients.set(preference.recipient.id, preference.recipient);
+      if (preference.statuses.includes(status) && !excluded.has(preference.recipient.id)) {
+        recipients.set(preference.recipient.id, preference.recipient);
+      }
     });
   }
   return [...recipients.values()];
@@ -109,7 +113,8 @@ export class MysteriesController {
           shares: {
             select: { recipient: { select: { id: true, username: true } } },
             orderBy: { createdAt: "asc" }
-          }
+          },
+          sharingExclusions: { select: { recipientId: true } }
         },
         orderBy: { createdAt: "asc" }
       }),
@@ -131,7 +136,12 @@ export class MysteriesController {
         clientId: mystery.clientId,
         mystery: mystery.data,
         revision: mystery.snapshotRevision,
-        sharedWith: effectiveRecipients(mystery.data, mystery.shares.map(({ recipient }) => recipient), preferences)
+        sharedWith: effectiveRecipients(
+          mystery.data,
+          mystery.shares.map(({ recipient }) => recipient),
+          preferences,
+          mystery.sharingExclusions.map(({ recipientId }) => recipientId)
+        )
       })),
       deletedClientIds: deletions.map(({ clientId }) => clientId)
     };
@@ -149,7 +159,8 @@ export class MysteriesController {
           shares: {
             select: { recipient: { select: { id: true, username: true } } },
             orderBy: { createdAt: "asc" }
-          }
+          },
+          sharingExclusions: { select: { recipientId: true } }
         }
       }),
       this.prisma.mysteryWorkspaceDeletion.findMany({
@@ -167,7 +178,12 @@ export class MysteriesController {
     ]);
     return {
       mysteries: mysteries.flatMap((mystery) => {
-        const sharedWith = effectiveRecipients(mystery.data, mystery.shares.map(({ recipient }) => recipient), preferences);
+        const sharedWith = effectiveRecipients(
+          mystery.data,
+          mystery.shares.map(({ recipient }) => recipient),
+          preferences,
+          mystery.sharingExclusions.map(({ recipientId }) => recipientId)
+        );
         return sharedWith.length ? [{ clientId: mystery.clientId, revision: mystery.snapshotRevision, sharedWith }] : [];
       }),
       deletedClientIds: deletions.map(({ clientId }) => clientId)
@@ -185,7 +201,8 @@ export class MysteriesController {
             shares: {
               include: { recipient: { select: { id: true, username: true } } },
               orderBy: { createdAt: "asc" }
-            }
+            },
+            sharingExclusions: { select: { recipientId: true } }
           }
         }
       },
@@ -203,7 +220,8 @@ export class MysteriesController {
         shares: {
           include: { recipient: { select: { id: true, username: true } } },
           orderBy: { createdAt: "asc" }
-        }
+        },
+        sharingExclusions: { select: { recipientId: true } }
       },
       orderBy: { createdAt: "asc" }
     }) : [];
@@ -222,7 +240,10 @@ export class MysteriesController {
     preferenceMysteries.forEach((mystery) => {
       const status = mysteryStatus(mystery.data);
       const visible = status && allPreferences.some((preference) =>
-        preference.ownerId === mystery.owner.id && preference.recipient.id === user.id && preference.statuses.includes(status)
+        preference.ownerId === mystery.owner.id &&
+        preference.recipient.id === user.id &&
+        preference.statuses.includes(status) &&
+        !mystery.sharingExclusions.some(({ recipientId }) => recipientId === user.id)
       );
       if (visible) workspaces.set(mystery.id, mystery);
     });
@@ -235,7 +256,8 @@ export class MysteriesController {
         sharedWith: effectiveRecipients(
           mystery.data,
           mystery.shares.map(({ recipient }) => recipient),
-          allPreferences.filter((preference) => preference.ownerId === mystery.owner.id)
+          allPreferences.filter((preference) => preference.ownerId === mystery.owner.id),
+          mystery.sharingExclusions.map(({ recipientId }) => recipientId)
         )
       }))
     };
@@ -339,6 +361,9 @@ export class MysteriesController {
         where: { mysteryId_recipientId: { mysteryId: mystery.id, recipientId: recipient.id } },
         create: { mysteryId: mystery.id, recipientId: recipient.id },
         update: {}
+      });
+      await tx.mysterySharingExclusion.deleteMany({
+        where: { mysteryId: mystery.id, recipientId: recipient.id }
       });
       const stored = await tx.mysteryWorkspace.findUnique({
         where: { id: mystery.id },
@@ -464,10 +489,22 @@ export class MysteriesController {
       await lockMystery(tx, user.id, clientId);
       const mystery = await tx.mysteryWorkspace.findUnique({
         where: { ownerId_clientId: { ownerId: user.id, clientId } },
-        select: { id: true }
+        select: { id: true, data: true }
       });
       if (!mystery) throw new NotFoundException("Shared mystery was not found");
       await tx.mysteryShare.deleteMany({ where: { mysteryId: mystery.id, recipientId } });
+      const status = mysteryStatus(mystery.data);
+      const preference = status ? await tx.mysterySharingPreference.findUnique({
+        where: { ownerId_recipientId: { ownerId: user.id, recipientId } },
+        select: { statuses: true }
+      }) : null;
+      if (status && preference?.statuses.includes(status)) {
+        await tx.mysterySharingExclusion.upsert({
+          where: { mysteryId_recipientId: { mysteryId: mystery.id, recipientId } },
+          create: { mysteryId: mystery.id, recipientId },
+          update: {}
+        });
+      }
     });
     return { ok: true };
   }

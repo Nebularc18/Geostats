@@ -51,6 +51,7 @@ model User {
   mysteryShares           MysteryShare[]           @relation("MysteryRecipient")
   mysterySharingPreferencesOwned MysterySharingPreference[] @relation("MysterySharingOwner")
   mysterySharingPreferencesReceived MysterySharingPreference[] @relation("MysterySharingRecipient")
+  mysterySharingExclusions MysterySharingExclusion[] @relation("MysterySharingExclusionRecipient")
   mysteryDeletions        MysteryWorkspaceDeletion[]
   caches                  Cache[]
 
@@ -69,6 +70,7 @@ model MysteryWorkspace {
 
   owner  User           @relation("MysteryOwner", fields: [ownerId], references: [id], onDelete: Cascade)
   shares MysteryShare[]
+  sharingExclusions MysterySharingExclusion[]
 
   @@unique([ownerId, clientId])
   @@unique([ownerId, gcCode])
@@ -104,6 +106,20 @@ model MysterySharingPreference {
   @@unique([ownerId, recipientId])
   @@index([recipientId])
   @@map("mystery_sharing_preferences")
+}
+
+model MysterySharingExclusion {
+  id          String   @id @default(cuid())
+  mysteryId   String   @map("mystery_id")
+  recipientId String   @map("recipient_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  mystery   MysteryWorkspace @relation(fields: [mysteryId], references: [id], onDelete: Cascade)
+  recipient User             @relation("MysterySharingExclusionRecipient", fields: [recipientId], references: [id], onDelete: Cascade)
+
+  @@unique([mysteryId, recipientId])
+  @@index([recipientId])
+  @@map("mystery_sharing_exclusions")
 }
 
 model MysteryWorkspaceDeletion {
