@@ -502,7 +502,7 @@ export class MysteriesController {
     @Param("recipientId") recipientId: string
   ) {
     await this.prisma.$transaction(async (tx) => {
-      await lockMystery(tx, user.id, clientId);
+      await lockMystery(tx, user.id, clientId, `sharing-preference:${recipientId}`);
       const mystery = await tx.mysteryWorkspace.findUnique({
         where: { ownerId_clientId: { ownerId: user.id, clientId } },
         select: { id: true, data: true }

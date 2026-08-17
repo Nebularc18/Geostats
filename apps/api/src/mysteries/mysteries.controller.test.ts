@@ -618,11 +618,13 @@ test("a durable deletion tombstone blocks stale tabs from resharing", async () =
   );
 });
 
-test("unshare locks the mystery before revoking its recipient grant", async () => {
+test("unshare locks both the mystery and recipient preference before revoking access", async () => {
   const operations: string[] = [];
+  const lockedKeys: unknown[] = [];
   const transaction = {
-    $queryRaw: async () => {
+    $queryRaw: async (_query: TemplateStringsArray, _ownerId: string, key: unknown) => {
       operations.push("lock");
+      lockedKeys.push(key);
       return [];
     },
     mysteryWorkspace: {
@@ -649,7 +651,8 @@ test("unshare locks the mystery before revoking its recipient grant", async () =
   const result = await controller.unshare(owner, mystery.id, recipient.id);
 
   assert.deepEqual(result, { ok: true });
-  assert.deepEqual(operations, ["lock", "workspace", "revoke"]);
+  assert.deepEqual(operations, ["lock", "lock", "workspace", "revoke"]);
+  assert.deepEqual(lockedKeys, [mystery.id, `sharing-preference:${recipient.id}`]);
 });
 
 test("unshare creates a per-Mystery exclusion for an automatic recipient", async () => {
@@ -694,6 +697,6 @@ test("unshare creates a per-Mystery exclusion for an automatic recipient", async
   const result = await controller.unshare(owner, mystery.id, recipient.id);
 
   assert.deepEqual(result, { ok: true });
-  assert.deepEqual(operations, ["lock", "workspace", "revoke-explicit", "preference", "exclude"]);
+  assert.deepEqual(operations, ["lock", "lock", "workspace", "revoke-explicit", "preference", "exclude"]);
   assert.deepEqual((exclusionInput as any).create, { mysteryId: "workspace-1", recipientId: recipient.id });
 });
