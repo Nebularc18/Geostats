@@ -655,7 +655,7 @@ test("unshare locks both the mystery and recipient preference before revoking ac
   assert.deepEqual(lockedKeys, [mystery.id, `sharing-preference:${recipient.id}`]);
 });
 
-test("unshare creates a per-Mystery exclusion for an automatic recipient", async () => {
+test("unshare preserves revocation when a preference matches a future status", async () => {
   const operations: string[] = [];
   let exclusionInput: unknown;
   const transaction = {
@@ -666,19 +666,21 @@ test("unshare creates a per-Mystery exclusion for an automatic recipient", async
     mysteryWorkspace: {
       findUnique: async () => {
         operations.push("workspace");
-        return { id: "workspace-1", data: { ...mystery, status: "solved" } };
+        return { id: "workspace-1" };
       }
     },
     mysteryShare: {
       deleteMany: async () => {
         operations.push("revoke-explicit");
-        return { count: 0 };
+        return { count: 1 };
       }
     },
     mysterySharingPreference: {
       findUnique: async () => {
         operations.push("preference");
-        return { statuses: ["solving", "solved", "planned"] };
+        // The workspace is currently shared explicitly. This preference may
+        // become effective only after a future status transition.
+        return { id: "preference-for-solved" };
       }
     },
     mysterySharingExclusion: {

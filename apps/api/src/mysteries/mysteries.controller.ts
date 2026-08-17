@@ -505,16 +505,15 @@ export class MysteriesController {
       await lockMystery(tx, user.id, clientId, `sharing-preference:${recipientId}`);
       const mystery = await tx.mysteryWorkspace.findUnique({
         where: { ownerId_clientId: { ownerId: user.id, clientId } },
-        select: { id: true, data: true }
+        select: { id: true }
       });
       if (!mystery) throw new NotFoundException("Shared mystery was not found");
       await tx.mysteryShare.deleteMany({ where: { mysteryId: mystery.id, recipientId } });
-      const status = mysteryStatus(mystery.data);
-      const preference = status ? await tx.mysterySharingPreference.findUnique({
+      const preference = await tx.mysterySharingPreference.findUnique({
         where: { ownerId_recipientId: { ownerId: user.id, recipientId } },
-        select: { statuses: true }
-      }) : null;
-      if (status && preference?.statuses.includes(status)) {
+        select: { id: true }
+      });
+      if (preference) {
         await tx.mysterySharingExclusion.upsert({
           where: { mysteryId_recipientId: { mysteryId: mystery.id, recipientId } },
           create: { mysteryId: mystery.id, recipientId },
