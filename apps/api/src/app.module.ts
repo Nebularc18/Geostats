@@ -11,9 +11,10 @@ import { QueueModule } from "./queue/queue.module";
 import { StatsModule } from "./stats/stats.module";
 import { StorageModule } from "./storage/storage.module";
 import { PortabilityModule } from "./portability/portability.module";
+import { ChallengeCheckersModule } from "./challenge-checkers/challenge-checkers.module";
 
 @Module({
-  imports: [AuthModule, ProfileModule, StorageModule, QueueModule, ImportsModule, StatsModule, MapModule, CollectorModule, MysteriesModule, PortabilityModule],
+  imports: [AuthModule, ProfileModule, StorageModule, QueueModule, ImportsModule, StatsModule, MapModule, CollectorModule, MysteriesModule, PortabilityModule, ChallengeCheckersModule],
   controllers: [HealthController],
   providers: [PrismaService],
   exports: [PrismaService]

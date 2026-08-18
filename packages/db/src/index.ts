@@ -3,6 +3,7 @@ import { PrismaClient, Prisma } from "@prisma/client";
 export { PrismaClient, Prisma };
 export type {
   Cache,
+  ChallengeChecker,
   CorrectedCoordinate,
   Find,
   GeocachingProfile,

@@ -1,5 +1,6 @@
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-arm64-openssl-3.0.x"]
 }
 
 datasource db {
@@ -54,8 +55,28 @@ model User {
   mysterySharingExclusions MysterySharingExclusion[] @relation("MysterySharingExclusionRecipient")
   mysteryDeletions        MysteryWorkspaceDeletion[]
   caches                  Cache[]
+  challengeCheckers       ChallengeChecker[]
 
   @@map("users")
+}
+
+model ChallengeChecker {
+  id          String    @id @default(cuid())
+  userId      String    @map("user_id")
+  name        String
+  gcCode      String?   @map("gc_code")
+  description String?
+  rules       Json
+  publicSlug  String?   @unique @map("public_slug")
+  publishedAt DateTime? @map("published_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, gcCode])
+  @@index([userId, updatedAt])
+  @@map("challenge_checkers")
 }
 
 model MysteryWorkspace {
@@ -255,6 +276,7 @@ model Find {
   cacheId      String       @map("cache_id")
   importId     String?      @map("import_id")
   foundAt      DateTime     @map("found_at")
+  foundDate    DateTime     @map("found_date") @db.Date
   logText      String?      @map("log_text")
   isFtf        Boolean      @default(false) @map("is_ftf")
   isFtfManual  Boolean      @default(false) @map("is_ftf_manual")
