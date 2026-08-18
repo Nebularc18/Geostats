@@ -23,7 +23,6 @@ function userscript(appOrigin: string) {
 // @grant        GM_setValue
 // @grant        GM_deleteValue
 // @grant        GM_listValues
-// @grant        unsafeWindow
 // @run-at       document-idle
 // ==/UserScript==
 
@@ -236,38 +235,6 @@ function userscript(appOrigin: string) {
     else GM_deleteValue(PENDING_SYNC_KEY);
   }
 
-  function pageUserToken() {
-    try {
-      if (typeof unsafeWindow !== "undefined" && typeof unsafeWindow.userToken === "string") {
-        return unsafeWindow.userToken;
-      }
-      if (typeof unsafeWindow !== "undefined" && typeof unsafeWindow.eval === "function") {
-        const token = unsafeWindow.eval("typeof userToken === 'string' ? userToken : ''");
-        if (typeof token === "string") return token;
-      }
-    } catch {
-      // Tampermonkey may restrict access while the page is still loading.
-    }
-    for (const script of document.scripts) {
-      const match = script.textContent?.match(/(?:var|let|const)\\s+userToken\\s*=\\s*["']([^"']+)["']/);
-      if (match?.[1]) return match[1];
-    }
-    return "";
-  }
-
-  function waitForUserToken(timeoutMs) {
-    return new Promise((resolve) => {
-      const started = Date.now();
-      const timer = window.setInterval(() => {
-        const token = pageUserToken();
-        if (token || Date.now() - started >= timeoutMs) {
-          window.clearInterval(timer);
-          resolve(token);
-        }
-      }, 100);
-    });
-  }
-
   function setSyncPanelState(message, state) {
     const instructions = document.getElementById("geostats-sync-instructions");
     const retry = document.getElementById("geostats-sync-save");
@@ -275,7 +242,7 @@ function userscript(appOrigin: string) {
     if (retry) {
       retry.style.display = state === "error" || state === "editor" ? "block" : "none";
       retry.disabled = false;
-      retry.textContent = state === "editor" ? "Save on Geocaching" : "Retry automatic sync";
+      retry.textContent = state === "editor" ? "Save on Geocaching" : "Retry coordinate sync";
     }
   }
 
@@ -308,7 +275,7 @@ function userscript(appOrigin: string) {
   async function performDirectSync() {
     if (!syncPayload || directSyncStarted || syncReceiptReturned) return;
     directSyncStarted = true;
-    setSyncPanelState("Saving the corrected coordinate with your signed-in Geocaching session…", "loading");
+    setSyncPanelState("Opening Geocaching's solved-coordinate editor…", "loading");
 
     if (window.localStorage.getItem(syncStorageKey())) {
       removePendingSyncPayload();
@@ -322,58 +289,18 @@ function userscript(appOrigin: string) {
       return;
     }
 
-    try {
-      const token = await waitForUserToken(10000);
-      if (!token) throw new Error("The signed-in page token was not available. Reload the cache page and press Sync again.");
-
-      const response = await window.fetch("/seek/cache_details.aspx/SetUserCoordinate", {
-        method: "POST",
-        credentials: "same-origin",
-        headers: {
-          "Accept": "application/json",
-          "Content-Type": "application/json; charset=UTF-8",
-          "X-Requested-With": "XMLHttpRequest"
-        },
-        body: JSON.stringify({
-          dto: {
-            data: {
-              lat: syncPayload.latitude,
-              lng: syncPayload.longitude
-            },
-            ut: token
-          }
-        })
-      });
-      const responseText = await response.text();
-      if (!response.ok) throw new Error("Geocaching rejected the coordinate (HTTP " + response.status + ").");
-
-      if (responseText) {
-        try {
-          const parsed = JSON.parse(responseText);
-          const result = parsed && Object.prototype.hasOwnProperty.call(parsed, "d") ? parsed.d : parsed;
-          if (result && typeof result === "object" && result.status && result.status !== "success") {
-            throw new Error(result.message || "Geocaching did not accept the coordinate.");
-          }
-        } catch (error) {
-          if (error instanceof SyntaxError) throw new Error("Geocaching returned an unreadable response.");
-          throw error;
-        }
-      }
-
-      markCoordinateSynced();
-    } catch (error) {
+    const editorOpened = await openAndFillCoordinateEditor();
+    if (editorOpened && findSolvedCoordinateEditor()) {
+      useCoordinateEditor = true;
       directSyncStarted = false;
-      const message = error instanceof Error ? error.message : "Automatic sync failed.";
-      const editorOpened = await openAndFillCoordinateEditor();
-      if (editorOpened && findSolvedCoordinateEditor()) {
-        useCoordinateEditor = true;
-        setSyncPanelState(message + " The coordinate is filled in Geocaching's editor; choose Save on Geocaching to finish.", "editor");
-        toast("Automatic sync was rejected, so Geocaching's coordinate editor is ready instead.", true);
-      } else {
-        setSyncPanelState(message, "error");
-        toast(message, true);
-      }
+      setSyncPanelState("The coordinate is filled in Geocaching's editor. Choose Save on Geocaching to finish.", "editor");
+      return;
     }
+
+    directSyncStarted = false;
+    const message = "Geocaching's solved-coordinate editor could not be opened. Reload the cache page and retry.";
+    setSyncPanelState(message, "error");
+    toast(message, true);
   }
 
   function setInputValue(input, value) {
@@ -621,7 +548,7 @@ function userscript(appOrigin: string) {
     Object.assign(panel.style, { position: "fixed", right: "22px", bottom: "82px", zIndex: "2147483646", width: "min(360px, calc(100vw - 44px))", padding: "16px", border: "1px solid #79d99d", borderRadius: "10px", color: "#f4f7f2", background: "#15261d", boxShadow: "0 16px 45px rgba(0,0,0,.45)", font: "14px/1.4 system-ui" });
 
     const title = document.createElement("strong");
-    title.textContent = "Automatic coordinate sync · v${MYSTERY_USERSCRIPT_VERSION}";
+    title.textContent = "Coordinate sync · v${MYSTERY_USERSCRIPT_VERSION}";
     title.style.display = "block";
     title.style.marginBottom = "7px";
 
@@ -631,7 +558,7 @@ function userscript(appOrigin: string) {
 
     const instructions = document.createElement("span");
     instructions.id = "geostats-sync-instructions";
-    instructions.textContent = "Preparing automatic sync…";
+    instructions.textContent = "Preparing coordinate sync…";
     Object.assign(instructions.style, { display: "block", color: "#d5ddd7", fontSize: "12px" });
 
     const actions = document.createElement("div");
@@ -639,7 +566,7 @@ function userscript(appOrigin: string) {
     const save = document.createElement("button");
     save.id = "geostats-sync-save";
     save.type = "button";
-    save.textContent = "Retry automatic sync";
+    save.textContent = "Retry coordinate sync";
     save.addEventListener("click", () => {
       if (useCoordinateEditor) {
         submitSolvedCoordinate();
