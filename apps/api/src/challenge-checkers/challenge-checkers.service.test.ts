@@ -1,0 +1,35 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { ChallengeCheckersService } from "./challenge-checkers.service";
+
+test("falls back to imported location metadata when boundary geometry is unavailable", async () => {
+  const checker = {
+    id: "checker-1",
+    userId: "user-1",
+    name: "Region challenge",
+    gcCode: "GCTEST",
+    description: null,
+    rules: [{ type: "LOCATION", field: "region", value: "Skane", country: "Sweden", region: "Skane", minimum: 1 }],
+    publicSlug: null,
+    publishedAt: null,
+    createdAt: new Date("2026-01-01T00:00:00Z"),
+    updatedAt: new Date("2026-01-01T00:00:00Z")
+  };
+  const prisma = {
+    challengeChecker: { findFirst: async () => checker },
+    geocachingProfile: { findUnique: async () => ({ gcUsername: "Geocacher", timeZone: "Europe/Stockholm" }) },
+    find: { findMany: async () => [{
+      foundAt: new Date("2025-05-02T22:30:00Z"),
+      cache: { gcCode: "GCFIND", name: "Fallback find", cacheType: "Traditional Cache", difficulty: 1, terrain: 1, country: "Sweden", region: "Skane", county: null, latitude: 55.6, longitude: 13 }
+    }] },
+    import: { findFirst: async () => null }
+  };
+  const boundaries = { geometry: async () => { throw new Error("Boundary provider unavailable"); } };
+  const service = new ChallengeCheckersService(prisma as never, boundaries as never);
+
+  const result = await service.runOwned("user-1", "checker-1");
+
+  assert.equal(result.passed, true);
+  assert.equal(result.rules[0]!.current, 1);
+  assert.equal(result.rules[0]!.evidence[0]!.date, "2025-05-03");
+});

@@ -228,11 +228,16 @@ export class ChallengeCheckersService {
     const geometries = new Map<ChallengeRule, BoundaryGeometry>();
     await Promise.all(rules.map(async (rule) => {
       if (rule.type === "LOCATION" && rule.field !== "country" && rule.country) {
-        const geometry = await this.boundaries.geometry(rule.country, rule.field, rule.value, rule.region);
-        if (geometry) geometries.set(rule, geometry);
+        try {
+          const geometry = await this.boundaries.geometry(rule.country, rule.field, rule.value, rule.region);
+          if (geometry) geometries.set(rule, geometry);
+        } catch {
+          // Remote boundary data is optional; evaluation can still use imported location metadata.
+        }
       }
     }));
     const result = evaluateChallenge(rules, finds, {
+      timeZone: profile?.timeZone ?? "Europe/Stockholm",
       locationMatch: (rule, find) => {
         const geometry = geometries.get(rule);
         const latitude = Number(find.cache.latitude);

@@ -38,8 +38,25 @@ function sameText(left: string | null, right: string) {
   return left?.trim().localeCompare(right.trim(), undefined, { sensitivity: "accent" }) === 0;
 }
 
-function calendarKey(date: Date) {
-  return `${String(date.getUTCMonth() + 1).padStart(2, "0")}-${String(date.getUTCDate()).padStart(2, "0")}`;
+function dateParts(date: Date, timeZone: string) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(date);
+  const value = (type: "year" | "month" | "day") => parts.find((part) => part.type === type)?.value ?? "";
+  return { year: value("year"), month: value("month"), day: value("day") };
+}
+
+function calendarKey(date: Date, timeZone: string) {
+  const { month, day } = dateParts(date, timeZone);
+  return `${month}-${day}`;
+}
+
+function evidenceDate(date: Date, timeZone: string) {
+  const { year, month, day } = dateParts(date, timeZone);
+  return `${year}-${month}-${day}`;
 }
 
 function rating(value: unknown) {
@@ -49,7 +66,8 @@ function rating(value: unknown) {
     : null;
 }
 
-export function evaluateChallenge(rules: ChallengeRule[], finds: CheckerFind[], options: { locationMatch?: (rule: Extract<ChallengeRule, { type: "LOCATION" }>, find: CheckerFind) => boolean } = {}) {
+export function evaluateChallenge(rules: ChallengeRule[], finds: CheckerFind[], options: { locationMatch?: (rule: Extract<ChallengeRule, { type: "LOCATION" }>, find: CheckerFind) => boolean; timeZone?: string } = {}) {
+  const timeZone = options.timeZone ?? "UTC";
   const results: RuleResult[] = rules.map((rule) => {
     let current = 0;
     let label = "";
@@ -73,7 +91,7 @@ export function evaluateChallenge(rules: ChallengeRule[], finds: CheckerFind[], 
         .filter(Boolean)
         .join(", ")}`;
     } else if (rule.type === "CALENDAR_DAYS") {
-      matchingFinds = [...new Map(finds.map((find) => [calendarKey(find.foundAt), find])).values()];
+      matchingFinds = [...new Map(finds.map((find) => [calendarKey(find.foundAt, timeZone), find])).values()];
       current = matchingFinds.length;
       label = "Calendar days with a find";
     } else {
@@ -99,7 +117,7 @@ export function evaluateChallenge(rules: ChallengeRule[], finds: CheckerFind[], 
         ? `${current.toLocaleString()} achieved; ${rule.minimum.toLocaleString()} required.`
         : `${current.toLocaleString()} achieved; ${Math.max(rule.minimum - current, 0).toLocaleString()} more needed.`,
       evidence: matchingFinds.slice(0, MAX_EVIDENCE_ROWS).map((find) => ({
-        date: find.foundAt.toISOString().slice(0, 10),
+        date: evidenceDate(find.foundAt, timeZone),
         gcCode: find.cache.gcCode,
         name: find.cache.name
       })),

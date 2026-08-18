@@ -47,3 +47,14 @@ test("reports an unmet rule", () => {
   assert.equal(result.passed, false);
   assert.match(result.rules[0]!.detail, /364 more needed/);
 });
+
+test("credits calendar days and formats evidence in the import profile timezone", () => {
+  const result = evaluateChallenge([{ type: "CALENDAR_DAYS", minimum: 1 }], [
+    { foundAt: new Date("2025-05-03T12:00:00Z"), cache: { gcCode: "GC10", name: "Midday", cacheType: "Traditional Cache", difficulty: 1, terrain: 1, country: "Sweden", region: null, county: null } },
+    { foundAt: new Date("2024-05-02T22:30:00Z"), cache: { gcCode: "GC11", name: "Local next day", cacheType: "Traditional Cache", difficulty: 1, terrain: 1, country: "Sweden", region: null, county: null } }
+  ], { timeZone: "Europe/Stockholm" });
+
+  assert.equal(result.rules[0]!.current, 1);
+  assert.equal(result.rules[0]!.evidence[0]!.gcCode, "GC11");
+  assert.equal(result.rules[0]!.evidence[0]!.date, "2024-05-03");
+});
