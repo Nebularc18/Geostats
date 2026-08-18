@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { BarChart3, Code2, Database, Flag, Globe2, Home, Map, Navigation, Puzzle, Settings, Trophy, Upload } from "lucide-react";
+import { BarChart3, Code2, Database, Flag, Globe2, Home, Map, Navigation, Puzzle, Settings, ShieldCheck, Trophy, Upload } from "lucide-react";
 import { API_URL, apiFetch } from "../lib/api";
 
 const nav = [
@@ -14,6 +14,7 @@ const nav = [
   { href: "/ftf", label: "FTF", icon: Trophy },
   { href: "/hides", label: "Hides", icon: Flag },
   { href: "/milestones", label: "Milestones", icon: Flag },
+  { href: "/challenge-checkers", label: "Challenge Checkers", icon: ShieldCheck },
   { href: "/profile-html", label: "Profile HTML", icon: Code2 },
   { href: "/map", label: "Map", icon: Map },
   { href: "/mysteries", label: "Mysteries", icon: Puzzle },

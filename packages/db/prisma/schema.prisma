@@ -54,8 +54,28 @@ model User {
   mysterySharingExclusions MysterySharingExclusion[] @relation("MysterySharingExclusionRecipient")
   mysteryDeletions        MysteryWorkspaceDeletion[]
   caches                  Cache[]
+  challengeCheckers       ChallengeChecker[]
 
   @@map("users")
+}
+
+model ChallengeChecker {
+  id          String    @id @default(cuid())
+  userId      String    @map("user_id")
+  name        String
+  gcCode      String?   @map("gc_code")
+  description String?
+  rules       Json
+  publicSlug  String?   @unique @map("public_slug")
+  publishedAt DateTime? @map("published_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, gcCode])
+  @@index([userId, updatedAt])
+  @@map("challenge_checkers")
 }
 
 model MysteryWorkspace {
