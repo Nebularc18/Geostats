@@ -7,6 +7,7 @@ export type ChallengeRule =
 
 export type CheckerFind = {
   foundAt: Date;
+  foundDate?: Date | null;
   cache: {
     gcCode: string;
     name: string;
@@ -59,6 +60,16 @@ function evidenceDate(date: Date, timeZone: string) {
   return `${year}-${month}-${day}`;
 }
 
+function loggedCalendarKey(find: CheckerFind, timeZone: string) {
+  return find.foundDate
+    ? `${String(find.foundDate.getUTCMonth() + 1).padStart(2, "0")}-${String(find.foundDate.getUTCDate()).padStart(2, "0")}`
+    : calendarKey(find.foundAt, timeZone);
+}
+
+function loggedEvidenceDate(find: CheckerFind, timeZone: string) {
+  return find.foundDate?.toISOString().slice(0, 10) ?? evidenceDate(find.foundAt, timeZone);
+}
+
 function rating(value: unknown) {
   const number = Number(value);
   return Number.isFinite(number) && number >= 1 && number <= 5 && number * 2 === Math.round(number * 2)
@@ -91,7 +102,7 @@ export function evaluateChallenge(rules: ChallengeRule[], finds: CheckerFind[], 
         .filter(Boolean)
         .join(", ")}`;
     } else if (rule.type === "CALENDAR_DAYS") {
-      matchingFinds = [...new Map(finds.map((find) => [calendarKey(find.foundAt, timeZone), find])).values()];
+      matchingFinds = [...new Map(finds.map((find) => [loggedCalendarKey(find, timeZone), find])).values()];
       current = matchingFinds.length;
       label = "Calendar days with a find";
     } else {
@@ -117,7 +128,7 @@ export function evaluateChallenge(rules: ChallengeRule[], finds: CheckerFind[], 
         ? `${current.toLocaleString()} achieved; ${rule.minimum.toLocaleString()} required.`
         : `${current.toLocaleString()} achieved; ${Math.max(rule.minimum - current, 0).toLocaleString()} more needed.`,
       evidence: matchingFinds.slice(0, MAX_EVIDENCE_ROWS).map((find) => ({
-        date: evidenceDate(find.foundAt, timeZone),
+        date: loggedEvidenceDate(find, timeZone),
         gcCode: find.cache.gcCode,
         name: find.cache.name
       })),

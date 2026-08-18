@@ -1,5 +1,6 @@
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-arm64-openssl-3.0.x"]
 }
 
 datasource db {
@@ -275,6 +276,7 @@ model Find {
   cacheId      String       @map("cache_id")
   importId     String?      @map("import_id")
   foundAt      DateTime     @map("found_at")
+  foundDate    DateTime     @map("found_date") @db.Date
   logText      String?      @map("log_text")
   isFtf        Boolean      @default(false) @map("is_ftf")
   isFtfManual  Boolean      @default(false) @map("is_ftf_manual")

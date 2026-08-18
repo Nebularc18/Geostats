@@ -111,10 +111,12 @@ export class ChallengeCheckersService {
     const unique = (values: string[]) => [...new Map(values.map((value) => [value.toLocaleLowerCase(), value])).values()].sort(compare);
     if (region) {
       const importedCounties = importedCountry.regions.find((item) => item.name === region)?.counties ?? [];
-      const canonicalCounties = await this.boundaries.counties(country, region);
+      let canonicalCounties: string[] = [];
+      try { canonicalCounties = await this.boundaries.counties(country, region); } catch { /* Imported metadata remains usable offline. */ }
       return { regions: [], counties: unique(canonicalCounties.length ? canonicalCounties : importedCounties) };
     }
-    const canonicalRegions = await this.boundaries.regions(country);
+    let canonicalRegions: string[] = [];
+    try { canonicalRegions = await this.boundaries.regions(country); } catch { /* Imported metadata remains usable offline. */ }
     return { regions: unique(canonicalRegions.length ? canonicalRegions : importedCountry.regions.map((item) => item.name)), counties: [] };
   }
 

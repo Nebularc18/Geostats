@@ -351,6 +351,7 @@ test("controller removes a spooled archive even when import fails", async () => 
 test("export includes every portable user data category and excludes server secrets", async () => {
   const createdAt = new Date("2026-01-01T00:00:00.000Z");
   const foundAt = new Date("2026-02-03T12:30:00.000Z");
+  const foundDate = new Date("2026-02-03T00:00:00.000Z");
   const placedAt = new Date("2025-05-06T00:00:00.000Z");
   const generatedAt = new Date("2026-08-01T08:00:00.000Z");
   const workspaceUpdatedAt = new Date("2026-08-02T09:00:00.000Z");
@@ -408,6 +409,7 @@ test("export includes every portable user data category and excludes server secr
           cacheId: cache.id,
           importId: "import-1",
           foundAt,
+          foundDate,
           logText: "Found after solving the cipher",
           isFtf: true,
           isFtfManual: true,
@@ -539,6 +541,7 @@ test("export includes every portable user data category and excludes server secr
     {
       gcCode: "GC12345",
       foundAt,
+      foundDate,
       logText: "Found after solving the cipher",
       isFtf: true,
       isFtfManual: true,

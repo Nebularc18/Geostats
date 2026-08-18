@@ -58,3 +58,13 @@ test("credits calendar days and formats evidence in the import profile timezone"
   assert.equal(result.rules[0]!.evidence[0]!.gcCode, "GC11");
   assert.equal(result.rules[0]!.evidence[0]!.date, "2024-05-03");
 });
+
+test("keeps calendar credits stable when the profile timezone changes", () => {
+  const result = evaluateChallenge([{ type: "CALENDAR_DAYS", minimum: 1 }], [
+    { foundAt: new Date("2025-05-03T12:00:00Z"), foundDate: new Date("2025-05-03T00:00:00Z"), cache: { gcCode: "GC20", name: "First year", cacheType: "Traditional Cache", difficulty: 1, terrain: 1, country: "Sweden", region: null, county: null } },
+    { foundAt: new Date("2024-05-02T22:30:00Z"), foundDate: new Date("2024-05-03T00:00:00Z"), cache: { gcCode: "GC21", name: "Second year", cacheType: "Traditional Cache", difficulty: 1, terrain: 1, country: "Sweden", region: null, county: null } }
+  ], { timeZone: "America/Los_Angeles" });
+
+  assert.equal(result.rules[0]!.current, 1);
+  assert.equal(result.rules[0]!.evidence[0]!.date, "2024-05-03");
+});

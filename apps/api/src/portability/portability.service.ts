@@ -93,6 +93,23 @@ function date(value: unknown, label: string): Date {
   return parsed;
 }
 
+function dateOnly(value: unknown, label: string): Date {
+  const raw = text(value, label, 100);
+  const day = raw.match(/^(\d{4}-\d{2}-\d{2})/)?.[1];
+  if (!day) throw new BadRequestException(`${label} is not a valid calendar date`);
+  const parsed = new Date(`${day}T00:00:00.000Z`);
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== day) {
+    throw new BadRequestException(`${label} is not a valid calendar date`);
+  }
+  return parsed;
+}
+
+function dateInTimeZone(value: Date, timeZone: string): Date {
+  const parts = new Intl.DateTimeFormat("en-US", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(value);
+  const part = (type: "year" | "month" | "day") => Number(parts.find((item) => item.type === type)?.value);
+  return new Date(Date.UTC(part("year"), part("month") - 1, part("day")));
+}
+
 function decimal(
   value: unknown,
   label: string,
@@ -292,6 +309,7 @@ export class PortabilityService implements OnModuleInit, OnModuleDestroy {
         finds: finds.map(({ cache, ...row }) => ({
           gcCode: cache.gcCode,
           foundAt: row.foundAt,
+          foundDate: row.foundDate ?? dateInTimeZone(row.foundAt, profile?.timeZone ?? "Europe/Stockholm"),
           logText: row.logText,
           isFtf: row.isFtf,
           isFtfManual: row.isFtfManual,
@@ -506,10 +524,14 @@ export class PortabilityService implements OnModuleInit, OnModuleDestroy {
               throw new BadRequestException(
                 `finds[${index}].importedFrom is invalid`,
               );
+            const foundAt = date(row.foundAt, `finds[${index}].foundAt`);
             return {
               userId: user.id,
               cacheId: cacheId(row.gcCode, `finds[${index}].gcCode`),
-              foundAt: date(row.foundAt, `finds[${index}].foundAt`),
+              foundAt,
+              foundDate: row.foundDate == null
+                ? dateInTimeZone(foundAt, data.profile?.timeZone ?? "Europe/Stockholm")
+                : dateOnly(row.foundDate, `finds[${index}].foundDate`),
               logText: optionalText(row.logText, `finds[${index}].logText`),
               isFtf: boolean(row.isFtf, `finds[${index}].isFtf`),
               isFtfManual: boolean(

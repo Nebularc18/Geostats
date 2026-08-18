@@ -33,3 +33,21 @@ test("falls back to imported location metadata when boundary geometry is unavail
   assert.equal(result.rules[0]!.current, 1);
   assert.equal(result.rules[0]!.evidence[0]!.date, "2025-05-03");
 });
+
+test("uses imported location choices when catalog providers are unavailable", async () => {
+  const prisma = {
+    geocachingProfile: { findUnique: async () => ({ gcUsername: "Geocacher" }) },
+    find: { findMany: async () => [
+      { cache: { country: "Norway", region: "Vestland", county: "Bergen" } },
+      { cache: { country: "Norway", region: "Vestland", county: "Voss" } }
+    ] }
+  };
+  const boundaries = {
+    regions: async () => { throw new Error("Kartverket unavailable"); },
+    counties: async () => { throw new Error("Kartverket unavailable"); }
+  };
+  const service = new ChallengeCheckersService(prisma as never, boundaries as never);
+
+  assert.deepEqual(await service.locationCatalogForUser("user-1", "Norway", undefined), { regions: ["Vestland"], counties: [] });
+  assert.deepEqual(await service.locationCatalogForUser("user-1", "Norway", "Vestland"), { regions: [], counties: ["Bergen", "Voss"] });
+});

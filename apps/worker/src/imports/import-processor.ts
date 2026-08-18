@@ -119,6 +119,10 @@ function wallClockInTimeZoneToUtc(date: Date, timeZone: string): Date {
   return utc;
 }
 
+function loggedDate(date: Date): Date {
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+}
+
 export class ImportProcessor {
   private readonly statsRecalculationsByUser = new Map<string, Promise<void>>();
 
@@ -214,15 +218,16 @@ export class ImportProcessor {
           .map((parsedFind) => {
             const cache = this.cacheFor(cachesByCode, parsedFind.cache.gcCode);
             const isFtf = detectFtfLog(parsedFind.logText, ftfDetectionTerms);
+            const foundDate = loggedDate(parsedFind.foundAt);
             const foundAt = wallClockInTimeZoneToUtc(
               foundAtWithFtfLogTime(parsedFind.foundAt, parsedFind.logText, isFtf, ftfDetectionTerms),
               timeZone
             );
-            return { parsedFind, cache, isFtf, foundAt };
+            return { parsedFind, cache, isFtf, foundAt, foundDate };
           })
           .sort((a, b) => a.foundAt.getTime() - b.foundAt.getTime());
 
-        for (const { parsedFind, cache, isFtf, foundAt } of importFinds) {
+        for (const { parsedFind, cache, isFtf, foundAt, foundDate } of importFinds) {
           const existingCacheFinds = existingFindsByCacheId.get(cache.id) ?? [];
           const exactMatchIndex = existingCacheFinds.findIndex((find) => find.foundAt.getTime() === foundAt.getTime());
           const existingFind =
@@ -234,6 +239,10 @@ export class ImportProcessor {
 
             if (existingFind.foundAt.getTime() !== foundAt.getTime()) {
               update.foundAt = foundAt;
+              statsRelevantChange = true;
+            }
+            if (existingFind.foundDate?.getTime() !== foundDate.getTime()) {
+              update.foundDate = foundDate;
               statsRelevantChange = true;
             }
             if (existingFind.logText !== parsedFind.logText) {
@@ -273,6 +282,7 @@ export class ImportProcessor {
               cacheId: cache.id,
               importId: payload.importId,
               foundAt,
+              foundDate,
               logText: parsedFind.logText,
               isFtf,
               isFtfManual: false,
