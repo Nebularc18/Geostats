@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ChallengeCheckersService } from "./challenge-checkers.service";
+import { ChallengeCheckersService, resolveDisplayTimeZone } from "./challenge-checkers.service";
+
+test("resolves the cacher display timezone from home coordinates with profile fallback", () => {
+  assert.equal(resolveDisplayTimeZone({ homeLatitude: 59.3293, homeLongitude: 18.0686, timeZone: "America/New_York" }), "Europe/Stockholm");
+  assert.equal(resolveDisplayTimeZone({ homeLatitude: null, homeLongitude: null, timeZone: "America/New_York" }), "America/New_York");
+});
 
 test("falls back to imported location metadata when boundary geometry is unavailable", async () => {
   const checker = {
@@ -20,6 +25,7 @@ test("falls back to imported location metadata when boundary geometry is unavail
     geocachingProfile: { findUnique: async () => ({ gcUsername: "Geocacher", timeZone: "Europe/Stockholm" }) },
     find: { findMany: async () => [{
       foundAt: new Date("2025-05-02T22:30:00Z"),
+      foundDate: new Date("2025-05-03T00:00:00Z"),
       cache: { gcCode: "GCFIND", name: "Fallback find", cacheType: "Traditional Cache", difficulty: 1, terrain: 1, country: "Sweden", region: "Skane", county: null, latitude: 55.6, longitude: 13 }
     }] },
     import: { findFirst: async () => null }

@@ -1,11 +1,21 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from "@nestjs/common";
 import { countableFindWhere, Prisma } from "@geostats/db";
 import { randomBytes } from "node:crypto";
+import timezoneAt from "tz-lookup";
 import { PrismaService } from "../common/prisma.service";
 import { ChallengeRule, evaluateChallenge, proofText } from "./challenge-checker.evaluator";
 import { BoundaryGeometry, GeographicBoundariesService, pointInBoundary } from "./geographic-boundaries";
 
 type CheckerInput = { name?: unknown; gcCode?: unknown; description?: unknown; rules?: unknown };
+
+export function resolveDisplayTimeZone(profile: { homeLatitude?: unknown; homeLongitude?: unknown; timeZone?: string | null } | null) {
+  const fallback = profile?.timeZone ?? "Europe/Stockholm";
+  if (profile?.homeLatitude == null || profile.homeLongitude == null) return fallback;
+  const latitude = Number(profile.homeLatitude);
+  const longitude = Number(profile.homeLongitude);
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude) || latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) return fallback;
+  try { return timezoneAt(latitude, longitude); } catch { return fallback; }
+}
 
 function cleanOptionalText(value: unknown, label: string, maximum: number) {
   if (value === undefined || value === null || value === "") return null;
@@ -239,7 +249,6 @@ export class ChallengeCheckersService {
       }
     }));
     const result = evaluateChallenge(rules, finds, {
-      timeZone: profile?.timeZone ?? "Europe/Stockholm",
       locationMatch: (rule, find) => {
         const geometry = geometries.get(rule);
         const latitude = Number(find.cache.latitude);
@@ -270,6 +279,7 @@ export class ChallengeCheckersService {
         updatedAt: checker.updatedAt
       },
       username,
+      timeZone: resolveDisplayTimeZone(profile),
       checkedAt: new Date().toISOString(),
       dataUpdatedAt: latestImport?.updatedAt.toISOString() ?? null,
       ...result,
