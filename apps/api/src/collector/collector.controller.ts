@@ -29,6 +29,7 @@ import { normalizeCountry } from "../common/geocaching.utils";
 import { PrismaService } from "../common/prisma.service";
 import { StatsService } from "../stats/stats.service";
 import { CollectorTokenAuthService } from "./collector-token-auth.service";
+import { GsakImportService } from "./gsak-import.service";
 
 type ReceivedLogInput = {
   gcCode?: string;
@@ -55,6 +56,7 @@ const COLLECTOR_SOURCE_PATH = resolve(process.cwd(), "apps/tools/src/collect-own
 const PROJECT_GC_SOURCE_PATH = resolve(process.cwd(), "apps/tools/src/collect-project-gc-finder-countries.ts");
 const COLLECTOR_CSV_MAX_BYTES = 10_485_760;
 const COLLECTOR_CSV_MIME_TYPES = new Set(["text/csv", "application/csv", "text/plain"]);
+const GSAK_IMPORT_SCOPE = "GSAK_IMPORT";
 
 function tokenHash(token: string) {
   return createHash("sha256").update(token, "utf8").digest("hex");
@@ -120,6 +122,232 @@ export function trustedBaseUrl(request: any) {
 
 function powershellString(value: string) {
   return `'${value.replace(/'/g, "''")}'`;
+}
+
+export function gsakImportBaseUrl(request: any) {
+  const configured = process.env.GSAK_IMPORT_ORIGIN?.trim();
+  if (!configured) return trustedBaseUrl(request);
+
+  const url = new URL(configured);
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error("GSAK_IMPORT_ORIGIN must be an http or https URL");
+  }
+  return url.toString().replace(/\/$/, "");
+}
+
+function gsakString(value: string) {
+  return `"${value.replace(/"/g, '""')}"`;
+}
+
+export function gsakImportMacro(serverUrl: string, token: string) {
+  const server = gsakString(serverUrl);
+  const credential = gsakString(token);
+  return `# MacDescription = Send found and owned caches from GSAK to Geostats
+# MacVersion = 1.6
+# NoVersionCheck
+
+$server = ${server}
+$token = ${credential}
+$endpoint = $server + "/collector/gsak/import"
+$cacheBatchSize = 50
+$logBatchSize = 25
+$cacheFilter = "(ifnull(FoundByMeDate,'') <> '' or IsOwner = 1)"
+$logFilter = "(c.IsOwner = 1)"
+
+# Make GSAK use the active Geocaching account when identifying finds and hides.
+ShowStatus msg="Checking the active Geocaching account..."
+GcUpdateUserInfo UpdateHome=N UpdateMatching=Y
+$currentUser = SysInfo("CurrentUser")
+If IsEmpty($currentUser)
+  Cancel Msg="GSAK is not connected to a Geocaching account. Use Geocaching.com access > Get another access token, then run this macro again."
+EndIf
+
+# Settings used when a missing found cache is loaded by GC code.
+<data> VarName=$geostatsCodeSettings
+[GcGeocaches]
+cbxDifMax.Text=5.0
+cbxDifMin.Text=1.0
+cbxLoadSettings.Text=* Use GSAK defaults *
+cbxTerMax.Text=5.0
+cbxTerMin.Text=1.0
+chkArchived.Checked=True
+chkFoundByMe.Checked=True
+chkLarge.Checked=True
+chkMicro.Checked=True
+chkNotChosen.Checked=True
+chkOther.Checked=True
+chkPremium.Checked=True
+chkRegular.Checked=True
+chkSmall.Checked=True
+chkVirtual.Checked=True
+edtHiddenBy.Text=
+edtLogsPerCache.Text=30
+edtMax.Text=10000
+edtNotFoundBy.Text=
+rbtFull.Checked=True
+rbtLite.Checked=False
+cbxref.Text=
+edtDistance.Text=
+d1.Checked=True
+d2.Checked=False
+edtNotHiddenBy.Text=
+edtbbBottom.Text=
+rbtRectangle.Checked=False
+rbtCircle.Checked=False
+edtbbtop.Text=
+edtFavmin.Text=0
+edtFavMax.Text=99999
+rbtCode.Checked=True
+cbxPublishDate.Text=Not applicable
+edtDuringDays.Text=
+rbtCtyState.Checked=False
+rbtCountry.Checked=False
+rbtNone.Checked=True
+rbtState.Checked=False
+edtSaveCountry.Text=
+edtSaveState.Text=
+edtCountry.Text=
+edtState.Text=
+edtProvince.Text=
+rbtOther.Checked=False
+edtName.Text=
+cbxSort.Text=Cache id ascending
+edtSkip.Text=0
+cbxCountry.Text=
+cbxState.Text=0
+NotCacheTypes=
+cbxsort=0
+edtPublishFrom=1899-12-30
+edtPublishTo=1899-12-30
+edtCodes.Text=
+<enddata>
+MacroSet Dialog=GcGeocaches VarName=$geostatsCodeSettings Name=<macro>
+
+# Get every found, attended, and webcam log from the active account. Only cache
+# records missing from this GSAK database consume the full-cache API allowance.
+$result = Sqlite("sql","drop table if exists GeostatsUserLogs")
+$result = Sqlite("sql","create temp table GeostatsUserLogs (ReferenceCode text, GeocacheCode text, LoggedDate text, Text text, Type text)")
+$apiSkip = 0
+$apiTake = 50
+$apiTotal = 1
+ShowStatus msg="Finding missing caches in GSAK..."
+While $apiSkip < $apiTotal
+  $apiPath = "users/me/geocachelogs?logTypes=2,10,11&skip=" + NumToStr($apiSkip) + "&take=" + NumToStr($apiTake) + "&fields=referenceCode,geocacheCode,loggedDate,text,type"
+  $apiResult = GcApi2($apiPath)
+  If Left($apiResult,7) = "*Error*"
+    Cancel Msg=$apiResult
+  EndIf
+  If $apiSkip = 0
+    $apiTotal = Val(RegExSub("x-total-count: (\\d+)",$_GcApi2Header,1,1))
+  EndIf
+  $result = Sqlite("sql","insert into GeostatsUserLogs select ReferenceCode, GeocacheCode, LoggedDate, Text, Type from ApiMaster")
+  $missingCodes = Sqlite("sql","select group_concat(distinct a.GeocacheCode) from ApiMaster a where not exists (select 1 from Caches c where c.Code = a.GeocacheCode)")
+  If not(IsEmpty($missingCodes))
+    GcGetCaches Settings=<macro> GcCodes=$missingCodes Load=Y ShowSummary=No
+  EndIf
+  $apiSkip = $apiSkip + $apiTake
+EndWhile
+
+# Load every cache placed by the active account. This also repairs ownership in
+# a GSAK database that did not already contain all of the user's hides.
+$geostatsOwnedSettings = Replace("edtHiddenBy.Text=","edtHiddenBy.Text=" + $currentUser,$geostatsCodeSettings)
+$geostatsOwnedSettings = Replace("rbtCode.Checked=True","rbtCode.Checked=False",$geostatsOwnedSettings)
+$geostatsOwnedSettings = Replace("rbtOther.Checked=False","rbtOther.Checked=True",$geostatsOwnedSettings)
+MacroSet Dialog=GcGeocaches VarName=$geostatsOwnedSettings Name=<macro>
+ShowStatus msg="Finding caches you have placed..."
+GcGetCaches Settings=<macro> Load=Y ShowSummary=No
+
+# Correct GSAK's own found flags and dates from the authoritative account logs.
+$result = Sqlite("sql","update Caches set Found=1, FoundByMeDate=(select substr(max(g.LoggedDate),1,10) from GeostatsUserLogs g where g.GeocacheCode=Caches.Code) where Code in (select GeocacheCode from GeostatsUserLogs)")
+ReSync
+
+# Update statuses for all relevant caches and collect new logs on owned caches.
+MFilter Expression=$d_Found OR IsOwner()
+If $_FilterCount > 0
+  ShowStatus msg="Updating cache statuses in GSAK..."
+  GcStatusCheck Scope=Filter ShowSummary=N
+EndIf
+MFilter Expression=IsOwner()
+If $_FilterCount > 0
+  ShowStatus msg="Updating logs for your placed caches..."
+  GcGetLogs Scope=Filter Type=Newer ShowSummary=N
+EndIf
+MFilter Expression=$d_Found OR IsOwner()
+
+ShowStatus msg="Sending caches to Geostats..."
+$total = Val(Sqlite("sql","select count(*) from Caches where " + $cacheFilter))
+$offset = 0
+While $offset < $total
+  $sql = "select Code as gcCode, Name as name, g_CacheType(CacheType) as cacheType, Difficulty as difficulty, Terrain as terrain, Container as size, case when HasCorrected = 1 and LatOriginal not in ('','0.0') then LatOriginal else Latitude end as latitude, case when HasCorrected = 1 and LonOriginal not in ('','0.0') then LonOriginal else Longitude end as longitude, Country as country, State as region, County as county, PlacedDate as hiddenDate, OwnerName as ownerName, FoundByMeDate as foundDate, FTF as isFtf, IsOwner as isOwner, FavPoints as favoritePoints, Elevation as elevationMeters, Status as status, IsPremium as isPremium, Latitude as correctedLatitude, Longitude as correctedLongitude, HasCorrected as hasCorrected, ifnull((select UserNote from CacheMemo where CacheMemo.Code = Caches.Code),'') as userNote, ifnull((select group_concat(aId || ':' || aInc,'|') from Attributes where Attributes.aCode = Caches.Code),'') as attributes from Caches where " + $cacheFilter + " order by Code limit " + NumToStr($cacheBatchSize) + " offset " + NumToStr($offset)
+  $csv = Sqlite("sql",$sql,"Delim=*csv* Headings=Yes")
+  $post = "'token'," + SqlQuote($token) + ",'kind','caches','csv'," + SqlQuote($csv)
+  $result = PostUrl($endpoint,$post,"Sending cache data",120)
+  If Left($result,7) = "*Error*"
+    Pause Msg=$result
+    Cancel
+  EndIf
+  If not(At($_Quote + "caches" + $_Quote + ":",$result) > 0)
+    Pause Msg="Geostats rejected the cache batch:" + $_NewLine + $result
+    Cancel
+  EndIf
+  $offset = $offset + $cacheBatchSize
+EndWhile
+
+ShowStatus msg="Sending logs from your placed caches to Geostats..."
+$total = Val(Sqlite("sql","select count(*) from LogsAll l join Caches c on c.Code = l.lParent where " + $logFilter))
+$offset = 0
+While $offset < $total
+  $sql = "select l.lParent as gcCode, l.lLogId as logId, l.lType as type, l.lBy as finder, l.lDate as date, l.lTime as time, l.lLat as latitude, l.lLon as longitude, l.lOwnerId as ownerId, l.lIsOwner as isOwnLog, l.lText as text, c.IsOwner as cacheIsOwned from LogsAll l join Caches c on c.Code = l.lParent where " + $logFilter + " order by l.lParent, l.lDate, l.lTime, l.lLogId limit " + NumToStr($logBatchSize) + " offset " + NumToStr($offset)
+  $csv = Sqlite("sql",$sql,"Delim=*csv* Headings=Yes")
+  $post = "'token'," + SqlQuote($token) + ",'kind','logs','csv'," + SqlQuote($csv)
+  $result = PostUrl($endpoint,$post,"Sending log data",120)
+  If Left($result,7) = "*Error*"
+    Pause Msg=$result
+    Cancel
+  EndIf
+  If not(At($_Quote + "logs" + $_Quote + ":",$result) > 0)
+    Pause Msg="Geostats rejected the placed-cache log batch:" + $_NewLine + $result
+    Cancel
+  EndIf
+  $offset = $offset + $logBatchSize
+EndWhile
+
+# Send the account logs as well. This covers older finds whose personal log is
+# no longer among the recent logs attached to the cache in GSAK.
+ShowStatus msg="Sending account logs to Geostats..."
+$total = Val(Sqlite("sql","select count(*) from GeostatsUserLogs"))
+$offset = 0
+While $offset < $total
+  $sql = "select g.GeocacheCode as gcCode, g.ReferenceCode as logId, g.Type as type, " + SqlQuote($currentUser) + " as finder, substr(g.LoggedDate,1,10) as date, '' as time, '' as latitude, '' as longitude, '' as ownerId, 1 as isOwnLog, ifnull(g.Text,'') as text, c.IsOwner as cacheIsOwned from GeostatsUserLogs g join Caches c on c.Code = g.GeocacheCode order by g.LoggedDate, g.ReferenceCode limit " + NumToStr($logBatchSize) + " offset " + NumToStr($offset)
+  $csv = Sqlite("sql",$sql,"Delim=*csv* Headings=Yes")
+  $post = "'token'," + SqlQuote($token) + ",'kind','logs','csv'," + SqlQuote($csv)
+  $result = PostUrl($endpoint,$post,"Sending account logs",120)
+  If Left($result,7) = "*Error*"
+    Pause Msg=$result
+    Cancel
+  EndIf
+  If not(At($_Quote + "logs" + $_Quote + ":",$result) > 0)
+    Pause Msg="Geostats rejected the account-log batch:" + $_NewLine + $result
+    Cancel
+  EndIf
+  $offset = $offset + $logBatchSize
+EndWhile
+
+ShowStatus msg="Finishing Geostats import..."
+$post = "'token'," + SqlQuote($token) + ",'kind','complete'"
+$result = PostUrl($endpoint,$post,"Finishing import",120)
+If Left($result,7) = "*Error*"
+  Pause Msg=$result
+  Cancel
+EndIf
+If not(At($_Quote + "completed" + $_Quote + ":true",$result) > 0)
+  Pause Msg="Geostats did not complete the import:" + $_NewLine + $result
+  Cancel
+EndIf
+
+ShowStatus msg=""
+MsgOk Msg="GSAK data was sent to Geostats successfully."
+`;
 }
 
 function hidesRunnerScript(serverUrl: string) {
@@ -650,20 +878,67 @@ export class CollectorController {
   constructor(
     private readonly prisma: PrismaService,
     private readonly stats: StatsService,
-    private readonly collectorTokenAuth?: CollectorTokenAuthService
+    private readonly collectorTokenAuth?: CollectorTokenAuthService,
+    private readonly gsakImporter?: GsakImportService
   ) {}
 
-  private async tokenUser(authorization: string | undefined) {
-    if (this.collectorTokenAuth) return this.collectorTokenAuth.userId(authorization);
+  private async tokenUser(authorization: string | undefined, requiredScope = "FULL") {
+    if (this.collectorTokenAuth) return this.collectorTokenAuth.userId(authorization, requiredScope);
     const token = authorization?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
     if (!token) throw new UnauthorizedException("Missing collector bearer token");
+    return this.tokenUserValue(token, requiredScope);
+  }
+
+  private async tokenUserValue(token: string, requiredScope = "FULL") {
+    if (this.collectorTokenAuth) return this.collectorTokenAuth.userIdForToken(token, requiredScope);
     const found = await this.prisma.collectorToken.findUnique({
       where: { tokenHash: tokenHash(token) },
-      select: { id: true, userId: true }
+      select: { id: true, userId: true, scope: true }
     });
     if (!found) throw new UnauthorizedException("Invalid collector token");
+    if ((found.scope ?? "FULL") !== requiredScope) throw new UnauthorizedException("Collector token does not allow this operation");
     await this.prisma.collectorToken.update({ where: { id: found.id }, data: { lastUsedAt: new Date() } });
     return found.userId;
+  }
+
+  @Post("gsak/setup")
+  @UseGuards(AuthGuard)
+  async setupGsak(@CurrentUser() user: AuthUser, @Req() request: any) {
+    const token = newToken();
+    await this.prisma.$transaction(async (tx) => {
+      await tx.collectorToken.deleteMany({ where: { userId: user.id, scope: GSAK_IMPORT_SCOPE } });
+      await tx.collectorToken.create({
+        data: {
+          userId: user.id,
+          name: "GSAK import",
+          scope: GSAK_IMPORT_SCOPE,
+          tokenPrefix: token.slice(0, 12),
+          tokenHash: tokenHash(token),
+          tokenCiphertext: encryptToken(token)
+        }
+      });
+    });
+    return { fileName: "GeostatsImport.gsk", macro: gsakImportMacro(gsakImportBaseUrl(request), token) };
+  }
+
+  @Get("gsak/status")
+  @UseGuards(AuthGuard)
+  async gsakStatus(@CurrentUser() user: AuthUser) {
+    const token = await this.prisma.collectorToken.findFirst({
+      where: { userId: user.id, scope: GSAK_IMPORT_SCOPE },
+      orderBy: { createdAt: "desc" },
+      select: { createdAt: true, lastUsedAt: true }
+    });
+    return { connected: Boolean(token), createdAt: token?.createdAt ?? null, lastImportedAt: token?.lastUsedAt ?? null };
+  }
+
+  @Post("gsak/import")
+  async importGsak(@Body() body: { token?: unknown; kind?: unknown; csv?: unknown }) {
+    const token = typeof body.token === "string" ? body.token.trim() : "";
+    if (!token) throw new UnauthorizedException("Missing GSAK import token");
+    const userId = await this.tokenUserValue(token, GSAK_IMPORT_SCOPE);
+    if (!this.gsakImporter) throw new NotFoundException("GSAK importer is not available in this deployment");
+    return this.gsakImporter.importBatch(userId, body.kind, body.csv);
   }
 
   @Get("hides.ps1")
@@ -803,7 +1078,7 @@ export class CollectorController {
     const codes = Array.from(new Set([...byCode.keys(), ...cacheTotals.keys()]));
     const hides = await this.prisma.hide.findMany({
       where: { userId, cache: { gcCode: { in: codes } } },
-      include: { cache: true }
+      include: { cache: { include: { userData: { where: { userId }, take: 1 } } } }
     });
     const hidesByCode = new Map(hides.map((hide) => [hide.cache.gcCode, hide]));
     const missing = codes.filter((code) => !hidesByCode.has(code));
@@ -822,7 +1097,7 @@ export class CollectorController {
         }
         const current = await tx.hide.findFirst({
           where: { id: hide.id, userId },
-          include: { cache: true }
+          include: { cache: { include: { userData: { where: { userId }, take: 1 } } } }
         });
         if (!current) {
           throw new BadRequestException(`Unknown owned caches: ${gcCode}`);
@@ -830,7 +1105,8 @@ export class CollectorController {
         const merged = mergedRaw(current.receivedLogsRaw, cacheLogsToAdd);
         const logsChanged = merged.added > 0 || current.receivedLogCount !== merged.receivedLogCount;
         const favoriteTotal = cacheTotals.get(gcCode);
-        const cacheRoot = rawObject(current.cache.raw);
+        const currentUserCacheData = current.cache.userData?.[0];
+        const cacheRoot = rawObject(currentUserCacheData?.raw);
         const currentFavoriteText = rawText(
           rawObject(cacheRoot["groundspeak:cache"] ?? cacheRoot.cache)["groundspeak:favorite_points"]
         );
@@ -849,12 +1125,17 @@ export class CollectorController {
           }
         }
         if (favoriteChanged) {
-          const updated = await tx.cache.updateMany({
-            where: { id: current.cache.id, updatedAt: current.cache.updatedAt },
-            data: { raw: rawWithFavoritePoints(current.cache.raw, favoriteTotal) as Prisma.InputJsonValue }
-          });
-          if (updated.count !== 1) {
-            throw new ConflictException(`Cache changed while receiving favorite points: ${gcCode}`);
+          const raw = rawWithFavoritePoints(currentUserCacheData?.raw, favoriteTotal) as Prisma.InputJsonValue;
+          if (currentUserCacheData) {
+            const updated = await tx.userCacheData.updateMany({
+              where: { id: currentUserCacheData.id, userId, updatedAt: currentUserCacheData.updatedAt },
+              data: { raw }
+            });
+            if (updated.count !== 1) {
+              throw new ConflictException(`Cache data changed while receiving favorite points: ${gcCode}`);
+            }
+          } else {
+            await tx.userCacheData.create({ data: { userId, cacheId: current.cache.id, raw } });
           }
         }
         added += merged.added;
@@ -883,9 +1164,9 @@ export class CollectorTokenController {
   @Get()
   async list(@CurrentUser() user: AuthUser) {
     const tokens = await this.prisma.collectorToken.findMany({
-      where: { userId: user.id },
+      where: { userId: user.id, scope: "FULL" },
       orderBy: { createdAt: "desc" },
-      select: { id: true, name: true, tokenPrefix: true, tokenCiphertext: true, createdAt: true, lastUsedAt: true }
+      select: { id: true, name: true, scope: true, tokenPrefix: true, tokenCiphertext: true, createdAt: true, lastUsedAt: true }
     });
     return {
       tokens: tokens.map(({ tokenCiphertext, ...token }) => ({
@@ -902,11 +1183,12 @@ export class CollectorTokenController {
       data: {
         userId: user.id,
         name: body.name?.trim() || "Collector",
+        scope: "FULL",
         tokenPrefix: token.slice(0, 12),
         tokenHash: tokenHash(token),
         tokenCiphertext: encryptToken(token)
       },
-      select: { id: true, name: true, tokenPrefix: true, tokenCiphertext: true, createdAt: true, lastUsedAt: true }
+      select: { id: true, name: true, scope: true, tokenPrefix: true, tokenCiphertext: true, createdAt: true, lastUsedAt: true }
     });
     const { tokenCiphertext, ...collectorToken } = created;
     return { token, collectorToken: { ...collectorToken, token } };

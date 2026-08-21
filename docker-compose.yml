@@ -106,6 +106,7 @@ services:
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
       COLLECTOR_TOKEN_ENCRYPTION_KEY: ${COLLECTOR_TOKEN_ENCRYPTION_KEY:?Set COLLECTOR_TOKEN_ENCRYPTION_KEY in .env}
       API_ORIGIN: ${API_ORIGIN:?Set API_ORIGIN in .env}
+      GSAK_IMPORT_ORIGIN: ${GSAK_IMPORT_ORIGIN:-http://${API_BIND_ADDRESS:-127.0.0.1}}
       WEB_ORIGIN: ${WEB_ORIGIN:?Set WEB_ORIGIN in .env}
       API_CORS_ORIGINS: ${API_CORS_ORIGINS:-${WEB_ORIGIN:?Set WEB_ORIGIN in .env}}
       AUTH_MODE: ${AUTH_MODE:-password}
@@ -145,6 +146,22 @@ services:
         condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://localhost:' + (process.env.API_PORT || 3001) + '/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+
+  gsak-gateway:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - "${API_BIND_ADDRESS:-127.0.0.1}:${GSAK_PORT:-80}:80"
+    volumes:
+      - ./docker/gsak/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/healthz"]
       interval: 20s
       timeout: 5s
       retries: 5

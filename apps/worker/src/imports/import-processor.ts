@@ -312,10 +312,9 @@ export class ImportProcessor {
     }
   }
 
-  private cacheCreateInput(userId: string, cache: any): Prisma.CacheUncheckedCreateInput {
+  private cacheCreateInput(cache: any): Prisma.CacheUncheckedCreateInput {
     return {
-      userId,
-      gcCode: cache.gcCode,
+      gcCode: String(cache.gcCode).trim().toUpperCase(),
       name: cache.name,
       cacheType: cache.cacheType,
       difficulty: cache.difficulty,
@@ -327,16 +326,16 @@ export class ImportProcessor {
       region: cache.region,
       county: cache.county,
       hiddenDate: cache.hiddenDate,
-      ownerName: cache.ownerName,
-      raw: cache.raw as Prisma.InputJsonValue
+      ownerName: cache.ownerName
     };
   }
 
   private async resolveCaches(userId: string, caches: any[]): Promise<Map<string, Cache>> {
     const uniqueCaches = new Map<string, any>();
     for (const cache of caches) {
-      if (!uniqueCaches.has(cache.gcCode)) {
-        uniqueCaches.set(cache.gcCode, cache);
+      const gcCode = String(cache.gcCode).trim().toUpperCase();
+      if (!uniqueCaches.has(gcCode)) {
+        uniqueCaches.set(gcCode, { ...cache, gcCode });
       }
     }
 
@@ -348,23 +347,32 @@ export class ImportProcessor {
   }
 
   private async findOrCreateCache(userId: string, cache: any): Promise<Cache> {
+    let resolved: Cache;
     try {
-      return await this.prisma.cache.upsert({
-        where: { userId_gcCode: { userId, gcCode: cache.gcCode } },
-        create: this.cacheCreateInput(userId, cache),
+      const create = this.cacheCreateInput(cache);
+      resolved = await this.prisma.cache.upsert({
+        where: { gcCode: create.gcCode },
+        create,
         update: {}
       });
     } catch (error) {
       if (this.isUniqueConstraintError(error)) {
-        return this.findExistingCache(userId, cache.gcCode);
+        resolved = await this.findExistingCache(cache.gcCode);
+      } else {
+        throw error;
       }
-      throw error;
     }
+    await this.prisma.userCacheData.upsert({
+      where: { userId_cacheId: { userId, cacheId: resolved.id } },
+      create: { userId, cacheId: resolved.id, raw: cache.raw as Prisma.InputJsonValue },
+      update: { raw: cache.raw as Prisma.InputJsonValue }
+    });
+    return resolved;
   }
 
-  private async findExistingCache(userId: string, gcCode: string): Promise<Cache> {
+  private async findExistingCache(gcCode: string): Promise<Cache> {
     const existing = await this.prisma.cache.findUnique({
-      where: { userId_gcCode: { userId, gcCode } }
+      where: { gcCode: gcCode.trim().toUpperCase() }
     });
     if (!existing) {
       throw new Error(`Cache ${gcCode} was not resolved after a unique constraint conflict`);
@@ -373,7 +381,7 @@ export class ImportProcessor {
   }
 
   private cacheFor(cachesByCode: Map<string, Cache>, gcCode: string): Cache {
-    const cache = cachesByCode.get(gcCode);
+    const cache = cachesByCode.get(gcCode.trim().toUpperCase());
     if (!cache) {
       throw new Error(`Cache ${gcCode} was not resolved`);
     }
@@ -432,6 +440,7 @@ export class ImportProcessor {
       include: {
         cache: {
           include: {
+            userData: { where: { userId }, take: 1 },
             corrections: {
               where: { userId }
             }
@@ -450,6 +459,7 @@ export class ImportProcessor {
       include: {
         cache: {
           include: {
+            userData: { where: { userId }, take: 1 },
             corrections: {
               where: { userId }
             }
@@ -477,8 +487,8 @@ export class ImportProcessor {
           county: find.cache.county,
           hiddenDate: find.cache.hiddenDate,
           ownerName: find.cache.ownerName,
-          elevationMeters: elevationFromRaw(find.cache.raw),
-          raw: find.cache.raw
+          elevationMeters: elevationFromRaw(find.cache.userData[0]?.raw),
+          raw: find.cache.userData[0]?.raw
         }
       })),
       {
@@ -505,8 +515,8 @@ export class ImportProcessor {
           county: hide.cache.county,
           hiddenDate: hide.cache.hiddenDate,
           ownerName: hide.cache.ownerName,
-          elevationMeters: elevationFromRaw(hide.cache.raw),
-          raw: hide.cache.raw
+          elevationMeters: elevationFromRaw(hide.cache.userData[0]?.raw),
+          raw: hide.cache.userData[0]?.raw
         }
       })),
       {

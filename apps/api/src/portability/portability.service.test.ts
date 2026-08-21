@@ -117,6 +117,7 @@ function importTransaction(
   storedCaches: Array<{ id: string; gcCode: string }>,
   cacheWrites: any[] = [],
   importWrites: any[] = [],
+  userCacheWrites: any[] = [],
 ) {
   return {
     geocachingProfile: { upsert: async () => undefined },
@@ -125,8 +126,13 @@ function importTransaction(
         cacheWrites.push(input);
       },
       findMany: async (input: any) => {
-        assert.equal(input.where.userId, user.id);
+        assert.equal(input.where.userId, undefined);
         return storedCaches;
+      },
+    },
+    userCacheData: {
+      upsert: async (input: any) => {
+        userCacheWrites.push(input);
       },
     },
     find: {
@@ -159,11 +165,14 @@ function importTransaction(
   };
 }
 
-test("import creates archive cache metadata only inside the authenticated user's scope", async () => {
+test("import creates global cache metadata and keeps raw data inside the authenticated user's scope", async () => {
   const cacheWrites: any[] = [];
+  const userCacheWrites: any[] = [];
   const tx = importTransaction(
     [{ id: "user-cache-1", gcCode: "GCPOISON" }],
     cacheWrites,
+    [],
+    userCacheWrites,
   );
   const prisma = {
     $transaction: async (callback: (transaction: typeof tx) => unknown) =>
@@ -174,8 +183,12 @@ test("import creates archive cache metadata only inside the authenticated user's
   await service.importData(user, archiveWithCache());
 
   assert.equal(cacheWrites.length, 1);
-  assert.equal(cacheWrites[0].data[0].userId, user.id);
+  assert.equal(cacheWrites[0].data[0].userId, undefined);
   assert.equal(cacheWrites[0].data[0].gcCode, "GCPOISON");
+  assert.equal(userCacheWrites.length, 1);
+  assert.equal(userCacheWrites[0].create.userId, user.id);
+  assert.equal(userCacheWrites[0].create.cacheId, "user-cache-1");
+  assert.deepEqual(userCacheWrites[0].create.raw, { attackerControlled: true });
 });
 
 test("import can attach portable records to cache metadata already owned by the user", async () => {
@@ -370,7 +383,7 @@ test("export includes every portable user data category and excludes server secr
     county: "Jönköping",
     hiddenDate: placedAt,
     ownerName: "CacheOwner",
-    raw: { groundspeak: { favoritePoints: 17 } },
+    userData: [{ raw: { groundspeak: { favoritePoints: 17 } } }],
     createdAt,
     updatedAt: createdAt,
   };

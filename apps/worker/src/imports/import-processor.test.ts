@@ -4,6 +4,12 @@ import { Prisma } from "@geostats/db";
 import { ImportFileType, ImportSource, ImportStatus } from "@geostats/shared";
 import { ImportProcessor } from "./import-processor";
 
+function withUserCacheData<T extends Record<string, any>>(prisma: T): T {
+  const models = prisma as T & { userCacheData?: { upsert: () => Promise<object> } };
+  models.userCacheData ??= { upsert: async () => ({}) };
+  return prisma;
+}
+
 const gpx = `<?xml version="1.0" encoding="UTF-8"?>
 <gpx version="1.0">
   <wpt lat="56.161200" lon="15.586900">
@@ -116,7 +122,7 @@ test("stats recalculation holds a database user lock before loading inputs", asy
     $transaction: async (callback: (transaction: typeof tx) => Promise<unknown>) => callback(tx)
   };
 
-  const processor = new ImportProcessor(prisma as any, {} as any);
+  const processor = new ImportProcessor(withUserCacheData(prisma) as any, {} as any);
   await (processor as any).calculateAndStoreStats("user-1");
 
   assert.deepEqual(events, ["lock", "read", "delete", "create"]);
@@ -152,6 +158,7 @@ test("process uses the user's existing cache metadata without overwriting it", a
   };
   const seenObjectKeys: string[] = [];
   const cacheUpserts: any[] = [];
+  const userCacheUpserts: any[] = [];
 
   const tx = {
     hide: {
@@ -176,6 +183,7 @@ test("process uses the user's existing cache metadata without overwriting it", a
         return existingCache;
       }
     },
+    userCacheData: { upsert: async (input: any) => userCacheUpserts.push(input) },
     $transaction: async (callback: (transaction: typeof tx) => Promise<unknown>) => callback(tx),
     geocachingProfile: {
       findUnique: async () => null
@@ -201,7 +209,7 @@ test("process uses the user's existing cache metadata without overwriting it", a
     }
   };
 
-  const processor = new ImportProcessor(prisma as any, storage as any);
+  const processor = new ImportProcessor(withUserCacheData(prisma) as any, storage as any);
   await processor.process({
     importId: "import-1",
     userId: "user-1",
@@ -211,12 +219,15 @@ test("process uses the user's existing cache metadata without overwriting it", a
 
   assert.deepEqual(seenObjectKeys, ["user-1/original.gpx"]);
   assert.equal(cacheUpserts.length, 1);
-  assert.deepEqual(cacheUpserts[0].where, {
-    userId_gcCode: { userId: "user-1", gcCode: "GC12345" }
-  });
-  assert.equal(cacheUpserts[0].create.userId, "user-1");
+  assert.deepEqual(cacheUpserts[0].where, { gcCode: "GC12345" });
+  assert.equal(cacheUpserts[0].create.userId, undefined);
   assert.equal(cacheUpserts[0].create.name, "Attacker Cache Name");
   assert.deepEqual(cacheUpserts[0].update, {});
+  assert.equal(userCacheUpserts.length, 1);
+  assert.deepEqual(userCacheUpserts[0].where, {
+    userId_cacheId: { userId: "user-1", cacheId: "cache-1" }
+  });
+  assert.equal(userCacheUpserts[0].create.raw["groundspeak:cache"]["groundspeak:name"], "Attacker Cache Name");
 });
 
 test("process recovers from concurrent cache upsert conflict by reading the existing cache", async () => {
@@ -277,13 +288,12 @@ test("process recovers from concurrent cache upsert conflict by reading the exis
         });
       },
       findUnique: async (input: any) => {
-        assert.deepEqual(input.where, {
-          userId_gcCode: { userId: "user-1", gcCode: "GC12345" }
-        });
+        assert.deepEqual(input.where, { gcCode: "GC12345" });
         cacheFindCalls += 1;
         return createdCache;
       }
     },
+    userCacheData: { upsert: async () => ({}) },
     $transaction: async (callback: (transaction: typeof tx) => Promise<unknown>) => {
       importTransactionStarted = true;
       return callback(tx);
@@ -309,7 +319,7 @@ test("process recovers from concurrent cache upsert conflict by reading the exis
     getObject: async () => Buffer.from(gpx)
   };
 
-  const processor = new ImportProcessor(prisma as any, storage as any);
+  const processor = new ImportProcessor(withUserCacheData(prisma) as any, storage as any);
   await processor.process({
     importId: "import-1",
     userId: "user-1",
@@ -391,6 +401,7 @@ test("process creates missing cache metadata before the import transaction", asy
         return createdCache;
       }
     },
+    userCacheData: { upsert: async () => ({}) },
     $transaction: async (callback: (transaction: typeof tx) => Promise<unknown>) => {
       importTransactionStarted = true;
       return callback(tx);
@@ -416,7 +427,7 @@ test("process creates missing cache metadata before the import transaction", asy
     getObject: async () => Buffer.from(gpx)
   };
 
-  const processor = new ImportProcessor(prisma as any, storage as any);
+  const processor = new ImportProcessor(withUserCacheData(prisma) as any, storage as any);
   await processor.process({
     importId: "import-1",
     userId: "user-1",
@@ -490,7 +501,7 @@ test("process marks a committed import failed when stats recalculation fails", a
     getObject: async () => Buffer.from(gpx)
   };
 
-  const processor = new ImportProcessor(prisma as any, storage as any);
+  const processor = new ImportProcessor(withUserCacheData(prisma) as any, storage as any);
   await assert.rejects(
     processor.process({
       importId: "import-1",
@@ -600,7 +611,7 @@ test("process updates an existing find to the full GPX timestamp", async () => {
     getObject: async () => Buffer.from(myFindsGpx)
   };
 
-  const processor = new ImportProcessor(prisma as any, storage as any);
+  const processor = new ImportProcessor(withUserCacheData(prisma) as any, storage as any);
   await processor.process({
     importId: "import-1",
     userId: "user-1",
@@ -724,7 +735,7 @@ test("process matches same-cache re-imports to each existing find once", async (
     getObject: async () => Buffer.from(twoFindsGpx)
   };
 
-  const processor = new ImportProcessor(prisma as any, storage as any);
+  const processor = new ImportProcessor(withUserCacheData(prisma) as any, storage as any);
   await processor.process({
     importId: "import-1",
     userId: "user-1",
@@ -851,7 +862,7 @@ test("process pairs same-cache re-import fallbacks in chronological order when G
     getObject: async () => Buffer.from(reversedFindsGpx)
   };
 
-  const processor = new ImportProcessor(prisma as any, storage as any);
+  const processor = new ImportProcessor(withUserCacheData(prisma) as any, storage as any);
   await processor.process({
     importId: "import-1",
     userId: "user-1",
@@ -964,7 +975,7 @@ test("process clears an auto-detected FTF mark when re-imported log text no long
     getObject: async () => Buffer.from(myFindsGpx)
   };
 
-  const processor = new ImportProcessor(prisma as any, storage as any);
+  const processor = new ImportProcessor(withUserCacheData(prisma) as any, storage as any);
   await processor.process({
     importId: "import-1",
     userId: "user-1",
@@ -1066,7 +1077,7 @@ test("process creates multiple same-cache finds when no existing row matches the
     getObject: async () => Buffer.from(twoFindsGpx)
   };
 
-  const processor = new ImportProcessor(prisma as any, storage as any);
+  const processor = new ImportProcessor(withUserCacheData(prisma) as any, storage as any);
   await processor.process({
     importId: "import-1",
     userId: "user-1",
@@ -1181,7 +1192,7 @@ test("process skips stats recalculation when an import has no new or changed fin
     getObject: async () => Buffer.from(myFindsGpx)
   };
 
-  const processor = new ImportProcessor(prisma as any, storage as any);
+  const processor = new ImportProcessor(withUserCacheData(prisma) as any, storage as any);
   await processor.process({
     importId: "import-1",
     userId: "user-1",
@@ -1278,7 +1289,7 @@ test("process uses an explicit FTF time near the FTF term when the GPX timestamp
     getObject: async () => Buffer.from(ftfLogTimeGpx.replace("FTF\nTime 08:11", "FTF\n\nJoint find with friends\nTime 08:11"))
   };
 
-  const processor = new ImportProcessor(prisma as any, storage as any);
+  const processor = new ImportProcessor(withUserCacheData(prisma) as any, storage as any);
   await processor.process({
     importId: "import-1",
     userId: "user-1",
@@ -1373,7 +1384,7 @@ test("process uses an explicit FTF time next to a custom detection term", async 
     getObject: async () => Buffer.from(ftfLogTimeGpx.replace("FTF\nTime 08:11", "silver medal\nTime 08:11"))
   };
 
-  const processor = new ImportProcessor(prisma as any, storage as any);
+  const processor = new ImportProcessor(withUserCacheData(prisma) as any, storage as any);
   await processor.process({
     importId: "import-1",
     userId: "user-1",
@@ -1470,7 +1481,7 @@ test("process keeps the GPX wall-clock date when applying a late-evening FTF log
       Buffer.from(ftfLogTimeGpx.replace("2026-05-03T19:00:00Z", "2024-06-01T22:30:00Z").replace("Time 08:11", "Time 22:30"))
   };
 
-  const processor = new ImportProcessor(prisma as any, storage as any);
+  const processor = new ImportProcessor(withUserCacheData(prisma) as any, storage as any);
   await processor.process({
     importId: "import-1",
     userId: "user-1",
@@ -1566,7 +1577,7 @@ test("process ignores incidental time mentions in FTF log text", async () => {
       Buffer.from(ftfLogTimeGpx.replace("FTF\nTime 08:11", "FTF! Spent some time here - 10:30 was a gorgeous morning"))
   };
 
-  const processor = new ImportProcessor(prisma as any, storage as any);
+  const processor = new ImportProcessor(withUserCacheData(prisma) as any, storage as any);
   await processor.process({
     importId: "import-1",
     userId: "user-1",
@@ -1662,7 +1673,7 @@ test("process interprets GPX find timestamps in the profile time zone", async ()
       Buffer.from(myFindsGpx.replace("2024-05-01T12:34:00Z", "2026-02-01T00:53:53Z"))
   };
 
-  const processor = new ImportProcessor(prisma as any, storage as any);
+  const processor = new ImportProcessor(withUserCacheData(prisma) as any, storage as any);
   await processor.process({
     importId: "import-1",
     userId: "user-1",
@@ -1770,7 +1781,7 @@ test("process preserves a manually cleared FTF mark during re-import", async () 
     getObject: async () => Buffer.from(ftfLogTimeGpx)
   };
 
-  const processor = new ImportProcessor(prisma as any, storage as any);
+  const processor = new ImportProcessor(withUserCacheData(prisma) as any, storage as any);
   await processor.process({
     importId: "import-1",
     userId: "user-1",

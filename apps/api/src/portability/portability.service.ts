@@ -239,17 +239,17 @@ export class PortabilityService implements OnModuleInit, OnModuleDestroy {
       this.prisma.geocachingProfile.findUnique({ where: { userId: user.id } }),
       this.prisma.find.findMany({
         where: { userId: user.id },
-        include: { cache: true },
+        include: { cache: { include: { userData: { where: { userId: user.id }, take: 1 } } } },
         orderBy: [{ foundAt: "asc" }, { id: "asc" }],
       }),
       this.prisma.hide.findMany({
         where: { userId: user.id },
-        include: { cache: true },
+        include: { cache: { include: { userData: { where: { userId: user.id }, take: 1 } } } },
         orderBy: [{ placedAt: "asc" }, { id: "asc" }],
       }),
       this.prisma.correctedCoordinate.findMany({
         where: { userId: user.id },
-        include: { cache: true },
+        include: { cache: { include: { userData: { where: { userId: user.id }, take: 1 } } } },
         orderBy: { id: "asc" },
       }),
       this.prisma.ownerFinderCountryStat.findMany({
@@ -283,7 +283,7 @@ export class PortabilityService implements OnModuleInit, OnModuleDestroy {
       county: cache.county,
       hiddenDate: cache.hiddenDate,
       ownerName: cache.ownerName,
-      raw: cache.raw,
+      raw: cache.userData?.[0]?.raw ?? null,
     });
 
     return {
@@ -447,7 +447,6 @@ export class PortabilityService implements OnModuleInit, OnModuleDestroy {
               throw new BadRequestException(`Duplicate cache ${gcCode}`);
             gcCodes.add(gcCode);
             return {
-              userId: user.id,
               gcCode,
               name: text(cache.name, `${label}.name`, 1000),
               cacheType: optionalText(
@@ -483,9 +482,6 @@ export class PortabilityService implements OnModuleInit, OnModuleDestroy {
                 `${label}.ownerName`,
                 500,
               ),
-              ...(cache.raw == null
-                ? {}
-                : { raw: cache.raw as Prisma.InputJsonValue }),
             };
           });
           for (const batch of batches(cacheRows)) {
@@ -495,7 +491,7 @@ export class PortabilityService implements OnModuleInit, OnModuleDestroy {
             await Promise.all(
               batches([...gcCodes]).map((batch) =>
                 tx.cache.findMany({
-                  where: { userId: user.id, gcCode: { in: batch } },
+                  where: { gcCode: { in: batch } },
                   select: { id: true, gcCode: true },
                 }),
               ),
@@ -513,6 +509,17 @@ export class PortabilityService implements OnModuleInit, OnModuleDestroy {
               );
             return id;
           };
+
+          for (const [index, cache] of data.caches.entries()) {
+            const gcCode = text(cache.gcCode, `caches[${index}].gcCode`, 40).toUpperCase();
+            const id = cacheId(gcCode, `caches[${index}].gcCode`);
+            const raw = cache.raw == null ? Prisma.JsonNull : (cache.raw as Prisma.InputJsonValue);
+            await tx.userCacheData.upsert({
+              where: { userId_cacheId: { userId: user.id, cacheId: id } },
+              create: { userId: user.id, cacheId: id, raw },
+              update: { raw }
+            });
+          }
 
           const finds = data.finds.map((row, index) => {
             const source = text(

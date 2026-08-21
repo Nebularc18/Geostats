@@ -4,6 +4,8 @@ import { BadRequestException } from "@nestjs/common";
 import {
   cacheLogs,
   CollectorController,
+  gsakImportBaseUrl,
+  gsakImportMacro,
   logKey,
   mergedRaw,
   normalizeFinderCountryRows,
@@ -31,6 +33,23 @@ function withEnv(values: Record<string, string | undefined>, fn: () => void) {
       } else {
         process.env[key] = value;
       }
+    }
+  }
+}
+
+async function withAsyncEnv(values: Record<string, string | undefined>, fn: () => Promise<void>) {
+  const previous = new Map<string, string | undefined>();
+  for (const [key, value] of Object.entries(values)) {
+    previous.set(key, process.env[key]);
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  try {
+    await fn();
+  } finally {
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
     }
   }
 }
@@ -78,6 +97,83 @@ test("PowerShell collectors select platform-specific npm launchers", () => {
       assert.doesNotMatch(script, /(?<![.\w])npx --yes/);
     }
   });
+});
+
+test("gsakImportBaseUrl uses the dedicated GSAK gateway origin", () => {
+  withEnv(
+    {
+      API_ORIGIN: "http://10.11.18.163:3001",
+      GSAK_IMPORT_ORIGIN: "http://10.11.18.163/",
+      NODE_ENV: "production"
+    },
+    () => assert.equal(gsakImportBaseUrl({ headers: {} }), "http://10.11.18.163")
+  );
+});
+
+test("gsakImportBaseUrl falls back to the normal API origin", () => {
+  withEnv(
+    { API_ORIGIN: "https://api.geostats.example/", GSAK_IMPORT_ORIGIN: undefined, NODE_ENV: "production" },
+    () => assert.equal(gsakImportBaseUrl({ headers: {} }), "https://api.geostats.example")
+  );
+});
+
+test("GSAK macro uploads only found or owned caches in bounded batches without refreshing GSAK", () => {
+  const macro = gsakImportMacro("https://api.geostats.example", "gst_secret");
+
+  assert.match(macro, /\$cacheBatchSize = 50/);
+  assert.match(macro, /\$logBatchSize = 25/);
+  assert.match(macro, /\/collector\/gsak\/import/);
+  assert.match(macro, /SqlQuote\(\$token\)/);
+  assert.match(macro, /'kind','complete'/);
+  assert.match(macro, /ifnull\(FoundByMeDate,''\) <> '' or IsOwner = 1/);
+  assert.match(macro, /\$logFilter = "\(c\.IsOwner = 1\)"/);
+  assert.doesNotMatch(macro, /\$logFilter = .*FoundByMeDate/);
+  assert.match(macro, /from Caches where " \+ \$cacheFilter/);
+  assert.match(macro, /join Caches c on c\.Code = l\.lParent where " \+ \$logFilter/);
+  assert.match(macro, /GcUpdateUserInfo UpdateHome=N UpdateMatching=Y/);
+  assert.match(macro, /users\/me\/geocachelogs\?logTypes=2,10,11/);
+  assert.match(macro, /not exists \(select 1 from Caches c where c\.Code = a\.GeocacheCode\)/);
+  assert.match(macro, /GcGetCaches Settings=<macro> GcCodes=\$missingCodes/);
+  assert.match(macro, /edtHiddenBy\.Text=" \+ \$currentUser/);
+  assert.match(macro, /GcGetCaches Settings=<macro> Load=Y ShowSummary=No/);
+  assert.match(macro, /skip=" \+ NumToStr\(\$apiSkip\)/);
+  assert.match(macro, /limit " \+ NumToStr\(\$cacheBatchSize\) \+ " offset " \+ NumToStr\(\$offset\)/);
+  assert.match(macro, /limit " \+ NumToStr\(\$logBatchSize\) \+ " offset " \+ NumToStr\(\$offset\)/);
+  assert.doesNotMatch(macro, /limit " \+ \$(?:cacheBatchSize|logBatchSize)/);
+  assert.match(macro, /GcStatusCheck Scope=Filter ShowSummary=N/);
+  assert.match(macro, /GcGetLogs Scope=Filter Type=Newer ShowSummary=N/);
+  assert.match(macro, /update Caches set Found=1/);
+  assert.doesNotMatch(macro, /FoundCount\s*=/);
+  assert.match(macro, /Geostats rejected the cache batch/);
+  assert.match(macro, /Geostats rejected the placed-cache log batch/);
+  assert.match(macro, /Geostats rejected the account-log batch/);
+  assert.match(macro, /Geostats did not complete the import/);
+  assert.doesNotMatch(macro, /GcRefresh/);
+});
+
+test("GSAK setup replaces only the dedicated scoped token", async () => {
+  const actions: any[] = [];
+  const tx = {
+    collectorToken: {
+      deleteMany: async (input: any) => actions.push(["delete", input]),
+      create: async (input: any) => actions.push(["create", input])
+    }
+  };
+  const prisma = { $transaction: async (run: (client: any) => Promise<unknown>) => run(tx) };
+  const controller = new CollectorController(prisma as any, {} as any);
+
+  await withAsyncEnv({ API_ORIGIN: "https://api.geostats.example", GSAK_IMPORT_ORIGIN: "http://gsak.geostats.example", COLLECTOR_TOKEN_ENCRYPTION_KEY: "test-key" }, async () => {
+    const result = await controller.setupGsak(
+      { id: "user-1", email: "user@example.com", username: "user" },
+      { headers: {}, protocol: "https" }
+    );
+    assert.equal(result.fileName, "GeostatsImport.gsk");
+    assert.match(result.macro, /http:\/\/gsak\.geostats\.example/);
+  });
+
+  assert.deepEqual(actions[0], ["delete", { where: { userId: "user-1", scope: "GSAK_IMPORT" } }]);
+  assert.equal(actions[1][0], "create");
+  assert.equal(actions[1][1].data.scope, "GSAK_IMPORT");
 });
 
 test("mergedRaw preserves root cache key variant", () => {
@@ -308,16 +404,20 @@ test("receivedLogs replaces the current favorite-point total without creating hi
         updatedAt,
         receivedLogCount: 0,
         receivedLogsRaw: raw,
-        cache: { id: "cache-1", updatedAt, raw }
+        cache: {
+          id: "cache-1",
+          updatedAt,
+          userData: [{ id: "user-cache-1", userId: "user-1", cacheId: "cache-1", updatedAt, raw }]
+        }
       }),
       updateMany: async () => {
         hideUpdated = true;
         return { count: 1 };
       }
     },
-    cache: {
+    userCacheData: {
       updateMany: async ({ where, data }: any) => {
-        assert.deepEqual(where, { id: "cache-1", updatedAt });
+        assert.deepEqual(where, { id: "user-cache-1", userId: "user-1", updatedAt });
         writtenCacheRaw = data.raw;
         return { count: 1 };
       }
@@ -336,7 +436,10 @@ test("receivedLogs replaces the current favorite-point total without creating hi
           cacheId: "cache-1",
           receivedLogCount: 0,
           receivedLogsRaw: raw,
-          cache: { gcCode: "GC123", raw }
+          cache: {
+            gcCode: "GC123",
+            userData: [{ id: "user-cache-1", userId: "user-1", cacheId: "cache-1", updatedAt, raw }]
+          }
         }
       ]
     },
