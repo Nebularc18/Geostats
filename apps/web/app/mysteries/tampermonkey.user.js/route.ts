@@ -298,7 +298,7 @@ function userscript(appOrigin: string) {
     }
 
     directSyncStarted = false;
-    const message = "Geocaching's solved-coordinate editor could not be opened. Reload the cache page and retry.";
+    const message = "Geocaching's editor did not open automatically. Click the pencil beside the coordinates, or reload the page and retry.";
     setSyncPanelState(message, "error");
     toast(message, true);
   }
@@ -319,10 +319,19 @@ function userscript(appOrigin: string) {
   }
 
   function findSolvedCoordinateEditor() {
-    const knownField = document.getElementById("newCoordinates");
-    if (knownField && isVisible(knownField) && !knownField.disabled && !knownField.readOnly) {
+    const fieldIsUsable = (field) => field && isVisible(field) && !field.disabled && !field.readOnly && !field.closest("#geostats-sync-panel");
+    const knownField = [
+      "#newCoordinates",
+      "#new-coordinates",
+      "[data-testid*='coordinate-input' i]",
+      "[name*='newCoordinate' i]",
+      "[name*='correctedCoordinate' i]",
+      "[aria-label*='solved coordinate' i]",
+      "[placeholder*='coordinate' i]"
+    ].map((selector) => document.querySelector(selector)).find(fieldIsUsable);
+    if (knownField) {
       let knownContainer = knownField.parentElement;
-      while (knownContainer?.parentElement && !knownContainer.querySelector(".btn-cc-parse")) {
+      while (knownContainer?.parentElement && knownContainer !== document.body && !knownContainer.querySelector("button, input[type='submit'], .btn-cc-parse")) {
         knownContainer = knownContainer.parentElement;
       }
       return { field: knownField, container: knownContainer || knownField.parentElement };
@@ -330,11 +339,16 @@ function userscript(appOrigin: string) {
 
     const fields = [...document.querySelectorAll("textarea, input:not([type='hidden']):not([type='submit']):not([type='button'])")];
     for (const field of fields) {
-      if (!isVisible(field) || field.disabled || field.readOnly || field.closest("#geostats-sync-panel")) continue;
+      if (!fieldIsUsable(field)) continue;
       let container = field.parentElement;
       for (let depth = 0; container && container !== document.body && depth < 8; depth += 1, container = container.parentElement) {
         const text = (container.textContent || "").replace(/\\s+/g, " ");
-        if (/enter solved coordinates/i.test(text) && /change\\s*to/i.test(text)) {
+        const isDialog = container.matches("dialog, [role='dialog'], [aria-modal='true'], .ui-dialog, .modal");
+        const hasCoordinateWording = /solved|corrected|coordinate|change\\s*to/i.test(text);
+        const hasSubmit = [...container.querySelectorAll("button, input[type='button'], input[type='submit']")].some((control) =>
+          /submit|save|accept/i.test((control.textContent || control.value || "").trim())
+        );
+        if (/enter solved coordinates/i.test(text) || (/change\\s*to/i.test(text) && hasCoordinateWording) || (isDialog && hasCoordinateWording && hasSubmit)) {
           return { field, container };
         }
       }
@@ -343,10 +357,11 @@ function userscript(appOrigin: string) {
   }
 
   function hasVisibleSolvedCoordinatePopup() {
-    return [...document.querySelectorAll("form, section, div")].some((element) => {
+    return [...document.querySelectorAll("dialog, [role='dialog'], [aria-modal='true'], .ui-dialog, .modal, form, section")].some((element) => {
       if (!isVisible(element)) return false;
       const text = (element.textContent || "").replace(/\\s+/g, " ");
-      return /enter solved coordinates/i.test(text) && /change\\s*to/i.test(text) && Boolean(element.querySelector("textarea, input"));
+      const hasField = Boolean(element.querySelector("textarea, input:not([type='hidden']):not([type='button']):not([type='submit'])"));
+      return hasField && (/enter solved coordinates/i.test(text) || (/solved|corrected|coordinate/i.test(text) && /change\\s*to|submit|save|accept/i.test(text)));
     });
   }
 
@@ -357,24 +372,33 @@ function userscript(appOrigin: string) {
     };
     const selectors = [
       "#uxLatLonLink",
+      ".edit-cache-coordinates",
       "button[aria-label*='coordinate' i][aria-label*='edit' i]",
       "a[aria-label*='coordinate' i][aria-label*='edit' i]",
       "button[title*='edit coordinate' i]",
       "a[title*='edit coordinate' i]",
       "[title*='corrected coordinate' i]",
-      "[data-testid*='coordinate-edit' i]"
+      "[data-testid*='coordinate-edit' i]",
+      "[data-testid*='edit-coordinate' i]",
+      "[id*='coordinate'][id*='edit' i]",
+      "[class*='coordinate'][class*='edit' i]"
     ];
     for (const selector of selectors) {
       add(document.querySelector(selector));
     }
 
-    const coordinateNode = document.querySelector("#uxLatLon, [data-testid='coordinates'], .coordinates, [class*='Coordinates']");
+    const coordinateNode = document.querySelector("#uxLatLon, [data-testid='coordinates'], [data-testid*='coordinate-value' i], .coordinates, [class*='Coordinates'], [class*='coordinates']");
     add(coordinateNode?.closest("a, button, [role='button'], [onclick]"));
     add(coordinateNode);
+    if (coordinateNode?.parentElement) {
+      [...coordinateNode.parentElement.children]
+        .filter((element) => element.matches("a, button, [role='button'], [onclick]") || element.querySelector?.("svg, img, [class*='pencil' i], [class*='edit' i]"))
+        .forEach(add);
+    }
     let container = coordinateNode?.parentElement;
     for (let depth = 0; container && depth < 4; depth += 1, container = container.parentElement) {
       const controls = [...container.querySelectorAll("button, a, [role='button']")];
-      const candidate = controls.find((control) => {
+      controls.filter((control) => {
         const icon = control.querySelector("svg, img, [class*='pencil' i], [class*='edit' i]");
         const description = [
           control.textContent,
@@ -387,9 +411,8 @@ function userscript(appOrigin: string) {
           icon?.getAttribute("alt"),
           icon?.getAttribute("src")
         ].filter(Boolean).join(" ");
-        return /edit|correct|pencil/i.test(description);
-      });
-      add(candidate);
+        return /edit|correct|pencil|coordinate/i.test(description);
+      }).forEach(add);
       if (coordinateNode) {
         const coordinateBounds = coordinateNode.getBoundingClientRect();
         [...container.querySelectorAll("[onclick], img, svg, i")]
@@ -402,7 +425,7 @@ function userscript(appOrigin: string) {
           .forEach(add);
       }
     }
-    return candidates.slice(0, 6);
+    return candidates.slice(0, 12);
   }
 
   function fillCoordinateEditor() {
@@ -449,10 +472,22 @@ function userscript(appOrigin: string) {
     for (let index = 0; index < triggers.length; index += 1) {
       if (fillCoordinateEditor() || hasVisibleSolvedCoordinatePopup()) return true;
       if (instructions) instructions.textContent = "Opening Geocaching's coordinate editor (attempt " + (index + 1) + " of " + triggers.length + ")…";
-      triggers[index].dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
-      if (await waitForCoordinateEditor(1500)) return true;
+      if (typeof triggers[index].click === "function") triggers[index].click();
+      else triggers[index].dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+      if (await waitForCoordinateEditor(2500)) return true;
     }
     return false;
+  }
+
+  function adoptManuallyOpenedEditor() {
+    if (!syncPayload || syncReceiptReturned || syncSubmissionStarted) return false;
+    const existingEditor = findSolvedCoordinateEditor();
+    if (useCoordinateEditor && existingEditor?.field.dataset.geostatsFilled === "true") return true;
+    if (!fillCoordinateEditor()) return false;
+    useCoordinateEditor = true;
+    directSyncStarted = false;
+    setSyncPanelState("The coordinate is filled in Geocaching's editor. Choose Save on Geocaching to finish.", "editor");
+    return true;
   }
 
   function submitSolvedCoordinate() {
@@ -628,6 +663,7 @@ function userscript(appOrigin: string) {
   new MutationObserver(() => {
     addButton();
     addSyncPanel();
+    adoptManuallyOpenedEditor();
   }).observe(document.documentElement, { childList: true, subtree: true });
   if (typeof GM_registerMenuCommand === "function") GM_registerMenuCommand("Import this cache to Geostats", importCache);
 })();
