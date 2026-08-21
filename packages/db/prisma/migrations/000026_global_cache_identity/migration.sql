@@ -50,7 +50,11 @@ SET "log_text" = COALESCE(kept."log_text", merged."log_text"),
 FROM (
   SELECT fm."canonical_relation_id",
          max(f."log_text") FILTER (WHERE f."log_text" IS NOT NULL) AS "log_text",
-         bool_or(f."is_ftf") AS "is_ftf",
+         CASE
+           WHEN bool_or(f."is_ftf_manual") THEN
+             (array_agg(f."is_ftf" ORDER BY f."is_ftf_manual" DESC, f."updated_at" DESC, f."id"))[1]
+           ELSE bool_or(f."is_ftf")
+         END AS "is_ftf",
          bool_or(f."is_ftf_manual") AS "is_ftf_manual",
          max(f."updated_at") AS "updated_at"
   FROM "find_merge_map" fm

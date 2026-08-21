@@ -57,12 +57,16 @@ test("GSAK log batches merge owned logs and preserve manual FTF choices", async 
   const updates: any[] = [];
   const existingFind = { id: "find-1", isFtfManual: true, isFtf: false };
   const tx = {
+    $queryRaw: async (query: any) => {
+      assert.match(query.sql, /FOR UPDATE/);
+      assert.deepEqual(query.values, ["hide-1", "user-1"]);
+      return [{ id: "hide-1", receivedLogsRaw: null }];
+    },
     find: {
       findFirst: async () => existingFind,
       update: async (input: any) => updates.push(["find", input])
     },
     hide: {
-      findUnique: async () => ({ id: "hide-1", receivedLogCount: 0, receivedLogsRaw: null }),
       update: async (input: any) => updates.push(["hide", input])
     }
   };
@@ -89,6 +93,61 @@ test("GSAK log batches merge owned logs and preserve manual FTF choices", async 
   assert.equal("isFtf" in updates[0][1].data, false);
   assert.equal(updates[1][1].data.receivedLogCount, 1);
   assert.equal(updates[1][1].data.receivedLogsRaw["groundspeak:cache"]["groundspeak:logs"]["groundspeak:log"][0]["geostats:log_id"], "99");
+});
+
+test("concurrent GSAK log batches serialize received-log merges", async () => {
+  let storedRaw: any = null;
+  let lockTail = Promise.resolve();
+  const prisma = {
+    cache: { findMany: async () => [{ id: "cache-1", gcCode: "GC123", userData: [{ raw: {} }] }] },
+    hide: { findMany: async () => [{ id: "hide-1", cache: { gcCode: "GC123" } }] },
+    geocachingProfile: { findUnique: async () => null },
+    $transaction: async (run: (client: any) => Promise<unknown>) => {
+      const previousLock = lockTail;
+      let releaseLock!: () => void;
+      lockTail = new Promise<void>((resolve) => {
+        releaseLock = resolve;
+      });
+      let locked = false;
+      const tx = {
+        $queryRaw: async () => {
+          await previousLock;
+          locked = true;
+          return [{ id: "hide-1", receivedLogsRaw: storedRaw }];
+        },
+        hide: {
+          update: async (input: any) => {
+            assert.equal(locked, true);
+            await new Promise((resolve) => setImmediate(resolve));
+            storedRaw = input.data.receivedLogsRaw;
+          }
+        }
+      };
+      try {
+        return await run(tx);
+      } finally {
+        releaseLock();
+      }
+    }
+  };
+  const service = new GsakImportService(prisma as any, {} as any);
+  const csv = (logId: string) =>
+    [
+      "gcCode,logId,type,finder,date,time,latitude,longitude,ownerId,isOwnLog,text,cacheIsOwned",
+      `GC123,${logId},Found it,Visitor,2024-01-02,13:14:15,,,42,0,Log ${logId},1`
+    ].join("\r\n");
+
+  const results = await Promise.all([
+    service.importBatch("user-1", "logs", csv("100")),
+    service.importBatch("user-1", "logs", csv("101"))
+  ]);
+
+  assert.deepEqual(results.map((result) => (result as { receivedLogs: number }).receivedLogs), [1, 1]);
+  const logs = storedRaw["groundspeak:cache"]["groundspeak:logs"]["groundspeak:log"];
+  assert.deepEqual(
+    logs.map((log: any) => log["geostats:log_id"]).sort(),
+    ["100", "101"]
+  );
 });
 
 test("GSAK log batches merge a single adjacent-day GPX find instead of duplicating it", async () => {

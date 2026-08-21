@@ -437,10 +437,16 @@ export class GsakImportService {
         }
         finds += 1;
       }
-      for (const [code, incoming] of receivedByCode) {
+      const receivedEntries = [...receivedByCode.entries()].sort(([left], [right]) => left.localeCompare(right));
+      for (const [code, incoming] of receivedEntries) {
         const hide = hideByCode.get(code);
         if (!hide) throw new BadRequestException(`GSAK marks ${code} as owned, but no hide record exists`);
-        const current = await tx.hide.findUnique({ where: { id: hide.id } });
+        const [current] = await tx.$queryRaw<Array<{ id: string; receivedLogsRaw: Prisma.JsonValue | null }>>(Prisma.sql`
+          SELECT "id", "received_logs_raw" AS "receivedLogsRaw"
+          FROM "hides"
+          WHERE "id" = ${hide.id} AND "user_id" = ${userId}
+          FOR UPDATE
+        `);
         if (!current) throw new BadRequestException(`GSAK hide disappeared during import: ${code}`);
         const merged = mergeReceivedLogs(current.receivedLogsRaw, incoming);
         await tx.hide.update({
