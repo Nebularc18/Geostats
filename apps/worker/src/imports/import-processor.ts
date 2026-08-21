@@ -18,6 +18,81 @@ function elevationFromRaw(raw: unknown): number | null {
   return Number.isFinite(elevation) ? elevation : null;
 }
 
+function rawObject(value: unknown): Record<string, any> {
+  return value && typeof value === "object" && !Array.isArray(value) ? { ...(value as Record<string, any>) } : {};
+}
+
+function rawArray<T>(value: unknown): T[] {
+  if (value == null) return [];
+  return Array.isArray(value) ? value : [value as T];
+}
+
+function rawText(...values: unknown[]): string {
+  for (const value of values) {
+    if (typeof value === "string" || typeof value === "number") return String(value).trim();
+    if (value && typeof value === "object" && "text" in value) return String((value as { text?: unknown }).text ?? "").trim();
+  }
+  return "";
+}
+
+function receivedLogs(raw: unknown): Array<Record<string, any>> {
+  const root = rawObject(raw);
+  const cache = rawObject(root["groundspeak:cache"] ?? root.cache);
+  return rawArray<Record<string, any>>(cache["groundspeak:logs"]?.["groundspeak:log"] ?? cache.logs?.log);
+}
+
+function receivedLogId(log: Record<string, any>): string | null {
+  const id = rawText(log["geostats:log_id"], log.logId, log.LogID, log.id);
+  return id || null;
+}
+
+function receivedLogKey(log: Record<string, any>): string {
+  const date = rawText(log["groundspeak:date"], log.date);
+  const day = date.match(/^(\d{4}-\d{2}-\d{2})/)?.[1] ?? date;
+  const text = rawText(log["groundspeak:text"], log.text)
+    .replace(/<\s*br\s*\/?>/gi, "\n")
+    .replace(/<\s*\/p\s*>/gi, "\n")
+    .replace(/<[^>]*>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;|&#39;/g, "'")
+    .replace(/\r/g, "")
+    .replace(/[ \t]+\n/g, "\n")
+    .trim();
+  return [day, rawText(log["groundspeak:type"], log.type), rawText(log["groundspeak:finder"], log.finder), text]
+    .map((value) => value.toLowerCase())
+    .join("\u001f");
+}
+
+function mergedHideRaw(incomingRaw: unknown, storedRaw: unknown) {
+  const root = rawObject(incomingRaw);
+  const cacheKey = root["groundspeak:cache"] !== undefined || root.cache === undefined ? "groundspeak:cache" : "cache";
+  const cache = rawObject(root[cacheKey]);
+  const logsKey = cache["groundspeak:logs"] !== undefined || cache.logs === undefined ? "groundspeak:logs" : "logs";
+  const logKey = logsKey === "groundspeak:logs" ? "groundspeak:log" : "log";
+  const container = rawObject(cache[logsKey]);
+  const logs = [...receivedLogs(incomingRaw)];
+  const ids = new Set(logs.map(receivedLogId).filter((value): value is string => Boolean(value)));
+  const keys = new Set(logs.map(receivedLogKey));
+
+  for (const log of receivedLogs(storedRaw)) {
+    const id = receivedLogId(log);
+    const key = receivedLogKey(log);
+    if ((id && ids.has(id)) || keys.has(key)) continue;
+    if (id) ids.add(id);
+    keys.add(key);
+    logs.push(log);
+  }
+
+  return {
+    count: logs.filter((log) => rawText(log["groundspeak:type"], log.type).toLowerCase() !== "publish listing").length,
+    raw: { ...root, [cacheKey]: { ...cache, [logsKey]: { ...container, [logKey]: logs } } }
+  };
+}
+
 function hasFoundDate(find: ParsedImportResult["finds"][number]): find is ParsedFindWithDate {
   return find.foundAt !== null;
 }
@@ -168,10 +243,21 @@ export class ImportProcessor {
       let shouldRecalculateStats = importRecord.source === ImportSource.MY_HIDES_GPX && parsed.caches.length > 0;
 
       await this.prisma.$transaction(async (tx) => {
-        for (const parsedCache of parsed.caches) {
+        const parsedCaches =
+          importRecord.source === ImportSource.MY_HIDES_GPX
+            ? [...parsed.caches].sort((left, right) => left.gcCode.localeCompare(right.gcCode))
+            : parsed.caches;
+        for (const parsedCache of parsedCaches) {
           const cache = this.cacheFor(cachesByCode, parsedCache.gcCode);
 
           if (importRecord.source === ImportSource.MY_HIDES_GPX) {
+            const [currentHide] = await tx.$queryRaw<Array<{ receivedLogsRaw: Prisma.JsonValue | null }>>(Prisma.sql`
+              SELECT "received_logs_raw" AS "receivedLogsRaw"
+              FROM "hides"
+              WHERE "user_id" = ${payload.userId} AND "cache_id" = ${cache.id}
+              FOR UPDATE
+            `);
+            const merged = mergedHideRaw(parsedCache.raw, currentHide?.receivedLogsRaw);
             await tx.hide.upsert({
               where: {
                 userId_cacheId: {
@@ -184,14 +270,14 @@ export class ImportProcessor {
                 cacheId: cache.id,
                 importId: payload.importId,
                 placedAt: parsedCache.hiddenDate,
-                receivedLogCount: parsedCache.receivedLogCount,
-                receivedLogsRaw: parsedCache.raw as Prisma.InputJsonValue
+                receivedLogCount: merged.count,
+                receivedLogsRaw: merged.raw as Prisma.InputJsonValue
               },
               update: {
                 importId: payload.importId,
                 placedAt: parsedCache.hiddenDate,
-                receivedLogCount: parsedCache.receivedLogCount,
-                receivedLogsRaw: parsedCache.raw as Prisma.InputJsonValue
+                receivedLogCount: merged.count,
+                receivedLogsRaw: merged.raw as Prisma.InputJsonValue
               }
             });
           }

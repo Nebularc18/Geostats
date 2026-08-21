@@ -5,8 +5,26 @@ import { ImportFileType, ImportSource, ImportStatus } from "@geostats/shared";
 import { ImportProcessor } from "./import-processor";
 
 function withUserCacheData<T extends Record<string, any>>(prisma: T): T {
-  const models = prisma as T & { userCacheData?: { upsert: () => Promise<object> } };
+  const models = prisma as T & {
+    userCacheData?: { upsert: () => Promise<object> };
+    $transaction?: (callback: (tx: any) => Promise<unknown>) => Promise<unknown>;
+  };
   models.userCacheData ??= { upsert: async () => ({}) };
+  const transaction = models.$transaction;
+  if (typeof transaction === "function") {
+    let transactionCalls = 0;
+    models.$transaction = (callback: (tx: any) => Promise<unknown>) =>
+      transaction.call(models, async (tx: any) => {
+        transactionCalls += 1;
+        const injectedQueryRaw = transactionCalls === 1 && typeof tx.$queryRaw !== "function";
+        if (injectedQueryRaw) tx.$queryRaw = async () => [];
+        try {
+          return await callback(tx);
+        } finally {
+          if (injectedQueryRaw) delete tx.$queryRaw;
+        }
+      });
+  }
   return prisma;
 }
 
@@ -159,13 +177,41 @@ test("process uses the user's existing cache metadata without overwriting it", a
   const seenObjectKeys: string[] = [];
   const cacheUpserts: any[] = [];
   const userCacheUpserts: any[] = [];
+  const hideUpserts: any[] = [];
+  const storedGSAKRaw = {
+    "groundspeak:cache": {
+      "groundspeak:logs": {
+        "groundspeak:log": [
+          {
+            "geostats:log_id": "900",
+            "groundspeak:date": "2024-06-01T12:00:00.000Z",
+            "groundspeak:type": "Found it",
+            "groundspeak:finder": "GSAK finder",
+            "groundspeak:text": "Imported by GSAK"
+          }
+        ]
+      }
+    }
+  };
 
   const tx = {
+    $queryRaw: async (query: any) => {
+      if (typeof query.sql === "string" && query.sql.includes('FROM "hides"')) {
+        assert.match(query.sql, /FOR UPDATE/);
+        assert.deepEqual(query.values, ["user-1", "cache-1"]);
+        return [{ receivedLogsRaw: storedGSAKRaw }];
+      }
+      return [];
+    },
+    geocachingProfile: { findUnique: async () => null },
+    ownerFinderCountryStat: { findMany: async () => [] },
     hide: {
-      upsert: async () => ({})
+      upsert: async (input: any) => hideUpserts.push(input),
+      findMany: async () => []
     },
     find: {
-      upsert: async () => ({})
+      upsert: async () => ({}),
+      findMany: async () => []
     },
     statSnapshot: {
       deleteMany: async () => ({ count: 0 }),
@@ -205,7 +251,20 @@ test("process uses the user's existing cache metadata without overwriting it", a
   const storage = {
     getObject: async (key: string) => {
       seenObjectKeys.push(key);
-      return Buffer.from(gpx);
+      return Buffer.from(
+        gpx.replace(
+          "    </groundspeak:cache>",
+          `      <groundspeak:logs>
+        <groundspeak:log>
+          <groundspeak:date>2024-06-02T12:00:00Z</groundspeak:date>
+          <groundspeak:type>Found it</groundspeak:type>
+          <groundspeak:finder>GPX finder</groundspeak:finder>
+          <groundspeak:text>Imported by GPX</groundspeak:text>
+        </groundspeak:log>
+      </groundspeak:logs>
+    </groundspeak:cache>`
+        )
+      );
     }
   };
 
@@ -228,6 +287,13 @@ test("process uses the user's existing cache metadata without overwriting it", a
     userId_cacheId: { userId: "user-1", cacheId: "cache-1" }
   });
   assert.equal(userCacheUpserts[0].create.raw["groundspeak:cache"]["groundspeak:name"], "Attacker Cache Name");
+  assert.equal(hideUpserts.length, 1);
+  assert.equal(hideUpserts[0].update.receivedLogCount, 2);
+  const mergedLogs = hideUpserts[0].update.receivedLogsRaw["groundspeak:cache"]["groundspeak:logs"]["groundspeak:log"];
+  assert.deepEqual(
+    mergedLogs.map((log: any) => log["groundspeak:finder"]),
+    ["GPX finder", "GSAK finder"]
+  );
 });
 
 test("process recovers from concurrent cache upsert conflict by reading the existing cache", async () => {
