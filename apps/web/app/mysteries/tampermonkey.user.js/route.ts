@@ -341,14 +341,21 @@ function userscript(appOrigin: string) {
         field.getAttribute("data-testid"),
         associatedLabel?.textContent
       ].filter(Boolean).join(" ");
-      if (!/change\\s*to|solved[^a-z0-9]*coordinate|corrected[^a-z0-9]*coordinate|newcoordinates/i.test(fieldDescription)) continue;
+      const fieldHasCoordinateName = /change\\s*to|solved[^a-z0-9]*coordinate|corrected[^a-z0-9]*coordinate|newcoordinates/i.test(fieldDescription);
       let container = field.parentElement;
       for (let depth = 0; container && container !== document.body && depth < 8; depth += 1, container = container.parentElement) {
         const text = (container.textContent || "").replace(/\\s+/g, " ");
         const hasSubmit = [...container.querySelectorAll("button, input[type='button'], input[type='submit']")].some((control) =>
           /^submit$/i.test((control.textContent || control.value || "").trim()) && isVisible(control)
         );
-        if (/enter solved coordinates/i.test(text) && /change\\s*to/i.test(text) && hasSubmit) {
+        const usableFields = [...container.querySelectorAll("textarea, input:not([type='hidden']):not([type='submit']):not([type='button'])")]
+          .filter(fieldIsUsable);
+        if (
+          /enter solved coordinates/i.test(text) &&
+          /change\\s*to/i.test(text) &&
+          hasSubmit &&
+          (fieldHasCoordinateName || (usableFields.length === 1 && usableFields[0] === field))
+        ) {
           return { field, container };
         }
       }

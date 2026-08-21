@@ -16,13 +16,16 @@ test("coordinate sync does not call Geocaching's retired token-based page method
 });
 
 test("userscript version is bumped for automatic Tampermonkey updates", () => {
-  assert.equal(MYSTERY_USERSCRIPT_VERSION, "2.5.3");
+  assert.equal(MYSTERY_USERSCRIPT_VERSION, "2.5.4");
 });
 
 test("coordinate sync only adopts a confirmed coordinate editor", () => {
   assert.doesNotMatch(routeSource, /\[placeholder\*='coordinate'/);
   assert.match(routeSource, /change\\\\s\*to\|solved\[\^a-z0-9\]\*coordinate/);
-  assert.match(routeSource, /enter solved coordinates.*change\\\\s\*to.*hasSubmit/);
+  assert.match(routeSource, /enter solved coordinates/);
+  assert.match(routeSource, /change\\\\s\*to/);
+  assert.match(routeSource, /hasSubmit &&/);
+  assert.match(routeSource, /usableFields\.length === 1 && usableFields\[0\] === field/);
   assert.doesNotMatch(routeSource, /isDialog|hasCoordinateWording|\/submit\|save\|accept\/i/);
   assert.match(routeSource, /adoptManuallyOpenedEditor\(\)/);
 });
