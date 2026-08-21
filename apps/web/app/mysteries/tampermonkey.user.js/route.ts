@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { cachePageShowsCoordinate } from "../../../lib/mystery-coordinate-confirmation";
+import { solvedCoordinateEditorFromPage } from "../../../lib/mystery-coordinate-editor";
 import { locationFromCachePageMetadata } from "../../../lib/mystery-area";
 import { locationFromPageSources } from "../../../lib/mystery-page-location";
 import { MYSTERY_USERSCRIPT_VERSION } from "../../../lib/mystery-userscript";
@@ -36,6 +37,7 @@ function userscript(appOrigin: string) {
   const SYNC_RECEIPT_PREFIX = SYNC_RECEIPT_KEY + ":";
   const MAX_SYNC_AGE_MS = 10 * 60 * 1000;
   const cachePageShowsCoordinate = ${cachePageShowsCoordinate.toString()};
+  const solvedCoordinateEditorFromPage = ${solvedCoordinateEditorFromPage.toString()};
 
   if (location.origin === GEOSTATS_ORIGIN) {
     document.addEventListener("geostats-sync-request", () => {
@@ -319,41 +321,7 @@ function userscript(appOrigin: string) {
   }
 
   function findSolvedCoordinateEditor() {
-    const fieldIsUsable = (field) => field && isVisible(field) && !field.disabled && !field.readOnly && !field.closest("#geostats-sync-panel");
-    const knownField = document.getElementById("newCoordinates");
-    if (fieldIsUsable(knownField)) {
-      let knownContainer = knownField.parentElement;
-      while (knownContainer?.parentElement && knownContainer !== document.body && !knownContainer.querySelector("button, input[type='submit'], .btn-cc-parse")) {
-        knownContainer = knownContainer.parentElement;
-      }
-      return { field: knownField, container: knownContainer || knownField.parentElement };
-    }
-
-    const fields = [...document.querySelectorAll("textarea, input:not([type='hidden']):not([type='submit']):not([type='button'])")];
-    for (const field of fields) {
-      if (!fieldIsUsable(field)) continue;
-      const associatedLabel = field.id ? document.querySelector("label[for='" + CSS.escape(field.id) + "']") : field.closest("label");
-      const fieldDescription = [
-        field.id,
-        field.name,
-        field.getAttribute("aria-label"),
-        field.getAttribute("placeholder"),
-        field.getAttribute("data-testid"),
-        associatedLabel?.textContent
-      ].filter(Boolean).join(" ");
-      if (!/change\\s*to|solved[^a-z0-9]*coordinate|corrected[^a-z0-9]*coordinate|newcoordinates/i.test(fieldDescription)) continue;
-      let container = field.parentElement;
-      for (let depth = 0; container && container !== document.body && depth < 8; depth += 1, container = container.parentElement) {
-        const text = (container.textContent || "").replace(/\\s+/g, " ");
-        const hasSubmit = [...container.querySelectorAll("button, input[type='button'], input[type='submit']")].some((control) =>
-          /^submit$/i.test((control.textContent || control.value || "").trim()) && isVisible(control)
-        );
-        if (/enter solved coordinates/i.test(text) && /change\\s*to/i.test(text) && hasSubmit) {
-          return { field, container };
-        }
-      }
-    }
-    return null;
+    return solvedCoordinateEditorFromPage(document, isVisible);
   }
 
   function hasVisibleSolvedCoordinatePopup() {
