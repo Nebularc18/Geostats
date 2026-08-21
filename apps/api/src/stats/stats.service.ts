@@ -157,6 +157,7 @@ export class StatsService {
       include: {
         cache: {
           include: {
+            userData: { where: { userId }, take: 1 },
             corrections: {
               where: { userId }
             }
@@ -175,6 +176,7 @@ export class StatsService {
       include: {
         cache: {
           include: {
+            userData: { where: { userId }, take: 1 },
             corrections: {
               where: { userId }
             }
@@ -202,8 +204,8 @@ export class StatsService {
           county: find.cache.county,
           hiddenDate: find.cache.hiddenDate,
           ownerName: find.cache.ownerName,
-          elevationMeters: elevationFromRaw(find.cache.raw),
-          raw: find.cache.raw
+          elevationMeters: elevationFromRaw(find.cache.userData[0]?.raw),
+          raw: find.cache.userData[0]?.raw
         }
       })),
       {
@@ -230,8 +232,8 @@ export class StatsService {
           county: hide.cache.county,
           hiddenDate: hide.cache.hiddenDate,
           ownerName: hide.cache.ownerName,
-          elevationMeters: elevationFromRaw(hide.cache.raw),
-          raw: hide.cache.raw
+          elevationMeters: elevationFromRaw(hide.cache.userData[0]?.raw),
+          raw: hide.cache.userData[0]?.raw
         }
       })),
       {

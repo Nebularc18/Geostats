@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useState } from "react";
-import { FileUp, UploadCloud } from "lucide-react";
+import { Database, Download, FileUp, UploadCloud } from "lucide-react";
 import { AppShell } from "../../components/app-shell";
 import { apiFetch } from "../../lib/api";
 import { hasActiveImports, type ImportListItem, type ImportsResponse } from "../../lib/imports";
@@ -10,6 +10,9 @@ export default function UploadPage() {
   const [message, setMessage] = useState<string | null>(null);
   const [csvMessage, setCsvMessage] = useState<string | null>(null);
   const [imports, setImports] = useState<ImportListItem[]>([]);
+  const [gsakStatus, setGsakStatus] = useState<{ connected: boolean; lastImportedAt: string | null } | null>(null);
+  const [gsakMessage, setGsakMessage] = useState<string | null>(null);
+  const [gsakBusy, setGsakBusy] = useState(false);
 
   const refresh = useCallback(async () => {
     const data = await apiFetch<ImportsResponse>("/imports");
@@ -19,6 +22,7 @@ export default function UploadPage() {
 
   useEffect(() => {
     void refresh();
+    void apiFetch<{ connected: boolean; lastImportedAt: string | null }>("/collector/gsak/status").then(setGsakStatus);
   }, [refresh]);
 
   useEffect(() => {
@@ -65,6 +69,28 @@ export default function UploadPage() {
     }
   }
 
+  async function downloadGsakConnector() {
+    setGsakBusy(true);
+    setGsakMessage(null);
+    try {
+      const data = await apiFetch<{ fileName: string; macro: string }>("/collector/gsak/setup", { method: "POST" });
+      const url = URL.createObjectURL(new Blob([data.macro], { type: "text/plain;charset=utf-8" }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = data.fileName;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      setGsakStatus({ connected: true, lastImportedAt: null });
+      setGsakMessage("Connector downloaded. Open GeostatsImport.gsk and let GSAK install it, then run the macro from GSAK.");
+    } catch (error) {
+      setGsakMessage(error instanceof Error ? error.message : "Could not prepare the GSAK connector");
+    } finally {
+      setGsakBusy(false);
+    }
+  }
+
   return (
     <AppShell>
       <header className="page-header">
@@ -80,6 +106,25 @@ export default function UploadPage() {
           </button>
         </form>
         {message ? <p className="muted">{message}</p> : null}
+      </section>
+      <section className="upload-zone">
+        <Database size={42} />
+        <div className="form">
+          <div>
+            <h2>Import from GSAK</h2>
+            <p className="muted">
+              Optional. Install the connector once, then send the current GSAK database to Geostats directly from GSAK. GPX and ZIP imports continue to work without it.
+            </p>
+          </div>
+          <button className="secondary-button" type="button" disabled={gsakBusy} onClick={() => void downloadGsakConnector()}>
+            <Download size={18} />
+            {gsakBusy ? "Preparing connector…" : gsakStatus?.connected ? "Download a new connector" : "Set up GSAK import"}
+          </button>
+          {gsakStatus?.lastImportedAt ? (
+            <p className="muted">Last GSAK import: {new Date(gsakStatus.lastImportedAt).toLocaleString()}</p>
+          ) : null}
+          {gsakMessage ? <p className="muted">{gsakMessage}</p> : null}
+        </div>
       </section>
       <section className="upload-zone">
         <FileUp size={42} />

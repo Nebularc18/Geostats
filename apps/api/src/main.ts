@@ -1,10 +1,11 @@
 import "reflect-metadata";
 import { ValidationPipe } from "@nestjs/common";
 import cookieParser from "cookie-parser";
-import { json, urlencoded } from "express";
+import { json, raw, urlencoded } from "express";
 import { NestFactory } from "@nestjs/core";
 import { AppModule } from "./app.module";
 import { envOrDefault, portEnvOrDefault, validateRuntimeEnv } from "./common/env";
+import { parseWindows1252Form } from "./common/windows-1252-form";
 
 async function bootstrap() {
   validateRuntimeEnv();
@@ -34,6 +35,17 @@ async function bootstrap() {
       forbidNonWhitelisted: true
     })
   );
+  const gsakWindows1252Form = raw({
+    limit: "3mb",
+    type: (request) => {
+      const contentType = request.headers["content-type"] ?? "";
+      return /^application\/x-www-form-urlencoded\b/i.test(contentType) && /charset\s*=\s*"?windows-1252"?/i.test(contentType);
+    }
+  });
+  app.use("/collector/gsak/import", gsakWindows1252Form, (request: any, _response: any, next: () => void) => {
+    if (Buffer.isBuffer(request.body)) request.body = parseWindows1252Form(request.body);
+    next();
+  });
   app.use(json({ limit: "3mb" }));
   app.use(urlencoded({ extended: true, limit: "3mb" }));
   app.use(cookieParser());

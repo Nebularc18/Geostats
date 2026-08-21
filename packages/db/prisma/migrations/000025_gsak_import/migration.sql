@@ -1,0 +1,4 @@
+ALTER TYPE "ImportSource" ADD VALUE IF NOT EXISTS 'GSAK';
+
+ALTER TABLE "collector_tokens"
+ADD COLUMN "scope" TEXT NOT NULL DEFAULT 'FULL';
