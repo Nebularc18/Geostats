@@ -16,13 +16,21 @@ test("coordinate sync does not call Geocaching's retired token-based page method
 });
 
 test("userscript version is bumped for automatic Tampermonkey updates", () => {
-  assert.equal(MYSTERY_USERSCRIPT_VERSION, "2.5.1");
+  assert.equal(MYSTERY_USERSCRIPT_VERSION, "2.5.2");
 });
 
-test("coordinate sync supports current editor controls and a manual-open fallback", () => {
+test("coordinate sync only adopts a confirmed coordinate editor", () => {
+  assert.doesNotMatch(routeSource, /\[placeholder\*='coordinate'/);
+  assert.match(routeSource, /fieldDescription/);
+  assert.match(routeSource, /enter solved coordinates.*change\\\\s\*to/);
+  assert.match(routeSource, /adoptManuallyOpenedEditor\(\)/);
+});
+
+test("coordinate sync only clicks one high-confidence editor control", () => {
   assert.match(routeSource, /edit-cache-coordinates/);
   assert.match(routeSource, /data-testid\*='edit-coordinate'/);
+  assert.match(routeSource, /candidates\.slice\(0, 1\)/);
+  assert.doesNotMatch(routeSource, /add\(coordinateNode|coordinateBounds|sameRow|nearby/);
   assert.match(routeSource, /triggers\[index\]\.click\(\)/);
-  assert.match(routeSource, /adoptManuallyOpenedEditor\(\)/);
   assert.match(routeSource, /Click the pencil beside the coordinates/);
 });

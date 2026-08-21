@@ -320,16 +320,8 @@ function userscript(appOrigin: string) {
 
   function findSolvedCoordinateEditor() {
     const fieldIsUsable = (field) => field && isVisible(field) && !field.disabled && !field.readOnly && !field.closest("#geostats-sync-panel");
-    const knownField = [
-      "#newCoordinates",
-      "#new-coordinates",
-      "[data-testid*='coordinate-input' i]",
-      "[name*='newCoordinate' i]",
-      "[name*='correctedCoordinate' i]",
-      "[aria-label*='solved coordinate' i]",
-      "[placeholder*='coordinate' i]"
-    ].map((selector) => document.querySelector(selector)).find(fieldIsUsable);
-    if (knownField) {
+    const knownField = document.getElementById("newCoordinates");
+    if (fieldIsUsable(knownField)) {
       let knownContainer = knownField.parentElement;
       while (knownContainer?.parentElement && knownContainer !== document.body && !knownContainer.querySelector("button, input[type='submit'], .btn-cc-parse")) {
         knownContainer = knownContainer.parentElement;
@@ -340,6 +332,16 @@ function userscript(appOrigin: string) {
     const fields = [...document.querySelectorAll("textarea, input:not([type='hidden']):not([type='submit']):not([type='button'])")];
     for (const field of fields) {
       if (!fieldIsUsable(field)) continue;
+      const associatedLabel = field.id ? document.querySelector("label[for='" + CSS.escape(field.id) + "']") : field.closest("label");
+      const fieldDescription = [
+        field.id,
+        field.name,
+        field.getAttribute("aria-label"),
+        field.getAttribute("placeholder"),
+        field.getAttribute("data-testid"),
+        associatedLabel?.textContent
+      ].filter(Boolean).join(" ");
+      if (!/solved|corrected|coordinate|change\\s*to/i.test(fieldDescription)) continue;
       let container = field.parentElement;
       for (let depth = 0; container && container !== document.body && depth < 8; depth += 1, container = container.parentElement) {
         const text = (container.textContent || "").replace(/\\s+/g, " ");
@@ -348,7 +350,7 @@ function userscript(appOrigin: string) {
         const hasSubmit = [...container.querySelectorAll("button, input[type='button'], input[type='submit']")].some((control) =>
           /submit|save|accept/i.test((control.textContent || control.value || "").trim())
         );
-        if (/enter solved coordinates/i.test(text) || (/change\\s*to/i.test(text) && hasCoordinateWording) || (isDialog && hasCoordinateWording && hasSubmit)) {
+        if ((/enter solved coordinates/i.test(text) && /change\\s*to/i.test(text)) || (isDialog && hasCoordinateWording && hasSubmit)) {
           return { field, container };
         }
       }
@@ -357,75 +359,41 @@ function userscript(appOrigin: string) {
   }
 
   function hasVisibleSolvedCoordinatePopup() {
-    return [...document.querySelectorAll("dialog, [role='dialog'], [aria-modal='true'], .ui-dialog, .modal, form, section")].some((element) => {
-      if (!isVisible(element)) return false;
-      const text = (element.textContent || "").replace(/\\s+/g, " ");
-      const hasField = Boolean(element.querySelector("textarea, input:not([type='hidden']):not([type='button']):not([type='submit'])"));
-      return hasField && (/enter solved coordinates/i.test(text) || (/solved|corrected|coordinate/i.test(text) && /change\\s*to|submit|save|accept/i.test(text)));
-    });
+    return Boolean(findSolvedCoordinateEditor());
   }
 
   function findCoordinateEditorTriggers() {
     const candidates = [];
     const add = (candidate) => {
-      if (candidate && !candidate.closest?.("#geostats-sync-panel") && !candidates.includes(candidate)) candidates.push(candidate);
+      if (
+        candidate &&
+        candidate.matches?.("a, button, [role='button']") &&
+        isVisible(candidate) &&
+        !candidate.closest("#geostats-sync-panel") &&
+        !candidates.includes(candidate)
+      ) candidates.push(candidate);
     };
     const selectors = [
       "#uxLatLonLink",
       ".edit-cache-coordinates",
       "button[aria-label*='coordinate' i][aria-label*='edit' i]",
       "a[aria-label*='coordinate' i][aria-label*='edit' i]",
+      "button[aria-label*='coordinate' i][aria-label*='correct' i]",
+      "a[aria-label*='coordinate' i][aria-label*='correct' i]",
       "button[title*='edit coordinate' i]",
       "a[title*='edit coordinate' i]",
-      "[title*='corrected coordinate' i]",
-      "[data-testid*='coordinate-edit' i]",
-      "[data-testid*='edit-coordinate' i]",
-      "[id*='coordinate'][id*='edit' i]",
-      "[class*='coordinate'][class*='edit' i]"
+      "button[title*='corrected coordinate' i]",
+      "a[title*='corrected coordinate' i]",
+      "button[data-testid*='coordinate-edit' i]",
+      "a[data-testid*='coordinate-edit' i]",
+      "button[data-testid*='edit-coordinate' i]",
+      "a[data-testid*='edit-coordinate' i]"
     ];
     for (const selector of selectors) {
       add(document.querySelector(selector));
     }
 
-    const coordinateNode = document.querySelector("#uxLatLon, [data-testid='coordinates'], [data-testid*='coordinate-value' i], .coordinates, [class*='Coordinates'], [class*='coordinates']");
-    add(coordinateNode?.closest("a, button, [role='button'], [onclick]"));
-    add(coordinateNode);
-    if (coordinateNode?.parentElement) {
-      [...coordinateNode.parentElement.children]
-        .filter((element) => element.matches("a, button, [role='button'], [onclick]") || element.querySelector?.("svg, img, [class*='pencil' i], [class*='edit' i]"))
-        .forEach(add);
-    }
-    let container = coordinateNode?.parentElement;
-    for (let depth = 0; container && depth < 4; depth += 1, container = container.parentElement) {
-      const controls = [...container.querySelectorAll("button, a, [role='button']")];
-      controls.filter((control) => {
-        const icon = control.querySelector("svg, img, [class*='pencil' i], [class*='edit' i]");
-        const description = [
-          control.textContent,
-          control.getAttribute("aria-label"),
-          control.getAttribute("title"),
-          control.getAttribute("data-testid"),
-          icon?.getAttribute("class"),
-          icon?.getAttribute("aria-label"),
-          icon?.getAttribute("title"),
-          icon?.getAttribute("alt"),
-          icon?.getAttribute("src")
-        ].filter(Boolean).join(" ");
-        return /edit|correct|pencil|coordinate/i.test(description);
-      }).forEach(add);
-      if (coordinateNode) {
-        const coordinateBounds = coordinateNode.getBoundingClientRect();
-        [...container.querySelectorAll("[onclick], img, svg, i")]
-          .filter((control) => {
-            const bounds = control.getBoundingClientRect();
-            const sameRow = bounds.bottom >= coordinateBounds.top - 12 && bounds.top <= coordinateBounds.bottom + 12;
-            const nearby = bounds.left >= coordinateBounds.right - 8 && bounds.left <= coordinateBounds.right + 100;
-            return isVisible(control) && sameRow && nearby;
-          })
-          .forEach(add);
-      }
-    }
-    return candidates.slice(0, 12);
+    return candidates.slice(0, 1);
   }
 
   function fillCoordinateEditor() {
