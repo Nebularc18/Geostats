@@ -341,16 +341,14 @@ function userscript(appOrigin: string) {
         field.getAttribute("data-testid"),
         associatedLabel?.textContent
       ].filter(Boolean).join(" ");
-      if (!/solved|corrected|coordinate|change\\s*to/i.test(fieldDescription)) continue;
+      if (!/change\\s*to|solved[^a-z0-9]*coordinate|corrected[^a-z0-9]*coordinate|newcoordinates/i.test(fieldDescription)) continue;
       let container = field.parentElement;
       for (let depth = 0; container && container !== document.body && depth < 8; depth += 1, container = container.parentElement) {
         const text = (container.textContent || "").replace(/\\s+/g, " ");
-        const isDialog = container.matches("dialog, [role='dialog'], [aria-modal='true'], .ui-dialog, .modal");
-        const hasCoordinateWording = /solved|corrected|coordinate|change\\s*to/i.test(text);
         const hasSubmit = [...container.querySelectorAll("button, input[type='button'], input[type='submit']")].some((control) =>
-          /submit|save|accept/i.test((control.textContent || control.value || "").trim())
+          /^submit$/i.test((control.textContent || control.value || "").trim()) && isVisible(control)
         );
-        if ((/enter solved coordinates/i.test(text) && /change\\s*to/i.test(text)) || (isDialog && hasCoordinateWording && hasSubmit)) {
+        if (/enter solved coordinates/i.test(text) && /change\\s*to/i.test(text) && hasSubmit) {
           return { field, container };
         }
       }

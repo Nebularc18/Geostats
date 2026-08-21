@@ -1,1 +1,1 @@
-export const MYSTERY_USERSCRIPT_VERSION = "2.5.2";
+export const MYSTERY_USERSCRIPT_VERSION = "2.5.3";
