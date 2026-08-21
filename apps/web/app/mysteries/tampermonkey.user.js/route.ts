@@ -298,7 +298,7 @@ function userscript(appOrigin: string) {
     }
 
     directSyncStarted = false;
-    const message = "Geocaching's solved-coordinate editor could not be opened. Reload the cache page and retry.";
+    const message = "Geocaching's editor did not open automatically. Click the pencil beside the coordinates, or reload the page and retry.";
     setSyncPanelState(message, "error");
     toast(message, true);
   }
@@ -319,10 +319,11 @@ function userscript(appOrigin: string) {
   }
 
   function findSolvedCoordinateEditor() {
+    const fieldIsUsable = (field) => field && isVisible(field) && !field.disabled && !field.readOnly && !field.closest("#geostats-sync-panel");
     const knownField = document.getElementById("newCoordinates");
-    if (knownField && isVisible(knownField) && !knownField.disabled && !knownField.readOnly) {
+    if (fieldIsUsable(knownField)) {
       let knownContainer = knownField.parentElement;
-      while (knownContainer?.parentElement && !knownContainer.querySelector(".btn-cc-parse")) {
+      while (knownContainer?.parentElement && knownContainer !== document.body && !knownContainer.querySelector("button, input[type='submit'], .btn-cc-parse")) {
         knownContainer = knownContainer.parentElement;
       }
       return { field: knownField, container: knownContainer || knownField.parentElement };
@@ -330,11 +331,24 @@ function userscript(appOrigin: string) {
 
     const fields = [...document.querySelectorAll("textarea, input:not([type='hidden']):not([type='submit']):not([type='button'])")];
     for (const field of fields) {
-      if (!isVisible(field) || field.disabled || field.readOnly || field.closest("#geostats-sync-panel")) continue;
+      if (!fieldIsUsable(field)) continue;
+      const associatedLabel = field.id ? document.querySelector("label[for='" + CSS.escape(field.id) + "']") : field.closest("label");
+      const fieldDescription = [
+        field.id,
+        field.name,
+        field.getAttribute("aria-label"),
+        field.getAttribute("placeholder"),
+        field.getAttribute("data-testid"),
+        associatedLabel?.textContent
+      ].filter(Boolean).join(" ");
+      if (!/change\\s*to|solved[^a-z0-9]*coordinate|corrected[^a-z0-9]*coordinate|newcoordinates/i.test(fieldDescription)) continue;
       let container = field.parentElement;
       for (let depth = 0; container && container !== document.body && depth < 8; depth += 1, container = container.parentElement) {
         const text = (container.textContent || "").replace(/\\s+/g, " ");
-        if (/enter solved coordinates/i.test(text) && /change\\s*to/i.test(text)) {
+        const hasSubmit = [...container.querySelectorAll("button, input[type='button'], input[type='submit']")].some((control) =>
+          /^submit$/i.test((control.textContent || control.value || "").trim()) && isVisible(control)
+        );
+        if (/enter solved coordinates/i.test(text) && /change\\s*to/i.test(text) && hasSubmit) {
           return { field, container };
         }
       }
@@ -343,66 +357,41 @@ function userscript(appOrigin: string) {
   }
 
   function hasVisibleSolvedCoordinatePopup() {
-    return [...document.querySelectorAll("form, section, div")].some((element) => {
-      if (!isVisible(element)) return false;
-      const text = (element.textContent || "").replace(/\\s+/g, " ");
-      return /enter solved coordinates/i.test(text) && /change\\s*to/i.test(text) && Boolean(element.querySelector("textarea, input"));
-    });
+    return Boolean(findSolvedCoordinateEditor());
   }
 
   function findCoordinateEditorTriggers() {
     const candidates = [];
     const add = (candidate) => {
-      if (candidate && !candidate.closest?.("#geostats-sync-panel") && !candidates.includes(candidate)) candidates.push(candidate);
+      if (
+        candidate &&
+        candidate.matches?.("a, button, [role='button']") &&
+        isVisible(candidate) &&
+        !candidate.closest("#geostats-sync-panel") &&
+        !candidates.includes(candidate)
+      ) candidates.push(candidate);
     };
     const selectors = [
       "#uxLatLonLink",
+      ".edit-cache-coordinates",
       "button[aria-label*='coordinate' i][aria-label*='edit' i]",
       "a[aria-label*='coordinate' i][aria-label*='edit' i]",
+      "button[aria-label*='coordinate' i][aria-label*='correct' i]",
+      "a[aria-label*='coordinate' i][aria-label*='correct' i]",
       "button[title*='edit coordinate' i]",
       "a[title*='edit coordinate' i]",
-      "[title*='corrected coordinate' i]",
-      "[data-testid*='coordinate-edit' i]"
+      "button[title*='corrected coordinate' i]",
+      "a[title*='corrected coordinate' i]",
+      "button[data-testid*='coordinate-edit' i]",
+      "a[data-testid*='coordinate-edit' i]",
+      "button[data-testid*='edit-coordinate' i]",
+      "a[data-testid*='edit-coordinate' i]"
     ];
     for (const selector of selectors) {
       add(document.querySelector(selector));
     }
 
-    const coordinateNode = document.querySelector("#uxLatLon, [data-testid='coordinates'], .coordinates, [class*='Coordinates']");
-    add(coordinateNode?.closest("a, button, [role='button'], [onclick]"));
-    add(coordinateNode);
-    let container = coordinateNode?.parentElement;
-    for (let depth = 0; container && depth < 4; depth += 1, container = container.parentElement) {
-      const controls = [...container.querySelectorAll("button, a, [role='button']")];
-      const candidate = controls.find((control) => {
-        const icon = control.querySelector("svg, img, [class*='pencil' i], [class*='edit' i]");
-        const description = [
-          control.textContent,
-          control.getAttribute("aria-label"),
-          control.getAttribute("title"),
-          control.getAttribute("data-testid"),
-          icon?.getAttribute("class"),
-          icon?.getAttribute("aria-label"),
-          icon?.getAttribute("title"),
-          icon?.getAttribute("alt"),
-          icon?.getAttribute("src")
-        ].filter(Boolean).join(" ");
-        return /edit|correct|pencil/i.test(description);
-      });
-      add(candidate);
-      if (coordinateNode) {
-        const coordinateBounds = coordinateNode.getBoundingClientRect();
-        [...container.querySelectorAll("[onclick], img, svg, i")]
-          .filter((control) => {
-            const bounds = control.getBoundingClientRect();
-            const sameRow = bounds.bottom >= coordinateBounds.top - 12 && bounds.top <= coordinateBounds.bottom + 12;
-            const nearby = bounds.left >= coordinateBounds.right - 8 && bounds.left <= coordinateBounds.right + 100;
-            return isVisible(control) && sameRow && nearby;
-          })
-          .forEach(add);
-      }
-    }
-    return candidates.slice(0, 6);
+    return candidates.slice(0, 1);
   }
 
   function fillCoordinateEditor() {
@@ -449,10 +438,22 @@ function userscript(appOrigin: string) {
     for (let index = 0; index < triggers.length; index += 1) {
       if (fillCoordinateEditor() || hasVisibleSolvedCoordinatePopup()) return true;
       if (instructions) instructions.textContent = "Opening Geocaching's coordinate editor (attempt " + (index + 1) + " of " + triggers.length + ")…";
-      triggers[index].dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
-      if (await waitForCoordinateEditor(1500)) return true;
+      if (typeof triggers[index].click === "function") triggers[index].click();
+      else triggers[index].dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+      if (await waitForCoordinateEditor(2500)) return true;
     }
     return false;
+  }
+
+  function adoptManuallyOpenedEditor() {
+    if (!syncPayload || syncReceiptReturned || syncSubmissionStarted) return false;
+    const existingEditor = findSolvedCoordinateEditor();
+    if (useCoordinateEditor && existingEditor?.field.dataset.geostatsFilled === "true") return true;
+    if (!fillCoordinateEditor()) return false;
+    useCoordinateEditor = true;
+    directSyncStarted = false;
+    setSyncPanelState("The coordinate is filled in Geocaching's editor. Choose Save on Geocaching to finish.", "editor");
+    return true;
   }
 
   function submitSolvedCoordinate() {
@@ -628,6 +629,7 @@ function userscript(appOrigin: string) {
   new MutationObserver(() => {
     addButton();
     addSyncPanel();
+    adoptManuallyOpenedEditor();
   }).observe(document.documentElement, { childList: true, subtree: true });
   if (typeof GM_registerMenuCommand === "function") GM_registerMenuCommand("Import this cache to Geostats", importCache);
 })();
