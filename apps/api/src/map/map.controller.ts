@@ -1,10 +1,117 @@
-import { Controller, Get, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Post, Query, UseGuards } from "@nestjs/common";
 import { AuthUser } from "@geostats/shared";
 import { countableFindWhere } from "@geostats/db";
 import { normalizedGcUsername } from "@geostats/stats";
+import { Type } from "class-transformer";
+import { ArrayMaxSize, IsArray, IsBoolean, IsIn, IsNumber, IsOptional, IsString, Max, MaxLength, Min, MinLength, ValidateIf, ValidateNested } from "class-validator";
 import { AuthGuard } from "../auth/auth.guard";
 import { CurrentUser } from "../auth/current-user.decorator";
 import { PrismaService } from "../common/prisma.service";
+import { TravelSearchService } from "./travel-search.service";
+
+class TravelMysteryCacheDto {
+  @IsString()
+  @MaxLength(100)
+  id!: string;
+
+  @IsString()
+  @MaxLength(20)
+  gcCode!: string;
+
+  @IsString()
+  @MaxLength(200)
+  name!: string;
+
+  @IsNumber()
+  @Min(-90)
+  @Max(90)
+  latitude!: number;
+
+  @IsNumber()
+  @Min(-180)
+  @Max(180)
+  longitude!: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  country?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  region?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  county?: string;
+}
+
+class TravelPlaceDto {
+  @IsString()
+  @MaxLength(300)
+  label!: string;
+
+  @IsNumber()
+  @Min(-90)
+  @Max(90)
+  latitude!: number;
+
+  @IsNumber()
+  @Min(-180)
+  @Max(180)
+  longitude!: number;
+}
+
+class PlaceSuggestionQueryDto {
+  @IsString()
+  @MinLength(3)
+  @MaxLength(100)
+  q!: string;
+}
+
+class TravelSearchDto {
+  @IsIn(["nearby", "route"])
+  mode!: "nearby" | "route";
+
+  @IsString()
+  @MinLength(2)
+  @MaxLength(200)
+  origin!: string;
+
+  @ValidateIf((input: TravelSearchDto) => input.mode === "route")
+  @IsString()
+  @MinLength(2)
+  @MaxLength(200)
+  destination?: string;
+
+  @IsNumber()
+  @Min(0.5)
+  @Max(100)
+  radiusKm!: number;
+
+  @IsOptional()
+  @IsBoolean()
+  includeFound?: boolean;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(500)
+  @ValidateNested({ each: true })
+  @Type(() => TravelMysteryCacheDto)
+  mysteryCaches?: TravelMysteryCacheDto[];
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => TravelPlaceDto)
+  originPlace?: TravelPlaceDto;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => TravelPlaceDto)
+  destinationPlace?: TravelPlaceDto;
+}
 
 const MAP_CACHE_LIMIT = 5000;
 const UNKNOWN_LOCATION = "Unknown";
@@ -126,11 +233,38 @@ function continentFor(latitude: number, longitude: number, country?: string | nu
 @Controller("map")
 @UseGuards(AuthGuard)
 export class MapController {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly travelSearch: TravelSearchService
+  ) {}
 
   private async countableFindWhereForUser(userId: string) {
     const profile = await this.prisma.geocachingProfile.findUnique({ where: { userId }, select: { gcUsername: true } });
     return countableFindWhere(userId, normalizedGcUsername(profile));
+  }
+
+  @Get("place-suggestions")
+  async placeSuggestions(@CurrentUser() user: AuthUser, @Query() query: PlaceSuggestionQueryDto) {
+    return this.travelSearch.suggestPlaces(user.id, query.q);
+  }
+
+  @Get("travel-pool")
+  async travelPool(@CurrentUser() user: AuthUser) {
+    return this.travelSearch.poolSummary(user.id);
+  }
+
+  @Post("travel-search")
+  async travel(@CurrentUser() user: AuthUser, @Body() body: TravelSearchDto) {
+    return this.travelSearch.search(user.id, {
+      mode: body.mode,
+      origin: body.origin.trim(),
+      destination: body.destination?.trim(),
+      radiusKm: body.radiusKm,
+      includeFound: body.includeFound ?? false,
+      mysteryCaches: body.mysteryCaches ?? [],
+      originPlace: body.originPlace,
+      destinationPlace: body.destinationPlace
+    });
   }
 
   @Get("caches")

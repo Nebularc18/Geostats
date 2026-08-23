@@ -195,6 +195,13 @@ test("parseImportFile reads GPX files from a ZIP", async () => {
   assert.equal(parsed.caches[0]?.name, "Harbor Cache");
 });
 
+test("Pocket Queries do not turn another geocacher's public log into the user's find", () => {
+  const parsed = parseGpx(gpx, ImportSource.POCKET_QUERY, { gcUsername: "Nebularc_" });
+
+  assert.equal(parsed.caches.length, 1);
+  assert.equal(parsed.finds.length, 0);
+});
+
 test("parseImportFile rejects ZIP files without GPX entries", async () => {
   const zip = new JSZip();
   zip.file("notes.txt", "nothing useful");

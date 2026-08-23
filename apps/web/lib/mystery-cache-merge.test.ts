@@ -211,6 +211,31 @@ test("reconnect produces one cache with both server and offline coordinates", ()
   assert.equal(merged.attempts[0]?.state, "correct");
 });
 
+test("keeps the newest trip assignment when devices reconnect", () => {
+  const server: MergeableMysteryCache = {
+    id: "server-cache-id",
+    gcCode: "GC1234",
+    name: "Mystery",
+    area: "",
+    country: "Sweden",
+    status: "solving",
+    trip: "Old route",
+    tripUpdatedAt: "2026-08-23T10:00:00.000Z",
+    notes: "",
+    clues: [],
+    sharedWith: [],
+    attempts: []
+  };
+  const device = {
+    ...server,
+    trip: "New route",
+    tripUpdatedAt: "2026-08-23T11:00:00.000Z"
+  };
+
+  assert.equal(mergeMysteryCaches(server, device).trip, "New route");
+  assert.equal(mergeMysteryCaches(device, server).trip, "New route");
+});
+
 test("device notes and images win a server conflict even when notes are shorter", () => {
   const server: MergeableMysteryCache = {
     id: "server-cache-id",

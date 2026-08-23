@@ -25,6 +25,8 @@ export type MergeableMysteryCache = {
   locality?: string;
   locationHierarchy?: string[];
   status: "solving" | "solved" | "planned";
+  trip?: string;
+  tripUpdatedAt?: string;
   notes: string;
   clues: string[];
   sharedWith: Array<{ id: string }>;
@@ -166,6 +168,11 @@ export function mergeMysteryCaches<T extends MergeableMysteryCache>(
 ): T {
   const sharedWith = new Map([...existing.sharedWith, ...incoming.sharedWith].map((user) => [user.id, user]));
   const statusRank = { solving: 0, planned: 1, solved: 2 } as const;
+  const existingTripTime = Date.parse(existing.tripUpdatedAt ?? "");
+  const incomingTripTime = Date.parse(incoming.tripUpdatedAt ?? "");
+  const preferIncomingTrip = Number.isFinite(incomingTripTime)
+    ? !Number.isFinite(existingTripTime) || incomingTripTime >= existingTripTime
+    : !Number.isFinite(existingTripTime) && Boolean(incoming.trip?.trim()) && !existing.trip?.trim();
   const syncConflicts = { ...existing.syncConflicts, ...incoming.syncConflicts };
   if (options.preserveNotesConflict && existing.notes !== incoming.notes) {
     syncConflicts.notes = { server: existing.notes, device: incoming.notes };
@@ -183,6 +190,8 @@ export function mergeMysteryCaches<T extends MergeableMysteryCache>(
     locality: existing.locality || incoming.locality,
     locationHierarchy: existing.locationHierarchy?.length ? existing.locationHierarchy : incoming.locationHierarchy,
     status: statusRank[incoming.status] > statusRank[existing.status] ? incoming.status : existing.status,
+    trip: preferIncomingTrip ? incoming.trip : existing.trip,
+    tripUpdatedAt: preferIncomingTrip ? incoming.tripUpdatedAt : existing.tripUpdatedAt,
     notes: options.preferIncomingNotes === false ? existing.notes : incoming.notes,
     clues: [...new Set([...existing.clues, ...incoming.clues])],
     attempts: mergeMysteryAttempts([...existing.attempts, ...incoming.attempts]),
