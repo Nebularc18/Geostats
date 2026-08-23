@@ -43,6 +43,137 @@ type WayTo81Entry = {
   terrain: number;
 };
 
+export type ExtremeCache = {
+  gcCode: string;
+  name: string;
+  cacheType: string | null;
+  country: string | null;
+  region: string | null;
+  latitude: number;
+  longitude: number;
+  hiddenDate: string | null;
+  elevationMeters: number | null;
+  found: boolean;
+};
+
+export type ExtremeCachesData = {
+  countries: string[];
+  selectedCountry: string | null;
+  extremes: {
+    northernmost: ExtremeCache | null;
+    southernmost: ExtremeCache | null;
+    easternmost: ExtremeCache | null;
+    westernmost: ExtremeCache | null;
+    highestElevation: ExtremeCache | null;
+    lowestElevation: ExtremeCache | null;
+    oldest: ExtremeCache | null;
+  };
+};
+
+const extremeCards: { key: keyof ExtremeCachesData["extremes"]; label: string }[] = [
+  { key: "northernmost", label: "Northernmost cache" },
+  { key: "easternmost", label: "Easternmost cache" },
+  { key: "southernmost", label: "Southernmost cache" },
+  { key: "westernmost", label: "Westernmost cache" },
+  { key: "highestElevation", label: "Highest altitude cache" },
+  { key: "lowestElevation", label: "Lowest altitude cache" },
+  { key: "oldest", label: "Oldest cache" }
+];
+
+function extremeDetail(cache: ExtremeCache) {
+  const parts = [cache.country ?? cache.region ?? ""];
+  if (cache.elevationMeters != null) {
+    parts.push(`${Math.round(cache.elevationMeters)} m`);
+  }
+  if (cache.hiddenDate) {
+    parts.push(`Hidden ${cache.hiddenDate}`);
+  }
+  return parts.filter(Boolean).join(" · ");
+}
+
+function ExtremeCachesPanel() {
+  const [country, setCountry] = useState("");
+  const [data, setData] = useState<ExtremeCachesData | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const query = country ? `?country=${encodeURIComponent(country)}` : "";
+    apiFetch<ExtremeCachesData>(`/stats/extreme-caches${query}`)
+      .then((result) => {
+        if (!cancelled) {
+          setData(result);
+          setError(null);
+        }
+      })
+      .catch((cause: Error) => {
+        if (!cancelled) {
+          setError(cause.message);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [country]);
+
+  const countries = data?.countries ?? [];
+  if (data && countries.length === 0 && !data.extremes.northernmost) {
+    return null;
+  }
+
+  return (
+    <section className="panel">
+      <div className="panel-heading">
+        <h2>Extreme caches</h2>
+        <label>
+          <span className="sr-only">Country</span>
+          <select value={country} onChange={(event) => setCountry(event.target.value)}>
+            <option value="">Worldwide</option>
+            {countries.map((name) => (
+              <option key={name} value={name}>
+                {name}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+      {error ? <p className="muted">Failed to load extreme caches: {error}</p> : null}
+      {!error && !data ? <p className="muted">Loading…</p> : null}
+      {data ? (
+        <div className="extremes-grid">
+          {extremeCards.map(({ key, label }) => {
+            const cache = data.extremes[key];
+            return (
+              <div className="extreme-card" key={key}>
+                <h3>{label}</h3>
+                {cache ? (
+                  <>
+                    <a
+                      className="extreme-link"
+                      href={`https://coord.info/${cache.gcCode}`}
+                      rel="noreferrer"
+                      target="_blank"
+                    >
+                      {cache.name}
+                    </a>
+                    <span className="extreme-detail">{extremeDetail(cache)}</span>
+                    <label>
+                      <input type="checkbox" checked={cache.found} readOnly />
+                      Found it
+                    </label>
+                  </>
+                ) : (
+                  <span className="extreme-detail">No known cache.</span>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 const monthLabels = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 function monthKey(date: Date) {
@@ -805,6 +936,7 @@ export default function StatsPage() {
       <BreakdownStatsPanel stats={stats} />
       <HomeDistancePanel distanceStats={stats?.distanceStats} />
       <WayTo81Panel entries={stats?.wayTo81 ?? []} />
+      <ExtremeCachesPanel />
       <DateGridPanel stats={stats} />
       <OwnerPanel owners={stats?.ownerBuckets ?? []} />
     </AppShell>

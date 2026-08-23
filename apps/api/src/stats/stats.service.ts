@@ -25,6 +25,77 @@ function isPrismaError(error: unknown, code: string): boolean {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === code;
 }
 
+export type ExtremeCacheEntry = {
+  gcCode: string;
+  name: string;
+  cacheType: string | null;
+  country: string | null;
+  region: string | null;
+  latitude: number;
+  longitude: number;
+  hiddenDate: string | null;
+  elevationMeters: number | null;
+  found: boolean;
+};
+
+type ExtremeCacheRow = {
+  id: string;
+  gcCode: string;
+  name: string;
+  cacheType: string | null;
+  country: string | null;
+  region: string | null;
+  latitude: Prisma.Decimal;
+  longitude: Prisma.Decimal;
+  hiddenDate: Date | null;
+  elevationMeters?: number | bigint | string | null;
+};
+
+function toExtremeCache(row: ExtremeCacheRow, foundCacheIds: Set<string>): ExtremeCacheEntry {
+  const elevation = row.elevationMeters == null ? null : Number(row.elevationMeters);
+  return {
+    gcCode: row.gcCode,
+    name: row.name,
+    cacheType: row.cacheType,
+    country: row.country,
+    region: row.region,
+    latitude: Number(row.latitude),
+    longitude: Number(row.longitude),
+    hiddenDate: row.hiddenDate ? row.hiddenDate.toISOString().slice(0, 10) : null,
+    elevationMeters: elevation != null && Number.isFinite(elevation) ? elevation : null,
+    found: foundCacheIds.has(row.id)
+  };
+}
+
+function elevationExtremeSql(direction: "ASC" | "DESC"): string {
+  return `
+  WITH candidates AS (
+    SELECT u."cache_id" AS cache_id,
+           CASE WHEN jsonb_typeof(u."raw"->'ele') = 'object'
+                THEN u."raw"->'ele'->>'text'
+                ELSE u."raw"->>'ele'
+           END AS ele_text
+    FROM "user_cache_data" u
+    WHERE jsonb_typeof(u."raw") = 'object' AND jsonb_exists(u."raw", 'ele')
+  ),
+  valid AS (
+    SELECT cache_id, MAX(CAST(ele_text AS double precision)) AS elevation
+    FROM candidates
+    WHERE ele_text ~ '^-?[0-9]+([.][0-9]+)?$'
+    GROUP BY cache_id
+  )
+  SELECT c."id"::text AS id, c."gc_code" AS "gcCode", c."name" AS name,
+         c."cache_type" AS "cacheType", c."country" AS country, c."region" AS region,
+         c."latitude", c."longitude", c."hidden_date" AS "hiddenDate",
+         v.elevation AS "elevationMeters"
+  FROM "caches" c
+  JOIN valid v ON v.cache_id = c."id"
+  WHERE ($1::text IS NULL OR c."country" = $1)
+  ORDER BY v.elevation ${direction}
+  LIMIT 1
+`;
+}
+
 function elevationFromRaw(raw: unknown): number | null {
   if (!raw || typeof raw !== "object") {
     return null;
@@ -243,6 +314,62 @@ export class StatsService {
     stats.achievementStats.hostedEventCaches = stats.hideStats.hostedEventCaches;
 
     return stats;
+  }
+
+  async extremeCachesForUser(userId: string, country?: string | null) {
+    const cleanCountry = country?.trim() || null;
+    const locationWhere = cleanCountry ? { country: cleanCountry } : {};
+
+    const countries = await this.prisma.cache.groupBy({
+      by: ["country"],
+      where: { country: { not: null } },
+      orderBy: { country: "asc" }
+    });
+
+    const [northernmost, southernmost, easternmost, westernmost, oldest] = await Promise.all([
+      this.prisma.cache.findFirst({ where: locationWhere, orderBy: { latitude: "desc" } }),
+      this.prisma.cache.findFirst({ where: locationWhere, orderBy: { latitude: "asc" } }),
+      this.prisma.cache.findFirst({ where: locationWhere, orderBy: { longitude: "desc" } }),
+      this.prisma.cache.findFirst({ where: locationWhere, orderBy: { longitude: "asc" } }),
+      this.prisma.cache.findFirst({
+        where: { ...locationWhere, hiddenDate: { not: null } },
+        orderBy: { hiddenDate: "asc" }
+      })
+    ]);
+
+    const [highestRows, lowestRows] = await Promise.all([
+      this.prisma.$queryRawUnsafe<ExtremeCacheRow[]>(elevationExtremeSql("DESC"), cleanCountry),
+      this.prisma.$queryRawUnsafe<ExtremeCacheRow[]>(elevationExtremeSql("ASC"), cleanCountry)
+    ]);
+
+    const rows = [northernmost, southernmost, easternmost, westernmost, oldest, highestRows[0], lowestRows[0]].filter(
+      (row): row is ExtremeCacheRow => row != null
+    );
+    const foundCacheIds = new Set<string>();
+    if (rows.length > 0) {
+      const finds = await this.prisma.find.findMany({
+        where: { userId, cacheId: { in: rows.map((row) => row.id) } },
+        select: { cacheId: true },
+        distinct: ["cacheId"]
+      });
+      for (const find of finds) {
+        foundCacheIds.add(find.cacheId);
+      }
+    }
+
+    return {
+      countries: countries.map((row) => row.country).filter((name): name is string => name != null),
+      selectedCountry: cleanCountry,
+      extremes: {
+        northernmost: northernmost ? toExtremeCache(northernmost, foundCacheIds) : null,
+        southernmost: southernmost ? toExtremeCache(southernmost, foundCacheIds) : null,
+        easternmost: easternmost ? toExtremeCache(easternmost, foundCacheIds) : null,
+        westernmost: westernmost ? toExtremeCache(westernmost, foundCacheIds) : null,
+        highestElevation: highestRows[0] ? toExtremeCache(highestRows[0], foundCacheIds) : null,
+        lowestElevation: lowestRows[0] ? toExtremeCache(lowestRows[0], foundCacheIds) : null,
+        oldest: oldest ? toExtremeCache(oldest, foundCacheIds) : null
+      }
+    };
   }
 
   async ftfFindsForUser(userId: string, options: { cursor?: string; limit?: number } = {}) {
