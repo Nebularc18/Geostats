@@ -12,6 +12,12 @@ import { placeSuggestionsFromPhoton, type PlaceSuggestion } from "./place-sugges
 
 type Place = Coordinate & { label: string };
 type RouteResult = { coordinates: Coordinate[]; distanceMeters: number; durationSeconds: number };
+type GeographicBounds = {
+  minimumLatitude: number;
+  maximumLatitude: number;
+  minimumLongitude?: number;
+  maximumLongitude?: number;
+};
 
 const MAX_CACHE_POOL = 5000;
 const MAX_RECOMMENDATIONS = 100;
@@ -28,6 +34,26 @@ function publicHeaders() {
     "User-Agent": "Geostats/0.1 (travel planner)",
     Referer: webOrigin,
     Accept: "application/json"
+  };
+}
+
+export function travelSearchBounds(coordinates: Coordinate[], paddingKm: number): GeographicBounds {
+  const latitudes = coordinates.map(({ latitude }) => latitude);
+  const longitudes = coordinates.map(({ longitude }) => longitude);
+  const minimumLatitude = Math.max(-90, Math.min(...latitudes) - paddingKm / 110.574);
+  const maximumLatitude = Math.min(90, Math.max(...latitudes) + paddingKm / 110.574);
+  const furthestLatitude = Math.max(Math.abs(minimumLatitude), Math.abs(maximumLatitude));
+  const longitudeKm = 111.32 * Math.cos(furthestLatitude * Math.PI / 180);
+  const longitudePadding = longitudeKm > 0.01 ? paddingKm / longitudeKm : 180;
+  const rawMinimumLongitude = Math.min(...longitudes) - longitudePadding;
+  const rawMaximumLongitude = Math.max(...longitudes) + longitudePadding;
+  const crossesDateLine = rawMinimumLongitude < -180 || rawMaximumLongitude > 180
+    || rawMaximumLongitude - rawMinimumLongitude >= 360;
+  return {
+    minimumLatitude,
+    maximumLatitude,
+    minimumLongitude: crossesDateLine ? undefined : rawMinimumLongitude,
+    maximumLongitude: crossesDateLine ? undefined : rawMaximumLongitude
   };
 }
 
@@ -233,10 +259,21 @@ export class TravelSearchService {
       ? input.destinationPlace ?? await geocode(input.destination!)
       : undefined;
     const route = destination ? await roadRoute(origin, destination) : undefined;
+    const bounds = travelSearchBounds(route?.coordinates ?? [origin], input.radiusKm);
+    const latitude = { gte: bounds.minimumLatitude, lte: bounds.maximumLatitude };
+    const longitude = bounds.minimumLongitude === undefined || bounds.maximumLongitude === undefined
+      ? undefined
+      : { gte: bounds.minimumLongitude, lte: bounds.maximumLongitude };
     const records = await this.prisma.userCacheData.findMany({
       where: {
         userId,
-        cache: { hides: { none: { userId } } }
+        cache: {
+          hides: { none: { userId } },
+          OR: [
+            { latitude, ...(longitude ? { longitude } : {}) },
+            { corrections: { some: { userId, latitude, ...(longitude ? { longitude } : {}) } } }
+          ]
+        }
       },
       select: {
         cache: {
@@ -257,12 +294,9 @@ export class TravelSearchService {
             corrections: { where: { userId }, select: { latitude: true, longitude: true }, take: 1 }
           }
         }
-      },
-      orderBy: { updatedAt: "desc" },
-      take: MAX_CACHE_POOL + 1
+      }
     });
-    const poolTruncated = records.length > MAX_CACHE_POOL;
-    const importedCandidates: TravelCandidate[] = records.slice(0, MAX_CACHE_POOL).map(({ cache }) => {
+    const importedCandidates: TravelCandidate[] = records.map(({ cache }) => {
       const correction = cache.corrections[0];
       return {
         id: cache.id,
@@ -307,7 +341,7 @@ export class TravelSearchService {
       importedCacheCount: importedCandidates.length,
       mysteryCacheCount: mysteryCandidates.length,
       searchedCacheCount: candidates.length,
-      poolTruncated,
+      poolTruncated: false,
       resultLimit: MAX_RECOMMENDATIONS,
       attribution: {
         places: "© OpenStreetMap contributors",

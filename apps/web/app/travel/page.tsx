@@ -11,6 +11,7 @@ import {
   finalTravelCoordinate,
   newerTravelAssignment,
   normalizedTripName,
+  reconcileStaleTravelAssignment,
   travelDirectionsUrl,
   travelGroups,
   type TravelAttempt
@@ -215,17 +216,37 @@ export default function TravelPage() {
   }
 
   async function syncCache(cache: TravelCache) {
-    const revision = (revisions.current.get(cache.id) ?? 0) + 1;
-    revisions.current.set(cache.id, revision);
     try {
-      const response = await apiFetch<{ revision: number; mystery: TravelCache }>(`/mysteries/${encodeURIComponent(cache.id)}`, {
-        method: "PUT",
-        body: JSON.stringify({ mystery: shareableCache(cache), revision })
-      });
-      revisions.current.set(cache.id, Math.max(revisions.current.get(cache.id) ?? 0, response.revision));
-      if (normalizedTripName(response.mystery?.trip) !== normalizedTripName(cache.trip)) {
-        setNotice(`${cache.gcCode} is saved on this device. Open Mysteries to reconcile its account copy.`);
+      let pending = cache;
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        const revision = (revisions.current.get(cache.id) ?? 0) + 1;
+        revisions.current.set(cache.id, revision);
+        const response = await apiFetch<{ revision: number; mystery: TravelCache }>(`/mysteries/${encodeURIComponent(cache.id)}`, {
+          method: "PUT",
+          body: JSON.stringify({ mystery: shareableCache(pending), revision })
+        });
+        revisions.current.set(cache.id, Math.max(revisions.current.get(cache.id) ?? 0, response.revision));
+        const server = normalizedCaches([{ ...response.mystery, id: cache.id }])[0];
+        if (!server) throw new Error("Account returned an invalid mystery snapshot");
+        const assignmentMatches = normalizedTripName(server.trip) === normalizedTripName(pending.trip)
+          && server.tripUpdatedAt === pending.tripUpdatedAt;
+        if (assignmentMatches) return;
+
+        const resolution = reconcileStaleTravelAssignment(server, pending);
+        if (!resolution.retry) {
+          setCaches((current) => {
+            const next = current.map((item) => item.id === cache.id && item.tripUpdatedAt === cache.tripUpdatedAt
+              ? { ...item, trip: resolution.cache.trip, tripUpdatedAt: resolution.cache.tripUpdatedAt }
+              : item);
+            latestCaches.current = next;
+            return next;
+          });
+          setNotice(`${cache.gcCode} changed on another device, so Travel kept the newer trip assignment.`);
+          return;
+        }
+        pending = resolution.cache;
       }
+      setNotice(`${cache.gcCode} is saved on this device. Account sync could not catch up yet.`);
     } catch {
       setNotice("Trip changes are saved on this device. Account sync will retry when Mysteries opens.");
     }

@@ -63,6 +63,29 @@ export function newerTravelAssignment<T extends TravelPlannerCache>(server: T, d
   return { ...device, trip: server.trip, tripUpdatedAt: server.tripUpdatedAt };
 }
 
+export function reconcileStaleTravelAssignment<T extends TravelPlannerCache>(server: T, desired: T) {
+  const resolved = newerTravelAssignment(server, desired);
+  if (resolved === desired) {
+    return {
+      retry: true,
+      cache: {
+        ...server,
+        id: desired.id,
+        trip: desired.trip,
+        tripUpdatedAt: desired.tripUpdatedAt
+      }
+    };
+  }
+  return {
+    retry: false,
+    cache: {
+      ...desired,
+      trip: server.trip,
+      tripUpdatedAt: server.tripUpdatedAt
+    }
+  };
+}
+
 export function travelDirectionsUrl(caches: TravelPlannerCache[]) {
   const coordinates = caches.flatMap((cache) => {
     const coordinate = finalTravelCoordinate(cache);

@@ -4,6 +4,7 @@ import {
   finalTravelCoordinate,
   newerTravelAssignment,
   normalizedTripName,
+  reconcileStaleTravelAssignment,
   travelDirectionsUrl,
   travelGroups,
   type TravelPlannerCache
@@ -45,6 +46,56 @@ test("keeps the newest travel assignment during account reconciliation", () => {
   const device = cache({ trip: "Device", tripUpdatedAt: "2026-08-23T11:00:00.000Z" });
   assert.equal(newerTravelAssignment(server, device).trip, "Device");
   assert.equal(newerTravelAssignment(device, server).trip, "Device");
+});
+
+test("rebases a newer device trip onto stale server content for retry", () => {
+  const server = {
+    id: "cache-1",
+    name: "New server name",
+    trip: "Server",
+    tripUpdatedAt: "2026-01-01T10:00:00.000Z",
+    attempts: []
+  };
+  const desired = {
+    id: "cache-1",
+    name: "Old device name",
+    trip: "Device",
+    tripUpdatedAt: "2026-01-01T11:00:00.000Z",
+    attempts: []
+  };
+
+  assert.deepEqual(reconcileStaleTravelAssignment(server, desired), {
+    retry: true,
+    cache: {
+      ...server,
+      trip: "Device",
+      tripUpdatedAt: "2026-01-01T11:00:00.000Z"
+    }
+  });
+});
+
+test("keeps a newer server trip instead of retrying a stale device assignment", () => {
+  const server = {
+    id: "cache-1",
+    trip: "Server",
+    tripUpdatedAt: "2026-01-01T12:00:00.000Z",
+    attempts: []
+  };
+  const desired = {
+    id: "cache-1",
+    trip: "Device",
+    tripUpdatedAt: "2026-01-01T11:00:00.000Z",
+    attempts: []
+  };
+
+  assert.deepEqual(reconcileStaleTravelAssignment(server, desired), {
+    retry: false,
+    cache: {
+      ...desired,
+      trip: "Server",
+      tripUpdatedAt: "2026-01-01T12:00:00.000Z"
+    }
+  });
 });
 
 test("builds a directions link from ready caches", () => {
