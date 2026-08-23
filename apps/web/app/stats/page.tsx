@@ -44,19 +44,6 @@ type WayTo81Entry = {
   terrain: number;
 };
 
-export type ExtremeCache = {
-  gcCode: string;
-  name: string;
-  cacheType: string | null;
-  country: string | null;
-  region: string | null;
-  latitude: number;
-  longitude: number;
-  hiddenDate: string | null;
-  elevationMeters: number | null;
-  found: boolean;
-};
-
 export type ReferenceExtremeEntry = {
   gcCode: string;
   name: string;
@@ -83,45 +70,7 @@ export type ExtremeCachesData = {
   selectedRegion: string | null;
   referenceRegions: string[];
   reference: ReferenceExtremes | null;
-  extremes: {
-    northernmost: ExtremeCache | null;
-    southernmost: ExtremeCache | null;
-    easternmost: ExtremeCache | null;
-    westernmost: ExtremeCache | null;
-    highestElevation: ExtremeCache | null;
-    lowestElevation: ExtremeCache | null;
-    oldest: ExtremeCache | null;
-  };
 };
-
-const extremeCards: {
-  key: keyof ExtremeCachesData["extremes"];
-  label: string;
-  badge: ExtremeBadgeKind;
-}[] = [
-  { key: "northernmost", label: "Northernmost cache", badge: "northernmost" },
-  { key: "easternmost", label: "Easternmost cache", badge: "easternmost" },
-  { key: "southernmost", label: "Southernmost cache", badge: "southernmost" },
-  { key: "westernmost", label: "Westernmost cache", badge: "westernmost" },
-  {
-    key: "highestElevation",
-    label: "Highest altitude cache",
-    badge: "highest"
-  },
-  { key: "lowestElevation", label: "Lowest altitude cache", badge: "lowest" },
-  { key: "oldest", label: "Oldest cache", badge: "oldest" }
-];
-
-function extremeDetail(cache: ExtremeCache) {
-  const parts = [cache.country ?? cache.region ?? ""];
-  if (cache.elevationMeters != null) {
-    parts.push(`${Math.round(cache.elevationMeters)} m`);
-  }
-  if (cache.hiddenDate) {
-    parts.push(`Hidden ${cache.hiddenDate}`);
-  }
-  return parts.filter(Boolean).join(" · ");
-}
 
 const referenceCards: {
   key: keyof ReferenceExtremes["extremes"];
@@ -175,7 +124,7 @@ function ExtremeCachesPanel() {
 
   const countries = data?.countries ?? [];
   const referenceRegions = data?.selectedCountry ? (data.referenceRegions ?? []) : [];
-  if (data && countries.length === 0 && !data.extremes.northernmost) {
+  if (data && countries.length === 0) {
     return null;
   }
 
@@ -243,46 +192,6 @@ function ExtremeCachesPanel() {
                     </a>
                     <span className="extreme-detail">{referenceDetail(entry)}</span>
                     <span className="sr-only">{entry.found ? "Found" : "Not found"}</span>
-                  </span>
-                </article>
-              );
-            })}
-          </div>
-        </section>
-      ) : null}
-      {data ? (
-        <section className="extreme-set">
-          <div className="extreme-set-heading">
-            <div>
-              <p className="eyebrow">Imported cache data</p>
-              <h3>Known extremes</h3>
-            </div>
-            <span>{[data.selectedCountry, data.selectedRegion].filter(Boolean).join(" · ") || "Worldwide"}</span>
-          </div>
-          <div className="extremes-grid">
-            {extremeCards.map(({ key, label, badge }) => {
-              const cache = data.extremes[key];
-              return (
-                <article className="extreme-card" key={key}>
-                  <ExtremeBadge kind={badge} found={cache?.found ?? false} />
-                  <span className="extreme-card-copy">
-                    <h3>{label}</h3>
-                    {cache ? (
-                      <>
-                        <a
-                          className="extreme-link"
-                          href={`https://coord.info/${cache.gcCode}`}
-                          rel="noreferrer"
-                          target="_blank"
-                        >
-                          {cache.name}
-                        </a>
-                        <span className="extreme-detail">{extremeDetail(cache)}</span>
-                        <span className="sr-only">{cache.found ? "Found" : "Not found"}</span>
-                      </>
-                    ) : (
-                      <span className="extreme-detail">No known cache.</span>
-                    )}
                   </span>
                 </article>
               );
