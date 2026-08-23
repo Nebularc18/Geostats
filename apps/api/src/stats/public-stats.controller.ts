@@ -2,7 +2,7 @@ import { Controller, Get, Header, NotFoundException, Param, Res } from "@nestjs/
 import type { Response } from "express";
 import { readFile } from "fs/promises";
 import { join } from "path";
-import { renderPublicProfileHtml, renderPublicProfileSvg, renderPublicScratchMapSvg } from "./public-profile-renderer";
+import { renderPublicExtremesSvg, renderPublicProfileHtml, renderPublicProfileSvg, renderPublicScratchMapSvg } from "./public-profile-renderer";
 import { StatsService } from "./stats.service";
 
 const worldMapTemplatePath = join(__dirname, "map-assets", "ProjectGC_World.svg");
@@ -36,6 +36,14 @@ export class PublicStatsController {
   async profileStatsImage(@Param("username") username: string) {
     const { profile, stats } = await this.stats.publicSnapshotForUsername(username);
     return renderPublicProfileSvg(profile, stats);
+  }
+
+  @Get("profile-extremes-image/:username")
+  @Header("Content-Type", "image/svg+xml; charset=utf-8")
+  @Header("Cache-Control", "public, max-age=300")
+  async profileExtremesImage(@Param("username") username: string) {
+    const { profile, stats } = await this.stats.publicSnapshotForUsername(username);
+    return renderPublicExtremesSvg(profile, stats.extremeCaches);
   }
 
   @Get("profile-scratch-map-image/:username")

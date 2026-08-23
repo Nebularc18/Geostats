@@ -282,9 +282,10 @@ export default function ProfileHtmlPage() {
   const publicUsername = profile?.gcUsername ? encodeURIComponent(profile.gcUsername) : "";
   const dynamicHtmlUrl = publicUsername ? `${API_URL}/public/profile-stats/${publicUsername}` : "";
   const dynamicImageUrl = publicUsername ? `${API_URL}/public/profile-stats-image/${publicUsername}` : "";
+  const dynamicExtremesImageUrl = publicUsername ? `${API_URL}/public/profile-extremes-image/${publicUsername}` : "";
   const dynamicScratchMapImageUrl = publicUsername ? `${API_URL}/public/profile-scratch-map-image/${publicUsername}` : "";
-  const embedHtml = dynamicHtmlUrl && dynamicImageUrl && dynamicScratchMapImageUrl
-    ? `<a href="${dynamicHtmlUrl}" target="_top"><img src="${dynamicImageUrl}" width="750"><br><img src="${dynamicScratchMapImageUrl}" width="750"></a>`
+  const embedHtml = dynamicHtmlUrl && dynamicImageUrl && dynamicExtremesImageUrl && dynamicScratchMapImageUrl
+    ? `<a href="${dynamicHtmlUrl}" target="_top"><img src="${dynamicImageUrl}" width="750"><br><img src="${dynamicExtremesImageUrl}" width="750"><br><img src="${dynamicScratchMapImageUrl}" width="750"></a>`
     : "";
 
   async function copyHtml() {

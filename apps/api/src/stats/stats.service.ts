@@ -2,6 +2,8 @@ import { BadRequestException, Injectable, NotFoundException } from "@nestjs/comm
 import { countableFindWhere, Prisma } from "@geostats/db";
 import { calculateHideStats, calculateStats, normalizedGcUsername, STATS_VERSION } from "@geostats/stats";
 import { PrismaService } from "../common/prisma.service";
+import { countryExtremes, CountryExtremeEntry } from "./country-extremes";
+import { swedenRegionExtremes } from "./sweden-region-extremes";
 
 const DEFAULT_FTF_FIND_LIMIT = 100;
 const MAX_FTF_FIND_LIMIT = 200;
@@ -38,6 +40,21 @@ export type ExtremeCacheEntry = {
   found: boolean;
 };
 
+export type ReferenceExtremeEntry = CountryExtremeEntry & { found: boolean };
+
+export type ReferenceExtremes = {
+  country: string;
+  region: string | null;
+  extremes: {
+    northernmost: ReferenceExtremeEntry;
+    southernmost: ReferenceExtremeEntry;
+    easternmost: ReferenceExtremeEntry;
+    westernmost: ReferenceExtremeEntry;
+    highest: ReferenceExtremeEntry;
+    lowest: ReferenceExtremeEntry;
+  };
+};
+
 type ExtremeCacheRow = {
   id: string;
   gcCode: string;
@@ -67,7 +84,7 @@ function toExtremeCache(row: ExtremeCacheRow, foundCacheIds: Set<string>): Extre
   };
 }
 
-function elevationExtremeSql(direction: "ASC" | "DESC"): string {
+function elevationExtremeSql(direction: "ASC" | "DESC", region: string | null): string {
   return `
   WITH candidates AS (
     SELECT u."cache_id" AS cache_id,
@@ -91,6 +108,7 @@ function elevationExtremeSql(direction: "ASC" | "DESC"): string {
   FROM "caches" c
   JOIN valid v ON v.cache_id = c."id"
   WHERE ($1::text IS NULL OR c."country" = $1)
+    AND ($2::text IS NULL OR c."region" = $2)
   ORDER BY v.elevation ${direction}
   LIMIT 1
 `;
@@ -171,12 +189,16 @@ export class StatsService {
     const profile = latestImport
       ? (profiles.find((candidate) => candidate.userId === latestImport.userId) ?? profiles[0]!)
       : profiles[0]!;
-    const stats = await this.snapshotForUser(profile.userId);
+    const [stats, extremeCaches] = await Promise.all([
+      this.snapshotForUser(profile.userId),
+      this.extremeCachesForUser(profile.userId, null)
+    ]);
 
     return {
       profile,
       stats: {
         ...stats,
+        extremeCaches: extremeCaches.extremes,
         latestImportAt: latestImport?.updatedAt?.toISOString() ?? latestImport?.createdAt?.toISOString() ?? null
       }
     };
@@ -316,15 +338,97 @@ export class StatsService {
     return stats;
   }
 
-  async extremeCachesForUser(userId: string, country?: string | null) {
+  private async referenceExtremesFoundFor(
+    userId: string,
+    label: { country: string; region: string | null },
+    entries: {
+      northernmost: CountryExtremeEntry;
+      southernmost: CountryExtremeEntry;
+      easternmost: CountryExtremeEntry;
+      westernmost: CountryExtremeEntry;
+      highest: CountryExtremeEntry;
+      lowest: CountryExtremeEntry;
+    }
+  ): Promise<ReferenceExtremes> {
+    const list = Object.values(entries);
+    const caches = await this.prisma.cache.findMany({
+      where: { gcCode: { in: list.map((item) => item.gcCode) } },
+      select: { id: true, gcCode: true }
+    });
+    const cacheIdByCode = new Map(caches.map((cache) => [cache.gcCode, cache.id]));
+
+    const foundCacheIds = new Set<string>();
+    if (caches.length > 0) {
+      const finds = await this.prisma.find.findMany({
+        where: { userId, cacheId: { in: caches.map((cache) => cache.id) } },
+        select: { cacheId: true },
+        distinct: ["cacheId"]
+      });
+      for (const find of finds) {
+        foundCacheIds.add(find.cacheId);
+      }
+    }
+
+    const toReference = (item: CountryExtremeEntry): ReferenceExtremeEntry => ({
+      ...item,
+      found: foundCacheIds.has(cacheIdByCode.get(item.gcCode) ?? "")
+    });
+
+    return {
+      country: label.country,
+      region: label.region,
+      extremes: {
+        northernmost: toReference(entries.northernmost),
+        southernmost: toReference(entries.southernmost),
+        easternmost: toReference(entries.easternmost),
+        westernmost: toReference(entries.westernmost),
+        highest: toReference(entries.highest),
+        lowest: toReference(entries.lowest)
+      }
+    };
+  }
+
+  private async referenceExtremesFor(userId: string, country: string): Promise<ReferenceExtremes | null> {
+    const entry = countryExtremes.find((item) => item.country === country);
+    if (!entry) {
+      return null;
+    }
+
+    return this.referenceExtremesFoundFor(userId, { country: entry.country, region: null }, entry.extremes);
+  }
+
+  private async referenceRegionExtremesFor(userId: string, country: string, region: string): Promise<ReferenceExtremes | null> {
+    if (country !== "Sweden") {
+      return null;
+    }
+    const entry = swedenRegionExtremes.find((item) => item.region === region);
+    if (!entry) {
+      return null;
+    }
+
+    return this.referenceExtremesFoundFor(userId, { country: entry.country, region: entry.region }, entry.extremes);
+  }
+
+  async extremeCachesForUser(userId: string, country?: string | null, region?: string | null) {
     const cleanCountry = country?.trim() || null;
-    const locationWhere = cleanCountry ? { country: cleanCountry } : {};
+    const cleanRegion = region?.trim() || null;
+    const locationWhere: { country?: string; region?: string } = {};
+    if (cleanCountry) {
+      locationWhere.country = cleanCountry;
+    }
+    if (cleanRegion) {
+      locationWhere.region = cleanRegion;
+    }
 
     const countries = await this.prisma.cache.groupBy({
       by: ["country"],
       where: { country: { not: null } },
       orderBy: { country: "asc" }
     });
+
+    const referenceRegions = cleanCountry
+      ? swedenRegionExtremes.filter((item) => item.country === cleanCountry).map((item) => item.region)
+      : [];
 
     const [northernmost, southernmost, easternmost, westernmost, oldest] = await Promise.all([
       this.prisma.cache.findFirst({ where: locationWhere, orderBy: { latitude: "desc" } }),
@@ -338,8 +442,8 @@ export class StatsService {
     ]);
 
     const [highestRows, lowestRows] = await Promise.all([
-      this.prisma.$queryRawUnsafe<ExtremeCacheRow[]>(elevationExtremeSql("DESC"), cleanCountry),
-      this.prisma.$queryRawUnsafe<ExtremeCacheRow[]>(elevationExtremeSql("ASC"), cleanCountry)
+      this.prisma.$queryRawUnsafe<ExtremeCacheRow[]>(elevationExtremeSql("DESC", cleanRegion), cleanCountry, cleanRegion),
+      this.prisma.$queryRawUnsafe<ExtremeCacheRow[]>(elevationExtremeSql("ASC", cleanRegion), cleanCountry, cleanRegion)
     ]);
 
     const rows = [northernmost, southernmost, easternmost, westernmost, oldest, highestRows[0], lowestRows[0]].filter(
@@ -357,9 +461,19 @@ export class StatsService {
       }
     }
 
+    const reference =
+      cleanCountry && cleanRegion
+        ? await this.referenceRegionExtremesFor(userId, cleanCountry, cleanRegion)
+        : cleanCountry
+          ? await this.referenceExtremesFor(userId, cleanCountry)
+          : null;
+
     return {
       countries: countries.map((row) => row.country).filter((name): name is string => name != null),
       selectedCountry: cleanCountry,
+      selectedRegion: cleanRegion,
+      referenceRegions,
+      reference,
       extremes: {
         northernmost: northernmost ? toExtremeCache(northernmost, foundCacheIds) : null,
         southernmost: southernmost ? toExtremeCache(southernmost, foundCacheIds) : null,

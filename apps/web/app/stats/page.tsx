@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { AppShell } from "../../components/app-shell";
 import { CountBarChart, CumulativeFindsChart } from "../../components/charts";
 import { DifficultyTerrainGrid } from "../../components/difficulty-terrain-grid";
+import { ExtremeBadge, type ExtremeBadgeKind } from "../../components/extreme-badge";
 import { StatCard } from "../../components/stat-card";
 import { apiFetch } from "../../lib/api";
 
@@ -56,9 +57,32 @@ export type ExtremeCache = {
   found: boolean;
 };
 
+export type ReferenceExtremeEntry = {
+  gcCode: string;
+  name: string;
+  elevationMeters: number | null;
+  found: boolean;
+};
+
+export type ReferenceExtremes = {
+  country: string;
+  region: string | null;
+  extremes: {
+    northernmost: ReferenceExtremeEntry;
+    southernmost: ReferenceExtremeEntry;
+    easternmost: ReferenceExtremeEntry;
+    westernmost: ReferenceExtremeEntry;
+    highest: ReferenceExtremeEntry;
+    lowest: ReferenceExtremeEntry;
+  };
+};
+
 export type ExtremeCachesData = {
   countries: string[];
   selectedCountry: string | null;
+  selectedRegion: string | null;
+  referenceRegions: string[];
+  reference: ReferenceExtremes | null;
   extremes: {
     northernmost: ExtremeCache | null;
     southernmost: ExtremeCache | null;
@@ -70,14 +94,22 @@ export type ExtremeCachesData = {
   };
 };
 
-const extremeCards: { key: keyof ExtremeCachesData["extremes"]; label: string }[] = [
-  { key: "northernmost", label: "Northernmost cache" },
-  { key: "easternmost", label: "Easternmost cache" },
-  { key: "southernmost", label: "Southernmost cache" },
-  { key: "westernmost", label: "Westernmost cache" },
-  { key: "highestElevation", label: "Highest altitude cache" },
-  { key: "lowestElevation", label: "Lowest altitude cache" },
-  { key: "oldest", label: "Oldest cache" }
+const extremeCards: {
+  key: keyof ExtremeCachesData["extremes"];
+  label: string;
+  badge: ExtremeBadgeKind;
+}[] = [
+  { key: "northernmost", label: "Northernmost cache", badge: "northernmost" },
+  { key: "easternmost", label: "Easternmost cache", badge: "easternmost" },
+  { key: "southernmost", label: "Southernmost cache", badge: "southernmost" },
+  { key: "westernmost", label: "Westernmost cache", badge: "westernmost" },
+  {
+    key: "highestElevation",
+    label: "Highest altitude cache",
+    badge: "highest"
+  },
+  { key: "lowestElevation", label: "Lowest altitude cache", badge: "lowest" },
+  { key: "oldest", label: "Oldest cache", badge: "oldest" }
 ];
 
 function extremeDetail(cache: ExtremeCache) {
@@ -91,14 +123,39 @@ function extremeDetail(cache: ExtremeCache) {
   return parts.filter(Boolean).join(" · ");
 }
 
+const referenceCards: {
+  key: keyof ReferenceExtremes["extremes"];
+  label: string;
+  badge: ExtremeBadgeKind;
+}[] = [
+  { key: "northernmost", label: "Northernmost cache", badge: "northernmost" },
+  { key: "easternmost", label: "Easternmost cache", badge: "easternmost" },
+  { key: "southernmost", label: "Southernmost cache", badge: "southernmost" },
+  { key: "westernmost", label: "Westernmost cache", badge: "westernmost" },
+  { key: "highest", label: "Highest altitude cache", badge: "highest" },
+  { key: "lowest", label: "Lowest altitude cache", badge: "lowest" }
+];
+
+function referenceDetail(entry: ReferenceExtremeEntry) {
+  return [entry.gcCode, entry.elevationMeters != null ? `${entry.elevationMeters} m` : ""].filter(Boolean).join(" · ");
+}
+
 function ExtremeCachesPanel() {
   const [country, setCountry] = useState("");
+  const [region, setRegion] = useState("");
   const [data, setData] = useState<ExtremeCachesData | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    const query = country ? `?country=${encodeURIComponent(country)}` : "";
+    const params = new URLSearchParams();
+    if (country) {
+      params.set("country", country);
+    }
+    if (region) {
+      params.set("region", region);
+    }
+    const query = params.toString() ? `?${params.toString()}` : "";
     apiFetch<ExtremeCachesData>(`/stats/extreme-caches${query}`)
       .then((result) => {
         if (!cancelled) {
@@ -114,9 +171,10 @@ function ExtremeCachesPanel() {
     return () => {
       cancelled = true;
     };
-  }, [country]);
+  }, [country, region]);
 
   const countries = data?.countries ?? [];
+  const referenceRegions = data?.selectedCountry ? (data.referenceRegions ?? []) : [];
   if (data && countries.length === 0 && !data.extremes.northernmost) {
     return null;
   }
@@ -127,7 +185,13 @@ function ExtremeCachesPanel() {
         <h2>Extreme caches</h2>
         <label>
           <span className="sr-only">Country</span>
-          <select value={country} onChange={(event) => setCountry(event.target.value)}>
+          <select
+            value={country}
+            onChange={(event) => {
+              setCountry(event.target.value);
+              setRegion("");
+            }}
+          >
             <option value="">Worldwide</option>
             {countries.map((name) => (
               <option key={name} value={name}>
@@ -136,39 +200,95 @@ function ExtremeCachesPanel() {
             ))}
           </select>
         </label>
+        {referenceRegions.length > 0 ? (
+          <label>
+            <span className="sr-only">Region</span>
+            <select value={region} onChange={(event) => setRegion(event.target.value)}>
+              <option value="">Whole country</option>
+              {referenceRegions.map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
       </div>
       {error ? <p className="muted">Failed to load extreme caches: {error}</p> : null}
       {!error && !data ? <p className="muted">Loading…</p> : null}
-      {data ? (
-        <div className="extremes-grid">
-          {extremeCards.map(({ key, label }) => {
-            const cache = data.extremes[key];
-            return (
-              <div className="extreme-card" key={key}>
-                <h3>{label}</h3>
-                {cache ? (
-                  <>
+      {data?.reference ? (
+        <section className="extreme-set">
+          <div className="extreme-set-heading">
+            <div>
+              <p className="eyebrow">Project-GC reference</p>
+              <h3>{data.reference.region ? `${data.reference.region} extremes` : "Country extremes"}</h3>
+            </div>
+            <span>{data.reference.region ? `${data.reference.country} · ${data.reference.region}` : data.reference.country}</span>
+          </div>
+          <div className="extremes-grid">
+            {referenceCards.map(({ key, label, badge }) => {
+              const entry = data.reference!.extremes[key];
+              return (
+                <article className="extreme-card" key={key}>
+                  <ExtremeBadge kind={badge} found={entry.found} />
+                  <span className="extreme-card-copy">
+                    <h3>{label}</h3>
                     <a
                       className="extreme-link"
-                      href={`https://coord.info/${cache.gcCode}`}
+                      href={`https://coord.info/${entry.gcCode}`}
                       rel="noreferrer"
                       target="_blank"
                     >
-                      {cache.name}
+                      {entry.name}
                     </a>
-                    <span className="extreme-detail">{extremeDetail(cache)}</span>
-                    <label>
-                      <input type="checkbox" checked={cache.found} readOnly />
-                      Found it
-                    </label>
-                  </>
-                ) : (
-                  <span className="extreme-detail">No known cache.</span>
-                )}
-              </div>
-            );
-          })}
-        </div>
+                    <span className="extreme-detail">{referenceDetail(entry)}</span>
+                    <span className="sr-only">{entry.found ? "Found" : "Not found"}</span>
+                  </span>
+                </article>
+              );
+            })}
+          </div>
+        </section>
+      ) : null}
+      {data ? (
+        <section className="extreme-set">
+          <div className="extreme-set-heading">
+            <div>
+              <p className="eyebrow">Imported cache data</p>
+              <h3>Known extremes</h3>
+            </div>
+            <span>{[data.selectedCountry, data.selectedRegion].filter(Boolean).join(" · ") || "Worldwide"}</span>
+          </div>
+          <div className="extremes-grid">
+            {extremeCards.map(({ key, label, badge }) => {
+              const cache = data.extremes[key];
+              return (
+                <article className="extreme-card" key={key}>
+                  <ExtremeBadge kind={badge} found={cache?.found ?? false} />
+                  <span className="extreme-card-copy">
+                    <h3>{label}</h3>
+                    {cache ? (
+                      <>
+                        <a
+                          className="extreme-link"
+                          href={`https://coord.info/${cache.gcCode}`}
+                          rel="noreferrer"
+                          target="_blank"
+                        >
+                          {cache.name}
+                        </a>
+                        <span className="extreme-detail">{extremeDetail(cache)}</span>
+                        <span className="sr-only">{cache.found ? "Found" : "Not found"}</span>
+                      </>
+                    ) : (
+                      <span className="extreme-detail">No known cache.</span>
+                    )}
+                  </span>
+                </article>
+              );
+            })}
+          </div>
+        </section>
       ) : null}
     </section>
   );
