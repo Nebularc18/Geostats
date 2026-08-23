@@ -440,6 +440,14 @@ export class StatsService {
       ? swedenRegionExtremes.filter((item) => item.country === cleanCountry).map((item) => item.region)
       : [];
 
+    const profile = await this.prisma.geocachingProfile.findUnique({ where: { userId }, select: { gcUsername: true } });
+    const firstHomeFind = await this.prisma.find.findFirst({
+      where: { ...countableFindWhere(userId, normalizedGcUsername(profile)), cache: { country: { not: null } } },
+      orderBy: [{ foundAt: "asc" }, { id: "asc" }],
+      select: { cache: { select: { country: true } } }
+    });
+    const homeCountry = firstHomeFind?.cache.country?.trim() || null;
+
     const [northernmost, southernmost, easternmost, westernmost, oldest] = await Promise.all([
       this.prisma.cache.findFirst({ where: locationWhere, orderBy: { latitude: "desc" } }),
       this.prisma.cache.findFirst({ where: locationWhere, orderBy: { latitude: "asc" } }),
@@ -477,6 +485,7 @@ export class StatsService {
       selectedRegion: cleanRegion,
       referenceRegions,
       reference,
+      homeCountry,
       extremes: {
         northernmost: northernmost ? toExtremeCache(northernmost, foundCacheIds) : null,
         southernmost: southernmost ? toExtremeCache(southernmost, foundCacheIds) : null,

@@ -70,6 +70,7 @@ export type ExtremeCachesData = {
   selectedRegion: string | null;
   referenceRegions: string[];
   reference: ReferenceExtremes | null;
+  homeCountry: string | null;
 };
 
 const referenceCards: {
@@ -124,6 +125,14 @@ function ExtremeCachesPanel() {
 
   const countries = data?.countries ?? [];
   const referenceRegions = data?.selectedCountry ? (data.referenceRegions ?? []) : [];
+  const homeCountry = data?.homeCountry ?? null;
+
+  useEffect(() => {
+    if (data && !country && homeCountry && countries.includes(homeCountry)) {
+      setCountry(homeCountry);
+    }
+  }, [countries, country, data, homeCountry]);
+
   if (data && countries.length === 0) {
     return null;
   }
@@ -141,7 +150,6 @@ function ExtremeCachesPanel() {
               setRegion("");
             }}
           >
-            <option value="">Worldwide</option>
             {countries.map((name) => (
               <option key={name} value={name}>
                 {name}
