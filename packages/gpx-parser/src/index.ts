@@ -277,7 +277,9 @@ function parseWaypoint(waypoint: Record<string, any>, source: ImportSource, opti
 
   return {
     cache,
-    foundAt: foundLogMatchesUser ? foundLogDate ?? userFoundDate : userFoundDate ?? foundLogDate,
+    foundAt: foundLogMatchesUser
+      ? foundLogDate ?? userFoundDate
+      : userFoundDate ?? (source === ImportSource.POCKET_QUERY ? null : foundLogDate),
     logText: shouldUseFoundLogText ? firstText(foundLog?.["groundspeak:text"], foundLog?.text) : null,
     source
   };

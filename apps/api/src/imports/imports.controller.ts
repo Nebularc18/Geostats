@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  Body,
   Controller,
   Get,
   NotFoundException,
@@ -24,6 +25,17 @@ function uploadMaxBytes() {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_UPLOAD_MAX_BYTES;
 }
 
+export function importSourceFor(fileName: string, fileType: ImportFileType, purpose?: string) {
+  if (purpose === "travel") {
+    return ImportSource.POCKET_QUERY;
+  }
+  const lower = fileName.toLowerCase();
+  if (lower.includes("my_hides") || lower.includes("my-hides") || lower.includes("my hides")) {
+    return ImportSource.MY_HIDES_GPX;
+  }
+  return fileType === ImportFileType.ZIP ? ImportSource.POCKET_QUERY : ImportSource.MY_FINDS_GPX;
+}
+
 @Controller("imports")
 @UseGuards(AuthGuard)
 export class ImportsController {
@@ -39,13 +51,20 @@ export class ImportsController {
       limits: { fileSize: uploadMaxBytes() }
     })
   )
-  async upload(@CurrentUser() user: AuthUser, @UploadedFile() file?: Express.Multer.File) {
+  async upload(
+    @CurrentUser() user: AuthUser,
+    @UploadedFile() file?: Express.Multer.File,
+    @Body("purpose") purpose?: string
+  ) {
     if (!file) {
       throw new BadRequestException("Upload a GPX or ZIP file using the file field");
     }
 
     const fileType = this.detectFileType(file.originalname);
-    const source = this.detectSource(file.originalname, fileType);
+    if (purpose && purpose !== "travel") {
+      throw new BadRequestException("Unknown import purpose");
+    }
+    const source = importSourceFor(file.originalname, fileType, purpose);
     const objectKey = `${user.id}/${Date.now()}-${file.originalname.replace(/[^a-zA-Z0-9_.-]/g, "_")}`;
 
     await this.storage.putObject(objectKey, file.buffer, file.mimetype || "application/octet-stream");
@@ -122,13 +141,5 @@ export class ImportsController {
       return ImportFileType.ZIP;
     }
     throw new BadRequestException("Only GPX and ZIP files are supported");
-  }
-
-  private detectSource(fileName: string, fileType: ImportFileType): ImportSource {
-    const lower = fileName.toLowerCase();
-    if (lower.includes("my_hides") || lower.includes("my-hides") || lower.includes("my hides")) {
-      return ImportSource.MY_HIDES_GPX;
-    }
-    return fileType === ImportFileType.ZIP ? ImportSource.POCKET_QUERY : ImportSource.MY_FINDS_GPX;
   }
 }

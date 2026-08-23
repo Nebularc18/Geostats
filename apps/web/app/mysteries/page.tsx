@@ -85,6 +85,8 @@ type MysteryCache = {
   locality?: string;
   locationHierarchy?: string[];
   status: MysteryStatus;
+  trip?: string;
+  tripUpdatedAt?: string;
   publishedLatitude: number;
   publishedLongitude: number;
   notes: string;

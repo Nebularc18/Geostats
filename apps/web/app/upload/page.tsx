@@ -1,13 +1,14 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useState } from "react";
-import { Database, Download, FileUp, UploadCloud } from "lucide-react";
+import { Database, Download, FileUp, Route, UploadCloud } from "lucide-react";
 import { AppShell } from "../../components/app-shell";
 import { apiFetch } from "../../lib/api";
 import { hasActiveImports, type ImportListItem, type ImportsResponse } from "../../lib/imports";
 
 export default function UploadPage() {
   const [message, setMessage] = useState<string | null>(null);
+  const [travelMessage, setTravelMessage] = useState<string | null>(null);
   const [csvMessage, setCsvMessage] = useState<string | null>(null);
   const [imports, setImports] = useState<ImportListItem[]>([]);
   const [gsakStatus, setGsakStatus] = useState<{ connected: boolean; lastImportedAt: string | null } | null>(null);
@@ -49,6 +50,22 @@ export default function UploadPage() {
       await refresh();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Upload failed");
+    }
+  }
+
+  async function submitTravelCaches(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
+    form.set("purpose", "travel");
+    setTravelMessage("Uploading cache list…");
+    try {
+      await apiFetch("/imports/upload", { method: "POST", body: form });
+      setTravelMessage("Import queued. The caches will appear in Travel when processing finishes.");
+      formElement.reset();
+      await refresh();
+    } catch (error) {
+      setTravelMessage(error instanceof Error ? error.message : "Cache list upload failed");
     }
   }
 
@@ -97,8 +114,27 @@ export default function UploadPage() {
         <p className="eyebrow">Import pipeline</p>
         <h1>Upload cache data</h1>
       </header>
+      <section className="upload-zone upload-purpose-zone" id="travel-cache-import">
+        <Route size={42} />
+        <div className="upload-zone-copy">
+          <h2>Cache lists for Travel</h2>
+          <p className="muted">Upload a Geocaching Pocket Query GPX or ZIP. Travel accepts every cache type in the file, including Traditional, Multi, Mystery, Virtual, EarthCache, Wherigo, and events.</p>
+        </div>
+        <form onSubmit={submitTravelCaches} className="form">
+          <label>
+            Pocket Query file
+            <input name="file" type="file" accept=".gpx,.zip,application/gpx+xml,application/zip" required />
+          </label>
+          <button className="primary-button" type="submit">Import cache list</button>
+        </form>
+        {travelMessage ? <p className="muted" role="status">{travelMessage}</p> : null}
+      </section>
       <section className="upload-zone">
         <UploadCloud size={42} />
+        <div className="upload-zone-copy">
+          <h2>Your finds and hides</h2>
+          <p className="muted">Upload a My Finds GPX, My Hides GPX, or an existing ZIP import.</p>
+        </div>
         <form onSubmit={submit} className="form">
           <input name="file" type="file" accept=".gpx,.zip,application/gpx+xml,application/zip" required />
           <button className="primary-button" type="submit">
