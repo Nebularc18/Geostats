@@ -338,6 +338,23 @@ export class StatsService {
     return stats;
   }
 
+  private async foundCacheIdsFor(userId: string, cacheIds: string[]): Promise<Set<string>> {
+    const foundCacheIds = new Set<string>();
+    if (cacheIds.length === 0) {
+      return foundCacheIds;
+    }
+    const profile = await this.prisma.geocachingProfile.findUnique({ where: { userId }, select: { gcUsername: true } });
+    const finds = await this.prisma.find.findMany({
+      where: { ...countableFindWhere(userId, normalizedGcUsername(profile)), cacheId: { in: cacheIds } },
+      select: { cacheId: true },
+      distinct: ["cacheId"]
+    });
+    for (const find of finds) {
+      foundCacheIds.add(find.cacheId);
+    }
+    return foundCacheIds;
+  }
+
   private async referenceExtremesFoundFor(
     userId: string,
     label: { country: string; region: string | null },
@@ -357,17 +374,10 @@ export class StatsService {
     });
     const cacheIdByCode = new Map(caches.map((cache) => [cache.gcCode, cache.id]));
 
-    const foundCacheIds = new Set<string>();
-    if (caches.length > 0) {
-      const finds = await this.prisma.find.findMany({
-        where: { userId, cacheId: { in: caches.map((cache) => cache.id) } },
-        select: { cacheId: true },
-        distinct: ["cacheId"]
-      });
-      for (const find of finds) {
-        foundCacheIds.add(find.cacheId);
-      }
-    }
+    const foundCacheIds = await this.foundCacheIdsFor(
+      userId,
+      caches.map((cache) => cache.id)
+    );
 
     const toReference = (item: CountryExtremeEntry): ReferenceExtremeEntry => ({
       ...item,
@@ -449,17 +459,10 @@ export class StatsService {
     const rows = [northernmost, southernmost, easternmost, westernmost, oldest, highestRows[0], lowestRows[0]].filter(
       (row): row is ExtremeCacheRow => row != null
     );
-    const foundCacheIds = new Set<string>();
-    if (rows.length > 0) {
-      const finds = await this.prisma.find.findMany({
-        where: { userId, cacheId: { in: rows.map((row) => row.id) } },
-        select: { cacheId: true },
-        distinct: ["cacheId"]
-      });
-      for (const find of finds) {
-        foundCacheIds.add(find.cacheId);
-      }
-    }
+    const foundCacheIds = await this.foundCacheIdsFor(
+      userId,
+      rows.map((row) => row.id)
+    );
 
     const reference =
       cleanCountry && cleanRegion
