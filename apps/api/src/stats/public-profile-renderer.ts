@@ -935,6 +935,184 @@ function pushBucketBars(lines: SvgLine[], title: string, buckets: CountBucket[] 
   }
 }
 
+type ProfileExtremeKind =
+  | "northernmost"
+  | "easternmost"
+  | "southernmost"
+  | "westernmost"
+  | "highestElevation"
+  | "lowestElevation"
+  | "oldest";
+
+type ProfileExtreme = {
+  gcCode: string;
+  name: string;
+  country?: string | null;
+  region?: string | null;
+  hiddenDate?: string | null;
+  elevationMeters?: number | null;
+  found?: boolean;
+};
+
+const profileExtremeCards: Array<{
+  kind: ProfileExtremeKind;
+  label: string;
+  ribbon: string;
+  tone: "aqua" | "green" | "blue" | "paper";
+}> = [
+  {
+    kind: "northernmost",
+    label: "Northernmost",
+    ribbon: "NORTH",
+    tone: "aqua"
+  },
+  { kind: "easternmost", label: "Easternmost", ribbon: "EAST", tone: "aqua" },
+  {
+    kind: "southernmost",
+    label: "Southernmost",
+    ribbon: "SOUTH",
+    tone: "aqua"
+  },
+  { kind: "westernmost", label: "Westernmost", ribbon: "WEST", tone: "aqua" },
+  {
+    kind: "highestElevation",
+    label: "Highest altitude",
+    ribbon: "HIGHEST",
+    tone: "green"
+  },
+  {
+    kind: "lowestElevation",
+    label: "Lowest altitude",
+    ribbon: "LOWEST",
+    tone: "blue"
+  },
+  { kind: "oldest", label: "Oldest cache", ribbon: "OLDEST", tone: "paper" }
+];
+
+function truncateSvgText(value: unknown, length: number) {
+  const text = String(value ?? "");
+  return text.length > length ? `${text.slice(0, Math.max(1, length - 1))}…` : text;
+}
+
+function profileExtremeDetail(extreme: ProfileExtreme, kind: ProfileExtremeKind) {
+  if (kind === "oldest" && extreme.hiddenDate) {
+    return `Hidden ${extreme.hiddenDate}`;
+  }
+  if (extreme.elevationMeters != null && Number.isFinite(Number(extreme.elevationMeters))) {
+    return `${Math.round(Number(extreme.elevationMeters))} m`;
+  }
+  return extreme.country ?? extreme.region ?? extreme.gcCode;
+}
+
+function profileExtremeMark(kind: ProfileExtremeKind, centerX: number, centerY: number) {
+  if (kind === "northernmost" || kind === "easternmost" || kind === "southernmost" || kind === "westernmost") {
+    const letter = {
+      northernmost: "N",
+      easternmost: "E",
+      southernmost: "S",
+      westernmost: "W"
+    }[kind];
+    return `<text x="${centerX}" y="${centerY + 7}" text-anchor="middle" font-family="Verdana, Arial, sans-serif" font-size="21" font-weight="700" fill="#053e32">${letter}</text>`;
+  }
+  if (kind === "highestElevation") {
+    return `<g transform="translate(${centerX - 22} ${centerY - 22})" fill="none" stroke="#053e32" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 34 17 13l7 11 4-7 11 17"/><path d="M28 12V5m-4 4 4-4 4 4"/></g>`;
+  }
+  if (kind === "lowestElevation") {
+    return `<g transform="translate(${centerX - 22} ${centerY - 22})" fill="none" stroke="#053e32" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 11c4-3 7-3 11 0s7 3 11 0 7-3 12 0"/><path d="M8 17h28M22 18v19m-7-7 7 7 7-7"/></g>`;
+  }
+  return `<g transform="translate(${centerX - 22} ${centerY - 22})" fill="none" stroke="#053e32" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 6h18M13 38h18M15 7c0 9 7 9 7 15s-7 6-7 15M29 7c0 9-7 9-7 15s7 6 7 15"/><path d="M18 13h8M18 32l4-5 4 5"/></g>`;
+}
+
+function profileExtremeBadge(
+  card: (typeof profileExtremeCards)[number],
+  extreme: ProfileExtreme | null,
+  centerX: number,
+  centerY: number
+) {
+  const innerGradient = {
+    aqua: "extremeInnerAqua",
+    green: "extremeInnerGreen",
+    blue: "extremeInnerBlue",
+    paper: "extremeInnerPaper"
+  }[card.tone];
+  const ribbonTop = centerY + 28;
+  const ribbonBottom = centerY + 45;
+  const foundSeal = extreme?.found
+    ? `<g aria-label="Found"><circle cx="${centerX + 29}" cy="${centerY + 30}" r="10" fill="#5fbf85" stroke="#111a14" stroke-width="2"/><path d="m${centerX + 24} ${centerY + 30} 3 3 7-7" fill="none" stroke="#07110b" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/></g>`
+    : "";
+  return `<g>
+    <circle cx="${centerX}" cy="${centerY}" r="38" fill="url(#extremeRim)" stroke="#f1bd3d" stroke-width="2"/>
+    <circle cx="${centerX}" cy="${centerY}" r="33" fill="none" stroke="#ffe494" stroke-opacity="0.32" stroke-width="3"/>
+    <circle cx="${centerX}" cy="${centerY}" r="28" fill="none" stroke="#021611" stroke-opacity="0.28" stroke-width="5"/>
+    <circle cx="${centerX}" cy="${centerY}" r="23" fill="url(#${innerGradient})" stroke="#053e32" stroke-opacity="0.25"/>
+    <circle cx="${centerX + 4}" cy="${centerY + 5}" r="15" fill="none" stroke="#053e32" stroke-opacity="0.08"/>
+    <circle cx="${centerX + 4}" cy="${centerY + 5}" r="10" fill="none" stroke="#053e32" stroke-opacity="0.08"/>
+    ${profileExtremeMark(card.kind, centerX, centerY)}
+    <polygon points="${centerX - 35},${ribbonTop} ${centerX + 35},${ribbonTop} ${centerX + 41},${(ribbonTop + ribbonBottom) / 2} ${centerX + 35},${ribbonBottom} ${centerX - 35},${ribbonBottom} ${centerX - 41},${(ribbonTop + ribbonBottom) / 2}" fill="url(#extremeRibbon)"/>
+    <text x="${centerX}" y="${ribbonTop + 12}" text-anchor="middle" font-family="Verdana, Arial, sans-serif" font-size="8" font-weight="700" letter-spacing="0.6" fill="#07110b">${card.ribbon}</text>
+    ${foundSeal}
+  </g>`;
+}
+
+export function renderPublicExtremesSvg(
+  profile: { gcUsername: string },
+  extremes: Partial<Record<ProfileExtremeKind, ProfileExtreme | null>> | null | undefined
+) {
+  const width = 750;
+  const height = 416;
+  const directionCards = profileExtremeCards.slice(0, 4);
+  const otherCards = profileExtremeCards.slice(4);
+
+  const renderRow = (cards: typeof profileExtremeCards, rowTop: number, columns: number, maxNameLength: number) => {
+    const cellWidth = width / columns;
+    return cards
+      .map((card, index) => {
+        const extreme = extremes?.[card.kind] ?? null;
+        const centerX = cellWidth * index + cellWidth / 2;
+        const centerY = rowTop + 48;
+        const name = extreme ? truncateSvgText(extreme.name, maxNameLength) : "No known cache";
+        const detail = extreme ? profileExtremeDetail(extreme, card.kind) : "";
+        const divider =
+          index > 0
+            ? `<line x1="${cellWidth * index}" y1="${rowTop + 12}" x2="${cellWidth * index}" y2="${rowTop + 156}" stroke="#edf4e8" stroke-opacity="0.07"/>`
+            : "";
+        return `${divider}${profileExtremeBadge(card, extreme, centerX, centerY)}
+          <text x="${centerX}" y="${rowTop + 121}" text-anchor="middle" font-family="Verdana, Arial, sans-serif" font-size="10" font-weight="700" letter-spacing="0.5" fill="#9faf9f">${card.label.toUpperCase()}</text>
+          <text x="${centerX}" y="${rowTop + 140}" text-anchor="middle" font-family="Verdana, Arial, sans-serif" font-size="11" font-weight="700" fill="#6bd197">${svgText(name)}</text>
+          <text x="${centerX}" y="${rowTop + 158}" text-anchor="middle" font-family="Verdana, Arial, sans-serif" font-size="10" fill="#9faf9f">${svgText(detail)}</text>`;
+      })
+      .join("");
+  };
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-label="${svgText(profile.gcUsername)} extreme caches">
+  <title>${svgText(profile.gcUsername)} Extreme Caches</title>
+  <defs>
+    <linearGradient id="extremeRim" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#0b8064"/><stop offset="1" stop-color="#032e27"/></linearGradient>
+    <linearGradient id="extremeInnerAqua" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#dff7f1"/><stop offset="1" stop-color="#79cfc9"/></linearGradient>
+    <linearGradient id="extremeInnerGreen" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#e4f3dd"/><stop offset="1" stop-color="#79c58d"/></linearGradient>
+    <linearGradient id="extremeInnerBlue" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#dbeaf7"/><stop offset="1" stop-color="#7fa8e8"/></linearGradient>
+    <linearGradient id="extremeInnerPaper" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#f7efd6"/><stop offset="1" stop-color="#d7b775"/></linearGradient>
+    <linearGradient id="extremeRibbon" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#fff2b7"/><stop offset="1" stop-color="#dfcc71"/></linearGradient>
+    <radialGradient id="extremeGlowA" cx="0" cy="0" r="1"><stop stop-color="#28dabf" stop-opacity="0.12"/><stop offset="1" stop-color="#28dabf" stop-opacity="0"/></radialGradient>
+    <radialGradient id="extremeGlowB" cx="0" cy="0" r="1"><stop stop-color="#f1a01d" stop-opacity="0.1"/><stop offset="1" stop-color="#f1a01d" stop-opacity="0"/></radialGradient>
+  </defs>
+  <rect width="${width}" height="${height}" fill="#111a14"/>
+  <ellipse cx="64" cy="50" rx="240" ry="170" fill="url(#extremeGlowA)"/>
+  <ellipse cx="720" cy="380" rx="220" ry="150" fill="url(#extremeGlowB)"/>
+  <rect x="0.5" y="0.5" width="749" height="415" fill="none" stroke="#2d3a31"/>
+  <rect x="1" y="1" width="748" height="50" fill="#075f45" fill-opacity="0.28"/>
+  <line x1="1" y1="51" x2="749" y2="51" stroke="#2d3a31"/>
+  <text x="18" y="31" font-family="Verdana, Arial, sans-serif" font-size="14" font-weight="700" fill="#edf4e8">Extreme caches</text>
+  <rect x="659" y="15" width="73" height="23" rx="11.5" fill="none" stroke="#5fbf85" stroke-opacity="0.42"/>
+  <text x="695.5" y="30" text-anchor="middle" font-family="Verdana, Arial, sans-serif" font-size="9" font-weight="700" letter-spacing="0.5" fill="#9edbb5">WORLDWIDE</text>
+  ${renderRow(directionCards, 52, 4, 25)}
+  <line x1="12" y1="222" x2="738" y2="222" stroke="#edf4e8" stroke-opacity="0.07"/>
+  ${renderRow(otherCards, 222, 3, 34)}
+  <line x1="1" y1="392" x2="749" y2="392" stroke="#2d3a31"/>
+  <text x="375" y="407" text-anchor="middle" font-family="Verdana, Arial, sans-serif" font-size="8" letter-spacing="0.8" fill="#789184">GENERATED WITH GEOSTATS</text>
+</svg>`;
+}
+
 export function renderPublicProfileSvg(profile: { gcUsername: string }, stats: any) {
   const summary = stats?.summaryNumbers ?? {};
   const lines: SvgLine[] = [

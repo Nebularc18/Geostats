@@ -61,6 +61,15 @@ export class StatsController {
     return { streaks: stats.streaks ?? { longest: 0, current: 0 } };
   }
 
+  @Get("extreme-caches")
+  async extremeCaches(
+    @CurrentUser() user: AuthUser,
+    @Query("country") country?: string,
+    @Query("region") region?: string
+  ) {
+    return this.stats.extremeCachesForUser(user.id, country ?? null, region ?? null);
+  }
+
   @Get("ftf/finds")
   async ftfFinds(
     @CurrentUser() user: AuthUser,

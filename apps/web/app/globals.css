@@ -1852,6 +1852,202 @@ select:focus {
   text-decoration: underline;
 }
 
+.extremes-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(265px, 1fr));
+  gap: 12px;
+}
+
+.extreme-set {
+  display: grid;
+  gap: 13px;
+}
+
+.extreme-set + .extreme-set {
+  margin-top: 22px;
+  padding-top: 20px;
+  border-top: 1px solid rgba(237, 244, 232, 0.08);
+}
+
+.extreme-set-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.extreme-set-heading h3,
+.extreme-set-heading p {
+  margin: 0;
+}
+
+.extreme-set-heading > span {
+  padding: 5px 9px;
+  border: 1px solid rgba(95, 191, 133, 0.28);
+  border-radius: 999px;
+  color: var(--green);
+  background: rgba(95, 191, 133, 0.07);
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.extreme-card {
+  display: grid;
+  grid-template-columns: 98px minmax(0, 1fr);
+  align-items: center;
+  gap: 14px;
+  min-height: 136px;
+  padding: 15px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: linear-gradient(145deg, rgba(237, 244, 232, 0.045), rgba(237, 244, 232, 0.018));
+}
+
+.extreme-card-copy {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.extreme-card-copy h3 {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.extreme-card .extreme-link {
+  color: var(--green);
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.extreme-card .extreme-detail {
+  color: var(--muted);
+  font-size: 0.7rem;
+}
+
+.extreme-badge-wrap {
+  position: relative;
+  display: grid;
+  justify-items: center;
+}
+
+.extreme-badge {
+  position: relative;
+  display: grid;
+  width: 82px;
+  height: 82px;
+  place-items: center;
+  overflow: hidden;
+  border: 2px solid #f1bd3d;
+  border-radius: 999px;
+  color: #053e32;
+  background:
+    radial-gradient(circle at 30% 20%, rgba(255, 255, 255, 0.46), transparent 22%),
+    linear-gradient(145deg, #0b8064, #032e27);
+  box-shadow:
+    inset 0 0 0 3px rgba(255, 228, 148, 0.32),
+    inset 0 0 0 9px rgba(2, 22, 17, 0.28),
+    0 2px 0 #02140f,
+    0 8px 16px rgba(0, 0, 0, 0.26);
+}
+
+.extreme-badge::before {
+  position: absolute;
+  inset: 15px;
+  border: 1px solid rgba(5, 62, 50, 0.25);
+  border-radius: inherit;
+  background:
+    radial-gradient(circle at 30% 22%, rgba(255, 255, 255, 0.8), transparent 28%),
+    repeating-radial-gradient(circle at 58% 56%, transparent 0 6px, rgba(5, 62, 50, 0.09) 6px 7px),
+    linear-gradient(145deg, #dff7f1, #79cfc9);
+  content: "";
+}
+
+.extreme-badge-highest::before {
+  background:
+    radial-gradient(circle at 30% 22%, rgba(255, 255, 255, 0.78), transparent 28%),
+    repeating-radial-gradient(circle at 58% 56%, transparent 0 6px, rgba(5, 62, 50, 0.08) 6px 7px),
+    linear-gradient(145deg, #e4f3dd, #79c58d);
+}
+
+.extreme-badge-lowest::before {
+  background:
+    radial-gradient(circle at 30% 22%, rgba(255, 255, 255, 0.78), transparent 28%),
+    repeating-radial-gradient(circle at 58% 56%, transparent 0 6px, rgba(5, 62, 50, 0.08) 6px 7px),
+    linear-gradient(145deg, #dbeaf7, #7fa8e8);
+}
+
+.extreme-badge-oldest::before {
+  background:
+    radial-gradient(circle at 30% 22%, rgba(255, 255, 255, 0.78), transparent 28%),
+    repeating-radial-gradient(circle at 58% 56%, transparent 0 6px, rgba(5, 62, 50, 0.08) 6px 7px),
+    linear-gradient(145deg, #f7efd6, #d7b775);
+}
+
+.extreme-badge svg {
+  position: relative;
+  z-index: 2;
+  width: 42px;
+  height: 42px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  filter: drop-shadow(0 1px 0 rgba(255, 255, 255, 0.35));
+}
+
+.extreme-badge .extreme-badge-cardinal {
+  fill: currentColor;
+  stroke: none;
+  font-family: Verdana, Arial, sans-serif;
+  font-size: 21px;
+  font-weight: 700;
+  text-anchor: middle;
+}
+
+.extreme-badge-ribbon {
+  position: relative;
+  z-index: 4;
+  min-width: 70px;
+  margin-top: -9px;
+  padding: 3px 11px;
+  clip-path: polygon(7px 0, calc(100% - 7px) 0, 100% 50%, calc(100% - 7px) 100%, 7px 100%, 0 50%);
+  color: #07110b;
+  background: linear-gradient(#fff2b7, #dfcc71);
+  box-shadow: 0 1px 0 rgba(7, 17, 11, 0.38);
+  font-size: 0.53rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.extreme-badge-earned {
+  position: absolute;
+  z-index: 5;
+  right: 4px;
+  bottom: 12px;
+  display: grid;
+  width: 21px;
+  height: 21px;
+  place-items: center;
+  border: 2px solid var(--panel);
+  border-radius: 999px;
+  color: #07110b;
+  background: var(--green);
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.32);
+}
+
+.extreme-badge-earned svg {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.5;
+}
+
 .hide-table {
   display: grid;
   grid-template-columns: 96px minmax(220px, 1fr) 150px 104px 72px;

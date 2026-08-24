@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { renderPublicScratchMapSvg } from "./public-profile-renderer";
+import { renderPublicExtremesSvg, renderPublicScratchMapSvg } from "./public-profile-renderer";
 
 const worldMapTemplate = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 360">
 <rect width="720" height="360" fill="#6fc7ef"/>
@@ -53,4 +53,40 @@ ${worldMapTemplate}`;
 
   assert.doesNotMatch(svg, /<\?xml|generated map/);
   assert.match(svg, /<title>Sweden: 1<\/title>/);
+});
+
+test("renders reusable extreme badges for the public profile image", () => {
+  const svg = renderPublicExtremesSvg(
+    { gcUsername: "Nebularc_" },
+    {
+      northernmost: {
+        gcCode: "GCPQ1G",
+        name: "Explore Sweden #6 - Treriksröset",
+        country: "Sweden",
+        elevationMeters: 498,
+        found: true
+      },
+      highestElevation: {
+        gcCode: "GC2YA0F",
+        name: "The roof of Sweden",
+        country: "Sweden",
+        elevationMeters: 2104,
+        found: false
+      },
+      oldest: {
+        gcCode: "GCOLD",
+        name: "Old & <unsafe>",
+        hiddenDate: "2000-05-03",
+        found: false
+      }
+    }
+  );
+
+  assert.match(svg, /Nebularc_ Extreme Caches/);
+  assert.match(svg, />N<\/text>/);
+  assert.match(svg, />HIGHEST<\/text>/);
+  assert.match(svg, /2104 m/);
+  assert.match(svg, /aria-label="Found"/);
+  assert.match(svg, /Old &amp; &lt;unsafe&gt;/);
+  assert.doesNotMatch(svg, /Old & <unsafe>/);
 });
