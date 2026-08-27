@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable } from "@nestjs/common";
 import { Prisma } from "@geostats/db";
-import { ImportSource } from "@geostats/shared";
+import { ImportFileType, ImportSource, ImportStatus } from "@geostats/shared";
 import { PrismaService } from "../common/prisma.service";
 import { StatsService } from "../stats/stats.service";
 
@@ -312,7 +312,19 @@ export class GsakImportService {
     if (kind === "logs") return this.importLogs(userId, gsakCsvRecords(csv).map(logRow));
     if (kind === "complete") {
       const snapshot = await this.stats.buildSnapshotForUser(userId);
-      await this.prisma.$transaction((tx) => this.stats.replaceSnapshotForUser(userId, snapshot, tx));
+      await this.prisma.$transaction(async (tx) => {
+        await this.stats.replaceSnapshotForUser(userId, snapshot, tx);
+        await tx.import.create({
+          data: {
+            userId,
+            fileName: "GSAK database",
+            fileType: ImportFileType.JSON,
+            source: ImportSource.GSAK,
+            status: ImportStatus.COMPLETED,
+            objectKey: `gsak/${userId}/${Date.now()}.json`
+          }
+        });
+      });
       return { completed: true };
     }
     throw new BadRequestException("GSAK import kind must be caches, logs, or complete");

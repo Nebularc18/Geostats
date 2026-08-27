@@ -157,7 +157,7 @@ export default function UploadPage() {
             {gsakBusy ? "Preparing connector…" : gsakStatus?.connected ? "Download a new connector" : "Set up GSAK import"}
           </button>
           {gsakStatus?.lastImportedAt ? (
-            <p className="muted">Last GSAK import: {new Date(gsakStatus.lastImportedAt).toLocaleString()}</p>
+            <p className="muted">Last GSAK import: {new Date(gsakStatus.lastImportedAt).toLocaleString("sv-SE")}</p>
           ) : null}
           {gsakMessage ? <p className="muted">{gsakMessage}</p> : null}
         </div>

@@ -373,7 +373,7 @@ function importedMystery(value: BrowserImport): MysteryCache | null {
     status: "solving",
     publishedLatitude,
     publishedLongitude,
-    notes: "Imported from geocaching.com with the Geostats Tampermonkey helper.",
+    notes: "",
     clues: [],
     sharedWith: [],
     attempts: []

@@ -2,8 +2,13 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { AppShell } from "../../components/app-shell";
+import { GsakImportPanel } from "../../components/gsak-import-panel";
 import { apiFetch } from "../../lib/api";
-import { hasActiveImports, type ImportListItem, type ImportsResponse } from "../../lib/imports";
+import {
+  hasActiveImports,
+  type ImportListItem,
+  type ImportsResponse,
+} from "../../lib/imports";
 
 const sourceLabels: Record<string, string> = {
   MY_FINDS_GPX: "My Finds GPX",
@@ -11,7 +16,8 @@ const sourceLabels: Record<string, string> = {
   POCKET_QUERY: "Pocket Query",
   MANUAL_GPX: "Manual GPX",
   GEOCACHING_API: "Geocaching API",
-  GEOSTATS_EXPORT: "Geostats transfer"
+  GSAK: "GSAK",
+  GEOSTATS_EXPORT: "Geostats transfer",
 };
 
 export default function ImportsPage() {
@@ -45,20 +51,27 @@ export default function ImportsPage() {
         <p className="eyebrow">Background jobs</p>
         <h1>Import history</h1>
       </header>
+      <GsakImportPanel />
       <section className="panel">
         <div className="table-list">
           {imports.map((item) => (
             <div key={item.id} className="table-row import-row">
               <span>
                 <strong>{item.fileName}</strong>
-                <small>{new Date(item.createdAt).toLocaleString()}</small>
-                {item.errorMessage ? <small className="error">{item.errorMessage}</small> : null}
+                <small>
+                  {new Date(item.createdAt).toLocaleString("sv-SE")}
+                </small>
+                {item.errorMessage ? (
+                  <small className="error">{item.errorMessage}</small>
+                ) : null}
               </span>
               <span>{sourceLabels[item.source] ?? item.source}</span>
               <strong>{item.status}</strong>
             </div>
           ))}
-          {imports.length === 0 ? <p className="muted">No import history yet.</p> : null}
+          {imports.length === 0 ? (
+            <p className="muted">No import history yet.</p>
+          ) : null}
         </div>
       </section>
     </AppShell>

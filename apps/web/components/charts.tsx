@@ -8,7 +8,14 @@ export function CountBarChart({ data }: { data: { key: string; count: number }[]
       <ResponsiveContainer width="100%" height={280}>
         <BarChart data={data}>
           <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" />
-          <XAxis dataKey="key" tick={{ fill: "var(--muted)", fontSize: 12 }} stroke="var(--line)" />
+          <XAxis
+            dataKey="key"
+            interval={0}
+            minTickGap={0}
+            tick={{ fill: "var(--muted)", fontSize: 12 }}
+            tickMargin={8}
+            stroke="var(--line)"
+          />
           <YAxis allowDecimals={false} tick={{ fill: "var(--muted)", fontSize: 12 }} stroke="var(--line)" />
           <Tooltip
             contentStyle={{

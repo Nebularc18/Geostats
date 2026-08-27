@@ -14,6 +14,35 @@ test("gsakCsvRecords rejects empty and oversized batches", () => {
   assert.throws(() => gsakCsvRecords(`gcCode\n${rows}\n`), /at most 500 rows/);
 });
 
+test("GSAK completion records the run in import history", async () => {
+  const created: any[] = [];
+  const tx = { import: { create: async (input: any) => created.push(input) } };
+  const prisma = { $transaction: async (run: (client: any) => Promise<unknown>) => run(tx) };
+  const stats = {
+    buildSnapshotForUser: async (userId: string) => ({ userId }),
+    replaceSnapshotForUser: async (userId: string, snapshot: unknown, client: unknown) => {
+      assert.equal(userId, "user-1");
+      assert.deepEqual(snapshot, { userId: "user-1" });
+      assert.equal(client, tx);
+    }
+  };
+  const service = new GsakImportService(prisma as any, stats as any);
+
+  const result = await service.importBatch("user-1", "complete", undefined);
+
+  assert.deepEqual(result, { completed: true });
+  assert.equal(created.length, 1);
+  assert.deepEqual(created[0].data, {
+    userId: "user-1",
+    fileName: "GSAK database",
+    fileType: "JSON",
+    source: "GSAK",
+    status: "COMPLETED",
+    objectKey: created[0].data.objectKey
+  });
+  assert.match(created[0].data.objectKey, /^gsak\/user-1\/\d+\.json$/);
+});
+
 test("GSAK cache batches upsert owned caches and corrected coordinates", async () => {
   const actions: Array<[string, any]> = [];
   const tx = {
