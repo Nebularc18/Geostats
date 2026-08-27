@@ -14,6 +14,7 @@ import {
 import { Response } from "express";
 import { AuthUser } from "@geostats/shared";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { Throttle } from "@nestjs/throttler";
 import { AuthService } from "./auth.service";
 import { AuthGuard } from "./auth.guard";
 import { CurrentUser } from "./current-user.decorator";
@@ -29,6 +30,7 @@ export class AuthController {
     private readonly mobileExchangeCodes: MobileExchangeCodeService
   ) {}
 
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @Post("register")
   async register(
     @Body() body: { email?: string; username?: string; password?: string },
@@ -39,6 +41,7 @@ export class AuthController {
     return { user };
   }
 
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @Post("login")
   async login(
     @Body() body: { email?: string; password?: string },
@@ -135,18 +138,21 @@ export class AuthController {
     return { user, token: this.auth.sign(user) };
   }
 
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @Post("mobile/register")
   async mobileRegister(@Body() body: { email?: string; username?: string; password?: string }) {
     const user = await this.auth.register(body.email ?? "", body.username ?? "", body.password ?? "");
     return { user, token: this.auth.sign(user) };
   }
 
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @Post("mobile/login")
   async mobileLogin(@Body() body: { email?: string; password?: string }) {
     const user = await this.auth.login(body.email ?? "", body.password ?? "");
     return { user, token: this.auth.sign(user) };
   }
 
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Post("mobile/exchange")
   async mobileExchange(@Body() body: { code?: unknown; codeVerifier?: unknown }) {
     if (typeof body.code !== "string" || typeof body.codeVerifier !== "string") {

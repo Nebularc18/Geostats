@@ -30,5 +30,6 @@ received-logs.csv
 security-scans/
 credentials.json
 
+artifacts/
 .DS_Store
 Thumbs.db

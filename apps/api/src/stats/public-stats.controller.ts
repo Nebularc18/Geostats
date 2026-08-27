@@ -1,4 +1,5 @@
 import { Controller, Get, Header, NotFoundException, Param, Res } from "@nestjs/common";
+import { Throttle } from "@nestjs/throttler";
 import type { Response } from "express";
 import { readFile } from "fs/promises";
 import { join } from "path";
@@ -22,6 +23,7 @@ function loadWorldMapTemplate() {
 export class PublicStatsController {
   constructor(private readonly stats: StatsService) {}
 
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @Get("profile-stats/:username")
   @Header("Content-Type", "text/html; charset=utf-8")
   @Header("Cache-Control", "public, max-age=300")
@@ -30,6 +32,7 @@ export class PublicStatsController {
     return renderPublicProfileHtml(profile, stats);
   }
 
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @Get("profile-stats-image/:username")
   @Header("Content-Type", "image/svg+xml; charset=utf-8")
   @Header("Cache-Control", "public, max-age=300")
@@ -38,6 +41,7 @@ export class PublicStatsController {
     return renderPublicProfileSvg(profile, stats);
   }
 
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @Get("profile-extremes-image/:username")
   @Header("Content-Type", "image/svg+xml; charset=utf-8")
   @Header("Cache-Control", "public, max-age=300")
@@ -46,6 +50,7 @@ export class PublicStatsController {
     return renderPublicExtremesSvg(profile, stats.extremeCaches);
   }
 
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @Get("profile-scratch-map-image/:username")
   @Header("Content-Type", "image/svg+xml; charset=utf-8")
   @Header("Cache-Control", "public, max-age=300")

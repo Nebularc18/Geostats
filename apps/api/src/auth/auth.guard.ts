@@ -31,10 +31,6 @@ export class AuthGuard implements CanActivate {
     try {
       request.user = await this.auth.verify(token);
     } catch {
-      if (this.auth.authMode() === "dev") {
-        request.user = await this.auth.devUser();
-        return true;
-      }
       throw new UnauthorizedException("Invalid or expired token");
     }
     return true;

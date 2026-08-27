@@ -304,6 +304,7 @@ model Find {
 
   @@unique([userId, cacheId, foundAt])
   @@index([userId, foundAt])
+  @@index([cacheId])
   @@map("finds")
 }
 
@@ -324,6 +325,7 @@ model Hide {
 
   @@unique([userId, cacheId])
   @@index([userId, placedAt])
+  @@index([cacheId])
   @@map("hides")
 }
 
@@ -341,6 +343,7 @@ model CorrectedCoordinate {
   cache Cache @relation(fields: [cacheId], references: [id], onDelete: Cascade)
 
   @@unique([userId, cacheId])
+  @@index([cacheId])
   @@map("corrected_coordinates")
 }
 

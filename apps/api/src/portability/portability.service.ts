@@ -199,7 +199,7 @@ export function parsePortableArchive(input: Buffer | string): PortableArchive {
 @Injectable()
 export class PortabilityService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(PortabilityService.name);
-  private importInProgress = false;
+  private readonly importsInProgress = new Set<string>();
   private cleanupInProgress = false;
   private cleanupTimer?: NodeJS.Timeout;
 
@@ -363,16 +363,16 @@ export class PortabilityService implements OnModuleInit, OnModuleDestroy {
   }
 
   async importFile(user: AuthUser, path: string, fileName = "geostats-export.json") {
-    if (this.importInProgress) {
+    if (this.importsInProgress.has(user.id)) {
       throw new ServiceUnavailableException(
-        "Another data import is already in progress; try again shortly",
+        "Your data import is already in progress; try again shortly",
       );
     }
-    this.importInProgress = true;
+    this.importsInProgress.add(user.id);
     try {
       return await this.importData(user, await readFile(path, "utf8"), fileName);
     } finally {
-      this.importInProgress = false;
+      this.importsInProgress.delete(user.id);
     }
   }
 

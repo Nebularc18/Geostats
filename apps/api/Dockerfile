@@ -6,7 +6,7 @@ FROM base AS deps
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml turbo.json tsconfig.base.json ./
 COPY apps/api/package.json apps/api/package.json
 COPY packages packages
-RUN pnpm install --frozen-lockfile=false
+RUN pnpm install --frozen-lockfile
 
 FROM deps AS build
 COPY apps/api/src apps/api/src
@@ -22,11 +22,12 @@ FROM node:22-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 RUN corepack enable
-COPY --from=build /app/node_modules ./node_modules
-COPY --from=build /app/apps/api/node_modules ./apps/api/node_modules
-COPY --from=build /app/packages ./packages
-COPY --from=build /app/apps/api/dist ./apps/api/dist
-COPY --from=build /app/apps/api/src/stats/map-assets ./apps/api/dist/stats/map-assets
-COPY --from=build /app/apps/tools/src ./apps/tools/src
+COPY --from=build --chown=node:node /app/node_modules ./node_modules
+COPY --from=build --chown=node:node /app/apps/api/node_modules ./apps/api/node_modules
+COPY --from=build --chown=node:node /app/packages ./packages
+COPY --from=build --chown=node:node /app/apps/api/dist ./apps/api/dist
+COPY --from=build --chown=node:node /app/apps/api/src/stats/map-assets ./apps/api/dist/stats/map-assets
+COPY --from=build --chown=node:node /app/apps/tools/src ./apps/tools/src
 RUN node -e "require('./packages/db/node_modules/@prisma/client')"
+USER node
 CMD ["sh", "-c", "node packages/db/node_modules/prisma/build/index.js migrate deploy --schema packages/db/prisma/schema.prisma && exec node apps/api/dist/main.js"]

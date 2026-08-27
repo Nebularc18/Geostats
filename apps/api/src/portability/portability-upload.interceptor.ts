@@ -6,6 +6,7 @@ import {
   NestInterceptor,
   OnModuleDestroy,
   ServiceUnavailableException,
+  UnauthorizedException,
 } from "@nestjs/common";
 import { randomUUID } from "node:crypto";
 import { chmod, mkdir, rm } from "node:fs/promises";
@@ -13,6 +14,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { diskStorage } from "multer";
 import { Observable, Subscription } from "rxjs";
+
+type PortabilityUploadRequest = Express.Request & {
+  user?: { id?: string };
+  portabilityUploadDirectory?: string;
+};
 
 const TEMP_ROOT = join(
   tmpdir(),
@@ -29,9 +35,24 @@ export async function cleanupPortabilityTempRoot() {
   await rm(TEMP_ROOT, { recursive: true, force: true });
 }
 
+async function preparePortabilityUploadDirectory(directory: string) {
+  await preparePortabilityTempRoot();
+  await mkdir(directory, { recursive: false, mode: 0o700 });
+  return directory;
+}
+
+async function cleanupPortabilityUploadDirectory(directory: string) {
+  await rm(directory, { recursive: true, force: true });
+}
+
 export const portabilityDiskStorage = diskStorage({
-  destination: (_request, _file, callback) => {
-    void preparePortabilityTempRoot()
+  destination: (request, _file, callback) => {
+    const directory = (request as PortabilityUploadRequest).portabilityUploadDirectory;
+    if (!directory) {
+      callback(new Error("Portability upload was not admitted"), "");
+      return;
+    }
+    void preparePortabilityUploadDirectory(directory)
       .then((path) => callback(null, path))
       .catch((error) => callback(error, ""));
   },
@@ -46,27 +67,32 @@ export class PortabilityUploadAdmissionInterceptor
   private readonly logger = new Logger(
     PortabilityUploadAdmissionInterceptor.name,
   );
-  private uploadInProgress = false;
+  private readonly uploadsInProgress = new Set<string>();
 
   intercept(
-    _context: ExecutionContext,
+    context: ExecutionContext,
     next: CallHandler,
   ): Observable<unknown> {
-    if (this.uploadInProgress) {
+    const request = context.switchToHttp().getRequest<PortabilityUploadRequest>();
+    const userId = request.user?.id;
+    if (!userId) throw new UnauthorizedException("Authentication required");
+    if (this.uploadsInProgress.has(userId)) {
       throw new ServiceUnavailableException(
-        "Another portability import is already in progress",
+        "Your portability import is already in progress",
       );
     }
-    this.uploadInProgress = true;
+    this.uploadsInProgress.add(userId);
+    const uploadDirectory = join(TEMP_ROOT, randomUUID());
+    request.portabilityUploadDirectory = uploadDirectory;
 
     return new Observable((subscriber) => {
       let finished = false;
       const finish = (notify: () => void) => {
         if (finished) return;
         finished = true;
-        void this.cleanupTempRoot()
+        void this.cleanupUploadDirectory(uploadDirectory)
           .then(() => {
-            this.uploadInProgress = false;
+            this.uploadsInProgress.delete(userId);
             notify();
           })
           .catch((error: unknown) => {
@@ -74,7 +100,7 @@ export class PortabilityUploadAdmissionInterceptor
               "Failed to clean the portability upload directory",
               error,
             );
-            this.uploadInProgress = false;
+            this.uploadsInProgress.delete(userId);
             notify();
           });
       };
@@ -97,12 +123,12 @@ export class PortabilityUploadAdmissionInterceptor
     });
   }
 
-  protected cleanupTempRoot() {
-    return cleanupPortabilityTempRoot();
+  protected cleanupUploadDirectory(directory: string) {
+    return cleanupPortabilityUploadDirectory(directory);
   }
 
   async onModuleDestroy() {
     await cleanupPortabilityTempRoot();
-    this.uploadInProgress = false;
+    this.uploadsInProgress.clear();
   }
 }
