@@ -4,10 +4,10 @@ import {
   BadRequestException,
   ServiceUnavailableException,
 } from "@nestjs/common";
-import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { lastValueFrom, of, Subject, throwError } from "rxjs";
+import { lastValueFrom, of, Subject } from "rxjs";
 import {
   parsePortableArchive,
   PortabilityService,
@@ -18,7 +18,6 @@ import {
 } from "./portability.controller";
 import {
   PortabilityUploadAdmissionInterceptor,
-  preparePortabilityTempRoot,
 } from "./portability-upload.interceptor";
 
 const user = {
@@ -26,6 +25,16 @@ const user = {
   username: "alice",
   email: "alice@example.com",
 };
+
+function uploadContext(userId: string) {
+  const request = { user: { id: userId }, portabilityUploadDirectory: undefined as string | undefined };
+  return {
+    request,
+    context: {
+      switchToHttp: () => ({ getRequest: () => request }),
+    } as any,
+  };
+}
 
 function archive(overrides: Record<string, unknown> = {}) {
   return Buffer.from(
@@ -260,11 +269,12 @@ test("archive limits are hard-clamped and imports are serialized per API process
   }
 });
 
-test("portability uploads are rejected before a concurrent upload can start", async () => {
+test("portability upload admission is per user", async () => {
   const interceptor = new PortabilityUploadAdmissionInterceptor();
+  const firstContext = uploadContext("user-1");
   const firstUpload = new Subject<string>();
   const firstResult = lastValueFrom(
-    interceptor.intercept({} as any, {
+    interceptor.intercept(firstContext.context, {
       handle: () => firstUpload,
     }),
   );
@@ -272,7 +282,7 @@ test("portability uploads are rejected before a concurrent upload can start", as
 
   assert.throws(
     () =>
-      interceptor.intercept({} as any, {
+      interceptor.intercept(uploadContext("user-1").context, {
         handle: () => {
           rejectedUploadStarted = true;
           return of("should not run");
@@ -281,13 +291,21 @@ test("portability uploads are rejected before a concurrent upload can start", as
     ServiceUnavailableException,
   );
   assert.equal(rejectedUploadStarted, false);
+  assert.equal(
+    await lastValueFrom(
+      interceptor.intercept(uploadContext("user-2").context, {
+        handle: () => of("different user upload"),
+      }),
+    ),
+    "different user upload",
+  );
 
   firstUpload.next("imported");
   firstUpload.complete();
   assert.equal(await firstResult, "imported");
   assert.equal(
     await lastValueFrom(
-      interceptor.intercept({} as any, { handle: () => of("next upload") }),
+      interceptor.intercept(uploadContext("user-1").context, { handle: () => of("next upload") }),
     ),
     "next upload",
   );
@@ -295,21 +313,21 @@ test("portability uploads are rejected before a concurrent upload can start", as
 
 test("portability upload artifacts are removed when an inner interceptor fails", async () => {
   const interceptor = new PortabilityUploadAdmissionInterceptor();
-  const directory = await preparePortabilityTempRoot();
+  const upload = uploadContext("user-1");
+  const inner = new Subject<string>();
+  const result = lastValueFrom(
+    interceptor.intercept(upload.context, { handle: () => inner }),
+  );
+  const directory = upload.request.portabilityUploadDirectory!;
+  await mkdir(directory, { recursive: true });
   await writeFile(join(directory, "partial-upload.json"), archive());
 
-  await assert.rejects(
-    lastValueFrom(
-      interceptor.intercept({} as any, {
-        handle: () => throwError(() => new Error("upload rejected")),
-      }),
-    ),
-    /upload rejected/,
-  );
+  inner.error(new Error("upload rejected"));
+  await assert.rejects(result, /upload rejected/);
   await assert.rejects(access(directory), /ENOENT/);
   assert.equal(
     await lastValueFrom(
-      interceptor.intercept({} as any, {
+      interceptor.intercept(uploadContext("user-1").context, {
         handle: () => of("upload after rejection"),
       }),
     ),
@@ -317,9 +335,35 @@ test("portability upload artifacts are removed when an inner interceptor fails",
   );
 });
 
+test("portability upload cleanup does not remove another user's artifacts", async () => {
+  const interceptor = new PortabilityUploadAdmissionInterceptor();
+  const first = uploadContext("user-1");
+  const second = uploadContext("user-2");
+  const firstInner = new Subject<string>();
+  const secondInner = new Subject<string>();
+  const firstResult = lastValueFrom(interceptor.intercept(first.context, { handle: () => firstInner }));
+  const secondResult = lastValueFrom(interceptor.intercept(second.context, { handle: () => secondInner }));
+  const firstFile = join(first.request.portabilityUploadDirectory!, "first.json");
+  const secondDirectory = second.request.portabilityUploadDirectory!;
+  await mkdir(first.request.portabilityUploadDirectory!, { recursive: true });
+  await mkdir(secondDirectory, { recursive: true });
+  await writeFile(firstFile, archive());
+  await writeFile(join(secondDirectory, "second.json"), archive());
+
+  secondInner.next("second complete");
+  secondInner.complete();
+  assert.equal(await secondResult, "second complete");
+  await access(firstFile);
+  await assert.rejects(access(secondDirectory), /ENOENT/);
+
+  firstInner.next("first complete");
+  firstInner.complete();
+  assert.equal(await firstResult, "first complete");
+});
+
 test("portability uploads remain available when temporary cleanup fails", async () => {
   class CleanupFailureInterceptor extends PortabilityUploadAdmissionInterceptor {
-    protected override cleanupTempRoot() {
+    protected override cleanupUploadDirectory(_directory: string) {
       return Promise.reject(new Error("temporary filesystem error"));
     }
   }
@@ -329,13 +373,13 @@ test("portability uploads remain available when temporary cleanup fails", async 
 
   assert.equal(
     await lastValueFrom(
-      interceptor.intercept({} as any, { handle: () => of("first upload") }),
+      interceptor.intercept(uploadContext("user-1").context, { handle: () => of("first upload") }),
     ),
     "first upload",
   );
   assert.equal(
     await lastValueFrom(
-      interceptor.intercept({} as any, { handle: () => of("next upload") }),
+      interceptor.intercept(uploadContext("user-1").context, { handle: () => of("next upload") }),
     ),
     "next upload",
   );

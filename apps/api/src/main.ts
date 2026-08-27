@@ -2,6 +2,7 @@ import "reflect-metadata";
 import { ValidationPipe } from "@nestjs/common";
 import cookieParser from "cookie-parser";
 import { json, raw, urlencoded } from "express";
+import helmet from "helmet";
 import { NestFactory } from "@nestjs/core";
 import { AppModule } from "./app.module";
 import { envOrDefault, portEnvOrDefault, validateRuntimeEnv } from "./common/env";
@@ -9,7 +10,16 @@ import { parseWindows1252Form } from "./common/windows-1252-form";
 
 async function bootstrap() {
   validateRuntimeEnv();
+  if (process.env.NODE_ENV === "production" && process.env.AUTH_MODE === "dev") {
+    throw new Error("AUTH_MODE=dev must not be used in production");
+  }
   const app = await NestFactory.create(AppModule, { bodyParser: false });
+  app.use(
+    helmet({
+      contentSecurityPolicy: false,
+      crossOriginEmbedderPolicy: false,
+    }),
+  );
   const webOrigin = envOrDefault("WEB_ORIGIN", "http://localhost:3000");
   const corsOrigins = envOrDefault("API_CORS_ORIGINS", webOrigin);
   const allowedOrigins = new Set([

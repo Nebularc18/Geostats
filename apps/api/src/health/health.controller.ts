@@ -1,4 +1,5 @@
 import { Controller, Get, ServiceUnavailableException } from "@nestjs/common";
+import { SkipThrottle } from "@nestjs/throttler";
 import { PrismaService } from "../common/prisma.service";
 import { ImportQueueService } from "../queue/import-queue.service";
 import { StorageService } from "../storage/storage.service";
@@ -11,6 +12,7 @@ export class HealthController {
     private readonly storage: StorageService
   ) {}
 
+  @SkipThrottle()
   @Get()
   async health() {
     const checks = await Promise.allSettled([

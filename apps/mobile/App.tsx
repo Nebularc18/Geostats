@@ -17,6 +17,12 @@ import { parseCoordinate } from "@geostats/shared";
 import { pickAndUploadDocument, type UploadKind } from "./upload";
 import { hasNativeMapSupport, scratchMapGeometryBudget, SCRATCH_WORLD_REGION, selectNativeMapPoints } from "./mobile-map";
 import { schedulePostImportStatsRefresh } from "./import-refresh";
+import {
+  MAX_MYSTERY_SNAPSHOT_BYTES,
+  mysterySnapshotByteLength,
+  readJsonArrayWithRecovery,
+  replaceJsonFile,
+} from "./mystery-storage";
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -129,9 +135,9 @@ const badgeMarks: Record<string, string> = {
 };
 const ACTIVE_IMPORT_STATUSES = new Set(["UPLOADED", "QUEUED", "PROCESSING"]);
 const MAX_NATIVE_MAP_MARKERS = Platform.OS === "android" ? 500 : 1_000;
-const COUNTRY_GEOJSON_URL = "https://raw.githubusercontent.com/datasets/geo-countries/master/data/countries.geojson";
-const SWEDEN_REGION_GEOJSON_URL = "https://raw.githubusercontent.com/okfse/sweden-geojson/master/swedish_regions.geojson";
-const SWEDEN_COUNTY_GEOJSON_URL = "https://raw.githubusercontent.com/okfse/sweden-geojson/master/swedish_municipalities.geojson";
+const COUNTRY_GEOJSON_URL = "https://raw.githubusercontent.com/datasets/geo-countries/185beb1137f6e9f5d916c91916f0159c20fbab30/data/countries.geojson";
+const SWEDEN_REGION_GEOJSON_URL = "https://raw.githubusercontent.com/okfse/sweden-geojson/ff67bcb030d7d09032ae5f443d27130f05fdf1e0/swedish_regions.geojson";
+const SWEDEN_COUNTY_GEOJSON_URL = "https://raw.githubusercontent.com/okfse/sweden-geojson/ff67bcb030d7d09032ae5f443d27130f05fdf1e0/swedish_municipalities.geojson";
 const GEOBOUNDARIES_BASE_URL =
   "https://media.githubusercontent.com/media/wmgeolab/geoBoundaries/9469f09592ced973a3448cf66b6100b741b64c0d/releaseData/gbOpen";
 const SCRATCH_GOOGLE_MAP_STYLE: MapStyleElement[] = [
@@ -344,6 +350,10 @@ function mysteryFile(userId: string) {
   return new File(Paths.document, `geostats-mysteries-${userId.replace(/[^a-z0-9_-]/gi, "_")}.json`);
 }
 
+function mysteryBackupFile(userId: string) {
+  return new File(Paths.document, `geostats-mysteries-${userId.replace(/[^a-z0-9_-]/gi, "_")}.backup.json`);
+}
+
 function mysterySyncFile(userId: string) {
   return new File(Paths.document, `geostats-mystery-sync-${userId.replace(/[^a-z0-9_-]/gi, "_")}.json`);
 }
@@ -359,12 +369,24 @@ function snapshotFingerprint(value: string) {
   return `${value.length}:${(first >>> 0).toString(36)}:${(second >>> 0).toString(36)}`;
 }
 
+function isStoredMystery(value: unknown): value is MysteryCache {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const cache = value as Partial<MysteryCache>;
+  return typeof cache.id === "string" && typeof cache.gcCode === "string" && typeof cache.name === "string";
+}
+
 async function readMysteries(userId: string) {
+  const file = mysteryFile(userId);
+  const backup = mysteryBackupFile(userId);
+  if (!file.exists && !backup.exists) return [];
   try {
-    const file = mysteryFile(userId);
-    if (!file.exists) return [];
-    const value = JSON.parse(await file.text());
-    if (!Array.isArray(value)) return [];
+    const value = await readJsonArrayWithRecovery<MysteryCache>(
+      file,
+      backup,
+      () => new File(Paths.document, `geostats-mysteries-${userId.replace(/[^a-z0-9_-]/gi, "_")}-corrupt-${Date.now()}.json`),
+      isStoredMystery,
+      (message, error) => console.warn(`${message} for ${userId}:`, error),
+    );
     return value.map((cache: MysteryCache) => ({
       ...cache,
       area: cache.area ?? "",
@@ -373,31 +395,47 @@ async function readMysteries(userId: string) {
       attempts: Array.isArray(cache.attempts) ? cache.attempts : [],
       sharedWith: Array.isArray(cache.sharedWith) ? cache.sharedWith : []
     })) as MysteryCache[];
-  } catch {
+  } catch (error) {
+    console.warn(`Could not read mysteries for ${userId}:`, error);
     return [];
   }
 }
 
-async function writeMysteries(userId: string, caches: MysteryCache[]) {
-  mysteryFile(userId).write(JSON.stringify(caches));
+function writeMysteries(userId: string, caches: MysteryCache[]) {
+  const json = JSON.stringify(caches);
+  const file = mysteryFile(userId);
+  const safeUserId = userId.replace(/[^a-z0-9_-]/gi, "_");
+  const tmp = new File(Paths.document, `geostats-mysteries-${safeUserId}-${Date.now()}-${Math.random().toString(36).slice(2)}.tmp`);
+  try {
+    replaceJsonFile(file, tmp, mysteryBackupFile(userId), json, isStoredMystery);
+    return true;
+  } catch (error) {
+    console.warn(`Failed to write mysteries for ${userId}:`, error);
+    return false;
+  }
 }
 
 async function readMysterySyncMetadata(userId: string) {
+  const file = mysterySyncFile(userId);
+  if (!file.exists) return new Map<string, MysterySyncMetadata>();
   try {
-    const file = mysterySyncFile(userId);
-    if (!file.exists) return new Map<string, MysterySyncMetadata>();
     const value = JSON.parse(await file.text()) as Record<string, MysterySyncMetadata>;
     return new Map(Object.entries(value).filter((entry): entry is [string, MysterySyncMetadata] => {
       const [cacheId, metadata] = entry;
       return Boolean(cacheId) && Number.isSafeInteger(metadata?.revision) && metadata.revision >= 0 && typeof metadata.fingerprint === "string";
     }));
-  } catch {
+  } catch (error) {
+    console.warn(`Corrupt mystery sync metadata for ${userId}:`, error);
     return new Map<string, MysterySyncMetadata>();
   }
 }
 
 async function writeMysterySyncMetadata(userId: string, metadata: Map<string, MysterySyncMetadata>) {
-  mysterySyncFile(userId).write(JSON.stringify(Object.fromEntries(metadata)));
+  try {
+    mysterySyncFile(userId).write(JSON.stringify(Object.fromEntries(metadata)));
+  } catch (error) {
+    console.warn(`Failed to write mystery sync metadata for ${userId}:`, error);
+  }
 }
 
 function mysteryLocation(cache: MysteryCache) {
@@ -1482,6 +1520,7 @@ function FtfScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [loadingMore, setLoadingMore] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
   const s = summary.data.stats.ftfStats ?? {};
   const allFinds = [...finds.data.finds, ...extraFinds].filter((find, index, rows) => rows.findIndex((row) => row.id === find.id) === index);
   const visibleFinds = allFinds.filter((find) => !query.trim() || `${find.cache.gcCode} ${find.cache.name}`.toLowerCase().includes(query.trim().toLowerCase()));
@@ -1490,16 +1529,24 @@ function FtfScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
     setExtraFinds([]);
   }, [finds.data.finds]);
   async function toggle(find: any) {
-    await apiFetch(apiBaseUrl, `/stats/ftf/finds/${find.id}`, token, { method: "PATCH", body: JSON.stringify({ isFtf: !find.isFtf }) });
-    await Promise.all([summary.refresh(), finds.refresh()]);
+    setActionError(null);
+    try {
+      await apiFetch(apiBaseUrl, `/stats/ftf/finds/${find.id}`, token, { method: "PATCH", body: JSON.stringify({ isFtf: !find.isFtf }) });
+      await Promise.all([summary.refresh(), finds.refresh()]);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Could not update FTF status.");
+    }
   }
   async function loadMore() {
     if (!nextCursor || loadingMore) return;
     setLoadingMore(true);
+    setActionError(null);
     try {
       const page = await apiFetch<{ finds: any[]; nextCursor: string | null }>(apiBaseUrl, `/stats/ftf/finds?limit=100&cursor=${encodeURIComponent(nextCursor)}`, token);
       setExtraFinds((current) => [...current, ...page.finds]);
       setNextCursor(page.nextCursor);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Could not load more finds.");
     } finally {
       setLoadingMore(false);
     }
@@ -1519,10 +1566,11 @@ function FtfScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
       <Panel title="FTF list">{(s.rows ?? []).map((row: any) => <CacheRow key={`${row.gcCode}-${row.dateTime}`} point={{ id: row.gcCode, gcCode: row.gcCode, name: row.name, cacheType: row.cacheType, latitude: row.latitude ?? 0, longitude: row.longitude ?? 0, foundAt: row.dateTime }} />)}</Panel>
       <Panel title="Mark FTF finds" subtitle={`${allFinds.length} loaded`}>
         <Field label="Search loaded finds" value={query} onChangeText={setQuery} autoCapitalize="none" />
-        {visibleFinds.map((find) => <Pressable key={find.id} onPress={() => toggle(find)} style={[styles.toggleRow, find.isFtf && styles.toggleRowActive]}><Text style={styles.rowTitle}>{find.cache.gcCode} - {find.cache.name}</Text><Text style={styles.muted}>{find.isFtf ? "Marked FTF" : "Tap to mark"} - {dateText(find.foundAt)}</Text></Pressable>)}
-        {nextCursor ? <SecondaryButton label={loadingMore ? "Loading..." : "Load 100 more"} onPress={loadMore} /> : null}
-      </Panel>
-      <LoadState loading={summary.loading || finds.loading} error={summary.error || finds.error} />
+        {visibleFinds.map((find) => <Pressable key={find.id} onPress={() => void toggle(find)} style={[styles.toggleRow, find.isFtf && styles.toggleRowActive]}><Text style={styles.rowTitle}>{find.cache.gcCode} - {find.cache.name}</Text><Text style={styles.muted}>{find.isFtf ? "Marked FTF" : "Tap to mark"} - {dateText(find.foundAt)}</Text></Pressable>)}
+        {nextCursor ? <SecondaryButton label={loadingMore ? "Loading..." : "Load 100 more"} onPress={() => void loadMore()} /> : null}
+        {actionError ? <Text style={styles.error}>{actionError}</Text> : null}
+       </Panel>
+       <LoadState loading={summary.loading || finds.loading} error={summary.error || finds.error} />
     </>
   );
 }
@@ -1840,7 +1888,9 @@ function MysteriesScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; to
   useEffect(() => {
     if (!ready) return;
     const timer = setTimeout(() => {
-      void writeMysteries(userId, caches.filter((cache) => !cache.sharedBy));
+      if (!writeMysteries(userId, caches.filter((cache) => !cache.sharedBy))) {
+        setNotice("Could not save mysteries on this device.");
+      }
     }, 150);
     return () => clearTimeout(timer);
   }, [caches, ready, userId]);
@@ -1895,7 +1945,7 @@ function MysteriesScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; to
     if (!latest.ready) return;
 
     const owned = latest.caches.filter((cache) => !cache.sharedBy);
-    void writeMysteries(userId, owned);
+    writeMysteries(userId, owned);
   }, [userId]);
 
   useEffect(() => {
@@ -1919,9 +1969,14 @@ function MysteriesScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; to
   const selected = caches.find((cache) => cache.id === selectedId) ?? visible[0];
 
   function updateSelected(patch: Partial<MysteryCache>) {
-    if (!selected || selected.sharedBy) return;
+    if (!selected || selected.sharedBy) return false;
     const next = { ...selected, ...patch };
+    if (mysterySnapshotByteLength(shareableMystery(next)) > MAX_MYSTERY_SNAPSHOT_BYTES) {
+      setNotice("This mystery is too large to sync. Shorten its notes or choose a smaller image.");
+      return false;
+    }
     setCaches((current) => current.map((cache) => cache.id === selected.id ? next : cache));
+    return true;
   }
 
   function addCache() {
@@ -1966,10 +2021,10 @@ function MysteriesScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; to
       setNotice("Those coordinates are already in the attempt history.");
       return;
     }
-    updateSelected({
+    if (!updateSelected({
       attempts: [{ id: newId("attempt"), kind: "coordinate", ...coordinate, state: attemptState, createdAt: new Date().toISOString() }, ...selected.attempts],
       status: attemptState === "correct" ? "solved" : selected.status
-    });
+    })) return;
     setAttemptText("");
     setNotice("Coordinate saved.");
   }
@@ -2005,16 +2060,28 @@ function MysteriesScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; to
 
   async function attachImage() {
     if (!selected || selected.sharedBy) return;
-    const result = await DocumentPicker.getDocumentAsync({ type: "image/*", copyToCacheDirectory: true });
-    if (result.canceled) return;
-    const asset = result.assets[0];
-    if ((asset.size ?? 0) > 1_500_000) {
-      setNotice("Choose an image smaller than 1.5 MB.");
-      return;
+    try {
+      const result = await DocumentPicker.getDocumentAsync({ type: "image/*", copyToCacheDirectory: true });
+      if (result.canceled) return;
+      const asset = result.assets[0];
+      if ((asset.size ?? 0) > 180_000) {
+        setNotice("Choose an image smaller than 180 KB to keep account sync under the 256 KB limit.");
+        return;
+      }
+      const base64 = await new File(asset.uri).base64();
+      const candidate = shareableMystery({
+        ...selected,
+        image: `data:${asset.mimeType ?? "image/jpeg"};base64,${base64}`,
+      });
+      if (mysterySnapshotByteLength(candidate) > MAX_MYSTERY_SNAPSHOT_BYTES) {
+        setNotice("That image makes this mystery too large to sync. Shorten its notes or choose a smaller image.");
+        return;
+      }
+      updateSelected({ image: candidate.image });
+      setNotice("Reference image attached.");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not attach image.");
     }
-    const base64 = await new File(asset.uri).base64();
-    updateSelected({ image: `data:${asset.mimeType ?? "image/jpeg"};base64,${base64}` });
-    setNotice("Reference image attached.");
   }
 
   function deleteSelected() {
@@ -2041,14 +2108,18 @@ function MysteriesScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; to
   }
 
   async function exportSolved() {
-    const solved = caches.flatMap((cache) => {
-      const coordinate = finalCoordinate(cache);
-      return coordinate ? [{ cache, coordinate }] : [];
-    });
-    const points = solved.map(({ cache, coordinate }) => `  <wpt lat="${coordinate.latitude}" lon="${coordinate.longitude}"><name>${escapeMarkup(cache.gcCode)}</name><desc>${escapeMarkup(cache.name)}</desc><type>Geocache|Unknown Cache</type></wpt>`).join("\n");
-    const file = new File(Paths.cache, "geostats-solved-mysteries.gpx");
-    file.write(`<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="Geostats" xmlns="http://www.topografix.com/GPX/1/1">\n${points}\n</gpx>`);
-    await Sharing.shareAsync(file.uri, { dialogTitle: `Share ${solved.length} solved mysteries`, mimeType: "application/gpx+xml", UTI: "com.topografix.gpx" });
+    try {
+      const solved = caches.flatMap((cache) => {
+        const coordinate = finalCoordinate(cache);
+        return coordinate ? [{ cache, coordinate }] : [];
+      });
+      const points = solved.map(({ cache, coordinate }) => `  <wpt lat="${coordinate.latitude}" lon="${coordinate.longitude}"><name>${escapeMarkup(cache.gcCode)}</name><desc>${escapeMarkup(cache.name)}</desc><type>Geocache|Unknown Cache</type></wpt>`).join("\n");
+      const file = new File(Paths.cache, "geostats-solved-mysteries.gpx");
+      file.write(`<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="Geostats" xmlns="http://www.topografix.com/GPX/1/1">\n${points}\n</gpx>`);
+      await Sharing.shareAsync(file.uri, { dialogTitle: `Share ${solved.length} solved mysteries`, mimeType: "application/gpx+xml", UTI: "com.topografix.gpx" });
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not export GPX.");
+    }
   }
 
   return (
@@ -2082,7 +2153,7 @@ function MysteriesScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; to
         {!selected.sharedBy ? <View style={styles.actionRow}><View style={styles.flex}><SecondaryButton label="Choose image" onPress={attachImage} /></View>{selected.image ? <View style={styles.flex}><SecondaryButton label="Remove image" danger onPress={() => updateSelected({ image: undefined })} /></View> : null}</View> : null}
         <Text style={styles.sectionLabel}>Clues</Text>
         {selected.clues.map((item) => <Pressable disabled={Boolean(selected.sharedBy)} key={item} onPress={() => updateSelected({ clues: selected.clues.filter((value) => value !== item) })}><Text style={styles.chip}>× {item}</Text></Pressable>)}
-        {!selected.sharedBy ? <View style={styles.inlineForm}><TextInput style={[styles.input, styles.flex]} value={clue} onChangeText={setClue} placeholder="Add a clue" placeholderTextColor="#668074" /><Pressable style={styles.smallButton} onPress={() => { if (clue.trim()) updateSelected({ clues: [...selected.clues, clue.trim()] }); setClue(""); }}><Text style={styles.smallButtonText}>Add</Text></Pressable></View> : null}
+        {!selected.sharedBy ? <View style={styles.inlineForm}><TextInput style={[styles.input, styles.flex]} value={clue} onChangeText={setClue} placeholder="Add a clue" placeholderTextColor="#668074" /><Pressable style={styles.smallButton} onPress={() => { if (clue.trim() && updateSelected({ clues: [...selected.clues, clue.trim()] })) setClue(""); }}><Text style={styles.smallButtonText}>Add</Text></Pressable></View> : null}
         <Text style={styles.sectionLabel}>Coordinate attempts</Text>
         {!selected.sharedBy ? <>
           <Field label="Coordinate" value={attemptText} onChangeText={setAttemptText} placeholder="N 59° 20.123' E 018° 04.321'" />

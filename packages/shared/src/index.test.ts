@@ -5,6 +5,7 @@ import { parseCoordinate } from "./index";
 function assertCoordinates(value: string, latitude: number, longitude: number) {
   const parsed = parseCoordinate(value);
   assert.ok(parsed);
+  if (!parsed) throw new Error("Expected coordinate");
   assert.ok(Math.abs(parsed.latitude - latitude) < 0.0000001);
   assert.ok(Math.abs(parsed.longitude - longitude) < 0.0000001);
 }

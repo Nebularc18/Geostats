@@ -1,4 +1,6 @@
 import { Module } from "@nestjs/common";
+import { APP_GUARD } from "@nestjs/core";
+import { ThrottlerGuard, ThrottlerModule } from "@nestjs/throttler";
 import { AuthModule } from "./auth/auth.module";
 import { HealthController } from "./health/health.controller";
 import { CollectorModule } from "./collector/collector.module";
@@ -12,11 +14,31 @@ import { StatsModule } from "./stats/stats.module";
 import { StorageModule } from "./storage/storage.module";
 import { PortabilityModule } from "./portability/portability.module";
 import { ChallengeCheckersModule } from "./challenge-checkers/challenge-checkers.module";
+import { APP_THROTTLERS } from "./common/rate-limits";
 
 @Module({
-  imports: [AuthModule, ProfileModule, StorageModule, QueueModule, ImportsModule, StatsModule, MapModule, CollectorModule, MysteriesModule, PortabilityModule, ChallengeCheckersModule],
+  imports: [
+    ThrottlerModule.forRoot(APP_THROTTLERS),
+    AuthModule,
+    ProfileModule,
+    StorageModule,
+    QueueModule,
+    ImportsModule,
+    StatsModule,
+    MapModule,
+    CollectorModule,
+    MysteriesModule,
+    PortabilityModule,
+    ChallengeCheckersModule,
+  ],
   controllers: [HealthController],
-  providers: [PrismaService],
-  exports: [PrismaService]
+  providers: [
+    PrismaService,
+    {
+      provide: APP_GUARD,
+      useClass: ThrottlerGuard,
+    },
+  ],
+  exports: [PrismaService],
 })
 export class AppModule {}
