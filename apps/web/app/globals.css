@@ -3165,7 +3165,9 @@ select:focus {
 .mystery-image {
   position: relative;
   display: flex;
+  align-items: center;
   justify-content: center;
+  min-height: 3.5rem;
   margin-top: 18px;
   overflow: hidden;
   border-radius: 8px;
