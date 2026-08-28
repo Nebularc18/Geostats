@@ -3164,17 +3164,23 @@ select:focus {
 
 .mystery-image {
   position: relative;
-  max-height: 230px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 3.5rem;
   margin-top: 18px;
   overflow: hidden;
   border-radius: 8px;
+  background: rgba(8, 13, 10, 0.42);
 }
 
 .mystery-image img {
   display: block;
-  width: 100%;
-  height: 230px;
-  object-fit: cover;
+  width: auto;
+  max-width: 100%;
+  height: auto;
+  max-height: min(70vh, 720px);
+  object-fit: contain;
 }
 
 .mystery-image button {
