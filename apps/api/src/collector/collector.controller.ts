@@ -927,9 +927,16 @@ export class CollectorController {
     const token = await this.prisma.collectorToken.findFirst({
       where: { userId: user.id, scope: GSAK_IMPORT_SCOPE },
       orderBy: { createdAt: "desc" },
-      select: { createdAt: true, lastUsedAt: true }
+      select: { createdAt: true }
     });
-    return { connected: Boolean(token), createdAt: token?.createdAt ?? null, lastImportedAt: token?.lastUsedAt ?? null };
+    const latestImport = token
+      ? await this.prisma.import.findFirst({
+        where: { userId: user.id, source: "GSAK", status: "COMPLETED", createdAt: { gte: token.createdAt } },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        select: { createdAt: true }
+      })
+      : null;
+    return { connected: Boolean(token), createdAt: token?.createdAt ?? null, lastImportedAt: latestImport?.createdAt ?? null };
   }
 
   @Post("gsak/import")
