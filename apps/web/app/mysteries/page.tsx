@@ -39,6 +39,7 @@ import { MYSTERY_USERSCRIPT_VERSION } from "../../lib/mystery-userscript";
 import { bulkAttemptKey, parseBulkFailedAttempts, parseFailedCoordinateCsv } from "../../lib/mystery-bulk-attempts";
 import { automaticSyncRetryDelay } from "../../lib/mystery-sync-policy";
 import { normalizeMysteryImageUrl } from "../../lib/mystery-image";
+import { reconcileGeocachingNoteReceipt, type GeocachingNoteConflict } from "../../lib/mystery-note-receipt";
 
 type CheckState = "correct" | "wrong" | "unchecked" | "planned";
 type MysteryStatus = "solving" | "solved" | "planned";
@@ -98,6 +99,7 @@ type MysteryCache = {
   image?: string;
   geocachingNotesFingerprint?: string;
   geocachingNotesSyncedAt?: string;
+  geocachingNoteConflict?: GeocachingNoteConflict & { syncedAt: string };
   syncConflicts?: MysterySyncConflicts;
   sharedBy?: AppUser;
   sharedWorkspaceId?: string;
@@ -152,6 +154,7 @@ type GeocachingSyncReceipt = {
   longitude?: unknown;
   syncedAt?: unknown;
   notes?: unknown;
+  geostatsNotes?: unknown;
   direction?: unknown;
 };
 
@@ -355,7 +358,7 @@ function verifiedStoredShares(caches: MysteryCache[], mergeOptions?: MysteryCach
 }
 
 function shareableMystery(cache: MysteryCache) {
-  const { sharedBy: _sharedBy, sharedWorkspaceId: _sharedWorkspaceId, syncConflicts: _syncConflicts, ...mystery } = cache;
+  const { sharedBy: _sharedBy, sharedWorkspaceId: _sharedWorkspaceId, syncConflicts: _syncConflicts, geocachingNoteConflict: _geocachingNoteConflict, ...mystery } = cache;
   return mystery;
 }
 
@@ -402,18 +405,29 @@ function applyGeocachingSyncReceipt(caches: MysteryCache[], value: GeocachingSyn
   const syncedAt = typeof value.syncedAt === "string" && Number.isFinite(Date.parse(value.syncedAt)) ? value.syncedAt : "";
   if (value.type === "notes") {
     const notes = typeof value.notes === "string" ? value.notes : null;
+    const geostatsNotes = typeof value.geostatsNotes === "string" ? value.geostatsNotes : null;
     let applied = false;
+    let conflicted = false;
     const next = caches.map((cache) => {
-      if (cache.id !== cacheId || cache.gcCode.toUpperCase() !== gcCode || notes === null || !syncedAt) return cache;
+      if (cache.id !== cacheId || cache.gcCode.toUpperCase() !== gcCode || notes === null || geostatsNotes === null || !syncedAt) return cache;
+      const reconciliation = reconcileGeocachingNoteReceipt(cache.notes, geostatsNotes, notes);
+      if (reconciliation.conflict) {
+        conflicted = true;
+        return {
+          ...cache,
+          geocachingNoteConflict: { ...reconciliation.conflict, syncedAt }
+        };
+      }
       applied = true;
       return {
         ...cache,
-        notes,
+        notes: reconciliation.notes,
         geocachingNotesFingerprint: mysteryFieldFingerprint(notes),
-        geocachingNotesSyncedAt: syncedAt
+        geocachingNotesSyncedAt: syncedAt,
+        geocachingNoteConflict: undefined
       };
     });
-    return { caches: next, applied };
+    return { caches: next, applied, conflicted };
   }
   const latitude = typeof value.latitude === "number" ? value.latitude : Number.NaN;
   const longitude = typeof value.longitude === "number" ? value.longitude : Number.NaN;
@@ -438,7 +452,7 @@ function applyGeocachingSyncReceipt(caches: MysteryCache[], value: GeocachingSyn
     return { ...cache, attempts };
   });
 
-  return { caches: next, applied };
+  return { caches: next, applied, conflicted: false };
 }
 
 export default function MysteriesPage() {
@@ -602,7 +616,9 @@ export default function MysteriesPage() {
         initial = result.caches;
         const receipt = JSON.parse(encodedSyncReceipt) as GeocachingSyncReceipt;
         if (typeof receipt.cacheId === "string") setSelectedId(receipt.cacheId);
-        setNotice(result.applied ? receipt.type === "notes" ? "Personal cache notes synced" : "Confirmed as synced to Geocaching" : "Could not match the Geocaching sync receipt");
+        setNotice(result.conflicted
+          ? "Notes changed during sync. Review both versions."
+          : result.applied ? receipt.type === "notes" ? "Personal cache notes synced" : "Confirmed as synced to Geocaching" : "Could not match the Geocaching sync receipt");
       } catch {
         setNotice("Could not read the Geocaching sync receipt");
       }
@@ -688,7 +704,7 @@ export default function MysteriesPage() {
             setCaches((current) => verifiedStoredShares(current.map((item) => {
               if (item.id !== cache.id) return item;
               const merged = verifiedStoredShares([authoritative, item], deviceMergeOptions(item, authoritative, baseMetadata))[0];
-              return { ...merged, id: authoritative.id, sharedWith: authoritative.sharedWith };
+              return { ...merged, id: authoritative.id, sharedWith: authoritative.sharedWith, geocachingNoteConflict: item.geocachingNoteConflict };
             })));
             setNotice(`Merged offline and server changes for ${cache.gcCode}.`);
           }
@@ -788,7 +804,7 @@ export default function MysteriesPage() {
               serverCache,
               { ...currentCache, id: serverCache.id, sharedWith: serverCache.sharedWith }
             ], mergeOptions)[0];
-            return { ...merged, id: serverCache.id, sharedWith: serverCache.sharedWith };
+            return { ...merged, id: serverCache.id, sharedWith: serverCache.sharedWith, geocachingNoteConflict: currentCache.geocachingNoteConflict };
           }
           const currentSerialized = stableJsonStringify(shareableMystery(currentCache));
           const requestSerialized = ownedAtRequest.get(serverCache.id);
@@ -803,9 +819,11 @@ export default function MysteriesPage() {
           if (localChanged || changedDuringRequest) {
             mergedConflictCount += 1;
             const merged = verifiedStoredShares([serverCache, currentCache], mergeOptions)[0];
-            return { ...merged, id: serverCache.id, sharedWith: serverCache.sharedWith };
+            return { ...merged, id: serverCache.id, sharedWith: serverCache.sharedWith, geocachingNoteConflict: currentCache.geocachingNoteConflict };
           }
-          return serverCache;
+          return currentCache.geocachingNoteConflict
+            ? { ...serverCache, geocachingNoteConflict: currentCache.geocachingNoteConflict }
+            : serverCache;
         });
         ownedEntries.forEach(({ cache, revision, serialized }) => rememberServerSnapshot(cache.id, revision, serialized));
         const localOnly = current.filter((cache) =>
@@ -939,7 +957,7 @@ export default function MysteriesPage() {
         setCaches((current) => applyGeocachingSyncReceipt(current, receipt).caches);
         if (typeof receipt.cacheId === "string") setSelectedId(receipt.cacheId);
         setNotice(receipt.type === "notes"
-          ? receipt.direction === "from-geocaching" ? "Geocaching note copied to Geostats" : "Personal cache notes synced"
+          ? "Note sync finished. Any newer Geostats edit was kept for review."
           : "Confirmed as synced to Geocaching");
       } catch {
         setNotice("Could not read the Geocaching sync receipt");
@@ -1075,6 +1093,18 @@ export default function MysteriesPage() {
     }
     updateSelected(patch);
     setNotice(useDevice ? `Restored offline ${field}.` : `Kept server ${field}.`);
+  }
+
+  function resolveGeocachingNoteConflict(useGeocaching: boolean) {
+    if (!selected?.geocachingNoteConflict || selected.sharedBy) return;
+    const conflict = selected.geocachingNoteConflict;
+    updateSelected(useGeocaching ? {
+      notes: conflict.geocaching,
+      geocachingNotesFingerprint: mysteryFieldFingerprint(conflict.geocaching),
+      geocachingNotesSyncedAt: conflict.syncedAt,
+      geocachingNoteConflict: undefined
+    } : { geocachingNoteConflict: undefined });
+    setNotice(useGeocaching ? "Using the Geocaching note." : "Kept the newer Geostats note.");
   }
 
   function rememberDeletedCache(cacheId: string) {
@@ -1759,6 +1789,11 @@ export default function MysteriesPage() {
               <div><AlertTriangle size={18} /><span><strong>Offline edits need review</strong><small>The server version is active. Restore your device edit or keep the server value.</small></span></div>
               {selected.syncConflicts.notes && <div className="mystery-sync-conflict-row"><span><strong>Notes from this device</strong><small>{selected.syncConflicts.notes.device || "Notes were cleared on this device."}</small></span><button className="secondary-button" type="button" onClick={() => resolveSyncConflict("notes", true)}>Use device</button><button className="text-button" type="button" onClick={() => resolveSyncConflict("notes", false)}>Keep server</button></div>}
               {selected.syncConflicts.image && <div className="mystery-sync-conflict-row"><span><strong>Image from this device</strong><small>{selected.syncConflicts.image.device ? "A different image was saved on this device." : "The image was removed on this device."}</small></span><button className="secondary-button" type="button" onClick={() => resolveSyncConflict("image", true)}>Use device</button><button className="text-button" type="button" onClick={() => resolveSyncConflict("image", false)}>Keep server</button></div>}
+            </section>}
+
+            {selected.geocachingNoteConflict && <section className="mystery-sync-conflicts" aria-label="Geocaching note conflict">
+              <div><AlertTriangle size={18} /><span><strong>Geocaching note needs review</strong><small>Your Geostats note changed while the sync tab was open, so the newer edit was kept.</small></span></div>
+              <div className="mystery-sync-conflict-row"><span><strong>Note returned by Geocaching</strong><small>{selected.geocachingNoteConflict.geocaching || "The Geocaching note is empty."}</small></span><button className="secondary-button" type="button" onClick={() => resolveGeocachingNoteConflict(true)}>Use Geocaching</button><button className="text-button" type="button" onClick={() => resolveGeocachingNoteConflict(false)}>Keep Geostats</button></div>
             </section>}
 
             <div className="clue-strip">

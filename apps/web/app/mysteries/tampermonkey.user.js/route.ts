@@ -481,6 +481,7 @@ function userscript(appOrigin: string) {
       cacheId: noteSyncPayload.cacheId,
       gcCode: noteSyncPayload.gcCode,
       notes,
+      geostatsNotes: noteSyncPayload.notes,
       direction,
       syncedAt: new Date().toISOString()
     };
