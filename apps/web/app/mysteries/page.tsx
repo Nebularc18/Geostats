@@ -39,7 +39,11 @@ import { MYSTERY_USERSCRIPT_VERSION } from "../../lib/mystery-userscript";
 import { bulkAttemptKey, parseBulkFailedAttempts, parseFailedCoordinateCsv } from "../../lib/mystery-bulk-attempts";
 import { automaticSyncRetryDelay } from "../../lib/mystery-sync-policy";
 import { normalizeMysteryImageUrl } from "../../lib/mystery-image";
-import { reconcileGeocachingNoteReceipt, type GeocachingNoteConflict } from "../../lib/mystery-note-receipt";
+import {
+  chooseGeocachingNoteConflict,
+  reconcileGeocachingNoteReceipt,
+  type GeocachingNoteConflict
+} from "../../lib/mystery-note-receipt";
 
 type CheckState = "correct" | "wrong" | "unchecked" | "planned";
 type MysteryStatus = "solving" | "solved" | "planned";
@@ -1098,13 +1102,22 @@ export default function MysteriesPage() {
   function resolveGeocachingNoteConflict(useGeocaching: boolean) {
     if (!selected?.geocachingNoteConflict || selected.sharedBy) return;
     const conflict = selected.geocachingNoteConflict;
-    updateSelected(useGeocaching ? {
-      notes: conflict.geocaching,
-      geocachingNotesFingerprint: mysteryFieldFingerprint(conflict.geocaching),
+    const choice = chooseGeocachingNoteConflict(selected.notes, conflict, useGeocaching);
+    if (choice.outcome === "stale") {
+      updateSelected({
+        notes: choice.notes,
+        geocachingNoteConflict: { ...choice.conflict, syncedAt: conflict.syncedAt }
+      });
+      setNotice("The Geostats note changed again. Review the latest edit before replacing it.");
+      return;
+    }
+    updateSelected(choice.outcome === "geocaching" ? {
+      notes: choice.notes,
+      geocachingNotesFingerprint: mysteryFieldFingerprint(choice.notes),
       geocachingNotesSyncedAt: conflict.syncedAt,
       geocachingNoteConflict: undefined
     } : { geocachingNoteConflict: undefined });
-    setNotice(useGeocaching ? "Using the Geocaching note." : "Kept the newer Geostats note.");
+    setNotice(choice.outcome === "geocaching" ? "Using the Geocaching note." : "Kept the newer Geostats note.");
   }
 
   function rememberDeletedCache(cacheId: string) {
