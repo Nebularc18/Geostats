@@ -3,6 +3,7 @@ import { cachePageShowsCoordinate } from "../../../lib/mystery-coordinate-confir
 import { solvedCoordinateEditorFromPage } from "../../../lib/mystery-coordinate-editor";
 import { locationFromCachePageMetadata } from "../../../lib/mystery-area";
 import { locationFromPageSources } from "../../../lib/mystery-page-location";
+import { personalCacheNoteEditorFromPage, personalCacheNoteFromPage } from "../../../lib/mystery-personal-note";
 import { MYSTERY_USERSCRIPT_VERSION } from "../../../lib/mystery-userscript";
 
 function userscript(appOrigin: string) {
@@ -10,7 +11,7 @@ function userscript(appOrigin: string) {
 // @name         Geostats Mystery Importer
 // @namespace    ${appOrigin}
 // @version      ${MYSTERY_USERSCRIPT_VERSION}
-// @description  Import mystery caches and automatically sync corrected coordinates from Geostats.
+// @description  Import mystery caches and sync corrected coordinates and personal cache notes with Geostats.
 // @match        https://www.geocaching.com/geocache/*
 // @match        https://www.geocaching.com/seek/cache_details.aspx*
 // @match        ${appOrigin}/mysteries*
@@ -35,9 +36,13 @@ function userscript(appOrigin: string) {
   const PENDING_SYNC_KEY = "geostats-pending-coordinate-sync";
   const SYNC_RECEIPT_KEY = "geostats-coordinate-sync-receipt";
   const SYNC_RECEIPT_PREFIX = SYNC_RECEIPT_KEY + ":";
+  const PENDING_NOTE_SYNC_KEY = "geostats-pending-note-sync";
+  const NOTE_SYNC_RECEIPT_PREFIX = "geostats-note-sync-receipt:";
   const MAX_SYNC_AGE_MS = 10 * 60 * 1000;
   const cachePageShowsCoordinate = ${cachePageShowsCoordinate.toString()};
   const solvedCoordinateEditorFromPage = ${solvedCoordinateEditorFromPage.toString()};
+  const personalCacheNoteFromPage = ${personalCacheNoteFromPage.toString()};
+  const personalCacheNoteEditorFromPage = ${personalCacheNoteEditorFromPage.toString()};
 
   if (location.origin === GEOSTATS_ORIGIN) {
     document.addEventListener("geostats-sync-request", () => {
@@ -68,8 +73,28 @@ function userscript(appOrigin: string) {
         // Ignore malformed requests.
       }
     });
+    document.addEventListener("geostats-note-sync-request", () => {
+      try {
+        const request = document.documentElement.getAttribute("data-geostats-note-sync-request");
+        const value = JSON.parse(request || "null");
+        const valid = value &&
+          typeof value.cacheId === "string" &&
+          /^GC[A-Z0-9]+$/i.test(value.gcCode || "") &&
+          typeof value.notes === "string" &&
+          value.notes.length <= 100000 &&
+          Number.isFinite(value.issuedAt);
+        const acknowledgement = value?.cacheId + ":" + value?.issuedAt;
+        if (valid && acknowledgement) {
+          GM_setValue(PENDING_NOTE_SYNC_KEY, JSON.stringify(value));
+          document.documentElement.setAttribute("data-geostats-note-sync-ready", acknowledgement);
+          document.dispatchEvent(new Event("geostats-note-sync-ready"));
+        }
+      } catch {
+        // Ignore malformed requests.
+      }
+    });
     const deliverSyncReceipt = () => {
-      const keys = GM_listValues().filter((key) => key === SYNC_RECEIPT_KEY || key.startsWith(SYNC_RECEIPT_PREFIX));
+      const keys = GM_listValues().filter((key) => key === SYNC_RECEIPT_KEY || key.startsWith(SYNC_RECEIPT_PREFIX) || key.startsWith(NOTE_SYNC_RECEIPT_PREFIX));
       keys.forEach((key) => {
         const receipt = GM_getValue(key, "");
         if (!receipt) return;
@@ -84,11 +109,16 @@ function userscript(appOrigin: string) {
   }
 
   const hasSyncRequest = new URLSearchParams(location.hash.replace(/^#/, "")).has("geostats-sync");
+  const hasNoteSyncRequest = new URLSearchParams(location.hash.replace(/^#/, "")).has("geostats-note-sync");
   const syncPayload = readSyncPayload();
+  const noteSyncPayload = readNoteSyncPayload();
   let syncSubmissionStarted = false;
   let syncReceiptReturned = false;
   let directSyncStarted = false;
   let useCoordinateEditor = false;
+  let noteSubmissionStarted = false;
+  let noteReceiptReturned = false;
+  let noteEditorReady = false;
 
   function readSyncPayload() {
     const encoded = new URLSearchParams(location.hash.replace(/^#/, "")).get("geostats-sync");
@@ -120,6 +150,34 @@ function userscript(appOrigin: string) {
         pending.latitude !== value.latitude ||
         pending.longitude !== value.longitude ||
         pending.coordinateText !== value.coordinateText ||
+        pending.issuedAt !== value.issuedAt
+      ) return null;
+      return value;
+    } catch {
+      return null;
+    }
+  }
+
+  function readNoteSyncPayload() {
+    const encoded = new URLSearchParams(location.hash.replace(/^#/, "")).get("geostats-note-sync");
+    if (!encoded) return null;
+    try {
+      const value = JSON.parse(encoded);
+      const pending = JSON.parse(GM_getValue(PENDING_NOTE_SYNC_KEY, "null"));
+      const pageCode = (location.pathname.match(/\\/geocache\\/(GC[A-Z0-9]+)/i)?.[1] || new URLSearchParams(location.search).get("wp") || "").toUpperCase();
+      if (
+        !pending ||
+        typeof value.cacheId !== "string" ||
+        typeof value.gcCode !== "string" ||
+        value.gcCode.toUpperCase() !== pageCode ||
+        typeof value.notes !== "string" ||
+        value.notes.length > 100000 ||
+        !Number.isFinite(value.issuedAt) ||
+        Date.now() - value.issuedAt > MAX_SYNC_AGE_MS ||
+        Date.now() - value.issuedAt < -30000 ||
+        pending.cacheId !== value.cacheId ||
+        pending.gcCode !== value.gcCode ||
+        pending.notes !== value.notes ||
         pending.issuedAt !== value.issuedAt
       ) return null;
       return value;
@@ -188,7 +246,9 @@ function userscript(appOrigin: string) {
     const coordinateText = textFrom(["#uxLatLon", "[data-testid='coordinates']", ".coordinates", "[class*='Coordinates']", "[class*='coordinates']"]);
     const coordinates = parseCoordinates(coordinateText);
     const pageLocationData = pageLocation();
-    return coordinates ? { gcCode, name, ...pageLocationData, ...coordinates } : { gcCode, name, ...pageLocationData };
+    const personalNote = personalCacheNoteFromPage(document);
+    const notes = personalNote.available ? { notes: personalNote.note } : {};
+    return coordinates ? { gcCode, name, ...pageLocationData, ...coordinates, ...notes } : { gcCode, name, ...pageLocationData, ...notes };
   }
 
   function toast(message, error) {
@@ -318,6 +378,196 @@ function userscript(appOrigin: string) {
     const style = window.getComputedStyle(element);
     const bounds = element.getBoundingClientRect();
     return style.display !== "none" && style.visibility !== "hidden" && bounds.width > 0 && bounds.height > 0;
+  }
+
+  function findPersonalNoteEditor() {
+    return personalCacheNoteEditorFromPage(document, isVisible);
+  }
+
+  function setNoteSyncPanelState(message, state) {
+    const instructions = document.getElementById("geostats-note-sync-instructions");
+    const useGeostats = document.getElementById("geostats-note-use-geostats");
+    if (instructions) instructions.textContent = message;
+    if (useGeostats) {
+      useGeostats.disabled = state === "loading";
+      useGeostats.textContent = state === "editor" ? "Save on Geocaching" : "Use Geostats note";
+    }
+  }
+
+  function noteEditorTriggers() {
+    const candidates = [];
+    const add = (candidate) => {
+      if (candidate && isVisible(candidate) && !candidate.closest("#geostats-note-sync-panel") && !candidates.includes(candidate)) candidates.push(candidate);
+    };
+    add(document.getElementById("viewCacheNote"));
+    add(document.getElementById("cache_note"));
+    const noteArea = document.querySelector(".PersonalCacheNote");
+    if (noteArea) {
+      [...noteArea.querySelectorAll("button, a, [role='button']")].forEach((control) => {
+        const label = [control.textContent, control.getAttribute("aria-label"), control.getAttribute("title")].filter(Boolean).join(" ");
+        if (/edit|add|enter|note/i.test(label)) add(control);
+      });
+      add(noteArea);
+    }
+    return candidates.slice(0, 2);
+  }
+
+  function fillPersonalNoteEditor() {
+    if (!noteSyncPayload) return false;
+    const editor = findPersonalNoteEditor();
+    if (!editor) return false;
+    const maxLength = Number(editor.field.getAttribute("maxlength") || -1);
+    if (maxLength > -1 && noteSyncPayload.notes.length > maxLength) {
+      setNoteSyncPanelState("This note is longer than Geocaching allows. Shorten it in Geostats, then try again.", "error");
+      return false;
+    }
+    setInputValue(editor.field, noteSyncPayload.notes);
+    editor.field.focus();
+    noteEditorReady = true;
+    setNoteSyncPanelState("Review the filled personal cache note, then save it on Geocaching.", "editor");
+    return true;
+  }
+
+  function waitForPersonalNoteEditor(timeoutMs) {
+    return new Promise((resolve) => {
+      const started = Date.now();
+      const timer = window.setInterval(() => {
+        if (fillPersonalNoteEditor()) {
+          window.clearInterval(timer);
+          resolve(true);
+          return;
+        }
+        if (Date.now() - started >= timeoutMs) {
+          window.clearInterval(timer);
+          resolve(false);
+        }
+      }, 100);
+    });
+  }
+
+  async function openPersonalNoteEditor() {
+    if (fillPersonalNoteEditor()) return true;
+    const triggers = noteEditorTriggers();
+    for (const trigger of triggers) {
+      trigger.click?.();
+      if (await waitForPersonalNoteEditor(2500)) return true;
+    }
+    return false;
+  }
+
+  function waitForPersonalNote(value, timeoutMs) {
+    return new Promise((resolve) => {
+      const started = Date.now();
+      const timer = window.setInterval(() => {
+        const current = personalCacheNoteFromPage(document);
+        if (current.available && current.note === value) {
+          window.clearInterval(timer);
+          resolve(true);
+          return;
+        }
+        if (Date.now() - started >= timeoutMs) {
+          window.clearInterval(timer);
+          resolve(false);
+        }
+      }, 250);
+    });
+  }
+
+  function returnNoteSyncReceipt(direction, notes) {
+    if (!noteSyncPayload || noteReceiptReturned) return;
+    noteReceiptReturned = true;
+    const receipt = {
+      type: "notes",
+      cacheId: noteSyncPayload.cacheId,
+      gcCode: noteSyncPayload.gcCode,
+      notes,
+      geostatsNotes: noteSyncPayload.notes,
+      direction,
+      syncedAt: new Date().toISOString()
+    };
+    GM_setValue(NOTE_SYNC_RECEIPT_PREFIX + noteSyncPayload.cacheId, JSON.stringify(receipt));
+    GM_deleteValue(PENDING_NOTE_SYNC_KEY);
+    setNoteSyncPanelState("Notes synced. Returning to Geostats…", "success");
+    toast("Personal cache note synced", false);
+    window.setTimeout(() => window.close(), 700);
+  }
+
+  async function useGeostatsPersonalNote() {
+    if (!noteSyncPayload || noteSubmissionStarted) return;
+    if (!noteEditorReady) {
+      setNoteSyncPanelState("Opening Geocaching's personal cache note editor…", "loading");
+      if (!await openPersonalNoteEditor()) {
+        setNoteSyncPanelState("Geocaching's note editor did not open. Open the personal cache note manually, then try again.", "error");
+      }
+      return;
+    }
+    const editor = findPersonalNoteEditor();
+    if (!editor?.save) {
+      setNoteSyncPanelState("The Geocaching Save button was not found. Save the filled note manually, then retry.", "error");
+      return;
+    }
+    noteSubmissionStarted = true;
+    setNoteSyncPanelState("Waiting for Geocaching to save the personal cache note…", "loading");
+    editor.save.click?.();
+    const saved = await waitForPersonalNote(noteSyncPayload.notes, 15000);
+    if (saved) {
+      returnNoteSyncReceipt("to-geocaching", noteSyncPayload.notes);
+      return;
+    }
+    noteSubmissionStarted = false;
+    noteEditorReady = false;
+    setNoteSyncPanelState("Geocaching did not confirm the saved note. Check the page, then retry.", "error");
+  }
+
+  function addNoteSyncPanel() {
+    if (!noteSyncPayload || document.getElementById("geostats-note-sync-panel")) return;
+    const current = personalCacheNoteFromPage(document);
+    const panel = document.createElement("section");
+    panel.id = "geostats-note-sync-panel";
+    Object.assign(panel.style, { position: "fixed", right: "22px", bottom: "82px", zIndex: "2147483646", width: "min(390px, calc(100vw - 44px))", padding: "16px", border: "1px solid #79d99d", borderRadius: "10px", color: "#f4f7f2", background: "#15261d", boxShadow: "0 16px 45px rgba(0,0,0,.45)", font: "14px/1.4 system-ui" });
+    const title = document.createElement("strong");
+    title.textContent = "Personal cache note sync · v${MYSTERY_USERSCRIPT_VERSION}";
+    title.style.display = "block";
+    title.style.marginBottom = "10px";
+    const comparison = document.createElement("div");
+    Object.assign(comparison.style, { display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px" });
+    [["Geostats", noteSyncPayload.notes], ["Geocaching", current.note]].forEach(([label, value]) => {
+      const box = document.createElement("div");
+      const heading = document.createElement("small");
+      heading.textContent = label;
+      Object.assign(heading.style, { display: "block", marginBottom: "4px", color: "#b9f5cf", fontWeight: "700" });
+      const preview = document.createElement("div");
+      preview.textContent = value || "No note";
+      Object.assign(preview.style, { minHeight: "56px", maxHeight: "110px", overflow: "auto", padding: "8px", borderRadius: "6px", color: value ? "#f4f7f2" : "#9caaa0", background: "rgba(0,0,0,.25)", fontSize: "12px", whiteSpace: "pre-wrap", overflowWrap: "anywhere" });
+      box.append(heading, preview);
+      comparison.appendChild(box);
+    });
+    const instructions = document.createElement("span");
+    instructions.id = "geostats-note-sync-instructions";
+    instructions.textContent = current.available ? "Choose which note to keep." : "Personal cache notes require a signed-in Premium Geocaching account.";
+    Object.assign(instructions.style, { display: "block", marginTop: "10px", color: "#d5ddd7", fontSize: "12px" });
+    const actions = document.createElement("div");
+    Object.assign(actions.style, { display: "flex", flexWrap: "wrap", gap: "8px", marginTop: "12px" });
+    const useGeostats = document.createElement("button");
+    useGeostats.id = "geostats-note-use-geostats";
+    useGeostats.type = "button";
+    useGeostats.textContent = "Use Geostats note";
+    useGeostats.disabled = !current.available;
+    useGeostats.addEventListener("click", () => void useGeostatsPersonalNote());
+    Object.assign(useGeostats.style, { flex: "1", padding: "8px 10px", border: "0", borderRadius: "6px", color: "#07110b", background: "#5fbf85", cursor: current.available ? "pointer" : "not-allowed", fontWeight: "700" });
+    const useGeocaching = document.createElement("button");
+    useGeocaching.type = "button";
+    useGeocaching.textContent = "Use Geocaching note";
+    useGeocaching.disabled = !current.available;
+    useGeocaching.addEventListener("click", () => returnNoteSyncReceipt("from-geocaching", current.note));
+    Object.assign(useGeocaching.style, { flex: "1", padding: "8px 10px", border: "1px solid #557363", borderRadius: "6px", color: "white", background: "transparent", cursor: current.available ? "pointer" : "not-allowed", fontWeight: "700" });
+    actions.append(useGeostats, useGeocaching);
+    panel.append(title, comparison, instructions, actions);
+    document.body.appendChild(panel);
+    if (current.available && current.note === noteSyncPayload.notes) {
+      setNoteSyncPanelState("The notes already match. Returning to Geostats…", "success");
+      window.setTimeout(() => returnNoteSyncReceipt("matched", current.note), 500);
+    }
   }
 
   function findSolvedCoordinateEditor() {
@@ -591,12 +841,17 @@ function userscript(appOrigin: string) {
 
   addButton();
   addSyncPanel();
+  addNoteSyncPanel();
   if (hasSyncRequest && !syncPayload) {
     toast("Geostats could not read this sync request. Update the helper and try again.", true);
+  }
+  if (hasNoteSyncRequest && !noteSyncPayload) {
+    toast("Geostats could not read this note sync request. Update the helper and try again.", true);
   }
   new MutationObserver(() => {
     addButton();
     addSyncPanel();
+    addNoteSyncPanel();
     adoptManuallyOpenedEditor();
   }).observe(document.documentElement, { childList: true, subtree: true });
   if (typeof GM_registerMenuCommand === "function") GM_registerMenuCommand("Import this cache to Geostats", importCache);

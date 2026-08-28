@@ -14,6 +14,7 @@ import {
   Import,
   MapPin,
   Plus,
+  RefreshCw,
   Search,
   Settings2,
   Share2,
@@ -37,6 +38,12 @@ import { normalizeMysteryArea } from "../../lib/mystery-area";
 import { MYSTERY_USERSCRIPT_VERSION } from "../../lib/mystery-userscript";
 import { bulkAttemptKey, parseBulkFailedAttempts, parseFailedCoordinateCsv } from "../../lib/mystery-bulk-attempts";
 import { automaticSyncRetryDelay } from "../../lib/mystery-sync-policy";
+import { normalizeMysteryImageUrl } from "../../lib/mystery-image";
+import {
+  chooseGeocachingNoteConflict,
+  reconcileGeocachingNoteReceipt,
+  type GeocachingNoteConflict
+} from "../../lib/mystery-note-receipt";
 
 type CheckState = "correct" | "wrong" | "unchecked" | "planned";
 type MysteryStatus = "solving" | "solved" | "planned";
@@ -94,6 +101,9 @@ type MysteryCache = {
   sharedWith: AppUser[];
   attempts: CoordinateAttempt[];
   image?: string;
+  geocachingNotesFingerprint?: string;
+  geocachingNotesSyncedAt?: string;
+  geocachingNoteConflict?: GeocachingNoteConflict & { syncedAt: string };
   syncConflicts?: MysterySyncConflicts;
   sharedBy?: AppUser;
   sharedWorkspaceId?: string;
@@ -136,15 +146,20 @@ type BrowserImport = {
   locationHierarchy?: unknown;
   latitude?: unknown;
   longitude?: unknown;
+  notes?: unknown;
 };
 
 type GeocachingSyncReceipt = {
+  type?: unknown;
   cacheId?: unknown;
   attemptId?: unknown;
   gcCode?: unknown;
   latitude?: unknown;
   longitude?: unknown;
   syncedAt?: unknown;
+  notes?: unknown;
+  geostatsNotes?: unknown;
+  direction?: unknown;
 };
 
 type GeocachingSyncPayload = {
@@ -155,6 +170,13 @@ type GeocachingSyncPayload = {
   longitude: number;
   coordinateText: string;
   solved: true;
+  issuedAt: number;
+};
+
+type GeocachingNoteSyncPayload = {
+  cacheId: string;
+  gcCode: string;
+  notes: string;
   issuedAt: number;
 };
 
@@ -340,7 +362,7 @@ function verifiedStoredShares(caches: MysteryCache[], mergeOptions?: MysteryCach
 }
 
 function shareableMystery(cache: MysteryCache) {
-  const { sharedBy: _sharedBy, sharedWorkspaceId: _sharedWorkspaceId, syncConflicts: _syncConflicts, ...mystery } = cache;
+  const { sharedBy: _sharedBy, sharedWorkspaceId: _sharedWorkspaceId, syncConflicts: _syncConflicts, geocachingNoteConflict: _geocachingNoteConflict, ...mystery } = cache;
   return mystery;
 }
 
@@ -373,7 +395,7 @@ function importedMystery(value: BrowserImport): MysteryCache | null {
     status: "solving",
     publishedLatitude,
     publishedLongitude,
-    notes: "",
+    notes: typeof value.notes === "string" ? value.notes : "",
     clues: [],
     sharedWith: [],
     attempts: []
@@ -384,9 +406,35 @@ function applyGeocachingSyncReceipt(caches: MysteryCache[], value: GeocachingSyn
   const cacheId = typeof value.cacheId === "string" ? value.cacheId : "";
   const attemptId = typeof value.attemptId === "string" ? value.attemptId : "";
   const gcCode = typeof value.gcCode === "string" ? value.gcCode.toUpperCase() : "";
+  const syncedAt = typeof value.syncedAt === "string" && Number.isFinite(Date.parse(value.syncedAt)) ? value.syncedAt : "";
+  if (value.type === "notes") {
+    const notes = typeof value.notes === "string" ? value.notes : null;
+    const geostatsNotes = typeof value.geostatsNotes === "string" ? value.geostatsNotes : null;
+    let applied = false;
+    let conflicted = false;
+    const next = caches.map((cache) => {
+      if (cache.id !== cacheId || cache.gcCode.toUpperCase() !== gcCode || notes === null || geostatsNotes === null || !syncedAt) return cache;
+      const reconciliation = reconcileGeocachingNoteReceipt(cache.notes, geostatsNotes, notes);
+      if (reconciliation.conflict) {
+        conflicted = true;
+        return {
+          ...cache,
+          geocachingNoteConflict: { ...reconciliation.conflict, syncedAt }
+        };
+      }
+      applied = true;
+      return {
+        ...cache,
+        notes: reconciliation.notes,
+        geocachingNotesFingerprint: mysteryFieldFingerprint(notes),
+        geocachingNotesSyncedAt: syncedAt,
+        geocachingNoteConflict: undefined
+      };
+    });
+    return { caches: next, applied, conflicted };
+  }
   const latitude = typeof value.latitude === "number" ? value.latitude : Number.NaN;
   const longitude = typeof value.longitude === "number" ? value.longitude : Number.NaN;
-  const syncedAt = typeof value.syncedAt === "string" && Number.isFinite(Date.parse(value.syncedAt)) ? value.syncedAt : "";
   let applied = false;
 
   const next = caches.map((cache) => {
@@ -408,7 +456,7 @@ function applyGeocachingSyncReceipt(caches: MysteryCache[], value: GeocachingSyn
     return { ...cache, attempts };
   });
 
-  return { caches: next, applied };
+  return { caches: next, applied, conflicted: false };
 }
 
 export default function MysteriesPage() {
@@ -442,6 +490,10 @@ export default function MysteriesPage() {
   const [coordinateError, setCoordinateError] = useState("");
   const [showAdd, setShowAdd] = useState(false);
   const [showBrowserImport, setShowBrowserImport] = useState(false);
+  const [showImagePicker, setShowImagePicker] = useState(false);
+  const [imageUrl, setImageUrl] = useState("");
+  const [imageUrlError, setImageUrlError] = useState("");
+  const [loadingImageUrl, setLoadingImageUrl] = useState(false);
   const [showBulkImport, setShowBulkImport] = useState(false);
   const [bulkTries, setBulkTries] = useState("");
   const [bulkImportError, setBulkImportError] = useState("");
@@ -462,6 +514,7 @@ export default function MysteriesPage() {
   const [scriptCopied, setScriptCopied] = useState(false);
   const [notice, setNotice] = useState("");
   const scriptTextRef = useRef<HTMLTextAreaElement>(null);
+  const imageLoadAttempt = useRef(0);
 
   latestCaches.current = caches;
 
@@ -567,7 +620,9 @@ export default function MysteriesPage() {
         initial = result.caches;
         const receipt = JSON.parse(encodedSyncReceipt) as GeocachingSyncReceipt;
         if (typeof receipt.cacheId === "string") setSelectedId(receipt.cacheId);
-        setNotice(result.applied ? "Confirmed as synced to Geocaching" : "Could not match the Geocaching sync receipt");
+        setNotice(result.conflicted
+          ? "Notes changed during sync. Review both versions."
+          : result.applied ? receipt.type === "notes" ? "Personal cache notes synced" : "Confirmed as synced to Geocaching" : "Could not match the Geocaching sync receipt");
       } catch {
         setNotice("Could not read the Geocaching sync receipt");
       }
@@ -653,7 +708,7 @@ export default function MysteriesPage() {
             setCaches((current) => verifiedStoredShares(current.map((item) => {
               if (item.id !== cache.id) return item;
               const merged = verifiedStoredShares([authoritative, item], deviceMergeOptions(item, authoritative, baseMetadata))[0];
-              return { ...merged, id: authoritative.id, sharedWith: authoritative.sharedWith };
+              return { ...merged, id: authoritative.id, sharedWith: authoritative.sharedWith, geocachingNoteConflict: item.geocachingNoteConflict };
             })));
             setNotice(`Merged offline and server changes for ${cache.gcCode}.`);
           }
@@ -753,7 +808,7 @@ export default function MysteriesPage() {
               serverCache,
               { ...currentCache, id: serverCache.id, sharedWith: serverCache.sharedWith }
             ], mergeOptions)[0];
-            return { ...merged, id: serverCache.id, sharedWith: serverCache.sharedWith };
+            return { ...merged, id: serverCache.id, sharedWith: serverCache.sharedWith, geocachingNoteConflict: currentCache.geocachingNoteConflict };
           }
           const currentSerialized = stableJsonStringify(shareableMystery(currentCache));
           const requestSerialized = ownedAtRequest.get(serverCache.id);
@@ -768,9 +823,11 @@ export default function MysteriesPage() {
           if (localChanged || changedDuringRequest) {
             mergedConflictCount += 1;
             const merged = verifiedStoredShares([serverCache, currentCache], mergeOptions)[0];
-            return { ...merged, id: serverCache.id, sharedWith: serverCache.sharedWith };
+            return { ...merged, id: serverCache.id, sharedWith: serverCache.sharedWith, geocachingNoteConflict: currentCache.geocachingNoteConflict };
           }
-          return serverCache;
+          return currentCache.geocachingNoteConflict
+            ? { ...serverCache, geocachingNoteConflict: currentCache.geocachingNoteConflict }
+            : serverCache;
         });
         ownedEntries.forEach(({ cache, revision, serialized }) => rememberServerSnapshot(cache.id, revision, serialized));
         const localOnly = current.filter((cache) =>
@@ -903,7 +960,9 @@ export default function MysteriesPage() {
         const receipt = JSON.parse(rawReceipt) as GeocachingSyncReceipt;
         setCaches((current) => applyGeocachingSyncReceipt(current, receipt).caches);
         if (typeof receipt.cacheId === "string") setSelectedId(receipt.cacheId);
-        setNotice("Confirmed as synced to Geocaching");
+        setNotice(receipt.type === "notes"
+          ? "Note sync finished. Any newer Geostats edit was kept for review."
+          : "Confirmed as synced to Geocaching");
       } catch {
         setNotice("Could not read the Geocaching sync receipt");
       }
@@ -1038,6 +1097,27 @@ export default function MysteriesPage() {
     }
     updateSelected(patch);
     setNotice(useDevice ? `Restored offline ${field}.` : `Kept server ${field}.`);
+  }
+
+  function resolveGeocachingNoteConflict(useGeocaching: boolean) {
+    if (!selected?.geocachingNoteConflict || selected.sharedBy) return;
+    const conflict = selected.geocachingNoteConflict;
+    const choice = chooseGeocachingNoteConflict(selected.notes, conflict, useGeocaching);
+    if (choice.outcome === "stale") {
+      updateSelected({
+        notes: choice.notes,
+        geocachingNoteConflict: { ...choice.conflict, syncedAt: conflict.syncedAt }
+      });
+      setNotice("The Geostats note changed again. Review the latest edit before replacing it.");
+      return;
+    }
+    updateSelected(choice.outcome === "geocaching" ? {
+      notes: choice.notes,
+      geocachingNotesFingerprint: mysteryFieldFingerprint(choice.notes),
+      geocachingNotesSyncedAt: conflict.syncedAt,
+      geocachingNoteConflict: undefined
+    } : { geocachingNoteConflict: undefined });
+    setNotice(choice.outcome === "geocaching" ? "Using the Geocaching note." : "Kept the newer Geostats note.");
   }
 
   function rememberDeletedCache(cacheId: string) {
@@ -1205,6 +1285,42 @@ export default function MysteriesPage() {
   function syncAttempt(cache: MysteryCache, attempt: CoordinateAttempt) {
     const solved = solvedCoordinateForAttempt(attempt);
     if (solved) syncAttempts([{ cache, ...solved }]);
+  }
+
+  function syncNotes(cache: MysteryCache) {
+    if (cache.sharedBy) return;
+    const payload: GeocachingNoteSyncPayload = {
+      cacheId: cache.id,
+      gcCode: cache.gcCode,
+      notes: cache.notes,
+      issuedAt: Date.now()
+    };
+    const request = JSON.stringify(payload);
+    const acknowledgement = `${payload.cacheId}:${payload.issuedAt}`;
+    const root = document.documentElement;
+    let finished = false;
+    const cleanup = () => {
+      document.removeEventListener("geostats-note-sync-ready", handleReady);
+      root.removeAttribute("data-geostats-note-sync-request");
+      root.removeAttribute("data-geostats-note-sync-ready");
+    };
+    const handleReady = () => {
+      if (finished || root.getAttribute("data-geostats-note-sync-ready") !== acknowledgement) return;
+      finished = true;
+      cleanup();
+      const target = `https://coord.info/${encodeURIComponent(payload.gcCode)}#geostats-note-sync=${encodeURIComponent(request)}`;
+      window.open(target, "_blank", "noopener,noreferrer");
+      setNotice("Geocaching opened. Choose which note to keep there.");
+    };
+    document.addEventListener("geostats-note-sync-ready", handleReady);
+    root.setAttribute("data-geostats-note-sync-request", request);
+    document.dispatchEvent(new Event("geostats-note-sync-request"));
+    window.setTimeout(() => {
+      if (finished) return;
+      finished = true;
+      cleanup();
+      setNotice("The current helper is not active here. Install or update it, then try again.");
+    }, 500);
   }
 
   function addCache(event: FormEvent<HTMLFormElement>) {
@@ -1462,16 +1578,67 @@ export default function MysteriesPage() {
     }
   }
 
+  function closeImagePicker() {
+    imageLoadAttempt.current += 1;
+    setShowImagePicker(false);
+    setImageUrl("");
+    setImageUrlError("");
+    setLoadingImageUrl(false);
+  }
+
+  function openImagePicker() {
+    setImageUrl(selected?.image?.startsWith("http") ? selected.image : "");
+    setImageUrlError("");
+    setShowImagePicker(true);
+  }
+
   function attachImage(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     if (!file || !selected) return;
+    event.target.value = "";
+    if (!file.type.startsWith("image/")) {
+      setImageUrlError("Choose an image file.");
+      return;
+    }
     if (file.size > 1_500_000) {
-      setNotice("Choose an image smaller than 1.5 MB");
+      setImageUrlError("Choose an image smaller than 1.5 MB.");
       return;
     }
     const reader = new FileReader();
-    reader.onload = () => updateSelected({ image: String(reader.result) });
+    reader.onload = () => {
+      updateSelected({ image: String(reader.result) });
+      closeImagePicker();
+      setNotice("Image added.");
+    };
+    reader.onerror = () => setImageUrlError("Could not read that image. Try another file.");
     reader.readAsDataURL(file);
+  }
+
+  function attachImageUrl(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const normalizedUrl = normalizeMysteryImageUrl(imageUrl);
+    if (!normalizedUrl) {
+      setImageUrlError("Enter a full image URL starting with http:// or https://.");
+      return;
+    }
+
+    const attempt = imageLoadAttempt.current + 1;
+    imageLoadAttempt.current = attempt;
+    setLoadingImageUrl(true);
+    setImageUrlError("");
+    const candidate = new Image();
+    candidate.onload = () => {
+      if (imageLoadAttempt.current !== attempt) return;
+      updateSelected({ image: normalizedUrl });
+      closeImagePicker();
+      setNotice("Image link added.");
+    };
+    candidate.onerror = () => {
+      if (imageLoadAttempt.current !== attempt) return;
+      setLoadingImageUrl(false);
+      setImageUrlError("That link did not load an image. Check the URL and try again.");
+    };
+    candidate.src = normalizedUrl;
   }
 
   function exportGpx() {
@@ -1624,7 +1791,7 @@ export default function MysteriesPage() {
               </div>
               <div className="detail-actions">
                 {!selected.sharedBy && <button className="secondary-button" type="button" onClick={openShare}><Share2 size={16} /> Share</button>}
-                {!selected.sharedBy && <label className="secondary-button image-button"><ImagePlus size={16} /> Add image<input type="file" accept="image/*" onChange={attachImage} /></label>}
+                {!selected.sharedBy && <button className="secondary-button" type="button" onClick={openImagePicker}><ImagePlus size={16} /> {selected.image ? "Change image" : "Add image"}</button>}
                 {!selected.sharedBy && <button className="secondary-button danger-button" type="button" onClick={() => setCacheToDelete(selected)}><Trash2 size={16} /> Delete</button>}
               </div>
             </div>
@@ -1635,6 +1802,11 @@ export default function MysteriesPage() {
               <div><AlertTriangle size={18} /><span><strong>Offline edits need review</strong><small>The server version is active. Restore your device edit or keep the server value.</small></span></div>
               {selected.syncConflicts.notes && <div className="mystery-sync-conflict-row"><span><strong>Notes from this device</strong><small>{selected.syncConflicts.notes.device || "Notes were cleared on this device."}</small></span><button className="secondary-button" type="button" onClick={() => resolveSyncConflict("notes", true)}>Use device</button><button className="text-button" type="button" onClick={() => resolveSyncConflict("notes", false)}>Keep server</button></div>}
               {selected.syncConflicts.image && <div className="mystery-sync-conflict-row"><span><strong>Image from this device</strong><small>{selected.syncConflicts.image.device ? "A different image was saved on this device." : "The image was removed on this device."}</small></span><button className="secondary-button" type="button" onClick={() => resolveSyncConflict("image", true)}>Use device</button><button className="text-button" type="button" onClick={() => resolveSyncConflict("image", false)}>Keep server</button></div>}
+            </section>}
+
+            {selected.geocachingNoteConflict && <section className="mystery-sync-conflicts" aria-label="Geocaching note conflict">
+              <div><AlertTriangle size={18} /><span><strong>Geocaching note needs review</strong><small>Your Geostats note changed while the sync tab was open, so the newer edit was kept.</small></span></div>
+              <div className="mystery-sync-conflict-row"><span><strong>Note returned by Geocaching</strong><small>{selected.geocachingNoteConflict.geocaching || "The Geocaching note is empty."}</small></span><button className="secondary-button" type="button" onClick={() => resolveGeocachingNoteConflict(true)}>Use Geocaching</button><button className="text-button" type="button" onClick={() => resolveGeocachingNoteConflict(false)}>Keep Geostats</button></div>
             </section>}
 
             <div className="clue-strip">
@@ -1705,7 +1877,7 @@ export default function MysteriesPage() {
 
               <aside className="mystery-side-column">
                 <section className="mystery-section notes-section">
-                  <div className="section-heading"><div><p className="eyebrow">Working notes</p><h3>Solution & field notes</h3></div><small>{serverSyncReady ? "Account sync on" : "Saved offline"}</small></div>
+                  <div className="section-heading"><div><p className="eyebrow">Working notes</p><h3>Solution & field notes</h3></div><div className="notes-heading-actions"><small>{serverSyncReady ? "Account sync on" : "Saved offline"}</small>{!selected.sharedBy && <button className={selected.geocachingNotesFingerprint === mysteryFieldFingerprint(selected.notes) ? "synced" : ""} type="button" onClick={() => syncNotes(selected)}><RefreshCw size={13} /> {selected.geocachingNotesFingerprint === mysteryFieldFingerprint(selected.notes) ? "Synced with GC" : "Sync with GC"}</button>}</div></div>
                   <textarea value={selected.notes} onChange={(event) => updateSelected({ notes: event.target.value })} placeholder="Write down clues, calculations and things to bring…" />
                 </section>
                 <section className="mystery-section shared-section">
@@ -1736,6 +1908,20 @@ export default function MysteriesPage() {
             <div className="two-column"><label>County<input name="county" placeholder="Stockholm County" /></label><label>Area / district<input name="area" placeholder="Vaxholm Municipality" /></label></div>
             <label>Locality<input name="locality" placeholder="Vaxholm" /></label>
             <div className="modal-actions"><button className="secondary-button" type="button" onClick={() => setShowAdd(false)}>Cancel</button><button className="primary-button" type="submit">Add to workspace</button></div>
+          </form>
+        </div>
+      )}
+
+      {showImagePicker && selected && !selected.sharedBy && (
+        <div className="mystery-modal-backdrop" role="presentation" onMouseDown={closeImagePicker}>
+          <form className="mystery-modal image-picker-modal" role="dialog" aria-modal="true" aria-labelledby="image-picker-title" onSubmit={attachImageUrl} onMouseDown={(event) => event.stopPropagation()}>
+            <div className="section-heading"><div><p className="eyebrow">Reference image</p><h2 id="image-picker-title">{selected.image ? "Change image" : "Add image"}</h2></div><button className="row-delete" type="button" aria-label="Close" onClick={closeImagePicker}><X /></button></div>
+            <label className="image-upload-choice"><span><ImagePlus size={20} /><span><strong>Upload from this device</strong><small>PNG, JPG, GIF or another image format, up to 1.5 MB.</small></span></span><span className="secondary-button">Choose file<input type="file" accept="image/*" onChange={attachImage} /></span></label>
+            <div className="image-source-divider"><span>or add one from the web</span></div>
+            <label className="image-url-field"><span>Direct image URL</span><input autoFocus type="url" inputMode="url" value={imageUrl} onChange={(event) => { setImageUrl(event.target.value); setImageUrlError(""); }} placeholder="https://example.com/clue.jpg" /></label>
+            <small className="image-url-help">Use the image's own URL, not the page that contains it.</small>
+            {imageUrlError && <p className="coordinate-error"><AlertTriangle size={15} /> {imageUrlError}</p>}
+            <div className="modal-actions"><button className="secondary-button" type="button" onClick={closeImagePicker}>Cancel</button><button className="primary-button" type="submit" disabled={loadingImageUrl || !imageUrl.trim()}>{loadingImageUrl ? "Checking image…" : "Add image link"}</button></div>
           </form>
         </div>
       )}
