@@ -3126,17 +3126,6 @@ select:focus {
   font-size: 0.76rem;
 }
 
-.image-button {
-  display: inline-flex;
-}
-
-.image-button input {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  opacity: 0;
-}
-
 .mystery-image {
   position: relative;
   max-height: 230px;
@@ -3770,6 +3759,42 @@ select:focus {
   line-height: 1.55;
 }
 
+.notes-heading-actions {
+  display: grid;
+  justify-items: end;
+  gap: 7px;
+}
+
+.notes-heading-actions > small {
+  white-space: nowrap;
+}
+
+.notes-heading-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 7px;
+  border: 1px solid rgba(95, 191, 133, 0.24);
+  border-radius: 999px;
+  color: var(--green);
+  background: rgba(95, 191, 133, 0.1);
+  cursor: pointer;
+  font-size: 0.63rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.notes-heading-actions button:hover {
+  border-color: rgba(95, 191, 133, 0.5);
+  background: rgba(95, 191, 133, 0.17);
+}
+
+.notes-heading-actions button.synced {
+  color: var(--muted);
+  border-color: var(--line);
+  background: transparent;
+}
+
 .people-list {
   display: flex;
   flex-wrap: wrap;
@@ -3846,6 +3871,97 @@ select:focus {
 
 .mystery-modal .modal-actions {
   margin-top: 8px;
+}
+
+.image-picker-modal {
+  width: min(540px, 100%);
+}
+
+.image-upload-choice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: rgba(237, 244, 232, 0.025);
+}
+
+.image-upload-choice > span:first-child {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  min-width: 0;
+}
+
+.image-upload-choice > span:first-child > span {
+  display: grid;
+  gap: 3px;
+}
+
+.image-upload-choice strong {
+  color: var(--ink);
+  font-size: 0.88rem;
+}
+
+.image-upload-choice small,
+.image-url-help {
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1.4;
+}
+
+.image-upload-choice .secondary-button {
+  position: relative;
+  flex: 0 0 auto;
+  cursor: pointer;
+}
+
+.image-upload-choice input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+
+.image-source-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+}
+
+.image-source-divider::before,
+.image-source-divider::after {
+  height: 1px;
+  flex: 1;
+  background: var(--line);
+  content: "";
+}
+
+.image-url-field {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.image-url-help {
+  margin-top: -8px;
+}
+
+@media (max-width: 560px) {
+  .image-upload-choice {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .image-upload-choice .secondary-button {
+    justify-content: center;
+  }
 }
 
 .delete-cache-modal {

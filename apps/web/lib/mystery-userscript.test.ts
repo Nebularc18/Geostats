@@ -16,7 +16,15 @@ test("coordinate sync does not call Geocaching's retired token-based page method
 });
 
 test("userscript version is bumped for automatic Tampermonkey updates", () => {
-  assert.equal(MYSTERY_USERSCRIPT_VERSION, "2.5.4");
+  assert.equal(MYSTERY_USERSCRIPT_VERSION, "2.6.0");
+});
+
+test("personal cache note sync compares both copies before replacing either", () => {
+  assert.match(routeSource, /geostats-note-sync-request/);
+  assert.match(routeSource, /personalCacheNoteFromPage\(document\)/);
+  assert.match(routeSource, /Use Geostats note/);
+  assert.match(routeSource, /Use Geocaching note/);
+  assert.match(routeSource, /personalCacheNoteEditorFromPage\(document, isVisible\)/);
 });
 
 test("coordinate sync adopts manually opened editors", () => {
