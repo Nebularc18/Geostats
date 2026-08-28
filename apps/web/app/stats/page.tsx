@@ -157,19 +157,17 @@ function ExtremeCachesPanel() {
             ))}
           </select>
         </label>
-        {referenceRegions.length > 0 ? (
-          <label>
-            <span className="sr-only">Region</span>
-            <select value={region} onChange={(event) => setRegion(event.target.value)}>
-              <option value="">Whole country</option>
-              {referenceRegions.map((name) => (
-                <option key={name} value={name}>
-                  {name}
-                </option>
-              ))}
-            </select>
-          </label>
-        ) : null}
+        <label className={referenceRegions.length > 0 ? "extreme-region-filter" : "extreme-region-filter extreme-region-filter-unavailable"}>
+          <span className="sr-only">Region</span>
+          <select value={region} disabled={referenceRegions.length === 0} onChange={(event) => setRegion(event.target.value)}>
+            <option value="">Whole country</option>
+            {referenceRegions.map((name) => (
+              <option key={name} value={name}>
+                {name}
+              </option>
+            ))}
+          </select>
+        </label>
       </div>
       {error ? <p className="muted">Failed to load extreme caches: {error}</p> : null}
       {!error && !data ? <p className="muted">Loading…</p> : null}
