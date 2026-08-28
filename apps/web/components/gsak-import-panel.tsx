@@ -1,22 +1,59 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Database, Download } from "lucide-react";
 import { apiFetch } from "../lib/api";
 
-export function GsakImportPanel() {
+type GsakImportPanelProps = {
+  onImportActivity?: () => void | Promise<unknown>;
+};
+
+export function GsakImportPanel({ onImportActivity }: GsakImportPanelProps) {
   const [status, setStatus] = useState<{
     connected: boolean;
     lastImportedAt: string | null;
   } | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const lastImportedAtRef = useRef<string | null | undefined>(undefined);
+  const statusRequestInFlightRef = useRef(false);
+
+  const refreshStatus = useCallback(async () => {
+    if (statusRequestInFlightRef.current) return;
+    statusRequestInFlightRef.current = true;
+    try {
+      const nextStatus = await apiFetch<{
+        connected: boolean;
+        lastImportedAt: string | null;
+      }>("/collector/gsak/status");
+      const previousLastImportedAt = lastImportedAtRef.current;
+      lastImportedAtRef.current = nextStatus.lastImportedAt;
+      setStatus(nextStatus);
+      if (
+        previousLastImportedAt !== undefined &&
+        nextStatus.lastImportedAt !== previousLastImportedAt
+      ) {
+        void onImportActivity?.();
+      }
+    } catch {
+      // Keep the most recent status when a poll fails temporarily.
+    } finally {
+      statusRequestInFlightRef.current = false;
+    }
+  }, [onImportActivity]);
 
   useEffect(() => {
-    void apiFetch<{ connected: boolean; lastImportedAt: string | null }>(
-      "/collector/gsak/status",
-    ).then(setStatus);
-  }, []);
+    const poll = () => {
+      if (document.visibilityState === "visible") void refreshStatus();
+    };
+    poll();
+    const interval = window.setInterval(poll, 3000);
+    document.addEventListener("visibilitychange", poll);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", poll);
+    };
+  }, [refreshStatus]);
 
   async function downloadConnector() {
     setBusy(true);
@@ -36,6 +73,7 @@ export function GsakImportPanel() {
       link.click();
       link.remove();
       URL.revokeObjectURL(url);
+      lastImportedAtRef.current = null;
       setStatus({ connected: true, lastImportedAt: null });
       setMessage(
         "Connector downloaded. Open GeostatsImport.gsk and let GSAK install it, then run the macro from GSAK.",

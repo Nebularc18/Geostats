@@ -51,7 +51,7 @@ export default function ImportsPage() {
         <p className="eyebrow">Background jobs</p>
         <h1>Import history</h1>
       </header>
-      <GsakImportPanel />
+      <GsakImportPanel onImportActivity={refresh} />
       <section className="panel">
         <div className="table-list">
           {imports.map((item) => (
