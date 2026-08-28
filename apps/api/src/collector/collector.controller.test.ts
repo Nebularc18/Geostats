@@ -176,6 +176,49 @@ test("GSAK setup replaces only the dedicated scoped token", async () => {
   assert.equal(actions[1][1].data.scope, "GSAK_IMPORT");
 });
 
+test("GSAK status advances only after a completed import exists", async () => {
+  const tokenCreatedAt = new Date("2026-08-28T10:00:00.000Z");
+  const tokenLastUsedAt = new Date("2026-08-28T10:05:00.000Z");
+  const importCreatedAt = new Date("2026-08-28T10:04:59.000Z");
+  let latestImport: { createdAt: Date } | null = null;
+  const prisma = {
+    collectorToken: {
+      findFirst: async (input: any) => {
+        assert.deepEqual(input, {
+          where: { userId: "user-1", scope: "GSAK_IMPORT" },
+          orderBy: { createdAt: "desc" },
+          select: { createdAt: true }
+        });
+        return { createdAt: tokenCreatedAt, lastUsedAt: tokenLastUsedAt };
+      }
+    },
+    import: {
+      findFirst: async (input: any) => {
+        assert.deepEqual(input, {
+          where: { userId: "user-1", source: "GSAK", status: "COMPLETED", createdAt: { gte: tokenCreatedAt } },
+          orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+          select: { createdAt: true }
+        });
+        return latestImport;
+      }
+    }
+  };
+  const controller = new CollectorController(prisma as any, {} as any);
+
+  const user = { id: "user-1", email: "user@example.com", username: "user" };
+  const beforeCompletion = await controller.gsakStatus(user);
+  assert.equal(beforeCompletion.lastImportedAt, null);
+
+  latestImport = { createdAt: importCreatedAt };
+  const afterCompletion = await controller.gsakStatus(user);
+
+  assert.deepEqual(afterCompletion, {
+    connected: true,
+    createdAt: tokenCreatedAt,
+    lastImportedAt: importCreatedAt
+  });
+});
+
 test("mergedRaw preserves root cache key variant", () => {
   const raw = {
     cache: {

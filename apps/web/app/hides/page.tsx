@@ -71,8 +71,11 @@ function percentFor(data: PercentBucket[], key: string) {
   return data.find((row) => row.key === key) ?? { key, count: 0, percent: 0 };
 }
 
-function PercentTable({ title, data, rows }: { title: string; data: PercentBucket[]; rows?: string[] }) {
+function PercentTable({ title, data, rows, collapsedRows }: { title: string; data: PercentBucket[]; rows?: string[]; collapsedRows?: number }) {
+  const [expanded, setExpanded] = useState(false);
   const visibleRows = rows ? rows.map((key) => percentFor(data, key)) : data;
+  const displayedRows = collapsedRows && !expanded ? visibleRows.slice(0, collapsedRows) : visibleRows;
+  const canCollapse = Boolean(collapsedRows && visibleRows.length > collapsedRows);
   const max = Math.max(1, ...visibleRows.map((row) => row.count));
   return (
     <section className="mini-table">
@@ -84,7 +87,7 @@ function PercentTable({ title, data, rows }: { title: string; data: PercentBucke
           <span>Percent</span>
           <span />
         </div>
-        {visibleRows.map((row) => (
+        {displayedRows.map((row) => (
           <div className="hide-percent-row" key={row.key}>
             <span>{row.key}</span>
             <strong>{row.count}</strong>
@@ -95,6 +98,11 @@ function PercentTable({ title, data, rows }: { title: string; data: PercentBucke
           </div>
         ))}
       </div>
+      {canCollapse ? (
+        <button className="table-collapse-button" type="button" aria-expanded={expanded} onClick={() => setExpanded((current) => !current)}>
+          {expanded ? "Show fewer" : `Show all ${visibleRows.length}`}
+        </button>
+      ) : null}
     </section>
   );
 }
@@ -159,6 +167,9 @@ function LogsReceivedTable({ rows, ownerName }: { rows: HideStats["logsReceived"
 }
 
 function RecentReceivedLogs({ rows }: { rows: HideStats["recentReceivedLogs"] }) {
+  const [expanded, setExpanded] = useState(false);
+  const displayedRows = expanded ? rows : rows.slice(0, 10);
+  const canCollapse = rows.length > 10;
   return (
     <section className="panel hide-report-section">
       <h2>Recent imported logs</h2>
@@ -167,7 +178,7 @@ function RecentReceivedLogs({ rows }: { rows: HideStats["recentReceivedLogs"] })
         <span>Type</span>
         <span>Logger</span>
         <span>Cache</span>
-        {rows.map((row, index) => (
+        {displayedRows.map((row, index) => (
           <Fragment key={`${row.gcCode}-${row.date}-${row.finder}-${row.type}-${index}`}>
             <span>{row.date}</span>
             <strong>{row.type}</strong>
@@ -180,6 +191,11 @@ function RecentReceivedLogs({ rows }: { rows: HideStats["recentReceivedLogs"] })
       </div>
       {rows.length === 0 ? <p className="muted">No imported owner logs yet.</p> : null}
       {rows.length === 100 ? <p className="hide-table-note">Showing the 100 most recent imported logs.</p> : null}
+      {canCollapse ? (
+        <button className="table-collapse-button" type="button" aria-expanded={expanded} onClick={() => setExpanded((current) => !current)}>
+          {expanded ? "Show fewer" : `Show all ${rows.length}`}
+        </button>
+      ) : null}
     </section>
   );
 }
@@ -319,7 +335,7 @@ export default function HidesPage() {
         <div className="stats-breakdown-grid">
           {hasFinderCountries ? <PercentTable title="Finders by country" data={hideStats?.finderCountryBuckets ?? []} /> : null}
           <CountPercentTable title="Placed by country" data={hideStats?.hidesByCountry ?? []} total={hideStats?.totalHides ?? 0} />
-          <PercentTable title="Top finders of my caches" data={hideStats?.finderBuckets ?? []} />
+          <PercentTable title="Top finders of my caches" data={hideStats?.finderBuckets ?? []} collapsedRows={10} />
           <PercentTable title="Received log types" data={hideStats?.receivedLogsByType ?? []} />
           <PercentTable title="Placed by type" data={hideStats?.hidesByType ?? []} />
           <PercentTable title="Placed by size" data={hideStats?.hidesBySize ?? []} />

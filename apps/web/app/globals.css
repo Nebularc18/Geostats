@@ -1542,6 +1542,29 @@ select:focus {
   min-height: 280px;
 }
 
+.table-collapse-button {
+  width: 100%;
+  min-height: 40px;
+  border: 0;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
+  color: var(--green);
+  background: rgba(95, 191, 133, 0.06);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+}
+
+.table-collapse-button:hover {
+  background: rgba(95, 191, 133, 0.12);
+}
+
+.hide-report-section > .table-collapse-button {
+  margin-top: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
 .month-year-card {
   display: grid;
   gap: 18px;
@@ -1874,6 +1897,19 @@ select:focus {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+}
+
+.extreme-region-filter {
+  width: 202px;
+}
+
+.extreme-region-filter select {
+  width: 100%;
+}
+
+.extreme-region-filter-unavailable {
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .extreme-set-heading h3,
@@ -5479,6 +5515,10 @@ select:focus {
   .panel-heading,
   .month-year-heading {
     flex-direction: column;
+  }
+
+  .extreme-region-filter-unavailable {
+    display: none;
   }
 
   .panel-metrics {
