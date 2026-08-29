@@ -15,6 +15,9 @@ export class ChallengeCheckersController {
   @Get("locations")
   async locations(@CurrentUser() user: AuthUser) { return { countries: await this.checkers.locationsForUser(user.id) }; }
 
+  @Get("catalog")
+  async catalog(@CurrentUser() user: AuthUser) { return this.checkers.catalogForUser(user.id); }
+
   @Get("location-catalog")
   async locationCatalog(@CurrentUser() user: AuthUser, @Query("country") country?: string, @Query("region") region?: string) {
     return this.checkers.locationCatalogForUser(user.id, country, region);

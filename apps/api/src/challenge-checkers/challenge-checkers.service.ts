@@ -3,7 +3,8 @@ import { countableFindWhere, Prisma } from "@geostats/db";
 import { randomBytes } from "node:crypto";
 import timezoneAt from "tz-lookup";
 import { PrismaService } from "../common/prisma.service";
-import { ChallengeRule, evaluateChallenge, proofText } from "./challenge-checker.evaluator";
+import { attributesFromRaw, ChallengeRule, evaluateChallenge, proofText } from "./challenge-checker.evaluator";
+import { cacheTypeIdentity, cacheTypeOptions } from "./cache-type-catalog";
 import { BoundaryGeometry, GeographicBoundariesService, pointInBoundary } from "./geographic-boundaries";
 
 type CheckerInput = { name?: unknown; gcCode?: unknown; description?: unknown; rules?: unknown };
@@ -38,9 +39,11 @@ function parseRules(value: unknown): ChallengeRule[] {
     }
     if (rule.type === "TOTAL_FINDS") return { type: rule.type, minimum };
     if (rule.type === "CACHE_TYPE") {
-      const cacheType = cleanOptionalText(rule.cacheType, "cacheType", 80);
-      if (!cacheType) throw new BadRequestException("cacheType is required");
-      return { type: rule.type, cacheType, minimum };
+      const cacheTypeValue = cleanOptionalText(rule.cacheTypeId, "cacheTypeId", 120) ?? cleanOptionalText(rule.cacheType, "cacheType", 80);
+      if (!cacheTypeValue) throw new BadRequestException("cacheTypeId is required");
+      const identity = cacheTypeIdentity(cacheTypeValue);
+      const label = cleanOptionalText(rule.cacheTypeLabel, "cacheTypeLabel", 100) ?? identity.label;
+      return { type: rule.type, cacheTypeId: identity.id, cacheTypeLabel: label, minimum };
     }
     if (rule.type === "LOCATION") {
       if (!(["country", "region", "county"] as unknown[]).includes(rule.field)) {
@@ -61,6 +64,46 @@ function parseRules(value: unknown): ChallengeRule[] {
       if (minimum > 81) throw new BadRequestException("Difficulty/terrain minimum cannot exceed 81");
       return { type: rule.type, minimum };
     }
+    if (rule.type === "CACHE_SIZE") {
+      const size = cleanOptionalText(rule.size, "size", 80);
+      if (!size) throw new BadRequestException("size is required");
+      return { type: rule.type, size, minimum };
+    }
+    if (rule.type === "FIND_STREAK") {
+      if (minimum > 365) throw new BadRequestException("Find-streak minimum cannot exceed 365");
+      return { type: rule.type, minimum };
+    }
+    if (rule.type === "PLACED_MONTHS") return { type: rule.type, minimum };
+    if (rule.type === "MONTH_OF_YEAR") {
+      const month = Number(rule.month);
+      if (!Number.isInteger(month) || month < 1 || month > 12) throw new BadRequestException("month must be between 1 and 12");
+      return { type: rule.type, month, minimum };
+    }
+    if (rule.type === "WEEKDAY") {
+      const weekday = Number(rule.weekday);
+      if (!Number.isInteger(weekday) || weekday < 0 || weekday > 6) throw new BadRequestException("weekday must be between 0 and 6");
+      return { type: rule.type, weekday, minimum };
+    }
+    if (rule.type === "DIFFICULTY_RATING" || rule.type === "TERRAIN_RATING") {
+      const rating = Number(rule.rating);
+      if (!Number.isFinite(rating) || rating < 1 || rating > 5 || rating * 2 !== Math.round(rating * 2)) {
+        throw new BadRequestException("rating must be between 1 and 5 in half-point steps");
+      }
+      return { type: rule.type, rating, minimum };
+    }
+    if (rule.type === "FAVORITE_POINTS") {
+      const minimumFavoritePoints = Number(rule.minimumFavoritePoints);
+      if (!Number.isInteger(minimumFavoritePoints) || minimumFavoritePoints < 1 || minimumFavoritePoints > 1_000_000) {
+        throw new BadRequestException("minimumFavoritePoints must be a positive integer");
+      }
+      return { type: rule.type, minimumFavoritePoints, minimum };
+    }
+    if (rule.type === "ATTRIBUTE") {
+      const attributeId = cleanOptionalText(rule.attributeId, "attributeId", 40);
+      const attributeLabel = cleanOptionalText(rule.attributeLabel, "attributeLabel", 120);
+      if (!attributeId || !attributeLabel) throw new BadRequestException("attributeId and attributeLabel are required");
+      return { type: rule.type, attributeId, attributeLabel, minimum };
+    }
     throw new BadRequestException("Unsupported challenge rule type");
   });
 }
@@ -74,7 +117,7 @@ export class ChallengeCheckersService {
       this.prisma.challengeChecker.findMany({ where: { userId }, orderBy: { updatedAt: "desc" } }),
       this.prisma.user.findUnique({ where: { id: userId }, select: { username: true } })
     ]);
-    return { checkers, username: user?.username ?? "user" };
+    return { checkers: checkers.map((checker) => ({ ...checker, rules: parseRules(checker.rules) })), username: user?.username ?? "user" };
   }
 
   async locationsForUser(userId: string) {
@@ -108,6 +151,33 @@ export class ChallengeCheckersService {
         counties: [...counties].sort(compare)
       }))
     }));
+  }
+
+  async catalogForUser(userId: string) {
+    const profile = await this.prisma.geocachingProfile.findUnique({ where: { userId }, select: { gcUsername: true } });
+    const finds = await this.prisma.find.findMany({
+      where: countableFindWhere(userId, profile?.gcUsername?.trim().toLowerCase() ?? null),
+      select: {
+        cache: {
+          select: {
+            cacheType: true,
+            size: true,
+            userData: { where: { userId }, take: 1, select: { raw: true } }
+          }
+        }
+      }
+    });
+    const compare = (left: string, right: string) => left.localeCompare(right, undefined, { sensitivity: "base", numeric: true });
+    const sizes = [...new Set([
+      "Micro", "Small", "Regular", "Large", "Other", "Virtual",
+      ...finds.map((find) => find.cache.size?.trim()).filter((value): value is string => Boolean(value))
+    ])].sort(compare);
+    const attributeMap = new Map<string, string>();
+    for (const find of finds) {
+      for (const attribute of attributesFromRaw(find.cache.userData[0]?.raw)) attributeMap.set(attribute.id, attribute.label);
+    }
+    const attributes = [...attributeMap].map(([id, label]) => ({ id, label })).sort((left, right) => compare(left.label, right.label));
+    return { cacheTypes: cacheTypeOptions(finds.map((find) => find.cache.cacheType)), sizes, attributes };
   }
 
   async locationCatalogForUser(userId: string, countryValue: unknown, regionValue: unknown) {
@@ -233,10 +303,11 @@ export class ChallengeCheckersService {
     const username = profile?.gcUsername ?? "Geocacher";
     const finds = await this.prisma.find.findMany({
       where: countableFindWhere(checker.userId, username.trim().toLowerCase()),
-      include: { cache: true },
+      include: { cache: { include: { userData: { where: { userId: checker.userId }, take: 1 } } } },
       orderBy: { foundAt: "asc" }
     });
     const rules = parseRules(checker.rules);
+    const checkerFinds = finds.map((find) => ({ ...find, cache: { ...find.cache, raw: find.cache.userData?.[0]?.raw } }));
     const geometries = new Map<ChallengeRule, BoundaryGeometry>();
     await Promise.all(rules.map(async (rule) => {
       if (rule.type === "LOCATION" && rule.field !== "country" && rule.country) {
@@ -248,7 +319,7 @@ export class ChallengeCheckersService {
         }
       }
     }));
-    const result = evaluateChallenge(rules, finds, {
+    const result = evaluateChallenge(rules, checkerFinds, {
       locationMatch: (rule, find) => {
         const geometry = geometries.get(rule);
         const latitude = Number(find.cache.latitude);

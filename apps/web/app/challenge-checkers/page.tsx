@@ -8,22 +8,43 @@ import { copyText } from "../../lib/copy-text";
 
 type Rule =
   | { type: "TOTAL_FINDS"; minimum: number }
-  | { type: "CACHE_TYPE"; cacheType: string; minimum: number }
+  | { type: "CACHE_TYPE"; cacheTypeId: string; cacheTypeLabel: string; minimum: number }
   | { type: "LOCATION"; field: "country" | "region" | "county"; value: string; country?: string; region?: string; minimum: number }
   | { type: "CALENDAR_DAYS"; minimum: number }
-  | { type: "DIFFICULTY_TERRAIN"; minimum: number };
+  | { type: "DIFFICULTY_TERRAIN"; minimum: number }
+  | { type: "CACHE_SIZE"; size: string; minimum: number }
+  | { type: "FIND_STREAK"; minimum: number }
+  | { type: "PLACED_MONTHS"; minimum: number }
+  | { type: "MONTH_OF_YEAR"; month: number; minimum: number }
+  | { type: "WEEKDAY"; weekday: number; minimum: number }
+  | { type: "DIFFICULTY_RATING"; rating: number; minimum: number }
+  | { type: "TERRAIN_RATING"; rating: number; minimum: number }
+  | { type: "FAVORITE_POINTS"; minimumFavoritePoints: number; minimum: number }
+  | { type: "ATTRIBUTE"; attributeId: string; attributeLabel: string; minimum: number };
 type Checker = { id: string; name: string; gcCode: string | null; description: string | null; rules: Rule[]; publicSlug: string | null; publishedAt: string | null; updatedAt: string };
 type Evidence = { date: string; gcCode: string; name: string };
 type Result = { passed: boolean; username: string; checkedAt: string; dataUpdatedAt: string | null; proofText: string; rules: Array<{ label: string; current: number; required: number; passed: boolean; detail: string; evidence: Evidence[]; evidenceLimited: boolean }> };
 type LocationCountry = { name: string; regions: Array<{ name: string; counties: string[] }> };
+type CacheTypeOption = { id: string; label: string; aliases: string[]; imported: boolean };
+type AttributeOption = { id: string; label: string };
 
-const TYPES = ["Traditional Cache", "Mystery Cache", "Multi-cache", "EarthCache", "Letterbox Hybrid", "Wherigo Cache", "Virtual Cache", "Event Cache"];
+const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const RATINGS = Array.from({ length: 9 }, (_, index) => 1 + index / 2);
 
 function defaultRule(type: Rule["type"]): Rule {
-  if (type === "CACHE_TYPE") return { type, cacheType: "Traditional Cache", minimum: 100 };
+  if (type === "CACHE_TYPE") return { type, cacheTypeId: "2", cacheTypeLabel: "Traditional Cache", minimum: 100 };
   if (type === "LOCATION") return { type, field: "country", value: "", minimum: 1 };
   if (type === "CALENDAR_DAYS") return { type, minimum: 365 };
   if (type === "DIFFICULTY_TERRAIN") return { type, minimum: 81 };
+  if (type === "CACHE_SIZE") return { type, size: "Micro", minimum: 100 };
+  if (type === "FIND_STREAK") return { type, minimum: 30 };
+  if (type === "PLACED_MONTHS") return { type, minimum: 100 };
+  if (type === "MONTH_OF_YEAR") return { type, month: 1, minimum: 100 };
+  if (type === "WEEKDAY") return { type, weekday: 1, minimum: 100 };
+  if (type === "DIFFICULTY_RATING" || type === "TERRAIN_RATING") return { type, rating: 1, minimum: 100 };
+  if (type === "FAVORITE_POINTS") return { type, minimumFavoritePoints: 10, minimum: 1 };
+  if (type === "ATTRIBUTE") return { type, attributeId: "", attributeLabel: "Select an attribute", minimum: 1 };
   return { type, minimum: 1000 };
 }
 
@@ -35,6 +56,9 @@ export default function ChallengeCheckersPage() {
   const [rules, setRules] = useState<Rule[]>([defaultRule("TOTAL_FINDS")]);
   const [results, setResults] = useState<Record<string, Result>>({});
   const [locationCountries, setLocationCountries] = useState<LocationCountry[]>([]);
+  const [cacheTypes, setCacheTypes] = useState<CacheTypeOption[]>([]);
+  const [cacheSizes, setCacheSizes] = useState<string[]>([]);
+  const [attributes, setAttributes] = useState<AttributeOption[]>([]);
   const [regionCatalogs, setRegionCatalogs] = useState<Record<string, string[]>>({});
   const [countyCatalogs, setCountyCatalogs] = useState<Record<string, string[]>>({});
   const [busy, setBusy] = useState<string | null>(null);
@@ -49,14 +73,18 @@ export default function ChallengeCheckersPage() {
   const formSectionRef = useRef<HTMLElement>(null);
 
   async function load() {
-    const [checkerData, locationData] = await Promise.all([
+    const [checkerData, locationData, catalog] = await Promise.all([
       apiFetch<{ checkers: Checker[]; username: string }>("/challenge-checkers"),
-      apiFetch<{ countries: LocationCountry[] }>("/challenge-checkers/locations")
+      apiFetch<{ countries: LocationCountry[] }>("/challenge-checkers/locations"),
+      apiFetch<{ cacheTypes: CacheTypeOption[]; sizes: string[]; attributes: AttributeOption[] }>("/challenge-checkers/catalog")
     ]);
     setCheckers(checkerData.checkers);
     setSelectedIds((current) => new Set([...current].filter((id) => checkerData.checkers.some((checker) => checker.id === id))));
     setAccountUsername(checkerData.username);
     setLocationCountries(locationData.countries);
+    setCacheTypes(catalog.cacheTypes);
+    setCacheSizes(catalog.sizes);
+    setAttributes(catalog.attributes);
   }
 
   useEffect(() => { void load().catch((cause) => setError(cause.message)); }, []);
@@ -204,11 +232,30 @@ export default function ChallengeCheckersPage() {
         <div className="challenge-rules">
           {rules.map((rule, index) => <div className="challenge-rule" key={index}>
             <label>Rule type<select value={rule.type} onChange={(event) => replaceRule(index, defaultRule(event.target.value as Rule["type"]))}>
-              <option value="TOTAL_FINDS">Total finds</option><option value="CACHE_TYPE">Finds by cache type</option><option value="LOCATION">Finds in a location</option><option value="CALENDAR_DAYS">Unique calendar days</option><option value="DIFFICULTY_TERRAIN">Difficulty/terrain grid</option>
+              <option value="TOTAL_FINDS">Total finds</option>
+              <option value="CACHE_TYPE">Finds by cache type</option>
+              <option value="CACHE_SIZE">Finds by cache size</option>
+              <option value="LOCATION">Finds in a location</option>
+              <option value="CALENDAR_DAYS">Unique calendar days</option>
+              <option value="FIND_STREAK">Longest find streak</option>
+              <option value="PLACED_MONTHS">Unique placement months</option>
+              <option value="MONTH_OF_YEAR">Finds in a calendar month</option>
+              <option value="WEEKDAY">Finds on a weekday</option>
+              <option value="DIFFICULTY_TERRAIN">Difficulty/terrain grid</option>
+              <option value="DIFFICULTY_RATING">Finds by difficulty</option>
+              <option value="TERRAIN_RATING">Finds by terrain</option>
+              <option value="FAVORITE_POINTS">Finds by Favorite points</option>
+              <option value="ATTRIBUTE">Finds with an attribute</option>
             </select></label>
-            {rule.type === "CACHE_TYPE" && <label>Cache type<select value={rule.cacheType} onChange={(event) => replaceRule(index, { ...rule, cacheType: event.target.value })}>{TYPES.map((type) => <option key={type}>{type}</option>)}</select></label>}
+            {rule.type === "CACHE_TYPE" && <label>Cache type<select value={rule.cacheTypeId} onChange={(event) => { const selected = cacheTypes.find((type) => type.id === event.target.value); replaceRule(index, { ...rule, cacheTypeId: event.target.value, cacheTypeLabel: selected?.label ?? event.target.selectedOptions[0]?.text ?? event.target.value }); }}>{cacheTypes.map((type) => <option value={type.id} key={type.id}>{type.label}{type.imported ? " · imported" : ""}</option>)}</select></label>}
+            {rule.type === "CACHE_SIZE" && <label>Cache size<select value={rule.size} onChange={(event) => replaceRule(index, { ...rule, size: event.target.value })}>{cacheSizes.map((size) => <option key={size}>{size}</option>)}</select></label>}
             {rule.type === "LOCATION" && <LocationRuleFields rule={rule} countries={locationCountries} regionCatalogs={regionCatalogs} countyCatalogs={countyCatalogs} loadCatalog={loadLocationCatalog} onChange={(nextRule) => replaceRule(index, nextRule)} />}
-            <label>Required<input type="number" min={1} max={rule.type === "CALENDAR_DAYS" ? 366 : rule.type === "DIFFICULTY_TERRAIN" ? 81 : 1000000} required value={rule.minimum} onChange={(event) => replaceRule(index, { ...rule, minimum: Number(event.target.value) })} /></label>
+            {rule.type === "MONTH_OF_YEAR" && <label>Month<select value={rule.month} onChange={(event) => replaceRule(index, { ...rule, month: Number(event.target.value) })}>{MONTHS.map((month, monthIndex) => <option value={monthIndex + 1} key={month}>{month}</option>)}</select></label>}
+            {rule.type === "WEEKDAY" && <label>Weekday<select value={rule.weekday} onChange={(event) => replaceRule(index, { ...rule, weekday: Number(event.target.value) })}>{WEEKDAYS.map((weekday, weekdayIndex) => <option value={weekdayIndex} key={weekday}>{weekday}</option>)}</select></label>}
+            {(rule.type === "DIFFICULTY_RATING" || rule.type === "TERRAIN_RATING") && <label>{rule.type === "DIFFICULTY_RATING" ? "Difficulty" : "Terrain"}<select value={rule.rating} onChange={(event) => replaceRule(index, { ...rule, rating: Number(event.target.value) })}>{RATINGS.map((rating) => <option value={rating} key={rating}>{rating.toFixed(1)}</option>)}</select></label>}
+            {rule.type === "FAVORITE_POINTS" && <label>Favorite points per cache<input type="number" min={1} max={1000000} required value={rule.minimumFavoritePoints} onChange={(event) => replaceRule(index, { ...rule, minimumFavoritePoints: Number(event.target.value) })} /></label>}
+            {rule.type === "ATTRIBUTE" && <label>Positive attribute<select required value={rule.attributeId} onChange={(event) => { const selected = attributes.find((attribute) => attribute.id === event.target.value); replaceRule(index, { ...rule, attributeId: event.target.value, attributeLabel: selected?.label ?? event.target.value }); }}><option value="" disabled>Select an attribute</option>{attributes.map((attribute) => <option value={attribute.id} key={attribute.id}>{attribute.label}</option>)}</select></label>}
+            <label>Required<input type="number" min={1} max={rule.type === "CALENDAR_DAYS" ? 366 : rule.type === "DIFFICULTY_TERRAIN" ? 81 : rule.type === "FIND_STREAK" ? 365 : 1000000} required value={rule.minimum} onChange={(event) => replaceRule(index, { ...rule, minimum: Number(event.target.value) })} /></label>
             {rules.length > 1 && <button className="challenge-icon-button" type="button" aria-label="Remove rule" onClick={() => setRules((current) => current.filter((_, itemIndex) => itemIndex !== index))}><X size={18} /></button>}
           </div>)}
         </div>
