@@ -39,6 +39,8 @@ function userscript(appOrigin: string) {
   const PENDING_NOTE_SYNC_KEY = "geostats-pending-note-sync";
   const NOTE_SYNC_RECEIPT_PREFIX = "geostats-note-sync-receipt:";
   const MAX_SYNC_AGE_MS = 10 * 60 * 1000;
+  const MAX_COORDINATE_EDITOR_ATTEMPTS = 4;
+  const MAX_COORDINATE_PAGE_RELOADS = 1;
   const cachePageShowsCoordinate = ${cachePageShowsCoordinate.toString()};
   const solvedCoordinateEditorFromPage = ${solvedCoordinateEditorFromPage.toString()};
   const personalCacheNoteFromPage = ${personalCacheNoteFromPage.toString()};
@@ -281,6 +283,10 @@ function userscript(appOrigin: string) {
     return syncPayload ? "geostats-synced:" + syncPayload.gcCode + ":" + syncPayload.attemptId : "";
   }
 
+  function syncReloadStorageKey() {
+    return syncPayload ? "geostats-sync-reloads:" + syncPayload.gcCode + ":" + syncPayload.attemptId : "";
+  }
+
   function pendingSyncPayloads() {
     try {
       const stored = JSON.parse(GM_getValue(PENDING_SYNC_KEY, "null"));
@@ -311,6 +317,7 @@ function userscript(appOrigin: string) {
   function markCoordinateSynced() {
     if (!syncPayload || syncReceiptReturned) return;
     window.localStorage.setItem(syncStorageKey(), new Date().toISOString());
+    window.sessionStorage.removeItem(syncReloadStorageKey());
     removePendingSyncPayload();
     setSyncPanelState("Corrected coordinate saved. Returning to Geostats…", "success");
     toast("Corrected coordinate saved on Geocaching", false);
@@ -355,12 +362,22 @@ function userscript(appOrigin: string) {
     if (editorOpened && findSolvedCoordinateEditor()) {
       useCoordinateEditor = true;
       directSyncStarted = false;
-      setSyncPanelState("The coordinate is filled in Geocaching's editor. Choose Save on Geocaching to finish.", "editor");
+      setSyncPanelState("The coordinate is filled. Saving it on Geocaching...", "loading");
+      submitSolvedCoordinate();
       return;
     }
 
     directSyncStarted = false;
-    const message = "Geocaching's editor did not open automatically. Click the pencil beside the coordinates, or reload the page and retry.";
+    const reloadKey = syncReloadStorageKey();
+    const reloadCount = Number(window.sessionStorage.getItem(reloadKey) || "0");
+    if (reloadCount < MAX_COORDINATE_PAGE_RELOADS) {
+      window.sessionStorage.setItem(reloadKey, String(reloadCount + 1));
+      setSyncPanelState("Geocaching's editor was not ready. Reloading once and continuing automatically...", "loading");
+      window.setTimeout(() => window.location.reload(), 500);
+      return;
+    }
+
+    const message = "Geocaching did not make its coordinate editor available. The sync will remain pending so it can be retried.";
     setSyncPanelState(message, "error");
     toast(message, true);
   }
@@ -620,14 +637,10 @@ function userscript(appOrigin: string) {
     if (input.value !== syncPayload.coordinateText) {
       setInputValue(input, syncPayload.coordinateText);
       input.focus();
-      input.select?.();
-      toast("Corrected coordinate filled. Review it, then choose Save on Geocaching.", false);
     }
     input.dataset.geostatsFilled = "true";
-    const save = document.getElementById("geostats-sync-save");
-    if (save) save.style.display = "block";
     const instructions = document.getElementById("geostats-sync-instructions");
-    if (instructions && !syncSubmissionStarted) instructions.textContent = "The Change To field is filled. Review it, then choose Save on Geocaching.";
+    if (instructions && !syncSubmissionStarted) instructions.textContent = "The Change To field is filled. Saving it on Geocaching...";
     return true;
   }
 
@@ -652,12 +665,12 @@ function userscript(appOrigin: string) {
     if (fillCoordinateEditor()) return true;
     if (hasVisibleSolvedCoordinatePopup()) return true;
     const instructions = document.getElementById("geostats-sync-instructions");
-    const triggers = findCoordinateEditorTriggers();
-    for (let index = 0; index < triggers.length; index += 1) {
+    for (let index = 0; index < MAX_COORDINATE_EDITOR_ATTEMPTS; index += 1) {
       if (fillCoordinateEditor() || hasVisibleSolvedCoordinatePopup()) return true;
-      if (instructions) instructions.textContent = "Opening Geocaching's coordinate editor (attempt " + (index + 1) + " of " + triggers.length + ")…";
-      if (typeof triggers[index].click === "function") triggers[index].click();
-      else triggers[index].dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+      const trigger = findCoordinateEditorTriggers()[0];
+      if (instructions) instructions.textContent = "Opening Geocaching's coordinate editor (attempt " + (index + 1) + " of " + MAX_COORDINATE_EDITOR_ATTEMPTS + ")...";
+      if (typeof trigger?.click === "function") trigger.click();
+      else trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
       if (await waitForCoordinateEditor(2500)) return true;
     }
     return false;
@@ -670,7 +683,8 @@ function userscript(appOrigin: string) {
     if (!fillCoordinateEditor()) return false;
     useCoordinateEditor = true;
     directSyncStarted = false;
-    setSyncPanelState("The coordinate is filled in Geocaching's editor. Choose Save on Geocaching to finish.", "editor");
+    setSyncPanelState("The coordinate is filled. Saving it on Geocaching...", "loading");
+    submitSolvedCoordinate();
     return true;
   }
 
@@ -702,6 +716,11 @@ function userscript(appOrigin: string) {
     let attempts = 0;
     const acceptTimer = window.setInterval(() => {
       attempts += 1;
+      if (cachePageShowsCoordinate(document, syncPayload)) {
+        window.clearInterval(acceptTimer);
+        markCoordinateSynced();
+        return;
+      }
       const accept = [...document.querySelectorAll("button, input[type='button'], input[type='submit']")].find((control) => {
         const label = (control.textContent || control.value || "").trim();
         return /^accept$/i.test(label) && isVisible(control);
