@@ -1060,6 +1060,10 @@ export default function MysteriesPage() {
     const solved = finalCoordinate(cache);
     return solved && !solved.attempt.geocachingSyncedAt ? [{ cache, ...solved }] : [];
   }), [caches]);
+  const selectedNotesNeedSync = Boolean(
+    selected && !selected.sharedBy &&
+    selected.geocachingNotesFingerprint !== mysteryFieldFingerprint(selected.notes)
+  );
   const filteredCaches = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     return caches.filter((cache) => {
@@ -1321,6 +1325,12 @@ export default function MysteriesPage() {
       cleanup();
       setNotice("The current helper is not active here. Install or update it, then try again.");
     }, 500);
+  }
+
+  function syncFromHeader() {
+    if (syncableCaches.length) syncAttempts(syncableCaches);
+    if (selectedNotesNeedSync && selected) syncNotes(selected);
+    if (!syncableCaches.length && !selectedNotesNeedSync) setNotice("Everything is already synced with Geocaching");
   }
 
   function addCache(event: FormEvent<HTMLFormElement>) {
@@ -1737,7 +1747,7 @@ export default function MysteriesPage() {
         </div>
         <div className="mystery-header-actions">
           <span className="offline-pill"><WifiOff size={14} /> Available offline</span>
-          <button className="secondary-button" type="button" disabled={!syncableCaches.length} onClick={() => syncAttempts(syncableCaches)}><ExternalLink size={17} /> Sync solved{syncableCaches.length ? ` (${syncableCaches.length})` : ""}</button>
+          <button className="secondary-button" type="button" disabled={!syncableCaches.length && !selectedNotesNeedSync} onClick={syncFromHeader}><ExternalLink size={17} /> Sync solved{syncableCaches.length ? ` (${syncableCaches.length})` : ""}</button>
           <button className="secondary-button" type="button" onClick={() => setShowBrowserImport(true)}><Import size={17} /> Browser import</button>
           <button className="secondary-button" type="button" onClick={exportGpx}><Download size={17} /> Export GPX</button>
           <button className="secondary-button" type="button" onClick={openSharingSettings}><Settings2 size={17} /> Sharing settings</button>
