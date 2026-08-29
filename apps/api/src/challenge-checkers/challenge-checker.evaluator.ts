@@ -1,4 +1,5 @@
 import { cacheTypeIdentity, cacheTypeLabel } from "./cache-type-catalog";
+import { geocacheAttributeLabel } from "./geocache-attribute-catalog";
 
 export type ChallengeRule =
   | { type: "TOTAL_FINDS"; minimum: number }
@@ -100,7 +101,7 @@ export function attributesFromRaw(raw: unknown): Array<{ id: string; label: stri
     if (included === "0" || included?.toLocaleLowerCase() === "false") return [];
     const id = rawText(attribute.id, attribute["@_id"]);
     if (!id) return [];
-    return [{ id, label: rawText(attribute.text, attribute["#text"]) ?? `Attribute ${id}` }];
+    return [{ id, label: rawText(attribute.text, attribute["#text"]) ?? geocacheAttributeLabel(id) ?? `Attribute ${id}` }];
   });
 }
 

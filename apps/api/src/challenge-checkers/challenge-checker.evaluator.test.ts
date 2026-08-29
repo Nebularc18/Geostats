@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { evaluateChallenge } from "./challenge-checker.evaluator";
+import { attributesFromRaw, evaluateChallenge } from "./challenge-checker.evaluator";
 
 const finds = [
   { foundAt: new Date("2025-01-01T00:00:00Z"), foundDate: new Date("2025-01-01T00:00:00Z"), cache: { gcCode: "GC1", name: "One", cacheType: "Traditional Cache", difficulty: 1, terrain: 1, country: "Sweden", region: "Skane", county: null } },
@@ -78,6 +78,20 @@ test("matches imported cache-type aliases by canonical id", () => {
   ]);
   assert.equal(result.passed, true);
   assert.equal(result.rules[0]!.current, 2);
+});
+
+test("labels text-free GSAK attributes by Groundspeak id", () => {
+  const raw = {
+    "groundspeak:cache": {
+      "groundspeak:attributes": {
+        "groundspeak:attribute": [{ id: "1", inc: "1" }, { id: "2", inc: "0" }, { id: "71", inc: "1" }]
+      }
+    }
+  };
+  assert.deepEqual(attributesFromRaw(raw), [
+    { id: "1", label: "Dogs" },
+    { id: "71", label: "Challenge cache" }
+  ]);
 });
 
 test("evaluates the expanded imported-data rules", () => {
