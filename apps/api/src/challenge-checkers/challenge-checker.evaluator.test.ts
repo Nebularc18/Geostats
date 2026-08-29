@@ -11,7 +11,7 @@ const finds = [
 test("evaluates supported rules and combines them with AND", () => {
   const result = evaluateChallenge([
     { type: "TOTAL_FINDS", minimum: 3 },
-    { type: "CACHE_TYPE", cacheType: "Traditional Cache", minimum: 2 },
+    { type: "CACHE_TYPE", cacheTypeId: "2", cacheTypeLabel: "Traditional Cache", minimum: 2 },
     { type: "LOCATION", field: "country", value: "Sweden", country: "Sweden", minimum: 2 },
     { type: "CALENDAR_DAYS", minimum: 2 },
     { type: "DIFFICULTY_TERRAIN", minimum: 2 }
@@ -67,4 +67,36 @@ test("does not accept a mutable profile timezone as a calendar input", () => {
 
   assert.equal(result.rules[0]!.current, 1);
   assert.equal(result.rules[0]!.evidence[0]!.date, "2024-05-03");
+});
+
+test("matches imported cache-type aliases by canonical id", () => {
+  const result = evaluateChallenge([
+    { type: "CACHE_TYPE", cacheTypeId: "8", cacheTypeLabel: "Mystery Cache", minimum: 2 }
+  ], [
+    { ...finds[0]!, cache: { ...finds[0]!.cache, cacheType: "Unknown Cache" } },
+    { ...finds[1]!, cache: { ...finds[1]!.cache, cacheType: "Unknown (Mystery) Cache" } }
+  ]);
+  assert.equal(result.passed, true);
+  assert.equal(result.rules[0]!.current, 2);
+});
+
+test("evaluates the expanded imported-data rules", () => {
+  const expandedFinds = [
+    { foundAt: new Date("2025-01-01T00:00:00Z"), foundDate: new Date("2025-01-01T00:00:00Z"), cache: { ...finds[0]!.cache, gcCode: "GC30", size: "Micro", hiddenDate: new Date("2001-01-01T00:00:00Z"), difficulty: 2.5, terrain: 3, raw: { "groundspeak:cache": { "groundspeak:favorite_points": 12, "groundspeak:attributes": { "groundspeak:attribute": { id: "1", inc: "1", text: "Dogs" } } } } } },
+    { foundAt: new Date("2025-01-02T00:00:00Z"), foundDate: new Date("2025-01-02T00:00:00Z"), cache: { ...finds[0]!.cache, gcCode: "GC31", size: "Micro", hiddenDate: new Date("2001-02-01T00:00:00Z"), difficulty: 2.5, terrain: 3, raw: { "groundspeak:cache": { "groundspeak:favorite_points": 4 } } } },
+    { foundAt: new Date("2025-01-04T00:00:00Z"), foundDate: new Date("2025-01-04T00:00:00Z"), cache: { ...finds[0]!.cache, gcCode: "GC32", size: "Regular", hiddenDate: new Date("2001-02-15T00:00:00Z"), difficulty: 1, terrain: 1, raw: {} } }
+  ];
+  const result = evaluateChallenge([
+    { type: "CACHE_SIZE", size: "Micro", minimum: 2 },
+    { type: "FIND_STREAK", minimum: 2 },
+    { type: "PLACED_MONTHS", minimum: 2 },
+    { type: "MONTH_OF_YEAR", month: 1, minimum: 3 },
+    { type: "WEEKDAY", weekday: 3, minimum: 1 },
+    { type: "DIFFICULTY_RATING", rating: 2.5, minimum: 2 },
+    { type: "TERRAIN_RATING", rating: 3, minimum: 2 },
+    { type: "FAVORITE_POINTS", minimumFavoritePoints: 10, minimum: 1 },
+    { type: "ATTRIBUTE", attributeId: "1", attributeLabel: "Dogs", minimum: 1 }
+  ], expandedFinds);
+  assert.equal(result.passed, true);
+  assert.deepEqual(result.rules.map((rule) => rule.current), [2, 2, 2, 3, 1, 2, 2, 1, 1]);
 });
