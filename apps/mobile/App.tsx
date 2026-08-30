@@ -1,7 +1,7 @@
 import { StatusBar } from "expo-status-bar";
 import { fetch as expoFetch } from "expo/fetch";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Alert, Image, InteractionManager, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, Alert, Image, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import * as DocumentPicker from "expo-document-picker";
 import { File, Paths } from "expo-file-system";
@@ -1911,7 +1911,7 @@ function MysteriesScreen({ apiBaseUrl, token, userId, onRequestScrollTop }: { ap
           : available.filter((cache) => cache.sharedBy);
         const next = [...reconciledOwned, ...conflictCopies, ...localOnly, ...sharedCaches];
         setCaches(next);
-        setSelectedId((selected) => next.some((cache) => cache.id === selected) ? selected : (next[0]?.id ?? ""));
+        setSelectedId((selected) => next.some((cache) => cache.id === selected) ? selected : "");
         if (conflictCopies.length) {
           setNotice(`${conflictCopies.length} local ${conflictCopies.length === 1 ? "edit was" : "edits were"} preserved as a separate device copy because the server also changed.`);
         }
@@ -1997,11 +1997,9 @@ function MysteriesScreen({ apiBaseUrl, token, userId, onRequestScrollTop }: { ap
     const owned = latest.caches.filter((cache) => !cache.sharedBy);
     const fingerprint = snapshotFingerprint(JSON.stringify(owned));
     if (persistedMysteriesFingerprint.current === fingerprint) return;
-    InteractionManager.runAfterInteractions(() => {
-      if (writeMysteries(userId, owned)) {
-        persistedMysteriesFingerprint.current = fingerprint;
-      }
-    });
+    if (writeMysteries(userId, owned)) {
+      persistedMysteriesFingerprint.current = fingerprint;
+    }
   }, [userId]);
 
   useEffect(() => {
@@ -2023,6 +2021,12 @@ function MysteriesScreen({ apiBaseUrl, token, userId, onRequestScrollTop }: { ap
     return matchesFilter && (!normalized || `${cache.gcCode} ${cache.name} ${mysteryLocation(cache)} ${cache.trip ?? ""}`.toLowerCase().includes(normalized));
   });
   const selected = caches.find((cache) => cache.id === selectedId);
+
+  useEffect(() => {
+    if (!detailOpen || selected) return;
+    setDetailOpen(false);
+    requestAnimationFrame(onRequestScrollTop);
+  }, [detailOpen, onRequestScrollTop, selected]);
 
   function showMystery(cacheId: string) {
     setSelectedId(cacheId);
