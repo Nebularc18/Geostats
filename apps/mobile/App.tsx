@@ -99,6 +99,41 @@ type BoundaryFeature = {
   geometry: { type: "Polygon" | "MultiPolygon"; coordinates: PolygonCoordinates | MultiPolygonCoordinates };
 };
 type BoundaryFeatureCollection = { type: "FeatureCollection"; features: BoundaryFeature[] };
+type TravelPlace = { label: string; latitude: number; longitude: number };
+type TravelRecommendation = {
+  id: string;
+  gcCode: string;
+  name: string;
+  cacheType: string | null;
+  difficulty: number | null;
+  terrain: number | null;
+  latitude: number;
+  longitude: number;
+  found: boolean;
+  distanceKm: number;
+  source: "imported" | "mystery";
+};
+type TravelSearchResult = {
+  mode: "nearby" | "route";
+  origin: TravelPlace;
+  destination?: TravelPlace;
+  route?: { distanceMeters: number; durationSeconds: number };
+  recommendations: TravelRecommendation[];
+  searchedCacheCount: number;
+  poolTruncated: boolean;
+  resultLimit: number;
+};
+type TravelPoolSummary = { total: number; found: number; unfound: number; poolTruncated: boolean; types: LocationBucket[] };
+type ReferenceExtremeEntry = { gcCode: string; name: string; elevationMeters: number | null; found: boolean };
+type ExtremeCachesData = {
+  selectedCountry: string | null;
+  selectedRegion: string | null;
+  reference: null | {
+    country: string;
+    region: string | null;
+    extremes: Record<"northernmost" | "southernmost" | "easternmost" | "westernmost" | "highest" | "lowest", ReferenceExtremeEntry>;
+  };
+};
 
 const HOSTED_API_URL = process.env.EXPO_PUBLIC_API_URL ?? "https://geostats-api.hampusek.com";
 const DEFAULT_API_URL = process.env.EXPO_PUBLIC_API_URL ?? (__DEV__ ? "http://10.0.2.2:3001" : HOSTED_API_URL);
@@ -1175,7 +1210,7 @@ function ScreenSwitch({ apiBaseUrl, screen, token, userId, username, onNavigate,
   if (screen === "ftf") return <FtfScreen apiBaseUrl={apiBaseUrl} token={token} />;
   if (screen === "hides") return <HidesScreen apiBaseUrl={apiBaseUrl} token={token} />;
   if (screen === "mysteries") return <MysteriesScreen apiBaseUrl={apiBaseUrl} token={token} userId={userId} />;
-  if (screen === "travel") return <TravelScreen userId={userId} />;
+  if (screen === "travel") return <TravelScreen apiBaseUrl={apiBaseUrl} token={token} userId={userId} />;
   if (screen === "upload") return <UploadScreen apiBaseUrl={apiBaseUrl} token={token} />;
   if (screen === "imports") return <ImportsScreen apiBaseUrl={apiBaseUrl} token={token} />;
   return <ProfileScreen apiBaseUrl={apiBaseUrl} token={token} onLogout={onLogout} />;
@@ -1314,6 +1349,7 @@ function StatsScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string 
       {section === "Patterns" ? <>
         <BreakdownPanel title="Cache breakdowns" groups={[["Cache types", s.cacheTypes ?? []], ["Sizes", s.sizes ?? []], ["Countries", s.countries ?? []], ["Regions", s.regions ?? []], ["Counties / municipalities", s.counties ?? []], ["Finds by difficulty", s.findsByDifficulty ?? []], ["Finds by terrain", s.findsByTerrain ?? []], ["Finds by calendar month", s.findsByCalendarMonth ?? []], ["Finds by weekday", s.findsByWeekday ?? []], ["Finds by year placed", s.findsByPlacedYear ?? []], ["Finds to today for each year", s.findsToTodayByYear ?? []], ["Average difficulty per year", s.averageDifficultyPerYear ?? s.averageDifficultyByYear ?? []], ["Average terrain per year", s.averageTerrainPerYear ?? s.averageTerrainByYear ?? []], ["Top hiders", (s.ownerBuckets ?? []).slice(0, 20)]]} />
         <Panel title="Elevation"><Bars data={s.elevationBuckets ?? []} /></Panel>
+        <ExtremeCachesPanel apiBaseUrl={apiBaseUrl} token={token} />
       </> : null}
       {section === "History" ? <>
         <Panel title="Way to 81"><Rows rows={(s.wayTo81 ?? []).map((entry: any) => [String(entry.index), `${entry.gcCode} ${entry.name}`, `${entry.difficulty}/${entry.terrain}`])} /></Panel>
@@ -2178,10 +2214,20 @@ function MysteriesScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; to
   );
 }
 
-function TravelScreen({ userId }: { userId: string }) {
+function TravelScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; token: string; userId: string }) {
   const [caches, setCaches] = useState<MysteryCache[]>([]);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<"all" | "ready" | "unsolved">("all");
+  const [searchMode, setSearchMode] = useState<"nearby" | "route">("nearby");
+  const [origin, setOrigin] = useState("");
+  const [destination, setDestination] = useState("");
+  const [radiusKm, setRadiusKm] = useState("10");
+  const [includeFound, setIncludeFound] = useState(false);
+  const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [searchResult, setSearchResult] = useState<TravelSearchResult | null>(null);
+  const [selectedRecommendations, setSelectedRecommendations] = useState<Set<string>>(new Set());
+  const pool = useApi<TravelPoolSummary>(apiBaseUrl, token, "/map/travel-pool", { total: 0, found: 0, unfound: 0, poolTruncated: false, types: [] });
   useEffect(() => { void readMysteries(userId).then(setCaches); }, [userId]);
   const visible = caches.filter((cache) => {
     const isReady = Boolean(finalCoordinate(cache));
@@ -2196,11 +2242,131 @@ function TravelScreen({ userId }: { userId: string }) {
   }, {});
   const readyCount = caches.filter(finalCoordinate).length;
   const tripCount = new Set(caches.map((cache) => cache.trip?.trim()).filter(Boolean)).size;
+
+  function changeSearchMode(value: string) {
+    const mode = value as typeof searchMode;
+    setSearchMode(mode);
+    setRadiusKm(mode === "nearby" ? "10" : "2");
+    setSearchResult(null);
+    setSearchError(null);
+  }
+
+  async function findCaches() {
+    const cleanOrigin = origin.trim();
+    const cleanDestination = destination.trim();
+    const radius = Number(radiusKm);
+    if (cleanOrigin.length < 2) {
+      setSearchError(searchMode === "nearby" ? "Enter a town, address, or landmark." : "Enter a starting point.");
+      return;
+    }
+    if (searchMode === "route" && cleanDestination.length < 2) {
+      setSearchError("Enter a destination.");
+      return;
+    }
+    if (!Number.isFinite(radius) || radius < 0.5 || radius > 100) {
+      setSearchError("Radius must be between 0.5 and 100 km.");
+      return;
+    }
+    setSearching(true);
+    setSearchError(null);
+    try {
+      const mysteryCaches = caches.flatMap((cache) => {
+        const coordinate = finalCoordinate(cache);
+        return coordinate ? [{
+          id: cache.id,
+          gcCode: cache.gcCode,
+          name: cache.name,
+          latitude: coordinate.latitude,
+          longitude: coordinate.longitude,
+          country: cache.country,
+          region: cache.region,
+          county: cache.county
+        }] : [];
+      });
+      const result = await apiFetch<TravelSearchResult>(apiBaseUrl, "/map/travel-search", token, {
+        method: "POST",
+        body: JSON.stringify({
+          mode: searchMode,
+          origin: cleanOrigin,
+          destination: searchMode === "route" ? cleanDestination : undefined,
+          radiusKm: radius,
+          includeFound,
+          mysteryCaches
+        })
+      });
+      setSearchResult(result);
+      setSelectedRecommendations(new Set(result.recommendations.filter((cache) => !cache.found).map((cache) => cache.id)));
+    } catch (error) {
+      setSearchResult(null);
+      setSelectedRecommendations(new Set());
+      setSearchError(error instanceof Error ? error.message : "The cache search failed. Try again.");
+    } finally {
+      setSearching(false);
+    }
+  }
+
+  function toggleRecommendation(cacheId: string) {
+    setSelectedRecommendations((current) => {
+      const next = new Set(current);
+      if (next.has(cacheId)) next.delete(cacheId);
+      else next.add(cacheId);
+      return next;
+    });
+  }
+
+  function openRecommendedRoute() {
+    if (!searchResult) return;
+    const cachesForRoute = searchResult.recommendations.filter((cache) => selectedRecommendations.has(cache.id));
+    if (!cachesForRoute.length) {
+      setSearchError("Choose at least one cache for directions.");
+      return;
+    }
+    const coordinate = (place: Pick<TravelPlace, "latitude" | "longitude">) => `${place.latitude},${place.longitude}`;
+    const destinationPoint = searchResult.mode === "route" && searchResult.destination
+      ? coordinate(searchResult.destination)
+      : coordinate(cachesForRoute.at(-1)!);
+    const waypointCaches = searchResult.mode === "route" ? cachesForRoute : cachesForRoute.slice(0, -1);
+    const params = [
+      "api=1",
+      `origin=${encodeURIComponent(coordinate(searchResult.origin))}`,
+      `destination=${encodeURIComponent(destinationPoint)}`,
+      "travelmode=driving"
+    ];
+    if (waypointCaches.length) params.push(`waypoints=${encodeURIComponent(waypointCaches.slice(0, 8).map(coordinate).join("|"))}`);
+    void Linking.openURL(`https://www.google.com/maps/dir/?${params.join("&")}`);
+  }
+
   return (
     <>
-      <PageTitle eyebrow="Routes and areas" title="Travel" />
-      <Text style={styles.muted}>Collect solved coordinates into trips before you head out. Assign trips from Mysteries.</Text>
+      <PageTitle eyebrow="Find caches for the journey" title="Travel" />
+      <Text style={styles.muted}>Search around a place or find caches along the drive. Your solved mysteries join the imported cache pool.</Text>
       <StatGrid rows={[["Trips", tripCount], ["Ready to find", readyCount], ["Still solving", Math.max(0, caches.length - readyCount)], ["Total caches", caches.length]]} />
+      <Panel title="Find caches" subtitle={pool.loading ? "Checking your cache pool..." : `${pool.data.unfound}${pool.data.poolTruncated ? "+" : ""} unfound of ${pool.data.total}${pool.data.poolTruncated ? "+" : ""} imported caches`}>
+        <Segmented values={["nearby", "route"]} active={searchMode} onPress={changeSearchMode} disabled={searching} />
+        <Field label={searchMode === "nearby" ? "Where are you?" : "Start"} value={origin} onChangeText={setOrigin} placeholder={searchMode === "nearby" ? "Town, address, or landmark" : "Starting town or address"} />
+        {searchMode === "route" ? <Field label="Destination" value={destination} onChangeText={setDestination} placeholder="Destination town or address" /> : null}
+        <Field label={searchMode === "nearby" ? "Search radius in km" : "Distance from route in km"} value={radiusKm} onChangeText={setRadiusKm} keyboardType="decimal-pad" />
+        <Segmented values={["unfound", "include found"]} active={includeFound ? "include found" : "unfound"} onPress={(value) => setIncludeFound(value === "include found")} disabled={searching} />
+        <PrimaryButton label={searching ? "Searching..." : "Find caches"} onPress={() => { if (!searching) void findCaches(); }} />
+        {searchError ? <Text style={styles.error}>{searchError}</Text> : null}
+        {searchResult ? <View style={styles.travelResults}>
+          <View style={styles.travelResultHeading}>
+            <View style={styles.flex}><Text style={styles.panelTitle}>{searchResult.recommendations.length} recommendations</Text><Text style={styles.muted}>{searchResult.origin.label}{searchResult.destination ? ` to ${searchResult.destination.label}` : ""}</Text></View>
+            <Text style={styles.travelResultCount}>{selectedRecommendations.size} picked</Text>
+          </View>
+          {searchResult.route ? <Text style={styles.note}>{Math.round(searchResult.route.distanceMeters / 1000)} km, about {Math.max(1, Math.round(searchResult.route.durationSeconds / 60))} min</Text> : null}
+          {searchResult.recommendations.map((cache) => {
+            const selected = selectedRecommendations.has(cache.id);
+            return <Pressable accessibilityRole="checkbox" accessibilityState={{ checked: selected }} key={cache.id} onPress={() => toggleRecommendation(cache.id)} style={[styles.travelRecommendation, selected && styles.travelRecommendationSelected]}>
+              <View style={[styles.travelCheck, selected && styles.travelCheckSelected]}><Text style={styles.travelCheckText}>{selected ? "✓" : ""}</Text></View>
+              <View style={styles.flex}><Text style={styles.rowTitle}>{cache.gcCode} · {cache.name}</Text><Text style={styles.muted}>{cache.distanceKm.toFixed(1)} km · {cache.cacheType ?? "Unknown type"}{cache.found ? " · found" : ""}</Text></View>
+            </Pressable>;
+          })}
+          {!searchResult.recommendations.length ? <Text style={styles.muted}>No matching caches found. Try a wider radius or import a Pocket Query for this area.</Text> : null}
+          {searchResult.recommendations.length ? <PrimaryButton label="Open picked caches in Maps" onPress={openRecommendedRoute} /> : null}
+        </View> : null}
+        <LoadState loading={pool.loading} error={pool.error} />
+      </Panel>
       <Panel title="Travel plan">
         <Field label="Search" value={query} onChangeText={setQuery} placeholder="Trip, area, or cache" />
         <Segmented values={["all", "ready", "unsolved"]} active={filter} onPress={(value) => setFilter(value as typeof filter)} />
@@ -2297,6 +2463,31 @@ function BreakdownGroup({ label, data }: { label: string; data: any[] }) {
       </Pressable>
       {expanded ? <View style={styles.breakdownContent}><Bars data={data} /></View> : null}
     </View>
+  );
+}
+
+function ExtremeCachesPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
+  const { data, loading, error } = useApi<ExtremeCachesData>(apiBaseUrl, token, "/stats/extreme-caches", { selectedCountry: null, selectedRegion: null, reference: null });
+  const labels: Array<[keyof NonNullable<ExtremeCachesData["reference"]>["extremes"], string, string]> = [
+    ["northernmost", "Northernmost", "N"],
+    ["southernmost", "Southernmost", "S"],
+    ["easternmost", "Easternmost", "E"],
+    ["westernmost", "Westernmost", "W"],
+    ["highest", "Highest", "↑"],
+    ["lowest", "Lowest", "↓"]
+  ];
+  const reference = data.reference;
+  return (
+    <Panel title="Extreme caches" subtitle={reference ? `Project-GC reference points for ${reference.region ?? reference.country}` : "Project-GC reference points for your home country"}>
+      {reference ? <View style={styles.extremeGrid}>{labels.map(([key, label, mark]) => {
+        const entry = reference.extremes[key];
+        return <Pressable key={key} onPress={() => void Linking.openURL(`https://coord.info/${entry.gcCode}`)} style={[styles.extremeCard, entry.found && styles.extremeCardFound]}>
+          <View style={[styles.extremeMark, entry.found && styles.extremeMarkFound]}><Text style={styles.extremeMarkText}>{entry.found ? "✓" : mark}</Text></View>
+          <View style={styles.flex}><Text style={styles.extremeLabel}>{label}</Text><Text style={styles.rowTitle} numberOfLines={2}>{entry.gcCode} · {entry.name}</Text>{entry.elevationMeters != null ? <Text style={styles.muted}>{Math.round(entry.elevationMeters)} m</Text> : null}</View>
+        </Pressable>;
+      })}</View> : !loading ? <Text style={styles.muted}>Set your home country and import finds to see its reference extremes.</Text> : null}
+      <LoadState loading={loading} error={error} />
+    </Panel>
   );
 }
 
@@ -2845,6 +3036,21 @@ const styles = StyleSheet.create({
   chip: { color: "#dce8df", backgroundColor: "#173326", alignSelf: "flex-start", paddingHorizontal: 9, paddingVertical: 6, borderRadius: 14, marginBottom: 4 },
   attemptRow: { flexDirection: "row", gap: 10, alignItems: "center", borderTopWidth: 1, borderColor: "#1b3729", paddingVertical: 10 },
   routeGroup: { borderTopWidth: 1, borderColor: "#294839", paddingTop: 14, marginTop: 6, gap: 3 },
+  travelResults: { gap: 9, borderTopWidth: 1, borderColor: "#294839", paddingTop: 14 },
+  travelResultHeading: { flexDirection: "row", alignItems: "center", gap: 10 },
+  travelResultCount: { color: "#f3b34d", fontSize: 12, fontWeight: "900" },
+  travelRecommendation: { flexDirection: "row", alignItems: "center", gap: 10, padding: 11, borderWidth: 1, borderColor: "#233f32", borderRadius: 12, backgroundColor: "#0b1912" },
+  travelRecommendationSelected: { borderColor: "#4a8a65", backgroundColor: "#132d20" },
+  travelCheck: { width: 24, height: 24, borderRadius: 7, borderWidth: 1, borderColor: "#50675b", alignItems: "center", justifyContent: "center" },
+  travelCheckSelected: { borderColor: "#f3b34d", backgroundColor: "#f3b34d" },
+  travelCheckText: { color: "#172016", fontWeight: "900" },
+  extremeGrid: { gap: 9 },
+  extremeCard: { minHeight: 78, flexDirection: "row", alignItems: "center", gap: 12, padding: 12, borderWidth: 1, borderColor: "#233f32", borderRadius: 13, backgroundColor: "#0b1912" },
+  extremeCardFound: { borderColor: "#427958", backgroundColor: "#122c1f" },
+  extremeMark: { width: 42, height: 42, borderRadius: 21, alignItems: "center", justifyContent: "center", backgroundColor: "#243a2e", borderWidth: 1, borderColor: "#4b6256" },
+  extremeMarkFound: { backgroundColor: "#f3b34d", borderColor: "#f3b34d" },
+  extremeMarkText: { color: "#edf7ef", fontSize: 17, fontWeight: "900" },
+  extremeLabel: { color: "#f3b34d", fontSize: 10, fontWeight: "900", textTransform: "uppercase", letterSpacing: 0.7 },
   mysteryImage: { width: "100%", height: 210, borderRadius: 8, backgroundColor: "#14271d" },
   linkText: { color: "#f3b34d", fontWeight: "800" },
   dtChart: { gap: 6 },
