@@ -126,14 +126,19 @@ type TravelSearchResult = {
 type TravelPoolSummary = { total: number; found: number; unfound: number; poolTruncated: boolean; types: LocationBucket[] };
 type ReferenceExtremeEntry = { gcCode: string; name: string; elevationMeters: number | null; found: boolean };
 type ExtremeCachesData = {
+  countries: string[];
   selectedCountry: string | null;
   selectedRegion: string | null;
+  referenceRegions: string[];
+  homeCountry: string | null;
   reference: null | {
     country: string;
     region: string | null;
     extremes: Record<"northernmost" | "southernmost" | "easternmost" | "westernmost" | "highest" | "lowest", ReferenceExtremeEntry>;
   };
 };
+
+const MAX_GOOGLE_MAPS_ROUTE_CACHES = 8;
 
 const HOSTED_API_URL = process.env.EXPO_PUBLIC_API_URL ?? "https://geostats-api.hampusek.com";
 const DEFAULT_API_URL = process.env.EXPO_PUBLIC_API_URL ?? (__DEV__ ? "http://10.0.2.2:3001" : HOSTED_API_URL);
@@ -2295,7 +2300,10 @@ function TravelScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; token
         })
       });
       setSearchResult(result);
-      setSelectedRecommendations(new Set(result.recommendations.filter((cache) => !cache.found).map((cache) => cache.id)));
+      setSelectedRecommendations(new Set(result.recommendations
+        .filter((cache) => !cache.found)
+        .slice(0, MAX_GOOGLE_MAPS_ROUTE_CACHES)
+        .map((cache) => cache.id)));
     } catch (error) {
       setSearchResult(null);
       setSelectedRecommendations(new Set());
@@ -2308,8 +2316,15 @@ function TravelScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; token
   function toggleRecommendation(cacheId: string) {
     setSelectedRecommendations((current) => {
       const next = new Set(current);
-      if (next.has(cacheId)) next.delete(cacheId);
-      else next.add(cacheId);
+      if (next.has(cacheId)) {
+        next.delete(cacheId);
+        setSearchError(null);
+      } else if (next.size >= MAX_GOOGLE_MAPS_ROUTE_CACHES) {
+        setSearchError(`Google Maps accepts up to ${MAX_GOOGLE_MAPS_ROUTE_CACHES} caches in one route.`);
+      } else {
+        next.add(cacheId);
+        setSearchError(null);
+      }
       return next;
     });
   }
@@ -2332,7 +2347,7 @@ function TravelScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; token
       `destination=${encodeURIComponent(destinationPoint)}`,
       "travelmode=driving"
     ];
-    if (waypointCaches.length) params.push(`waypoints=${encodeURIComponent(waypointCaches.slice(0, 8).map(coordinate).join("|"))}`);
+    if (waypointCaches.length) params.push(`waypoints=${encodeURIComponent(waypointCaches.map(coordinate).join("|"))}`);
     void Linking.openURL(`https://www.google.com/maps/dir/?${params.join("&")}`);
   }
 
@@ -2352,7 +2367,7 @@ function TravelScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; token
         {searchResult ? <View style={styles.travelResults}>
           <View style={styles.travelResultHeading}>
             <View style={styles.flex}><Text style={styles.panelTitle}>{searchResult.recommendations.length} recommendations</Text><Text style={styles.muted}>{searchResult.origin.label}{searchResult.destination ? ` to ${searchResult.destination.label}` : ""}</Text></View>
-            <Text style={styles.travelResultCount}>{selectedRecommendations.size} picked</Text>
+            <Text style={styles.travelResultCount}>{selectedRecommendations.size}/{MAX_GOOGLE_MAPS_ROUTE_CACHES} picked</Text>
           </View>
           {searchResult.route ? <Text style={styles.note}>{Math.round(searchResult.route.distanceMeters / 1000)} km, about {Math.max(1, Math.round(searchResult.route.durationSeconds / 60))} min</Text> : null}
           {searchResult.recommendations.map((cache) => {
@@ -2467,7 +2482,13 @@ function BreakdownGroup({ label, data }: { label: string; data: any[] }) {
 }
 
 function ExtremeCachesPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
-  const { data, loading, error } = useApi<ExtremeCachesData>(apiBaseUrl, token, "/stats/extreme-caches", { selectedCountry: null, selectedRegion: null, reference: null });
+  const [country, setCountry] = useState("");
+  const path = country ? `/stats/extreme-caches?country=${encodeURIComponent(country)}` : "/stats/extreme-caches";
+  const { data, loading, error } = useApi<ExtremeCachesData>(apiBaseUrl, token, path, { countries: [], selectedCountry: null, selectedRegion: null, referenceRegions: [], homeCountry: null, reference: null });
+  const selectingHomeCountry = !country && Boolean(data.homeCountry) && data.countries.includes(data.homeCountry!);
+  useEffect(() => {
+    if (selectingHomeCountry) setCountry(data.homeCountry!);
+  }, [data.homeCountry, selectingHomeCountry]);
   const labels: Array<[keyof NonNullable<ExtremeCachesData["reference"]>["extremes"], string, string]> = [
     ["northernmost", "Northernmost", "N"],
     ["southernmost", "Southernmost", "S"],
@@ -2485,8 +2506,8 @@ function ExtremeCachesPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: 
           <View style={[styles.extremeMark, entry.found && styles.extremeMarkFound]}><Text style={styles.extremeMarkText}>{entry.found ? "✓" : mark}</Text></View>
           <View style={styles.flex}><Text style={styles.extremeLabel}>{label}</Text><Text style={styles.rowTitle} numberOfLines={2}>{entry.gcCode} · {entry.name}</Text>{entry.elevationMeters != null ? <Text style={styles.muted}>{Math.round(entry.elevationMeters)} m</Text> : null}</View>
         </Pressable>;
-      })}</View> : !loading ? <Text style={styles.muted}>Set your home country and import finds to see its reference extremes.</Text> : null}
-      <LoadState loading={loading} error={error} />
+      })}</View> : !loading && !selectingHomeCountry ? <Text style={styles.muted}>Import finds from a supported country to see its reference extremes.</Text> : null}
+      <LoadState loading={loading || selectingHomeCountry} error={error} />
     </Panel>
   );
 }
