@@ -1,7 +1,7 @@
 import { StatusBar } from "expo-status-bar";
 import { fetch as expoFetch } from "expo/fetch";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Alert, Image, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, Alert, AppState, Image, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import * as DocumentPicker from "expo-document-picker";
 import { File, Paths } from "expo-file-system";
@@ -1115,6 +1115,7 @@ export default function App() {
   const [booting, setBooting] = useState(true);
   const [needsOnboarding, setNeedsOnboarding] = useState(false);
   const [screen, setScreen] = useState<ScreenId>("dashboard");
+  const contentScrollRef = useRef<ScrollView>(null);
   useEffect(() => {
     if (__DEV__ || !Updates.isEnabled) return;
     let active = true;
@@ -1184,8 +1185,8 @@ export default function App() {
             <Text style={styles.avatarText}>{session.user.username.slice(0, 1).toUpperCase()}</Text>
           </Pressable>
         </View>
-        <ScrollView key={screen} style={styles.content} contentContainerStyle={styles.contentInner} showsVerticalScrollIndicator={false}>
-          <ScreenSwitch apiBaseUrl={apiBaseUrl} screen={screen} token={session.token} userId={session.user.id} username={session.user.username} onNavigate={setScreen} onLogout={logout} />
+        <ScrollView ref={contentScrollRef} key={screen} style={styles.content} contentContainerStyle={styles.contentInner} showsVerticalScrollIndicator={false}>
+          <ScreenSwitch apiBaseUrl={apiBaseUrl} screen={screen} token={session.token} userId={session.user.id} username={session.user.username} onNavigate={setScreen} onLogout={logout} onRequestScrollTop={() => contentScrollRef.current?.scrollTo({ y: 0, animated: false })} />
         </ScrollView>
         <View style={styles.bottomNav}>
           {primaryScreens.map((item) => {
@@ -1205,7 +1206,7 @@ export default function App() {
   return <SafeAreaProvider>{content}</SafeAreaProvider>;
 }
 
-function ScreenSwitch({ apiBaseUrl, screen, token, userId, username, onNavigate, onLogout }: { apiBaseUrl: string; screen: ScreenId; token: string; userId: string; username: string; onNavigate: (screen: ScreenId) => void; onLogout: () => void }) {
+function ScreenSwitch({ apiBaseUrl, screen, token, userId, username, onNavigate, onLogout, onRequestScrollTop }: { apiBaseUrl: string; screen: ScreenId; token: string; userId: string; username: string; onNavigate: (screen: ScreenId) => void; onLogout: () => void; onRequestScrollTop: () => void }) {
   if (screen === "dashboard") return <DashboardScreen apiBaseUrl={apiBaseUrl} token={token} username={username} onNavigate={onNavigate} />;
   if (screen === "explore") return <ExploreScreen username={username} onNavigate={onNavigate} />;
   if (screen === "stats") return <StatsScreen apiBaseUrl={apiBaseUrl} token={token} />;
@@ -1214,7 +1215,7 @@ function ScreenSwitch({ apiBaseUrl, screen, token, userId, username, onNavigate,
   if (screen === "milestones") return <MilestonesScreen apiBaseUrl={apiBaseUrl} token={token} />;
   if (screen === "ftf") return <FtfScreen apiBaseUrl={apiBaseUrl} token={token} />;
   if (screen === "hides") return <HidesScreen apiBaseUrl={apiBaseUrl} token={token} />;
-  if (screen === "mysteries") return <MysteriesScreen apiBaseUrl={apiBaseUrl} token={token} userId={userId} />;
+  if (screen === "mysteries") return <MysteriesScreen apiBaseUrl={apiBaseUrl} token={token} userId={userId} onRequestScrollTop={onRequestScrollTop} />;
   if (screen === "travel") return <TravelScreen apiBaseUrl={apiBaseUrl} token={token} userId={userId} />;
   if (screen === "upload") return <UploadScreen apiBaseUrl={apiBaseUrl} token={token} />;
   if (screen === "imports") return <ImportsScreen apiBaseUrl={apiBaseUrl} token={token} />;
@@ -1777,17 +1778,19 @@ function badgeTierSummary(badges: Array<{ current: number | null; thresholds: nu
   return badgeTiers.map((tier, index) => ({ tier, count: counts[index] ?? 0 })).reverse();
 }
 
-function MysteriesScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; token: string; userId: string }) {
+function MysteriesScreen({ apiBaseUrl, token, userId, onRequestScrollTop }: { apiBaseUrl: string; token: string; userId: string; onRequestScrollTop: () => void }) {
   const [caches, setCaches] = useState<MysteryCache[]>([]);
   const [ready, setReady] = useState(false);
   const latestMysteries = useRef({ caches, ready });
   const serverSnapshots = useRef(new Map<string, string>());
   const snapshotRevisions = useRef(new Map<string, number>());
   const syncMetadata = useRef(new Map<string, MysterySyncMetadata>());
+  const persistedMysteriesFingerprint = useRef<string | null>(null);
   const [accountLoaded, setAccountLoaded] = useState(false);
   const [ownedLoadAttempt, setOwnedLoadAttempt] = useState(0);
   const [syncAttempt, setSyncAttempt] = useState(0);
   const [selectedId, setSelectedId] = useState("");
+  const [detailOpen, setDetailOpen] = useState(false);
   const [filter, setFilter] = useState<"all" | MysteryStatus>("all");
   const [query, setQuery] = useState("");
   const [showAdd, setShowAdd] = useState(false);
@@ -1832,6 +1835,7 @@ function MysteriesScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; to
         readMysterySyncMetadata(userId)
       ]);
       if (!active) return;
+      persistedMysteriesFingerprint.current = snapshotFingerprint(JSON.stringify(local.filter((cache) => !cache.sharedBy)));
       if (!syncMetadata.current.size) {
         syncMetadata.current = storedMetadata;
         storedMetadata.forEach(({ revision }, cacheId) => rememberSnapshotRevision(cacheId, revision));
@@ -1907,7 +1911,7 @@ function MysteriesScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; to
           : available.filter((cache) => cache.sharedBy);
         const next = [...reconciledOwned, ...conflictCopies, ...localOnly, ...sharedCaches];
         setCaches(next);
-        setSelectedId((selected) => next.some((cache) => cache.id === selected) ? selected : (next[0]?.id ?? ""));
+        setSelectedId((selected) => next.some((cache) => cache.id === selected) ? selected : "");
         if (conflictCopies.length) {
           setNotice(`${conflictCopies.length} local ${conflictCopies.length === 1 ? "edit was" : "edits were"} preserved as a separate device copy because the server also changed.`);
         }
@@ -1928,8 +1932,14 @@ function MysteriesScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; to
 
   useEffect(() => {
     if (!ready) return;
+    const owned = caches.filter((cache) => !cache.sharedBy);
+    const fingerprint = snapshotFingerprint(JSON.stringify(owned));
+    if (persistedMysteriesFingerprint.current === fingerprint) return;
     const timer = setTimeout(() => {
-      if (!writeMysteries(userId, caches.filter((cache) => !cache.sharedBy))) {
+      if (persistedMysteriesFingerprint.current === fingerprint) return;
+      if (writeMysteries(userId, owned)) {
+        persistedMysteriesFingerprint.current = fingerprint;
+      } else {
         setNotice("Could not save mysteries on this device.");
       }
     }, 150);
@@ -1981,12 +1991,26 @@ function MysteriesScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; to
     };
   }, [accountLoaded, apiBaseUrl, caches, ready, syncAttempt, token]);
 
-  useEffect(() => () => {
-    const latest = latestMysteries.current;
-    if (!latest.ready) return;
+  useEffect(() => {
+    function flushLatestMysteries() {
+      const latest = latestMysteries.current;
+      if (!latest.ready) return;
 
-    const owned = latest.caches.filter((cache) => !cache.sharedBy);
-    writeMysteries(userId, owned);
+      const owned = latest.caches.filter((cache) => !cache.sharedBy);
+      const fingerprint = snapshotFingerprint(JSON.stringify(owned));
+      if (persistedMysteriesFingerprint.current === fingerprint) return;
+      if (writeMysteries(userId, owned)) {
+        persistedMysteriesFingerprint.current = fingerprint;
+      }
+    }
+
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (state !== "active") flushLatestMysteries();
+    });
+    return () => {
+      subscription.remove();
+      flushLatestMysteries();
+    };
   }, [userId]);
 
   useEffect(() => {
@@ -2007,7 +2031,24 @@ function MysteriesScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; to
     const normalized = query.trim().toLowerCase();
     return matchesFilter && (!normalized || `${cache.gcCode} ${cache.name} ${mysteryLocation(cache)} ${cache.trip ?? ""}`.toLowerCase().includes(normalized));
   });
-  const selected = caches.find((cache) => cache.id === selectedId) ?? visible[0];
+  const selected = caches.find((cache) => cache.id === selectedId);
+
+  useEffect(() => {
+    if (!detailOpen || selected) return;
+    setDetailOpen(false);
+    requestAnimationFrame(onRequestScrollTop);
+  }, [detailOpen, onRequestScrollTop, selected]);
+
+  function showMystery(cacheId: string) {
+    setSelectedId(cacheId);
+    setDetailOpen(true);
+    requestAnimationFrame(onRequestScrollTop);
+  }
+
+  function showMysteryList() {
+    setDetailOpen(false);
+    requestAnimationFrame(onRequestScrollTop);
+  }
 
   function updateSelected(patch: Partial<MysteryCache>) {
     if (!selected || selected.sharedBy) return false;
@@ -2042,6 +2083,8 @@ function MysteriesScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; to
     };
     setCaches((current) => [cache, ...current]);
     setSelectedId(cache.id);
+    setDetailOpen(true);
+    requestAnimationFrame(onRequestScrollTop);
     setGcCode(""); setName(""); setLocation(""); setCountry(""); setPublished(""); setShowAdd(false);
     setNotice("Mystery cache added.");
   }
@@ -2140,6 +2183,8 @@ function MysteriesScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; to
             const remaining = latestMysteries.current.caches.filter((cache) => cache.id !== selected.id);
             setCaches(remaining);
             setSelectedId(remaining[0]?.id ?? "");
+            setDetailOpen(false);
+            requestAnimationFrame(onRequestScrollTop);
           } catch (error) {
             setNotice(error instanceof Error ? error.message : "Could not delete this mystery.");
           }
@@ -2165,6 +2210,7 @@ function MysteriesScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; to
 
   return (
     <>
+      {!detailOpen || !selected ? <>
       <PageTitle eyebrow="Offline solving workspace" title="Mysteries" />
       <StatGrid rows={[["Caches", caches.length], ["Solved", caches.filter((cache) => cache.status === "solved").length], ["Planned", caches.filter((cache) => cache.status === "planned").length], ["Shared", caches.filter((cache) => cache.sharedBy || cache.sharedWith.length).length]]} />
       <View style={styles.actionRow}>
@@ -2182,10 +2228,16 @@ function MysteriesScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; to
       <Panel title="Mystery list">
         <Field label="Search" value={query} onChangeText={setQuery} placeholder="Code, name, trip, or area" />
         <Segmented values={["all", "solving", "solved", "planned"]} active={filter} onPress={(value) => setFilter(value as typeof filter)} />
-        {visible.map((cache) => <Pressable key={`${cache.sharedBy?.id ?? "own"}-${cache.id}`} onPress={() => setSelectedId(cache.id)} style={[styles.cacheRow, selected?.id === cache.id && styles.selectedRow]}><Text style={styles.rowTitle}>{cache.gcCode} · {cache.name}</Text><Text style={styles.muted}>{cache.status} · {mysteryLocation(cache) || "No location"}{cache.sharedBy ? ` · from ${cache.sharedBy.username}` : ""}</Text></Pressable>)}
+        {visible.map((cache) => {
+          const isSelected = selected?.id === cache.id;
+          return <Pressable accessibilityRole="button" accessibilityLabel={`Open ${cache.gcCode} ${cache.name}`} accessibilityState={{ selected: isSelected }} key={`${cache.sharedBy?.id ?? "own"}-${cache.id}`} onPress={() => showMystery(cache.id)} style={[styles.cacheRow, isSelected && styles.selectedRow]}><View style={styles.cacheRowHeading}><Text style={[styles.rowTitle, isSelected && styles.selectedRowTitle]}>{cache.gcCode} · {cache.name}</Text><Text style={styles.cacheRowAction}>Open ›</Text></View><Text style={[styles.muted, isSelected && styles.selectedRowMeta]}>{cache.status} · {mysteryLocation(cache) || "No location"}{cache.sharedBy ? ` · from ${cache.sharedBy.username}` : ""}</Text></Pressable>;
+        })}
         {!visible.length ? <Text style={styles.muted}>No mysteries match this view.</Text> : null}
       </Panel>
-      {selected ? <Panel title={`${selected.gcCode} · ${selected.name}`} subtitle={selected.sharedBy ? `Read-only shared workspace from ${selected.sharedBy.username}` : mysteryLocation(selected)}>
+      </> : null}
+      {detailOpen && selected ? <>
+      <Pressable accessibilityRole="button" accessibilityLabel="Back to mystery list" onPress={showMysteryList} style={styles.mysteryBackButton}><Text style={styles.mysteryBackButtonText}>‹ Mystery list</Text></Pressable>
+      <Panel title={`${selected.gcCode} · ${selected.name}`} subtitle={selected.sharedBy ? `Read-only shared workspace from ${selected.sharedBy.username}` : mysteryLocation(selected)}>
         <Segmented values={["solving", "solved", "planned"]} active={selected.status} disabled={Boolean(selected.sharedBy)} onPress={(value) => updateSelected({ status: value as MysteryStatus })} />
         <Field label="Trip / route" value={selected.trip ?? ""} editable={!selected.sharedBy} onChangeText={(value) => updateSelected({ trip: value })} />
         <Field label="Notes" value={selected.notes} editable={!selected.sharedBy} multiline style={styles.textArea} onChangeText={(value) => updateSelected({ notes: value })} />
@@ -2203,7 +2255,10 @@ function MysteriesScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; to
         </> : null}
         {selected.attempts.map((attempt) => {
           const revealed = revealedCoordinate(attempt);
-          return <View key={attempt.id} style={styles.attemptRow}><View style={styles.flex}><Text style={styles.rowTitle}>{attemptLabel(attempt)}</Text>{revealed ? <Text style={styles.linkText}>Final: {revealed.latitude.toFixed(5)}, {revealed.longitude.toFixed(5)}</Text> : null}<Text style={styles.muted}>{attempt.kind === "keyword" ? "keyword" : "coordinate"} · {attempt.state} · {dateText(attempt.createdAt)}</Text></View>{!selected.sharedBy ? <Pressable onPress={() => updateSelected({ attempts: selected.attempts.filter((item) => item.id !== attempt.id) })}><Text style={styles.danger}>Remove</Text></Pressable> : null}</View>;
+          const isCorrect = attempt.state === "correct";
+          const isWrong = attempt.state === "wrong";
+          const statusLabel = isCorrect ? "✓ Correct" : isWrong ? "× Wrong" : "Not checked";
+          return <View key={attempt.id} style={[styles.attemptRow, isCorrect && styles.attemptRowCorrect, isWrong && styles.attemptRowWrong]}><View style={styles.flex}><View style={styles.attemptHeading}><Text style={[styles.attemptCoordinate, isCorrect && styles.attemptCoordinateCorrect, isWrong && styles.attemptCoordinateWrong]}>{attemptLabel(attempt)}</Text><Text style={[styles.attemptStatus, isCorrect && styles.attemptStatusCorrect, isWrong && styles.attemptStatusWrong]}>{statusLabel}</Text></View>{revealed ? <Text style={styles.correctCoordinate}>Correct coordinates: {revealed.latitude.toFixed(5)}, {revealed.longitude.toFixed(5)}</Text> : null}<Text style={styles.attemptMeta}>{attempt.kind === "keyword" ? "Keyword" : "Coordinate"} · {dateText(attempt.createdAt)}</Text></View>{!selected.sharedBy ? <Pressable accessibilityRole="button" accessibilityLabel={`Remove ${attemptLabel(attempt)}`} onPress={() => updateSelected({ attempts: selected.attempts.filter((item) => item.id !== attempt.id) })}><Text style={styles.danger}>Remove</Text></Pressable> : null}</View>;
         })}
         {!selected.sharedBy ? <>
           <Text style={styles.sectionLabel}>Share with a Geostats user</Text>
@@ -2212,7 +2267,8 @@ function MysteriesScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; to
           {users.filter((user) => !selected.sharedWith.some((person) => person.id === user.id)).map((user) => <Pressable key={user.id} onPress={() => shareWith(user)} style={styles.cacheRow}><Text style={styles.linkText}>Share with {user.username}</Text></Pressable>)}
           <SecondaryButton label="Delete mystery" danger onPress={deleteSelected} />
         </> : null}
-      </Panel> : null}
+      </Panel>
+      </> : null}
       {notice ? <Text style={styles.note}>{notice}</Text> : null}
       <LoadState loading={!ready} error={null} />
     </>
@@ -2437,7 +2493,10 @@ function SecondaryButton({ label, onPress, danger = false }: { label: string; on
 }
 
 function Segmented({ values, active, onPress, disabled = false }: { values: readonly string[]; active: string; onPress: (value: string) => void; disabled?: boolean }) {
-  return <View style={styles.segmented}>{values.map((value) => <Pressable disabled={disabled} key={value} onPress={() => onPress(value)} style={[styles.segmentButton, active === value && styles.segmentButtonActive]}><Text style={[styles.segmentText, active === value && styles.segmentTextActive]}>{value}</Text></Pressable>)}</View>;
+  return <View style={styles.segmented}>{values.map((value) => {
+    const isActive = active === value;
+    return <Pressable accessibilityRole="button" accessibilityState={{ selected: isActive, disabled }} disabled={disabled} key={value} onPress={() => onPress(value)} style={[styles.segmentButton, isActive && styles.segmentButtonActive, isActive && value === "correct" && styles.segmentButtonCorrect, isActive && value === "wrong" && styles.segmentButtonWrong]}><Text style={[styles.segmentText, isActive && styles.segmentTextActive, isActive && (value === "correct" || value === "wrong") && styles.segmentTextStatusActive]}>{value}</Text></Pressable>;
+  })}</View>;
 }
 
 function Panel({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {
@@ -3047,15 +3106,35 @@ const styles = StyleSheet.create({
   segmented: { flexDirection: "row", gap: 5, backgroundColor: "#10251b", borderRadius: 14, padding: 4 },
   segmentButton: { flex: 1, borderRadius: 11, paddingVertical: 10, alignItems: "center" },
   segmentButtonActive: { backgroundColor: "#f3b34d" },
+  segmentButtonCorrect: { backgroundColor: "#3da66a" },
+  segmentButtonWrong: { backgroundColor: "#c9564c" },
   segmentText: { color: "#b9c8bf", fontWeight: "800", textTransform: "capitalize" },
   segmentTextActive: { color: "#172016" },
+  segmentTextStatusActive: { color: "#ffffff" },
   actionRow: { flexDirection: "row", gap: 10, alignItems: "stretch" },
   inlineForm: { flexDirection: "row", gap: 8, alignItems: "center" },
   smallButton: { backgroundColor: "#f3b34d", borderRadius: 8, paddingHorizontal: 15, paddingVertical: 12 },
   smallButtonText: { color: "#172016", fontWeight: "900" },
-  selectedRow: { backgroundColor: "#173326", paddingHorizontal: 8, borderRadius: 6 },
+  selectedRow: { backgroundColor: "#1b3929", borderWidth: 2, borderColor: "#f3b34d", paddingHorizontal: 11, paddingVertical: 11, borderRadius: 12, marginTop: 5 },
+  selectedRowTitle: { color: "#fff2cf" },
+  selectedRowMeta: { color: "#c8d8ce" },
+  cacheRowHeading: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 },
+  cacheRowAction: { color: "#f3b34d", fontSize: 12, fontWeight: "900" },
+  mysteryBackButton: { alignSelf: "flex-start", minHeight: 44, justifyContent: "center", paddingHorizontal: 4 },
+  mysteryBackButtonText: { color: "#f3b34d", fontSize: 15, fontWeight: "900" },
   chip: { color: "#dce8df", backgroundColor: "#173326", alignSelf: "flex-start", paddingHorizontal: 9, paddingVertical: 6, borderRadius: 14, marginBottom: 4 },
-  attemptRow: { flexDirection: "row", gap: 10, alignItems: "center", borderTopWidth: 1, borderColor: "#1b3729", paddingVertical: 10 },
+  attemptRow: { flexDirection: "row", gap: 10, alignItems: "center", borderWidth: 1, borderColor: "#294839", borderRadius: 12, backgroundColor: "#102119", paddingHorizontal: 12, paddingVertical: 12 },
+  attemptRowCorrect: { borderColor: "#3da66a", backgroundColor: "#123322" },
+  attemptRowWrong: { borderColor: "#a94a43", backgroundColor: "#321c19" },
+  attemptHeading: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 },
+  attemptCoordinate: { flex: 1, color: "#edf7ef", fontWeight: "900", fontSize: 15 },
+  attemptCoordinateCorrect: { color: "#92e7ad" },
+  attemptCoordinateWrong: { color: "#ffaaa1", textDecorationLine: "line-through" },
+  attemptStatus: { color: "#dce8df", backgroundColor: "#294839", borderRadius: 999, overflow: "hidden", paddingHorizontal: 9, paddingVertical: 5, fontSize: 10, fontWeight: "900" },
+  attemptStatusCorrect: { color: "#eaffef", backgroundColor: "#287847" },
+  attemptStatusWrong: { color: "#fff1ef", backgroundColor: "#8e3932" },
+  correctCoordinate: { color: "#a9efbf", fontWeight: "900", marginTop: 6 },
+  attemptMeta: { color: "#91a79c", fontSize: 12, marginTop: 5 },
   routeGroup: { borderTopWidth: 1, borderColor: "#294839", paddingTop: 14, marginTop: 6, gap: 3 },
   travelResults: { gap: 9, borderTopWidth: 1, borderColor: "#294839", paddingTop: 14 },
   travelResultHeading: { flexDirection: "row", alignItems: "center", gap: 10 },
