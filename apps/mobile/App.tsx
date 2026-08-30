@@ -1,7 +1,7 @@
 import { StatusBar } from "expo-status-bar";
 import { fetch as expoFetch } from "expo/fetch";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Alert, Image, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, Alert, AppState, Image, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import * as DocumentPicker from "expo-document-picker";
 import { File, Paths } from "expo-file-system";
@@ -1936,6 +1936,7 @@ function MysteriesScreen({ apiBaseUrl, token, userId, onRequestScrollTop }: { ap
     const fingerprint = snapshotFingerprint(JSON.stringify(owned));
     if (persistedMysteriesFingerprint.current === fingerprint) return;
     const timer = setTimeout(() => {
+      if (persistedMysteriesFingerprint.current === fingerprint) return;
       if (writeMysteries(userId, owned)) {
         persistedMysteriesFingerprint.current = fingerprint;
       } else {
@@ -1990,16 +1991,26 @@ function MysteriesScreen({ apiBaseUrl, token, userId, onRequestScrollTop }: { ap
     };
   }, [accountLoaded, apiBaseUrl, caches, ready, syncAttempt, token]);
 
-  useEffect(() => () => {
-    const latest = latestMysteries.current;
-    if (!latest.ready) return;
+  useEffect(() => {
+    function flushLatestMysteries() {
+      const latest = latestMysteries.current;
+      if (!latest.ready) return;
 
-    const owned = latest.caches.filter((cache) => !cache.sharedBy);
-    const fingerprint = snapshotFingerprint(JSON.stringify(owned));
-    if (persistedMysteriesFingerprint.current === fingerprint) return;
-    if (writeMysteries(userId, owned)) {
-      persistedMysteriesFingerprint.current = fingerprint;
+      const owned = latest.caches.filter((cache) => !cache.sharedBy);
+      const fingerprint = snapshotFingerprint(JSON.stringify(owned));
+      if (persistedMysteriesFingerprint.current === fingerprint) return;
+      if (writeMysteries(userId, owned)) {
+        persistedMysteriesFingerprint.current = fingerprint;
+      }
     }
+
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (state !== "active") flushLatestMysteries();
+    });
+    return () => {
+      subscription.remove();
+      flushLatestMysteries();
+    };
   }, [userId]);
 
   useEffect(() => {
