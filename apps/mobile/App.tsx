@@ -1115,6 +1115,7 @@ export default function App() {
   const [booting, setBooting] = useState(true);
   const [needsOnboarding, setNeedsOnboarding] = useState(false);
   const [screen, setScreen] = useState<ScreenId>("dashboard");
+  const contentScrollRef = useRef<ScrollView>(null);
   useEffect(() => {
     if (__DEV__ || !Updates.isEnabled) return;
     let active = true;
@@ -1184,8 +1185,8 @@ export default function App() {
             <Text style={styles.avatarText}>{session.user.username.slice(0, 1).toUpperCase()}</Text>
           </Pressable>
         </View>
-        <ScrollView key={screen} style={styles.content} contentContainerStyle={styles.contentInner} showsVerticalScrollIndicator={false}>
-          <ScreenSwitch apiBaseUrl={apiBaseUrl} screen={screen} token={session.token} userId={session.user.id} username={session.user.username} onNavigate={setScreen} onLogout={logout} />
+        <ScrollView ref={contentScrollRef} key={screen} style={styles.content} contentContainerStyle={styles.contentInner} showsVerticalScrollIndicator={false}>
+          <ScreenSwitch apiBaseUrl={apiBaseUrl} screen={screen} token={session.token} userId={session.user.id} username={session.user.username} onNavigate={setScreen} onLogout={logout} onRequestScrollTop={() => contentScrollRef.current?.scrollTo({ y: 0, animated: false })} />
         </ScrollView>
         <View style={styles.bottomNav}>
           {primaryScreens.map((item) => {
@@ -1205,7 +1206,7 @@ export default function App() {
   return <SafeAreaProvider>{content}</SafeAreaProvider>;
 }
 
-function ScreenSwitch({ apiBaseUrl, screen, token, userId, username, onNavigate, onLogout }: { apiBaseUrl: string; screen: ScreenId; token: string; userId: string; username: string; onNavigate: (screen: ScreenId) => void; onLogout: () => void }) {
+function ScreenSwitch({ apiBaseUrl, screen, token, userId, username, onNavigate, onLogout, onRequestScrollTop }: { apiBaseUrl: string; screen: ScreenId; token: string; userId: string; username: string; onNavigate: (screen: ScreenId) => void; onLogout: () => void; onRequestScrollTop: () => void }) {
   if (screen === "dashboard") return <DashboardScreen apiBaseUrl={apiBaseUrl} token={token} username={username} onNavigate={onNavigate} />;
   if (screen === "explore") return <ExploreScreen username={username} onNavigate={onNavigate} />;
   if (screen === "stats") return <StatsScreen apiBaseUrl={apiBaseUrl} token={token} />;
@@ -1214,7 +1215,7 @@ function ScreenSwitch({ apiBaseUrl, screen, token, userId, username, onNavigate,
   if (screen === "milestones") return <MilestonesScreen apiBaseUrl={apiBaseUrl} token={token} />;
   if (screen === "ftf") return <FtfScreen apiBaseUrl={apiBaseUrl} token={token} />;
   if (screen === "hides") return <HidesScreen apiBaseUrl={apiBaseUrl} token={token} />;
-  if (screen === "mysteries") return <MysteriesScreen apiBaseUrl={apiBaseUrl} token={token} userId={userId} />;
+  if (screen === "mysteries") return <MysteriesScreen apiBaseUrl={apiBaseUrl} token={token} userId={userId} onRequestScrollTop={onRequestScrollTop} />;
   if (screen === "travel") return <TravelScreen apiBaseUrl={apiBaseUrl} token={token} userId={userId} />;
   if (screen === "upload") return <UploadScreen apiBaseUrl={apiBaseUrl} token={token} />;
   if (screen === "imports") return <ImportsScreen apiBaseUrl={apiBaseUrl} token={token} />;
@@ -1777,7 +1778,7 @@ function badgeTierSummary(badges: Array<{ current: number | null; thresholds: nu
   return badgeTiers.map((tier, index) => ({ tier, count: counts[index] ?? 0 })).reverse();
 }
 
-function MysteriesScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; token: string; userId: string }) {
+function MysteriesScreen({ apiBaseUrl, token, userId, onRequestScrollTop }: { apiBaseUrl: string; token: string; userId: string; onRequestScrollTop: () => void }) {
   const [caches, setCaches] = useState<MysteryCache[]>([]);
   const [ready, setReady] = useState(false);
   const latestMysteries = useRef({ caches, ready });
@@ -1789,6 +1790,7 @@ function MysteriesScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; to
   const [ownedLoadAttempt, setOwnedLoadAttempt] = useState(0);
   const [syncAttempt, setSyncAttempt] = useState(0);
   const [selectedId, setSelectedId] = useState("");
+  const [detailOpen, setDetailOpen] = useState(false);
   const [filter, setFilter] = useState<"all" | MysteryStatus>("all");
   const [query, setQuery] = useState("");
   const [showAdd, setShowAdd] = useState(false);
@@ -2020,7 +2022,18 @@ function MysteriesScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; to
     const normalized = query.trim().toLowerCase();
     return matchesFilter && (!normalized || `${cache.gcCode} ${cache.name} ${mysteryLocation(cache)} ${cache.trip ?? ""}`.toLowerCase().includes(normalized));
   });
-  const selected = visible.find((cache) => cache.id === selectedId) ?? visible[0];
+  const selected = caches.find((cache) => cache.id === selectedId);
+
+  function showMystery(cacheId: string) {
+    setSelectedId(cacheId);
+    setDetailOpen(true);
+    requestAnimationFrame(onRequestScrollTop);
+  }
+
+  function showMysteryList() {
+    setDetailOpen(false);
+    requestAnimationFrame(onRequestScrollTop);
+  }
 
   function updateSelected(patch: Partial<MysteryCache>) {
     if (!selected || selected.sharedBy) return false;
@@ -2055,6 +2068,8 @@ function MysteriesScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; to
     };
     setCaches((current) => [cache, ...current]);
     setSelectedId(cache.id);
+    setDetailOpen(true);
+    requestAnimationFrame(onRequestScrollTop);
     setGcCode(""); setName(""); setLocation(""); setCountry(""); setPublished(""); setShowAdd(false);
     setNotice("Mystery cache added.");
   }
@@ -2153,6 +2168,8 @@ function MysteriesScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; to
             const remaining = latestMysteries.current.caches.filter((cache) => cache.id !== selected.id);
             setCaches(remaining);
             setSelectedId(remaining[0]?.id ?? "");
+            setDetailOpen(false);
+            requestAnimationFrame(onRequestScrollTop);
           } catch (error) {
             setNotice(error instanceof Error ? error.message : "Could not delete this mystery.");
           }
@@ -2178,6 +2195,7 @@ function MysteriesScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; to
 
   return (
     <>
+      {!detailOpen || !selected ? <>
       <PageTitle eyebrow="Offline solving workspace" title="Mysteries" />
       <StatGrid rows={[["Caches", caches.length], ["Solved", caches.filter((cache) => cache.status === "solved").length], ["Planned", caches.filter((cache) => cache.status === "planned").length], ["Shared", caches.filter((cache) => cache.sharedBy || cache.sharedWith.length).length]]} />
       <View style={styles.actionRow}>
@@ -2197,11 +2215,14 @@ function MysteriesScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; to
         <Segmented values={["all", "solving", "solved", "planned"]} active={filter} onPress={(value) => setFilter(value as typeof filter)} />
         {visible.map((cache) => {
           const isSelected = selected?.id === cache.id;
-          return <Pressable accessibilityRole="button" accessibilityState={{ selected: isSelected }} key={`${cache.sharedBy?.id ?? "own"}-${cache.id}`} onPress={() => setSelectedId(cache.id)} style={[styles.cacheRow, isSelected && styles.selectedRow]}><View style={styles.cacheRowHeading}><Text style={[styles.rowTitle, isSelected && styles.selectedRowTitle]}>{cache.gcCode} · {cache.name}</Text>{isSelected ? <Text style={styles.selectedPill}>✓ Selected</Text> : null}</View><Text style={[styles.muted, isSelected && styles.selectedRowMeta]}>{cache.status} · {mysteryLocation(cache) || "No location"}{cache.sharedBy ? ` · from ${cache.sharedBy.username}` : ""}</Text></Pressable>;
+          return <Pressable accessibilityRole="button" accessibilityLabel={`Open ${cache.gcCode} ${cache.name}`} accessibilityState={{ selected: isSelected }} key={`${cache.sharedBy?.id ?? "own"}-${cache.id}`} onPress={() => showMystery(cache.id)} style={[styles.cacheRow, isSelected && styles.selectedRow]}><View style={styles.cacheRowHeading}><Text style={[styles.rowTitle, isSelected && styles.selectedRowTitle]}>{cache.gcCode} · {cache.name}</Text><Text style={styles.cacheRowAction}>Open ›</Text></View><Text style={[styles.muted, isSelected && styles.selectedRowMeta]}>{cache.status} · {mysteryLocation(cache) || "No location"}{cache.sharedBy ? ` · from ${cache.sharedBy.username}` : ""}</Text></Pressable>;
         })}
         {!visible.length ? <Text style={styles.muted}>No mysteries match this view.</Text> : null}
       </Panel>
-      {selected ? <Panel title={`${selected.gcCode} · ${selected.name}`} subtitle={selected.sharedBy ? `Read-only shared workspace from ${selected.sharedBy.username}` : mysteryLocation(selected)}>
+      </> : null}
+      {detailOpen && selected ? <>
+      <Pressable accessibilityRole="button" accessibilityLabel="Back to mystery list" onPress={showMysteryList} style={styles.mysteryBackButton}><Text style={styles.mysteryBackButtonText}>‹ Mystery list</Text></Pressable>
+      <Panel title={`${selected.gcCode} · ${selected.name}`} subtitle={selected.sharedBy ? `Read-only shared workspace from ${selected.sharedBy.username}` : mysteryLocation(selected)}>
         <Segmented values={["solving", "solved", "planned"]} active={selected.status} disabled={Boolean(selected.sharedBy)} onPress={(value) => updateSelected({ status: value as MysteryStatus })} />
         <Field label="Trip / route" value={selected.trip ?? ""} editable={!selected.sharedBy} onChangeText={(value) => updateSelected({ trip: value })} />
         <Field label="Notes" value={selected.notes} editable={!selected.sharedBy} multiline style={styles.textArea} onChangeText={(value) => updateSelected({ notes: value })} />
@@ -2231,7 +2252,8 @@ function MysteriesScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; to
           {users.filter((user) => !selected.sharedWith.some((person) => person.id === user.id)).map((user) => <Pressable key={user.id} onPress={() => shareWith(user)} style={styles.cacheRow}><Text style={styles.linkText}>Share with {user.username}</Text></Pressable>)}
           <SecondaryButton label="Delete mystery" danger onPress={deleteSelected} />
         </> : null}
-      </Panel> : null}
+      </Panel>
+      </> : null}
       {notice ? <Text style={styles.note}>{notice}</Text> : null}
       <LoadState loading={!ready} error={null} />
     </>
@@ -3082,7 +3104,9 @@ const styles = StyleSheet.create({
   selectedRowTitle: { color: "#fff2cf" },
   selectedRowMeta: { color: "#c8d8ce" },
   cacheRowHeading: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 },
-  selectedPill: { color: "#172016", backgroundColor: "#f3b34d", borderRadius: 999, overflow: "hidden", paddingHorizontal: 8, paddingVertical: 4, fontSize: 10, fontWeight: "900" },
+  cacheRowAction: { color: "#f3b34d", fontSize: 12, fontWeight: "900" },
+  mysteryBackButton: { alignSelf: "flex-start", minHeight: 44, justifyContent: "center", paddingHorizontal: 4 },
+  mysteryBackButtonText: { color: "#f3b34d", fontSize: 15, fontWeight: "900" },
   chip: { color: "#dce8df", backgroundColor: "#173326", alignSelf: "flex-start", paddingHorizontal: 9, paddingVertical: 6, borderRadius: 14, marginBottom: 4 },
   attemptRow: { flexDirection: "row", gap: 10, alignItems: "center", borderWidth: 1, borderColor: "#294839", borderRadius: 12, backgroundColor: "#102119", paddingHorizontal: 12, paddingVertical: 12 },
   attemptRowCorrect: { borderColor: "#3da66a", backgroundColor: "#123322" },
