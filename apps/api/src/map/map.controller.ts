@@ -3,7 +3,7 @@ import { AuthUser } from "@geostats/shared";
 import { countableFindWhere, Prisma } from "@geostats/db";
 import { normalizedGcUsername } from "@geostats/stats";
 import { Type } from "class-transformer";
-import { ArrayMaxSize, IsArray, IsBoolean, IsDateString, IsIn, IsNumber, IsOptional, IsString, Max, MaxLength, Min, MinLength, ValidateIf, ValidateNested } from "class-validator";
+import { ArrayMaxSize, IsArray, IsBoolean, IsDateString, IsIn, IsNumber, IsNumberString, IsOptional, IsString, Max, MaxLength, Min, MinLength, ValidateIf, ValidateNested } from "class-validator";
 import { AuthGuard } from "../auth/auth.guard";
 import { CurrentUser } from "../auth/current-user.decorator";
 import { PrismaService } from "../common/prisma.service";
@@ -117,6 +117,61 @@ class MapPointsQueryDto {
   @IsOptional()
   @IsString()
   @MaxLength(100)
+  query?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  cacheType?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  size?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  country?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  region?: string;
+
+  @IsOptional()
+  @IsNumberString()
+  @MaxLength(20)
+  difficultyMin?: string;
+
+  @IsOptional()
+  @IsNumberString()
+  @MaxLength(20)
+  difficultyMax?: string;
+
+  @IsOptional()
+  @IsNumberString()
+  @MaxLength(20)
+  terrainMin?: string;
+
+  @IsOptional()
+  @IsNumberString()
+  @MaxLength(20)
+  terrainMax?: string;
+
+  @IsOptional()
+  @IsDateString()
+  @MaxLength(40)
+  dateFrom?: string;
+
+  @IsOptional()
+  @IsDateString()
+  @MaxLength(40)
+  dateTo?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
   cursor?: string;
 
   @IsOptional()
@@ -189,6 +244,121 @@ function mapSnapshot(value?: string) {
     throw new BadRequestException("snapshot must be an ISO date");
   }
   return snapshot;
+}
+
+const MAP_DAY_MS = 24 * 60 * 60 * 1000;
+
+function mapNumber(value: string | undefined, label: string) {
+  if (!value?.trim()) {
+    return undefined;
+  }
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    throw new BadRequestException(`${label} must be a number`);
+  }
+  return parsed;
+}
+
+function mapDate(value: string | undefined, label: string) {
+  if (!value?.trim()) {
+    return undefined;
+  }
+  const parsed = /^\d{4}-\d{2}-\d{2}$/.test(value) ? new Date(`${value}T00:00:00.000Z`) : new Date(value);
+  if (!Number.isFinite(parsed.getTime())) {
+    throw new BadRequestException(`${label} must be an ISO date`);
+  }
+  return parsed;
+}
+
+function mapDateRange(query: MapPointsQueryDto) {
+  const from = mapDate(query.dateFrom, "dateFrom");
+  const to = mapDate(query.dateTo, "dateTo");
+  if (!from && !to) {
+    return undefined;
+  }
+  return {
+    ...(from ? { gte: from } : {}),
+    ...(to ? { lte: new Date(to.getTime() + MAP_DAY_MS - 1) } : {})
+  };
+}
+
+function mapCacheWhere(query: MapPointsQueryDto): Prisma.CacheWhereInput | undefined {
+  const filters: Prisma.CacheWhereInput[] = [];
+  const text = query.query?.trim();
+  if (text) {
+    filters.push({
+      OR: [
+        { gcCode: { contains: text, mode: "insensitive" } },
+        { name: { contains: text, mode: "insensitive" } }
+      ]
+    });
+  }
+
+  const exactFields = [
+    ["cacheType", query.cacheType],
+    ["size", query.size],
+    ["country", query.country],
+    ["region", query.region]
+  ] as const;
+  for (const [field, value] of exactFields) {
+    const trimmed = value?.trim();
+    if (trimmed) {
+      filters.push({ [field]: trimmed });
+    }
+  }
+
+  const difficultyMin = mapNumber(query.difficultyMin, "difficultyMin");
+  const difficultyMax = mapNumber(query.difficultyMax, "difficultyMax");
+  if (difficultyMin !== undefined || difficultyMax !== undefined) {
+    filters.push({
+      difficulty: {
+        ...(difficultyMin !== undefined ? { gte: difficultyMin } : {}),
+        ...(difficultyMax !== undefined ? { lte: difficultyMax } : {})
+      }
+    });
+  }
+
+  const terrainMin = mapNumber(query.terrainMin, "terrainMin");
+  const terrainMax = mapNumber(query.terrainMax, "terrainMax");
+  if (terrainMin !== undefined || terrainMax !== undefined) {
+    filters.push({
+      terrain: {
+        ...(terrainMin !== undefined ? { gte: terrainMin } : {}),
+        ...(terrainMax !== undefined ? { lte: terrainMax } : {})
+      }
+    });
+  }
+
+  if (filters.length === 0) {
+    return undefined;
+  }
+  return filters.length === 1 ? filters[0] : { AND: filters };
+}
+
+function findMapWhere(base: Prisma.FindWhereInput, query: MapPointsQueryDto, snapshot: Date): Prisma.FindWhereInput {
+  const conditions: Prisma.FindWhereInput[] = [base, { createdAt: { lte: snapshot } }];
+  const cache = mapCacheWhere(query);
+  const dateRange = mapDateRange(query);
+  if (cache) {
+    conditions.push({ cache });
+  }
+  if (dateRange) {
+    conditions.push({ foundAt: dateRange });
+  }
+  return { AND: conditions };
+}
+
+function hideMapWhere(base: Prisma.HideWhereInput, query: MapPointsQueryDto, snapshot: Date): Prisma.HideWhereInput {
+  const conditions: Prisma.HideWhereInput[] = [base, { createdAt: { lte: snapshot } }];
+  const cache = mapCacheWhere(query);
+  const dateRange = mapDateRange(query);
+  if (cache) {
+    conditions.push({ cache });
+  }
+  if (dateRange) {
+    conditions.push({ placedAt: dateRange });
+  }
+  return { AND: conditions };
 }
 
 type LocationBucket = {
@@ -296,13 +466,12 @@ export class MapController {
   async caches(@CurrentUser() user: AuthUser, @Query() query: MapPointsQueryDto = {}) {
     const cursor = query.cursor?.trim() || undefined;
     const snapshot = mapSnapshot(query.snapshot);
+    const where = findMapWhere(await this.countableFindWhereForUser(user.id), query, snapshot);
+    const totalCount = cursor ? undefined : await this.prisma.find.count({ where });
     let finds: any[];
     try {
       finds = await this.prisma.find.findMany({
-        where: {
-          ...(await this.countableFindWhereForUser(user.id)),
-          createdAt: { lte: snapshot }
-        },
+        where,
         select: {
           id: true,
           foundAt: true,
@@ -342,6 +511,7 @@ export class MapController {
       truncated,
       limit: MAP_CACHE_LIMIT,
       snapshot: snapshot.toISOString(),
+      totalCount,
       nextCursor: truncated ? visibleFinds.at(-1)?.id ?? null : null,
       points: visibleFinds.map((find) => ({
         id: find.cache.id,
@@ -366,10 +536,12 @@ export class MapController {
   async hides(@CurrentUser() user: AuthUser, @Query() query: MapPointsQueryDto = {}) {
     const cursor = query.cursor?.trim() || undefined;
     const snapshot = mapSnapshot(query.snapshot);
+    const where = hideMapWhere({ userId: user.id }, query, snapshot);
+    const totalCount = cursor ? undefined : await this.prisma.hide.count({ where });
     let hides: any[];
     try {
       hides = await this.prisma.hide.findMany({
-        where: { userId: user.id, createdAt: { lte: snapshot } },
+        where,
         select: {
           id: true,
           placedAt: true,
@@ -409,6 +581,7 @@ export class MapController {
       truncated,
       limit: MAP_CACHE_LIMIT,
       snapshot: snapshot.toISOString(),
+      totalCount,
       nextCursor: truncated ? visibleHides.at(-1)?.id ?? null : null,
       points: visibleHides.map((hide) => ({
         id: hide.cache.id,

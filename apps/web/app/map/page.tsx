@@ -20,22 +20,50 @@ type MapPointsResponse = {
   truncated?: boolean;
   nextCursor?: string | null;
   snapshot?: string;
+  totalCount?: number;
 };
 
 type LoadedMapPoints = {
   points: CacheMapPoint[];
   truncated: boolean;
+  totalCount: number;
 };
 
 const MAX_MAP_POINTS = 20_000;
 
-async function loadMapPoints(path: "/map/caches" | "/map/hides", signal: AbortSignal): Promise<LoadedMapPoints> {
+function mapFilterParams(filters: MapFilters) {
+  const params = new URLSearchParams();
+  const entries: Array<[string, string]> = [
+    ["query", filters.query.trim()],
+    ["cacheType", filters.cacheType],
+    ["size", filters.size],
+    ["country", filters.country],
+    ["region", filters.region],
+    ["difficultyMin", filters.difficultyMin],
+    ["difficultyMax", filters.difficultyMax],
+    ["terrainMin", filters.terrainMin],
+    ["terrainMax", filters.terrainMax],
+    ["dateFrom", filters.dateFrom],
+    ["dateTo", filters.dateTo]
+  ];
+  for (const [key, value] of entries) {
+    if (value) {
+      params.set(key, value);
+    }
+  }
+  return params;
+}
+
+async function loadMapPoints(path: "/map/caches" | "/map/hides", signal: AbortSignal, filters: MapFilters): Promise<LoadedMapPoints> {
   const points: CacheMapPoint[] = [];
   let cursor: string | undefined;
   let snapshot: string | undefined;
+  let totalCount: number | undefined;
+  // The API applies active filters before paging, so filtered searches can traverse every match.
+  const bounded = activeMapFilterCount(filters) === 0;
 
   while (true) {
-    const params = new URLSearchParams();
+    const params = mapFilterParams(filters);
     if (cursor) {
       params.set("cursor", cursor);
     }
@@ -49,20 +77,27 @@ async function loadMapPoints(path: "/map/caches" | "/map/hides", signal: AbortSi
       if (typeof response.snapshot !== "string" || response.snapshot.length === 0) {
         throw new Error("Map data pagination did not return a snapshot.");
       }
+      const pageTotalCount = response.totalCount;
+      if (typeof pageTotalCount !== "number" || !Number.isSafeInteger(pageTotalCount) || pageTotalCount < 0) {
+        throw new Error("Map data pagination did not return a total count.");
+      }
+      totalCount = pageTotalCount;
       snapshot = response.snapshot;
     } else if (response.snapshot !== snapshot) {
       throw new Error("Map data pagination changed its snapshot.");
+    } else if (response.totalCount !== undefined && response.totalCount !== totalCount) {
+      throw new Error("Map data pagination changed its total count.");
     }
 
     const remaining = MAX_MAP_POINTS - points.length;
-    const pageExceedsLimit = response.points.length > remaining;
-    points.push(...response.points.slice(0, remaining));
+    const pageExceedsLimit = bounded && response.points.length > remaining;
+    points.push(...(bounded ? response.points.slice(0, remaining) : response.points));
 
     if (!response.truncated) {
-      return { points, truncated: pageExceedsLimit };
+      return { points, truncated: pageExceedsLimit, totalCount: totalCount ?? points.length };
     }
-    if (points.length >= MAX_MAP_POINTS) {
-      return { points, truncated: true };
+    if (bounded && points.length >= MAX_MAP_POINTS) {
+      return { points, truncated: true, totalCount: totalCount ?? points.length };
     }
 
     const nextCursor = response.nextCursor;
@@ -79,27 +114,51 @@ export default function MapPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [historyTruncated, setHistoryTruncated] = useState(false);
+  const [totalCount, setTotalCount] = useState(0);
 
   useEffect(() => {
     let active = true;
     const abortController = new AbortController();
-    void Promise.allSettled([loadMapPoints("/map/caches", abortController.signal), loadMapPoints("/map/hides", abortController.signal)]).then(([findResult, hideResult]) => {
+    setLoading(true);
+    setPoints([]);
+    setError(null);
+    setHistoryTruncated(false);
+    setTotalCount(0);
+
+    const paths: Array<"/map/caches" | "/map/hides"> =
+      filters.source === "finds" ? ["/map/caches"] : filters.source === "hides" ? ["/map/hides"] : ["/map/caches", "/map/hides"];
+    const findIndex = paths.indexOf("/map/caches");
+    const hideIndex = paths.indexOf("/map/hides");
+
+    void Promise.allSettled(paths.map((path) => loadMapPoints(path, abortController.signal, filters))).then((results) => {
       if (!active) {
         return;
       }
-      const findPoints = findResult.status === "fulfilled" ? findResult.value.points : [];
-      const hidePoints = hideResult.status === "fulfilled" ? hideResult.value.points : [];
+      const findResult = findIndex >= 0 ? results[findIndex] : undefined;
+      const hideResult = hideIndex >= 0 ? results[hideIndex] : undefined;
+      const findPoints = findResult?.status === "fulfilled" ? findResult.value.points : [];
+      const hidePoints = hideResult?.status === "fulfilled" ? hideResult.value.points : [];
       setPoints([...findPoints, ...hidePoints]);
       setHistoryTruncated(
-        (findResult.status === "fulfilled" && findResult.value.truncated) || (hideResult.status === "fulfilled" && hideResult.value.truncated)
+        (findResult?.status === "fulfilled" && findResult.value.truncated) || (hideResult?.status === "fulfilled" && hideResult.value.truncated)
       );
+      setTotalCount(
+        (findResult?.status === "fulfilled" ? findResult.value.totalCount : 0) +
+          (hideResult?.status === "fulfilled" ? hideResult.value.totalCount : 0)
+      );
+      const findsFailed = findResult?.status === "rejected";
+      const hidesFailed = hideResult?.status === "rejected";
       setError(
-        findResult.status === "rejected" && hideResult.status === "rejected"
+        findsFailed && hidesFailed
           ? "Could not load map points."
-          : findResult.status === "rejected"
-            ? "Finds could not be loaded. Own hides are still shown."
-            : hideResult.status === "rejected"
-              ? "Own hides could not be loaded. Finds are still shown."
+          : findsFailed
+            ? hideResult
+              ? "Finds could not be loaded. Own hides are still shown."
+              : "Finds could not be loaded."
+            : hidesFailed
+              ? findResult
+                ? "Own hides could not be loaded. Finds are still shown."
+                : "Own hides could not be loaded."
               : null
       );
       setLoading(false);
@@ -108,7 +167,7 @@ export default function MapPage() {
       active = false;
       abortController.abort();
     };
-  }, []);
+  }, [filters]);
 
   const cacheTypes = useMemo(() => mapFilterValues(points, "cacheType"), [points]);
   const sizes = useMemo(() => mapFilterValues(points, "size"), [points]);
@@ -242,10 +301,10 @@ export default function MapPage() {
         </div>
       </section>
       {error ? <p className="notice error">{error}</p> : null}
-      {historyTruncated ? <p className="notice">Map history is capped at {MAX_MAP_POINTS.toLocaleString()} finds and hides to keep the browser responsive. Older points are not loaded.</p> : null}
+      {historyTruncated ? <p className="notice">Unfiltered map history is capped at {MAX_MAP_POINTS.toLocaleString()} points to keep the browser responsive. Use a filter to search the complete matching history.</p> : null}
       <section className="map-stage">
         <div className="map-toolbar">
-          <strong>{loading ? "Loading map points..." : `${filteredPoints.length} of ${points.length} shown`}</strong>
+          <strong>{loading ? "Loading map points..." : `${filteredPoints.length} of ${totalCount.toLocaleString()} matching points shown`}</strong>
           <span>
             {findCount} finds, {ownHideCount} own hides
           </span>

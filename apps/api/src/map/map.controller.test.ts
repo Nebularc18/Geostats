@@ -29,6 +29,7 @@ function controllerWith({ finds = [], hides = [] }: { finds?: any[]; hides?: any
       findUnique: async () => ({ gcUsername: "owner" })
     },
     find: {
+      count: async () => finds.length,
       findMany: async (query: any) => {
         calls.finds.push(query);
         const cursorIndex = query.cursor ? finds.findIndex((find) => find.id === query.cursor.id) : -1;
@@ -37,6 +38,7 @@ function controllerWith({ finds = [], hides = [] }: { finds?: any[]; hides?: any
       }
     },
     hide: {
+      count: async () => hides.length,
       findMany: async (query: any) => {
         calls.hides.push(query);
         const cursorIndex = query.cursor ? hides.findIndex((hide) => hide.id === query.cursor.id) : -1;
@@ -67,6 +69,7 @@ test("map point endpoints page complete histories without unbounded queries", as
   assert.equal(calls.finds[0].skip, undefined);
   assert.equal(calls.finds[0].take, 5001);
   assert.equal(firstPage.truncated, true);
+  assert.equal(firstPage.totalCount, finds.length);
   assert.equal(firstPage.nextCursor, "find-4999");
   assert.equal(firstPage.points.length, 5000);
   assert.deepEqual(calls.finds[1].cursor, { id: "find-4999" });
@@ -118,7 +121,38 @@ test("map pages keep an immutable ordering and snapshot cutoff", async () => {
 
   assert.equal(typeof firstPage.snapshot, "string");
   assert.deepEqual(calls.finds[0].orderBy, [{ createdAt: "desc" }, { id: "desc" }]);
-  assert.deepEqual(calls.finds[0].where.createdAt, { lte: new Date(firstPage.snapshot) });
-  assert.deepEqual(calls.finds[1].where.createdAt, { lte: new Date(firstPage.snapshot) });
+  assert.deepEqual(calls.finds[0].where.AND.find((condition: any) => condition.createdAt)?.createdAt, { lte: new Date(firstPage.snapshot) });
+  assert.deepEqual(calls.finds[1].where.AND.find((condition: any) => condition.createdAt)?.createdAt, { lte: new Date(firstPage.snapshot) });
   assert.equal(secondPage.snapshot, firstPage.snapshot);
+});
+
+test("map filters are applied before pagination", async () => {
+  const { controller, calls } = controllerWith({ finds: [{ id: "find-1", foundAt: new Date("2024-06-01T12:00:00.000Z"), cache: cache(1) }] });
+
+  const result = await controller.caches(user, {
+    query: "old cache",
+    cacheType: "Mystery Cache",
+    size: "Regular",
+    country: "Sweden",
+    region: "Blekinge",
+    difficultyMin: "1.5",
+    difficultyMax: "3",
+    terrainMin: "2",
+    terrainMax: "4",
+    dateFrom: "2024-01-01",
+    dateTo: "2024-12-31"
+  });
+
+  const conditions = calls.finds[0].where.AND as any[];
+  const cacheCondition = conditions.find((condition) => condition.cache).cache;
+  const cacheFilters = cacheCondition.AND as any[];
+  assert.equal(cacheFilters[0].OR[0].gcCode.contains, "old cache");
+  assert.equal(cacheFilters.find((condition) => condition.cacheType)?.cacheType, "Mystery Cache");
+  assert.deepEqual(cacheFilters.find((condition) => condition.difficulty)?.difficulty, { gte: 1.5, lte: 3 });
+  assert.deepEqual(cacheFilters.find((condition) => condition.terrain)?.terrain, { gte: 2, lte: 4 });
+  assert.deepEqual(conditions.find((condition) => condition.foundAt)?.foundAt, {
+    gte: new Date("2024-01-01T00:00:00.000Z"),
+    lte: new Date("2024-12-31T23:59:59.999Z")
+  });
+  assert.equal(result.totalCount, 1);
 });
