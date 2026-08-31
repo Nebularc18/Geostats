@@ -26,6 +26,35 @@ test("imports a Project-GC c_number script and tag config", () => {
   assert.match(imported.summary, /25 finds/);
 });
 
+test("accepts the config-copy and expanded-filter shape used by the Project-GC sample", () => {
+  const script = `
+local args={...}
+local conf = args[1].config
+function expandFilter(filter) return filter end
+function GetCombinedFinds(profileId, config)
+  local l_config = TableCopy(config)
+  l_config.filter.filters = nil
+  local l_filter = TableCopy(l_config)
+  l_config.filter = l_filter
+  l_config.fields = { 'gccode' }
+  l_config.filter = expandFilter(c)
+  return PGC.GetFinds(profileId, l_config)
+end
+function c_number(conf)
+  local options = { 'limit' }
+  if extraInConfig(conf, options) == true then return { ok = nil } end
+  local finds = GetCombinedFinds(args[1].profileId, { filter = conf })
+  local ok = false
+  if #finds >= conf.limit then ok = true end
+  return { ok = ok }
+end
+res = c_number(conf)
+local ok = res.ok
+return { ok = ok }
+`;
+  assert.equal(importProjectGcNumberScript(script, '{"limit":1}').rules[0]!.minimum, 1);
+});
+
 test("merges Project-GC alternative filters with the base filter", () => {
   const imported = importProjectGcNumberScript(numberScript, JSON.stringify({
     limit: 2,
@@ -39,7 +68,27 @@ test("merges Project-GC alternative filters with the base filter", () => {
 });
 
 test("rejects arbitrary Lua instead of executing it", () => {
-  assert.throws(() => importProjectGcNumberScript("return os.execute('bad')", '{"limit":1}'), /currently supports Project-GC c_number scripts/);
+  assert.throws(() => importProjectGcNumberScript("return os.execute('bad')", '{"limit":1}'), /Project-GC/);
+});
+
+test("rejects a c_number script that passes a different GetFinds filter", () => {
+  const script = numberScript.replace("{ filter = conf }", "{ filter = other }");
+  assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /tag config as its filter/);
+});
+
+test("rejects an added boolean condition in the checker result", () => {
+  const script = numberScript.replace("return { ok = #finds >= conf.limit }", "return { ok = #finds >= conf.limit and conf.brief }");
+  assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /exactly the conf.limit count condition/);
+});
+
+test("rejects mutation of the config passed to GetFinds", () => {
+  const script = numberScript.replace("function c_number(conf)", "function c_number(conf)\n  conf.filter = other");
+  assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /must not be mutated/);
+});
+
+test("rejects an outer return that changes the c_number verdict", () => {
+  const script = numberScript.replace("return c_number(conf)", "local ok = c_number(conf).ok and conf.brief\nreturn { ok = ok }");
+  assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /additional pass\/fail condition/);
 });
 
 test("rejects unsupported config fields instead of changing checker meaning", () => {
