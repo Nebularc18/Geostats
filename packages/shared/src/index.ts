@@ -42,9 +42,18 @@ export interface CacheMapPoint {
   gcCode: string;
   name: string;
   cacheType: string | null;
+  difficulty?: number | null;
+  terrain?: number | null;
+  size?: string | null;
   latitude: number;
   longitude: number;
-  foundAt: string;
+  country?: string | null;
+  region?: string | null;
+  county?: string | null;
+  hiddenDate?: string | null;
+  foundAt?: string;
+  placedAt?: string;
+  isOwnHide?: boolean;
 }
 
 export interface ParsedCoordinate {
@@ -67,9 +76,7 @@ export function parseCoordinate(value: string): ParsedCoordinate | null {
     }
   }
 
-  const dmm = value.match(
-    /^\s*([NS])\s*(\d{1,2})(?:\s*°\s*|\s+)(\d{1,2}(?:\.\d+)?)\s*['’′]?\s*[,;]?\s*([EW])\s*(\d{1,3})(?:\s*°\s*|\s+)(\d{1,2}(?:\.\d+)?)\s*['’′]?\s*$/i
-  );
+  const dmm = value.match(/^\s*([NS])\s*(\d{1,2})(?:\s*°\s*|\s+)(\d{1,2}(?:\.\d+)?)\s*['’′]?\s*[,;]?\s*([EW])\s*(\d{1,3})(?:\s*°\s*|\s+)(\d{1,2}(?:\.\d+)?)\s*['’′]?\s*$/i);
   if (!dmm) return null;
 
   const latitudeDegrees = Number(dmm[2]);

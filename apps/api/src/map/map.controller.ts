@@ -188,9 +188,7 @@ function increment(map: Map<string, number>, name: string) {
 }
 
 function sortedBuckets(map: Map<string, number>): LocationBucket[] {
-  return [...map.entries()]
-    .map(([name, count]) => ({ name, count }))
-    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+  return [...map.entries()].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
 }
 
 function continentFor(latitude: number, longitude: number, country?: string | null) {
@@ -239,7 +237,10 @@ export class MapController {
   ) {}
 
   private async countableFindWhereForUser(userId: string) {
-    const profile = await this.prisma.geocachingProfile.findUnique({ where: { userId }, select: { gcUsername: true } });
+    const profile = await this.prisma.geocachingProfile.findUnique({
+      where: { userId },
+      select: { gcUsername: true }
+    });
     return countableFindWhere(userId, normalizedGcUsername(profile));
   }
 
@@ -279,8 +280,15 @@ export class MapController {
             gcCode: true,
             name: true,
             cacheType: true,
+            difficulty: true,
+            terrain: true,
+            size: true,
             latitude: true,
-            longitude: true
+            longitude: true,
+            country: true,
+            region: true,
+            county: true,
+            hiddenDate: true
           }
         }
       },
@@ -298,8 +306,15 @@ export class MapController {
         gcCode: find.cache.gcCode,
         name: find.cache.name,
         cacheType: find.cache.cacheType,
+        difficulty: find.cache.difficulty === null ? null : Number(find.cache.difficulty),
+        terrain: find.cache.terrain === null ? null : Number(find.cache.terrain),
+        size: find.cache.size,
         latitude: Number(find.cache.latitude),
         longitude: Number(find.cache.longitude),
+        country: find.cache.country,
+        region: find.cache.region,
+        county: find.cache.county,
+        hiddenDate: find.cache.hiddenDate?.toISOString() ?? null,
         foundAt: find.foundAt.toISOString()
       }))
     };
@@ -317,8 +332,15 @@ export class MapController {
             gcCode: true,
             name: true,
             cacheType: true,
+            difficulty: true,
+            terrain: true,
+            size: true,
             latitude: true,
-            longitude: true
+            longitude: true,
+            country: true,
+            region: true,
+            county: true,
+            hiddenDate: true
           }
         }
       },
@@ -336,8 +358,15 @@ export class MapController {
         gcCode: hide.cache.gcCode,
         name: hide.cache.name,
         cacheType: hide.cache.cacheType,
+        difficulty: hide.cache.difficulty === null ? null : Number(hide.cache.difficulty),
+        terrain: hide.cache.terrain === null ? null : Number(hide.cache.terrain),
+        size: hide.cache.size,
         latitude: Number(hide.cache.latitude),
         longitude: Number(hide.cache.longitude),
+        country: hide.cache.country,
+        region: hide.cache.region,
+        county: hide.cache.county,
+        hiddenDate: hide.cache.hiddenDate?.toISOString() ?? null,
         placedAt: hide.placedAt?.toISOString() ?? "",
         isOwnHide: true
       }))
@@ -366,7 +395,13 @@ export class MapController {
     const visibleFinds = truncated ? finds.slice(0, MAP_CACHE_LIMIT) : finds;
 
     const continents = new Map<string, number>();
-    const countries = new Map<string, CountryBucket & { regionMap: Map<string, number>; countyMap: Map<string, number> }>();
+    const countries = new Map<
+      string,
+      CountryBucket & {
+        regionMap: Map<string, number>;
+        countyMap: Map<string, number>;
+      }
+    >();
 
     for (const find of visibleFinds) {
       const latitude = Number(find.cache.latitude);
@@ -378,17 +413,15 @@ export class MapController {
 
       increment(continents, continent);
 
-      const existing =
-        countries.get(country) ??
-        {
-          name: country,
-          continent,
-          count: 0,
-          regions: [],
-          counties: [],
-          regionMap: new Map<string, number>(),
-          countyMap: new Map<string, number>()
-        };
+      const existing = countries.get(country) ?? {
+        name: country,
+        continent,
+        count: 0,
+        regions: [],
+        counties: [],
+        regionMap: new Map<string, number>(),
+        countyMap: new Map<string, number>()
+      };
 
       existing.count += 1;
       increment(existing.regionMap, region);

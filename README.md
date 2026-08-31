@@ -9,8 +9,12 @@ Pocket Query, and owner-log imports.
   owner-log CSV files.
 - Explore find statistics, milestones, achievement badges, FTF history, hides,
   and received logs.
+- Compare summary stats, country coverage, and cache-type finds with friends who
+  also use Geostats.
+- Build reusable challenge checkers and publish a result page for a cache.
 - Browse finds and hides on a map, or track country, region, and county coverage
-  with the scratch map.
+  with the scratch map. Filter map points by cache metadata, ratings, location,
+  date, and find or hide status.
 - Plan caching trips and keep a synchronized mystery-solving journal, including
   computer access tokens for AI-assisted workflows.
 - Generate downloadable profile HTML and public, dynamically updated statistics
@@ -87,13 +91,13 @@ Use `.env.agent.example` only for local development. Its secrets are intentional
 Geostats supports password, external, and development authentication. The API's
 runtime environment determines the effective mode:
 
-| Environment | `AUTH_MODE` | Sign-in options |
-| --- | --- | --- |
-| Development | unset or `password` | Local email and password |
-| Development | `external` | External provider plus local email and password |
-| Development | `dev` | Automatic disposable development user; password auth is disabled |
-| Production | `password` | Local email and password |
-| Production | unset, `external`, or any other value | External provider plus local email and password |
+| Environment | `AUTH_MODE`                           | Sign-in options                                                  |
+| ----------- | ------------------------------------- | ---------------------------------------------------------------- |
+| Development | unset or `password`                   | Local email and password                                         |
+| Development | `external`                            | External provider plus local email and password                  |
+| Development | `dev`                                 | Automatic disposable development user; password auth is disabled |
+| Production  | `password`                            | Local email and password                                         |
+| Production  | unset, `external`, or any other value | External provider plus local email and password                  |
 
 Production deliberately ignores `AUTH_MODE=dev`. When production selects
 external auth, Shoo is the provider unless `EXTERNAL_AUTH_PROVIDER_ID` names a
@@ -443,10 +447,15 @@ builds do not create a release.
 - Object storage uses S3-compatible environment variables so MinIO can be replaced with cloud S3 later.
 - The mobile app uses the same API contracts and shared packages as web.
 
-## Not Yet Included
+## Work in progress
 
-- friend comparison
-- challenge checker
-- live Geocaching.com sync
-- advanced map filtering
-- cloud deployment automation
+- Trackable logbook with owned, discovered, retrieved, dropped, and visited
+  states; GPX or CSV history import; distance and journey maps; and a last-seen
+  warning for trackables that may be stuck.
+- Shared trip lists so friends can collect solved mysteries, vote on stops, and
+  open one route on caching day.
+- Personal goals for yearly find counts, Jasmer months, D/T grid cells, counties,
+  cache types, and streaks.
+- Owner maintenance board with disabled-cache reminders, maintenance history,
+  supply notes, and a route across caches that need attention.
+- Opt-in group challenges and small leaderboards for clubs, trips, and events.

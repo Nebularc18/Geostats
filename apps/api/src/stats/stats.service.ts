@@ -4,6 +4,7 @@ import { calculateHideStats, calculateStats, normalizedGcUsername, STATS_VERSION
 import { PrismaService } from "../common/prisma.service";
 import { countryExtremes, CountryExtremeEntry } from "./country-extremes";
 import { swedenRegionExtremes } from "./sweden-region-extremes";
+import { friendComparisonStats } from "./friend-comparison";
 
 const DEFAULT_FTF_FIND_LIMIT = 100;
 const MAX_FTF_FIND_LIMIT = 200;
@@ -131,7 +132,9 @@ export class StatsService {
   constructor(private readonly prisma: PrismaService) {}
 
   async snapshotForUser(userId: string) {
-    const profile = await this.prisma.geocachingProfile.findUnique({ where: { userId } });
+    const profile = await this.prisma.geocachingProfile.findUnique({
+      where: { userId }
+    });
     const latest = await this.prisma.statSnapshot.findFirst({
       where: { userId },
       orderBy: { generatedAt: "desc" }
@@ -149,7 +152,7 @@ export class StatsService {
     return this.recalculateSnapshotForUser(userId, profile);
   }
 
-  async publicSnapshotForUsername(username: string) {
+  private async snapshotForUsername(username: string) {
     const cleanUsername = username.trim();
     if (!cleanUsername) {
       throw new NotFoundException("Profile not found");
@@ -186,26 +189,70 @@ export class StatsService {
       take: 1
     });
     const latestImport = latestImports[0] ?? null;
-    const profile = latestImport
-      ? (profiles.find((candidate) => candidate.userId === latestImport.userId) ?? profiles[0]!)
-      : profiles[0]!;
-    const [stats, extremeCaches] = await Promise.all([
-      this.snapshotForUser(profile.userId),
-      this.extremeCachesForUser(profile.userId, null)
-    ]);
+    const profile = latestImport ? (profiles.find((candidate) => candidate.userId === latestImport.userId) ?? profiles[0]!) : profiles[0]!;
+    const stats = await this.snapshotForUser(profile.userId);
 
     return {
       profile,
       stats: {
         ...stats,
-        extremeCaches: extremeCaches.extremes,
         latestImportAt: latestImport?.updatedAt?.toISOString() ?? latestImport?.createdAt?.toISOString() ?? null
       }
     };
   }
 
+  async publicSnapshotForUsername(username: string) {
+    const snapshot = await this.snapshotForUsername(username);
+    const extremeCaches = await this.extremeCachesForUser(snapshot.profile.userId, null);
+    return {
+      ...snapshot,
+      stats: {
+        ...snapshot.stats,
+        extremeCaches: extremeCaches.extremes
+      }
+    };
+  }
+
+  async friendComparisonForUser(userId: string, username: string) {
+    const [ownProfile, ownStats, friendSnapshot, ownLatestImport] = await Promise.all([
+      this.prisma.geocachingProfile.findUnique({
+        where: { userId },
+        select: { gcUsername: true }
+      }),
+      this.snapshotForUser(userId),
+      this.snapshotForUsername(username),
+      this.prisma.import.findFirst({
+        where: { userId, status: "COMPLETED" },
+        orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
+        select: { createdAt: true, updatedAt: true }
+      })
+    ]);
+
+    if (!ownProfile) {
+      throw new NotFoundException("Profile not found");
+    }
+    if (friendSnapshot.profile.userId === userId) {
+      throw new BadRequestException("Enter another geocaching username");
+    }
+
+    return {
+      you: {
+        username: ownProfile.gcUsername,
+        latestImportAt: ownLatestImport?.updatedAt?.toISOString() ?? ownLatestImport?.createdAt?.toISOString() ?? null,
+        stats: friendComparisonStats(ownStats)
+      },
+      friend: {
+        username: friendSnapshot.profile.gcUsername,
+        latestImportAt: friendSnapshot.stats.latestImportAt,
+        stats: friendComparisonStats(friendSnapshot.stats)
+      }
+    };
+  }
+
   async buildSnapshotForUser(userId: string) {
-    const profile = await this.prisma.geocachingProfile.findUnique({ where: { userId } });
+    const profile = await this.prisma.geocachingProfile.findUnique({
+      where: { userId }
+    });
     return this.calculateSnapshot(userId, profile, this.prisma);
   }
 
@@ -221,7 +268,11 @@ export class StatsService {
 
   private async recalculateSnapshotForUser(
     userId: string,
-    profile?: { gcUsername?: string | null; homeLatitude: unknown; homeLongitude: unknown } | null
+    profile?: {
+      gcUsername?: string | null;
+      homeLatitude: unknown;
+      homeLongitude: unknown;
+    } | null
   ) {
     const inFlight = this.recalculationsByUser.get(userId);
     if (inFlight) {
@@ -242,7 +293,11 @@ export class StatsService {
 
   private async calculateSnapshot(
     userId: string,
-    profile?: { gcUsername?: string | null; homeLatitude: unknown; homeLongitude: unknown } | null,
+    profile?: {
+      gcUsername?: string | null;
+      homeLatitude: unknown;
+      homeLongitude: unknown;
+    } | null,
     prisma: PrismaClientLike = this.prisma
   ) {
     const hides = await prisma.hide.findMany({
@@ -330,7 +385,10 @@ export class StatsService {
         }
       })),
       {
-        finderCountryBuckets: ownerFinderCountryStats.map((row) => ({ key: row.country, count: row.count }))
+        finderCountryBuckets: ownerFinderCountryStats.map((row) => ({
+          key: row.country,
+          count: row.count
+        }))
       }
     );
     stats.achievementStats.hostedEventCaches = stats.hideStats.hostedEventCaches;
@@ -343,9 +401,15 @@ export class StatsService {
     if (cacheIds.length === 0) {
       return foundCacheIds;
     }
-    const profile = await this.prisma.geocachingProfile.findUnique({ where: { userId }, select: { gcUsername: true } });
+    const profile = await this.prisma.geocachingProfile.findUnique({
+      where: { userId },
+      select: { gcUsername: true }
+    });
     const finds = await this.prisma.find.findMany({
-      where: { ...countableFindWhere(userId, normalizedGcUsername(profile)), cacheId: { in: cacheIds } },
+      where: {
+        ...countableFindWhere(userId, normalizedGcUsername(profile)),
+        cacheId: { in: cacheIds }
+      },
       select: { cacheId: true },
       distinct: ["cacheId"]
     });
@@ -436,23 +500,39 @@ export class StatsService {
       orderBy: { country: "asc" }
     });
 
-    const referenceRegions = cleanCountry
-      ? swedenRegionExtremes.filter((item) => item.country === cleanCountry).map((item) => item.region)
-      : [];
+    const referenceRegions = cleanCountry ? swedenRegionExtremes.filter((item) => item.country === cleanCountry).map((item) => item.region) : [];
 
-    const profile = await this.prisma.geocachingProfile.findUnique({ where: { userId }, select: { gcUsername: true } });
+    const profile = await this.prisma.geocachingProfile.findUnique({
+      where: { userId },
+      select: { gcUsername: true }
+    });
     const firstHomeFind = await this.prisma.find.findFirst({
-      where: { ...countableFindWhere(userId, normalizedGcUsername(profile)), cache: { country: { not: null } } },
+      where: {
+        ...countableFindWhere(userId, normalizedGcUsername(profile)),
+        cache: { country: { not: null } }
+      },
       orderBy: [{ foundAt: "asc" }, { id: "asc" }],
       select: { cache: { select: { country: true } } }
     });
     const homeCountry = firstHomeFind?.cache.country?.trim() || null;
 
     const [northernmost, southernmost, easternmost, westernmost, oldest] = await Promise.all([
-      this.prisma.cache.findFirst({ where: locationWhere, orderBy: { latitude: "desc" } }),
-      this.prisma.cache.findFirst({ where: locationWhere, orderBy: { latitude: "asc" } }),
-      this.prisma.cache.findFirst({ where: locationWhere, orderBy: { longitude: "desc" } }),
-      this.prisma.cache.findFirst({ where: locationWhere, orderBy: { longitude: "asc" } }),
+      this.prisma.cache.findFirst({
+        where: locationWhere,
+        orderBy: { latitude: "desc" }
+      }),
+      this.prisma.cache.findFirst({
+        where: locationWhere,
+        orderBy: { latitude: "asc" }
+      }),
+      this.prisma.cache.findFirst({
+        where: locationWhere,
+        orderBy: { longitude: "desc" }
+      }),
+      this.prisma.cache.findFirst({
+        where: locationWhere,
+        orderBy: { longitude: "asc" }
+      }),
       this.prisma.cache.findFirst({
         where: { ...locationWhere, hiddenDate: { not: null } },
         orderBy: { hiddenDate: "asc" }
@@ -464,9 +544,7 @@ export class StatsService {
       this.prisma.$queryRawUnsafe<ExtremeCacheRow[]>(elevationExtremeSql("ASC", cleanRegion), cleanCountry, cleanRegion)
     ]);
 
-    const rows = [northernmost, southernmost, easternmost, westernmost, oldest, highestRows[0], lowestRows[0]].filter(
-      (row): row is ExtremeCacheRow => row != null
-    );
+    const rows = [northernmost, southernmost, easternmost, westernmost, oldest, highestRows[0], lowestRows[0]].filter((row): row is ExtremeCacheRow => row != null);
     const foundCacheIds = await this.foundCacheIdsFor(
       userId,
       rows.map((row) => row.id)
@@ -500,7 +578,10 @@ export class StatsService {
 
   async ftfFindsForUser(userId: string, options: { cursor?: string; limit?: number } = {}) {
     const limit = Math.min(Math.max(options.limit ?? DEFAULT_FTF_FIND_LIMIT, 1), MAX_FTF_FIND_LIMIT);
-    const profile = await this.prisma.geocachingProfile.findUnique({ where: { userId }, select: { gcUsername: true } });
+    const profile = await this.prisma.geocachingProfile.findUnique({
+      where: { userId },
+      select: { gcUsername: true }
+    });
     const gcUsername = normalizedGcUsername(profile);
     let finds: FtfFindRow[];
     try {
@@ -547,7 +628,7 @@ export class StatsService {
           region: find.cache.region
         }
       })),
-      nextCursor: finds.length > limit ? page.at(-1)?.id ?? null : null
+      nextCursor: finds.length > limit ? (page.at(-1)?.id ?? null) : null
     };
   }
 

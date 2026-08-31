@@ -8,8 +8,15 @@ export interface CacheMapPoint {
   gcCode: string;
   name: string;
   cacheType: string | null;
+  difficulty?: number | null;
+  terrain?: number | null;
+  size?: string | null;
   latitude: number;
   longitude: number;
+  country?: string | null;
+  region?: string | null;
+  county?: string | null;
+  hiddenDate?: string | null;
   foundAt?: string;
   placedAt?: string;
   isOwnHide?: boolean;
@@ -66,24 +73,18 @@ const CACHE_TYPE_COLOR_PAIRS = [
 ] as const;
 const FALLBACK_CACHE_TYPE_COLOR = "#6f7f73";
 const OWN_HIDE_COLOR = "#d9468f";
-const CACHE_TYPE_COLORS = [
-  "match",
-  ["get", "cacheType"],
-  ...CACHE_TYPE_COLOR_PAIRS.flat(),
-  FALLBACK_CACHE_TYPE_COLOR
-] as unknown as ExpressionSpecification;
-const POINT_COLORS = [
-  "case",
-  ["==", ["get", "isOwnHide"], true],
-  OWN_HIDE_COLOR,
-  CACHE_TYPE_COLORS
-] as unknown as ExpressionSpecification;
+const CACHE_TYPE_COLORS = ["match", ["get", "cacheType"], ...CACHE_TYPE_COLOR_PAIRS.flat(), FALLBACK_CACHE_TYPE_COLOR] as unknown as ExpressionSpecification;
+const POINT_COLORS = ["case", ["==", ["get", "isOwnHide"], true], OWN_HIDE_COLOR, CACHE_TYPE_COLORS] as unknown as ExpressionSpecification;
 
 type CachePointProperties = {
   id: string;
   gcCode: string;
   name: string;
   cacheType: string;
+  difficulty: number | null;
+  terrain: number | null;
+  size: string;
+  location: string;
   isOwnHide: boolean;
 };
 
@@ -107,14 +108,7 @@ export function getCacheTypeColor(cacheType: string | null, isOwnHide = false) {
 }
 
 function isValidPoint(point: CacheMapPoint) {
-  return (
-    Number.isFinite(point.latitude) &&
-    Number.isFinite(point.longitude) &&
-    point.latitude >= -90 &&
-    point.latitude <= 90 &&
-    point.longitude >= -180 &&
-    point.longitude <= 180
-  );
+  return Number.isFinite(point.latitude) && Number.isFinite(point.longitude) && point.latitude >= -90 && point.latitude <= 90 && point.longitude >= -180 && point.longitude <= 180;
 }
 
 function pointsToGeoJson(points: CacheMapPoint[]): CachePointFeatureCollection {
@@ -131,6 +125,10 @@ function pointsToGeoJson(points: CacheMapPoint[]): CachePointFeatureCollection {
         gcCode: point.gcCode,
         name: point.name,
         cacheType: point.cacheType ?? "Unknown",
+        difficulty: point.difficulty ?? null,
+        terrain: point.terrain ?? null,
+        size: point.size ?? "Unknown",
+        location: [point.county, point.region, point.country].filter(Boolean).join(", "),
         isOwnHide: point.isOwnHide === true
       }
     }))
@@ -179,13 +177,14 @@ export function CacheMap({ points }: { points: CacheMapPoint[] }) {
         return;
       }
 
-      const [feature] = map.queryRenderedFeatures(event.point, { layers: [POINT_LAYER_ID] });
+      const [feature] = map.queryRenderedFeatures(event.point, {
+        layers: [POINT_LAYER_ID]
+      });
       if (!feature || !feature.properties) {
         return;
       }
 
-      const coordinates =
-        feature.geometry.type === "Point" ? (feature.geometry.coordinates as number[]) : [];
+      const coordinates = feature.geometry.type === "Point" ? (feature.geometry.coordinates as number[]) : [];
       if (coordinates.length < 2) {
         return;
       }
@@ -197,10 +196,18 @@ export function CacheMap({ points }: { points: CacheMapPoint[] }) {
       name.textContent = String(feature.properties.name ?? "");
       const type = document.createElement("small");
       type.textContent =
-        feature.properties.isOwnHide === true
-          ? `Own hide - ${String(feature.properties.cacheType ?? "Unknown")}`
-          : String(feature.properties.cacheType ?? "Unknown");
-      popupContent.append(code, name, type);
+        feature.properties.isOwnHide === true ? `Own hide - ${String(feature.properties.cacheType ?? "Unknown")}` : String(feature.properties.cacheType ?? "Unknown");
+      const details = document.createElement("div");
+      const difficulty = feature.properties.difficulty;
+      const terrain = feature.properties.terrain;
+      const size = String(feature.properties.size ?? "Unknown");
+      details.textContent = `D ${difficulty ?? "?"} / T ${terrain ?? "?"} - ${size}`;
+      const location = document.createElement("small");
+      location.textContent = String(feature.properties.location ?? "");
+      popupContent.append(code, name, type, details);
+      if (location.textContent) {
+        popupContent.append(location);
+      }
 
       popupRef.current?.remove();
       popupRef.current = new maplibregl.Popup({ offset: 14 })
@@ -215,7 +222,9 @@ export function CacheMap({ points }: { points: CacheMapPoint[] }) {
         return;
       }
 
-      const features = map.queryRenderedFeatures(event.point, { layers: [POINT_LAYER_ID] });
+      const features = map.queryRenderedFeatures(event.point, {
+        layers: [POINT_LAYER_ID]
+      });
       map.getCanvas().style.cursor = features.length > 0 ? "pointer" : "";
     });
 
@@ -265,17 +274,7 @@ export function CacheMap({ points }: { points: CacheMapPoint[] }) {
           type: "circle",
           source: POINT_SOURCE_ID,
           paint: {
-            "circle-radius": [
-              "interpolate",
-              ["linear"],
-              ["zoom"],
-              4,
-              4.5,
-              8,
-              6.5,
-              12,
-              9
-            ],
+            "circle-radius": ["interpolate", ["linear"], ["zoom"], 4, 4.5, 8, 6.5, 12, 9],
             "circle-color": POINT_COLORS,
             "circle-stroke-color": "#fff7de",
             "circle-stroke-width": 2,
@@ -286,7 +285,11 @@ export function CacheMap({ points }: { points: CacheMapPoint[] }) {
 
       const bounds = boundsFor(points);
       if (bounds) {
-        activeMap.fitBounds(bounds, { padding: 56, maxZoom: 10, duration: 700 });
+        activeMap.fitBounds(bounds, {
+          padding: 56,
+          maxZoom: 10,
+          duration: 700
+        });
       }
     }
 
