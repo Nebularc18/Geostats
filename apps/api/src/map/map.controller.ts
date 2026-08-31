@@ -1,9 +1,9 @@
 import { BadRequestException, Body, Controller, Get, Post, Query, UseGuards } from "@nestjs/common";
 import { AuthUser } from "@geostats/shared";
-import { countableFindWhere } from "@geostats/db";
+import { countableFindWhere, Prisma } from "@geostats/db";
 import { normalizedGcUsername } from "@geostats/stats";
 import { Type } from "class-transformer";
-import { ArrayMaxSize, IsArray, IsBoolean, IsIn, IsNumber, IsOptional, IsString, Matches, Max, MaxLength, Min, MinLength, ValidateIf, ValidateNested } from "class-validator";
+import { ArrayMaxSize, IsArray, IsBoolean, IsIn, IsNumber, IsOptional, IsString, Max, MaxLength, Min, MinLength, ValidateIf, ValidateNested } from "class-validator";
 import { AuthGuard } from "../auth/auth.guard";
 import { CurrentUser } from "../auth/current-user.decorator";
 import { PrismaService } from "../common/prisma.service";
@@ -115,8 +115,9 @@ class TravelSearchDto {
 
 class MapPointsQueryDto {
   @IsOptional()
-  @Matches(/^\d{1,16}$/)
-  offset?: string;
+  @IsString()
+  @MaxLength(100)
+  cursor?: string;
 }
 
 const MAP_CACHE_LIMIT = 5000;
@@ -173,12 +174,8 @@ const COUNTRY_CONTINENTS = new Map(
   ].map(([country, continent]) => [country.toLowerCase(), continent])
 );
 
-function mapOffset(value?: string) {
-  const offset = value === undefined ? 0 : Number(value);
-  if (!Number.isSafeInteger(offset) || offset < 0) {
-    throw new BadRequestException("offset must be a non-negative integer");
-  }
-  return offset;
+function isPrismaError(error: unknown, code: string): boolean {
+  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === code;
 }
 
 type LocationBucket = {
@@ -284,41 +281,49 @@ export class MapController {
 
   @Get("caches")
   async caches(@CurrentUser() user: AuthUser, @Query() query: MapPointsQueryDto = {}) {
-    const offset = mapOffset(query.offset);
-    const finds = await this.prisma.find.findMany({
-      where: await this.countableFindWhereForUser(user.id),
-      select: {
-        id: true,
-        foundAt: true,
-        cache: {
-          select: {
-            id: true,
-            gcCode: true,
-            name: true,
-            cacheType: true,
-            difficulty: true,
-            terrain: true,
-            size: true,
-            latitude: true,
-            longitude: true,
-            country: true,
-            region: true,
-            county: true,
-            hiddenDate: true
+    const cursor = query.cursor?.trim() || undefined;
+    let finds: any[];
+    try {
+      finds = await this.prisma.find.findMany({
+        where: await this.countableFindWhereForUser(user.id),
+        select: {
+          id: true,
+          foundAt: true,
+          cache: {
+            select: {
+              id: true,
+              gcCode: true,
+              name: true,
+              cacheType: true,
+              difficulty: true,
+              terrain: true,
+              size: true,
+              latitude: true,
+              longitude: true,
+              country: true,
+              region: true,
+              county: true,
+              hiddenDate: true
+            }
           }
-        }
-      },
-      orderBy: [{ foundAt: "desc" }, { id: "desc" }],
-      skip: offset,
-      take: MAP_CACHE_LIMIT + 1
-    });
+        },
+        orderBy: [{ foundAt: "desc" }, { id: "desc" }],
+        take: MAP_CACHE_LIMIT + 1,
+        ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {})
+      });
+    } catch (error) {
+      if (isPrismaError(error, "P2025")) {
+        throw new BadRequestException("invalid cursor");
+      }
+      throw error;
+    }
     const truncated = finds.length > MAP_CACHE_LIMIT;
     const visibleFinds = truncated ? finds.slice(0, MAP_CACHE_LIMIT) : finds;
 
     return {
       truncated,
       limit: MAP_CACHE_LIMIT,
-      nextOffset: truncated ? offset + MAP_CACHE_LIMIT : null,
+      nextCursor: truncated ? visibleFinds.at(-1)?.id ?? null : null,
       points: visibleFinds.map((find) => ({
         id: find.cache.id,
         gcCode: find.cache.gcCode,
@@ -340,41 +345,49 @@ export class MapController {
 
   @Get("hides")
   async hides(@CurrentUser() user: AuthUser, @Query() query: MapPointsQueryDto = {}) {
-    const offset = mapOffset(query.offset);
-    const hides = await this.prisma.hide.findMany({
-      where: { userId: user.id },
-      select: {
-        id: true,
-        placedAt: true,
-        cache: {
-          select: {
-            id: true,
-            gcCode: true,
-            name: true,
-            cacheType: true,
-            difficulty: true,
-            terrain: true,
-            size: true,
-            latitude: true,
-            longitude: true,
-            country: true,
-            region: true,
-            county: true,
-            hiddenDate: true
+    const cursor = query.cursor?.trim() || undefined;
+    let hides: any[];
+    try {
+      hides = await this.prisma.hide.findMany({
+        where: { userId: user.id },
+        select: {
+          id: true,
+          placedAt: true,
+          cache: {
+            select: {
+              id: true,
+              gcCode: true,
+              name: true,
+              cacheType: true,
+              difficulty: true,
+              terrain: true,
+              size: true,
+              latitude: true,
+              longitude: true,
+              country: true,
+              region: true,
+              county: true,
+              hiddenDate: true
+            }
           }
-        }
-      },
-      orderBy: [{ placedAt: "desc" }, { id: "desc" }],
-      skip: offset,
-      take: MAP_CACHE_LIMIT + 1
-    });
+        },
+        orderBy: [{ placedAt: "desc" }, { id: "desc" }],
+        take: MAP_CACHE_LIMIT + 1,
+        ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {})
+      });
+    } catch (error) {
+      if (isPrismaError(error, "P2025")) {
+        throw new BadRequestException("invalid cursor");
+      }
+      throw error;
+    }
     const truncated = hides.length > MAP_CACHE_LIMIT;
     const visibleHides = truncated ? hides.slice(0, MAP_CACHE_LIMIT) : hides;
 
     return {
       truncated,
       limit: MAP_CACHE_LIMIT,
-      nextOffset: truncated ? offset + MAP_CACHE_LIMIT : null,
+      nextCursor: truncated ? visibleHides.at(-1)?.id ?? null : null,
       points: visibleHides.map((hide) => ({
         id: hide.cache.id,
         gcCode: hide.cache.gcCode,

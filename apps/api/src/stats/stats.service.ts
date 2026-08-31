@@ -169,27 +169,26 @@ export class StatsService {
         userId: true,
         gcUsername: true
       },
-      orderBy: { updatedAt: "desc" }
+      orderBy: { updatedAt: "desc" },
+      take: 2
     });
 
     if (!profiles.length) {
       throw new NotFoundException("Profile not found");
     }
-    const latestImports = await this.prisma.import.findMany({
-      where: {
-        userId: { in: profiles.map((profile) => profile.userId) },
-        status: "COMPLETED"
-      },
+    if (profiles.length > 1) {
+      throw new BadRequestException("Geocaching username matches multiple profiles");
+    }
+
+    const profile = profiles[0]!;
+    const latestImport = await this.prisma.import.findFirst({
+      where: { userId: profile.userId, status: "COMPLETED" },
       orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
       select: {
-        userId: true,
         createdAt: true,
         updatedAt: true
-      },
-      take: 1
+      }
     });
-    const latestImport = latestImports[0] ?? null;
-    const profile = latestImport ? (profiles.find((candidate) => candidate.userId === latestImport.userId) ?? profiles[0]!) : profiles[0]!;
     const stats = await this.snapshotForUser(profile.userId);
 
     return {

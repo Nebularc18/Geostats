@@ -18,26 +18,27 @@ function mapPointTime(point: CacheMapPoint) {
 type MapPointsResponse = {
   points: CacheMapPoint[];
   truncated?: boolean;
-  nextOffset?: number | null;
+  nextCursor?: string | null;
 };
 
 async function loadMapPoints(path: "/map/caches" | "/map/hides") {
   const points: CacheMapPoint[] = [];
-  let offset = 0;
+  let cursor: string | undefined;
 
   while (true) {
-    const response = await apiFetch<MapPointsResponse>(`${path}?offset=${offset}`);
+    const query = cursor ? `?cursor=${encodeURIComponent(cursor)}` : "";
+    const response = await apiFetch<MapPointsResponse>(`${path}${query}`);
     points.push(...response.points);
 
     if (!response.truncated) {
       return points;
     }
 
-    const nextOffset = response.nextOffset;
-    if (typeof nextOffset !== "number" || !Number.isSafeInteger(nextOffset) || nextOffset <= offset) {
+    const nextCursor = response.nextCursor;
+    if (typeof nextCursor !== "string" || nextCursor.length === 0 || nextCursor === cursor) {
       throw new Error("Map data pagination did not advance.");
     }
-    offset = nextOffset;
+    cursor = nextCursor;
   }
 }
 

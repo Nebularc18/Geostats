@@ -53,6 +53,7 @@ export default function FriendsPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const latestRequestRef = useRef(0);
+  const pendingUsernameRef = useRef<string | null>(null);
 
   useEffect(() => {
     setSavedFriends(readSavedFriends(localStorage.getItem(SAVED_FRIENDS_KEY)));
@@ -78,6 +79,7 @@ export default function FriendsPage() {
 
     const requestId = latestRequestRef.current + 1;
     latestRequestRef.current = requestId;
+    pendingUsernameRef.current = cleanUsername;
     setLoading(true);
     setError(null);
     try {
@@ -96,6 +98,7 @@ export default function FriendsPage() {
       setError(requestError instanceof Error ? requestError.message : "Could not compare profiles.");
     } finally {
       if (requestId === latestRequestRef.current) {
+        pendingUsernameRef.current = null;
         setLoading(false);
       }
     }
@@ -107,10 +110,14 @@ export default function FriendsPage() {
   }
 
   function removeFriend(friend: string) {
-    latestRequestRef.current += 1;
-    setLoading(false);
+    const normalizedFriend = friend.trim().toLowerCase();
+    if (pendingUsernameRef.current?.trim().toLowerCase() === normalizedFriend) {
+      latestRequestRef.current += 1;
+      pendingUsernameRef.current = null;
+      setLoading(false);
+    }
     updateSavedFriends((friends) => friends.filter((candidate) => candidate !== friend));
-    if (comparison?.friend.username === friend) {
+    if (comparison?.friend.username.trim().toLowerCase() === normalizedFriend) {
       setComparison(null);
     }
   }
