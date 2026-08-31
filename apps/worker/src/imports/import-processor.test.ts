@@ -17,11 +17,14 @@ function withUserCacheData<T extends Record<string, any>>(prisma: T): T {
       transaction.call(models, async (tx: any) => {
         transactionCalls += 1;
         const injectedQueryRaw = transactionCalls === 1 && typeof tx.$queryRaw !== "function";
+        const injectedImport = typeof tx.import?.update !== "function";
         if (injectedQueryRaw) tx.$queryRaw = async () => [];
+        if (injectedImport) tx.import = { ...(tx.import ?? {}), update: async () => ({}) };
         try {
           return await callback(tx);
         } finally {
           if (injectedQueryRaw) delete tx.$queryRaw;
+          if (injectedImport) delete tx.import.update;
         }
       });
   }
@@ -541,6 +544,14 @@ test("process marks a committed import failed when stats recalculation fails", a
     },
     find: {
       upsert: async () => ({})
+    },
+    import: {
+      update: async ({ where, data }: any) => {
+        assert.deepEqual(where, { id: "import-1" });
+        assert.ok(data.updatedAt instanceof Date);
+        events.push("MAP_REVISION");
+        return {};
+      }
     }
   };
   const prisma = {
@@ -579,7 +590,7 @@ test("process marks a committed import failed when stats recalculation fails", a
   );
 
   assert.deepEqual(importStatuses, [ImportStatus.PROCESSING, ImportStatus.FAILED]);
-  assert.deepEqual(events, [ImportStatus.PROCESSING, "RECALCULATE", ImportStatus.FAILED]);
+  assert.deepEqual(events, [ImportStatus.PROCESSING, "MAP_REVISION", "RECALCULATE", ImportStatus.FAILED]);
 });
 
 test("process updates an existing find to the full GPX timestamp", async () => {

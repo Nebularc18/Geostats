@@ -447,11 +447,21 @@ export class MapController {
     // A cursor spans separate requests, so a timestamp alone cannot freeze a
     // history while an import transaction is committing. Detect changed rows
     // and make the client restart from a fresh snapshot instead.
-    const [latestImport, findCount, hideCount] = await Promise.all([
+    const [latestImport, latestFind, latestHide, findCount, hideCount] = await Promise.all([
       this.prisma.import.findFirst({
         where: { userId },
         orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }, { id: "desc" }],
         select: { id: true, updatedAt: true, createdAt: true }
+      }),
+      this.prisma.find.findFirst({
+        where: { userId },
+        orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+        select: { id: true, updatedAt: true }
+      }),
+      this.prisma.hide.findFirst({
+        where: { userId },
+        orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+        select: { id: true, updatedAt: true }
       }),
       this.prisma.find.count({ where: { userId } }),
       this.prisma.hide.count({ where: { userId } })
@@ -459,7 +469,9 @@ export class MapController {
     const importRevision = latestImport
       ? `${latestImport.id}:${latestImport.updatedAt.toISOString()}:${latestImport.createdAt.toISOString()}`
       : "none";
-    return `${importRevision}:${findCount}:${hideCount}`;
+    const findRevision = latestFind ? `${latestFind.id}:${latestFind.updatedAt.toISOString()}` : "none";
+    const hideRevision = latestHide ? `${latestHide.id}:${latestHide.updatedAt.toISOString()}` : "none";
+    return `${importRevision}:${findRevision}:${hideRevision}:${findCount}:${hideCount}`;
   }
 
   private async validateMapSnapshot(userId: string, query: MapPointsQueryDto, cursor: string | undefined) {

@@ -32,6 +32,7 @@ function controllerWith({ finds = [], hides = [] }: { finds?: any[]; hides?: any
     },
     find: {
       count: async () => finds.length,
+      findFirst: async () => finds.length ? { id: finds[0].id, updatedAt: finds[0].updatedAt ?? new Date("2024-01-01T00:00:00.000Z") } : null,
       findMany: async (query: any) => {
         calls.finds.push(query);
         const cursorIndex = query.cursor ? finds.findIndex((find) => find.id === query.cursor.id) : -1;
@@ -41,6 +42,7 @@ function controllerWith({ finds = [], hides = [] }: { finds?: any[]; hides?: any
     },
     hide: {
       count: async () => hides.length,
+      findFirst: async () => hides.length ? { id: hides[0].id, updatedAt: hides[0].updatedAt ?? new Date("2024-01-01T00:00:00.000Z") } : null,
       findMany: async (query: any) => {
         calls.hides.push(query);
         const cursorIndex = query.cursor ? hides.findIndex((hide) => hide.id === query.cursor.id) : -1;
@@ -167,6 +169,28 @@ test("rejects a cursor when an import changes the map snapshot", async () => {
 
   const firstPage = await controller.caches(user, {});
   setLatestImport("import-1");
+
+  await assert.rejects(
+    () => controller.caches(user, {
+      cursor: firstPage.nextCursor,
+      snapshot: firstPage.snapshot,
+      snapshotRevision: firstPage.snapshotRevision
+    }),
+    (error: unknown) => error instanceof ConflictException && error.message === "map snapshot expired"
+  );
+});
+
+test("rejects a cursor when an existing point is updated", async () => {
+  const finds = Array.from({ length: 5001 }, (_, index) => ({
+    id: `find-${index}`,
+    foundAt: new Date("2024-01-02T00:00:00.000Z"),
+    updatedAt: new Date("2024-01-01T00:00:00.000Z"),
+    cache: cache(index)
+  }));
+  const { controller } = controllerWith({ finds });
+
+  const firstPage = await controller.caches(user, {});
+  finds[0]!.updatedAt = new Date("2025-01-01T00:00:00.000Z");
 
   await assert.rejects(
     () => controller.caches(user, {
