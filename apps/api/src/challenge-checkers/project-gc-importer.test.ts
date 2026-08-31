@@ -134,6 +134,15 @@ test("rejects helper calls that mutate the finds result", () => {
   assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /finds result must not be mutated/);
 });
 
+test("rejects finds results that escape into mutable storage", () => {
+  const scripts = [
+    numberScript.replace("return { ok = #finds >= conf.limit }", "local box = { finds }\n  table.remove(box[1], 1)\n  return { ok = #finds >= conf.limit }"),
+    numberScript.replace("return { ok = #finds >= conf.limit }", "local box = {}\n  box.result = finds\n  table.remove(box.result, 1)\n  return { ok = #finds >= conf.limit }"),
+    numberScript.replace("return { ok = #finds >= conf.limit }", "function stash(rows)\n    savedRows = rows\n  end\n  stash(finds)\n  table.remove(savedRows, 1)\n  return { ok = #finds >= conf.limit }")
+  ];
+  for (const script of scripts) assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /finds result must not escape|finds result must not be mutated/);
+});
+
 test("rejects an outer return that changes the c_number verdict", () => {
   const script = numberScript.replace("return c_number(conf)", "local ok = c_number(conf).ok and conf.brief\nreturn { ok = ok }");
   assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /additional pass\/fail condition/);

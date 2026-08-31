@@ -213,9 +213,9 @@ function referencesAny(value: string, names: Set<string>) {
 }
 
 function assignmentSites(source: string) {
-  const assignments: Array<{ name: string; value: string }> = [];
-  const assignment = /(?:^|[;\n])\s*(?:\blocal\s+)?([A-Za-z_]\w*)\s*=\s*([^;\n]*)/g;
-  for (const match of source.matchAll(assignment)) assignments.push({ name: match[1]!, value: match[2]!.trim() });
+  const assignments: Array<{ name: string; value: string; local: boolean }> = [];
+  const assignment = /(?:^|[;\n])\s*(\blocal\s+)?([A-Za-z_]\w*)\s*=\s*([^;\n]*)/g;
+  for (const match of source.matchAll(assignment)) assignments.push({ name: match[2]!, value: match[3]!.trim(), local: Boolean(match[1]) });
   return assignments;
 }
 
@@ -275,6 +275,7 @@ function functionMutatesParameter(source: string, name: string, parameter: strin
   const nextStack = new Set(stack);
   nextStack.add(key);
   const aliases = new Set([parameter]);
+  const localNames = new Set(assignmentSites(definition.body).filter((assignment) => assignment.local).map((assignment) => assignment.name));
   for (const assignment of assignmentSites(definition.body)) {
     const valueName = assignment.value.match(/^([A-Za-z_]\w*)$/)?.[1];
     const valueRead = [...aliases].some((alias) => new RegExp("^" + alias + "\\s*(?:\\.\\s*[A-Za-z_]\\w*|\\[[^\\]]*\\]|$)").test(assignment.value));
@@ -282,6 +283,7 @@ function functionMutatesParameter(source: string, name: string, parameter: strin
     if (aliases.has(assignment.name)) {
       if (!valueName || !aliases.has(valueName)) return true;
     } else if (valueName && aliases.has(valueName)) {
+      if (!assignment.local && !localNames.has(assignment.name)) return true;
       aliases.add(assignment.name);
     } else if (referencesAny(assignment.value, aliases) && !valueRead && !/^#\s*(?:[A-Za-z_]\w*)$/.test(assignment.value) && !valueCall) {
       return true;
@@ -289,6 +291,9 @@ function functionMutatesParameter(source: string, name: string, parameter: strin
   }
   const aliasPattern = [...aliases].map((alias) => "\\b" + alias + "\\b").join("|");
   if (new RegExp("(?:" + aliasPattern + ")\\s*(?:\\.\\s*[A-Za-z_]\\w*|\\[[^\\]]*\\])\\s*=").test(definition.body)) return true;
+  for (const assignment of memberAssignmentSites(definition.body)) {
+    if (referencesAny(assignment.value, aliases)) return true;
+  }
   for (const call of callSites(definition.body)) {
     if (CONTROL_CALLS.has(call.name)) continue;
     const argumentsList = topLevelArguments(call.argumentsText);
@@ -411,20 +416,48 @@ function validateCountCondition(source: string) {
     throw new BadRequestException("The importer requires one c_number(conf) checker invocation");
   }
   if ((source.match(/#\s*finds/g) ?? []).length !== 1 || (body.match(/#\s*finds/g) ?? []).length !== 1) throw new BadRequestException("c_number must compare the complete find count exactly once");
-  const findsAssignments = body.match(/\bfinds\s*=\s*/g) ?? [];
-  if (findsAssignments.length !== 1) throw new BadRequestException("The c_number finds result must not be reassigned");
+  const findsAssignmentCount = body.match(/\bfinds\s*=\s*/g) ?? [];
+  if (findsAssignmentCount.length !== 1) throw new BadRequestException("The c_number finds result must not be reassigned");
   if (!/\bfinds\s*=\s*(?:(?:[A-Za-z_]\w*\s*\.\s*)?[A-Za-z_]\w*)\s*\(/.test(body)) {
     throw new BadRequestException("The c_number finds result must come from a function call");
   }
   const findsAliases = new Set(["finds"]);
-  const findsAliasAssignments = /(?:^|[;\n])\s*(?:\blocal\s+)?([A-Za-z_]\w*)\s*=\s*([^;\n]*)/g;
-  for (const assignment of body.matchAll(findsAliasAssignments)) {
-    const valueName = assignment[2]!.trim().match(/^([A-Za-z_]\w*)$/)?.[1];
-    if (valueName && findsAliases.has(valueName)) findsAliases.add(assignment[1]!);
+  const findsAssignments = assignmentSites(body);
+  const localNames = new Set([
+    ...findsAssignments.filter((assignment) => assignment.local).map((assignment) => assignment.name),
+    ...[...body.matchAll(/\blocal\s+([A-Za-z_]\w*)/g)].map((match) => match[1]!)
+  ]);
+  let aliasesChanged = true;
+  while (aliasesChanged) {
+    aliasesChanged = false;
+    for (const assignment of findsAssignments) {
+      const valueName = assignment.value.match(/^([A-Za-z_]\w*)$/)?.[1];
+      if (valueName && findsAliases.has(valueName)) {
+        if (!assignment.local && !localNames.has(assignment.name)) {
+          throw new BadRequestException("The c_number finds result must not escape its local scope");
+        }
+        if (!findsAliases.has(assignment.name)) {
+          findsAliases.add(assignment.name);
+          aliasesChanged = true;
+        }
+      } else if (referencesAny(assignment.value, findsAliases)) {
+        const valueRead = [...findsAliases].some((alias) => new RegExp("^" + alias + "\\s*(?:\\.\\s*[A-Za-z_]\\w*|\\[[^\\]]*\\]|$)").test(assignment.value));
+        const valueLength = new RegExp("^#\\s*(?:" + [...findsAliases].join("|") + ")$").test(assignment.value);
+        const valueCopy = /^TableCopy\s*\(/.test(assignment.value);
+        if (!valueRead && !valueLength && !valueCopy) {
+          throw new BadRequestException("The c_number finds result must not escape its local scope");
+        }
+      }
+    }
   }
   const findsAliasPattern = [...findsAliases].map((alias) => "\\b" + alias + "\\b").join("|");
   if (new RegExp("(?:" + findsAliasPattern + ")\\s*(?:\\.\\s*[A-Za-z_]\\w*|\\[[^\\]]*\\])\\s*=").test(body)) {
     throw new BadRequestException("The c_number finds result must not be mutated in place");
+  }
+  for (const assignment of memberAssignmentSites(body)) {
+    if (referencesAny(assignment.value, findsAliases)) {
+      throw new BadRequestException("The c_number finds result must not escape its local scope");
+    }
   }
   for (const call of callSites(body)) {
     if (CONTROL_CALLS.has(call.name)) continue;
