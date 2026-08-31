@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import maplibregl, { ExpressionSpecification, LngLatBoundsLike, StyleSpecification } from "maplibre-gl";
+import maplibregl, { ExpressionSpecification, StyleSpecification } from "maplibre-gl";
+import { boundsFor, isValidMapPoint } from "../lib/map-bounds";
 
 export interface CacheMapPoint {
   id: string;
@@ -107,14 +108,10 @@ export function getCacheTypeColor(cacheType: string | null, isOwnHide = false) {
   return CACHE_TYPE_COLOR_PAIRS.find(([type]) => type === cacheType)?.[1] ?? FALLBACK_CACHE_TYPE_COLOR;
 }
 
-function isValidPoint(point: CacheMapPoint) {
-  return Number.isFinite(point.latitude) && Number.isFinite(point.longitude) && point.latitude >= -90 && point.latitude <= 90 && point.longitude >= -180 && point.longitude <= 180;
-}
-
 function pointsToGeoJson(points: CacheMapPoint[]): CachePointFeatureCollection {
   return {
     type: "FeatureCollection",
-    features: points.filter(isValidPoint).map((point) => ({
+    features: points.filter(isValidMapPoint).map((point) => ({
       type: "Feature",
       geometry: {
         type: "Point",
@@ -133,22 +130,6 @@ function pointsToGeoJson(points: CacheMapPoint[]): CachePointFeatureCollection {
       }
     }))
   };
-}
-
-function boundsFor(points: CacheMapPoint[]): LngLatBoundsLike | null {
-  const validPoints = points.filter(isValidPoint);
-  if (validPoints.length === 0) {
-    return null;
-  }
-
-  const west = Math.min(...validPoints.map((point) => point.longitude));
-  const east = Math.max(...validPoints.map((point) => point.longitude));
-  const south = Math.min(...validPoints.map((point) => point.latitude));
-  const north = Math.max(...validPoints.map((point) => point.latitude));
-  return [
-    [west, south],
-    [east, north]
-  ];
 }
 
 export function CacheMap({ points }: { points: CacheMapPoint[] }) {

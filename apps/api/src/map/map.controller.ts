@@ -1,9 +1,9 @@
-import { Body, Controller, Get, Post, Query, UseGuards } from "@nestjs/common";
+import { BadRequestException, Body, Controller, Get, Post, Query, UseGuards } from "@nestjs/common";
 import { AuthUser } from "@geostats/shared";
 import { countableFindWhere } from "@geostats/db";
 import { normalizedGcUsername } from "@geostats/stats";
 import { Type } from "class-transformer";
-import { ArrayMaxSize, IsArray, IsBoolean, IsIn, IsNumber, IsOptional, IsString, Max, MaxLength, Min, MinLength, ValidateIf, ValidateNested } from "class-validator";
+import { ArrayMaxSize, IsArray, IsBoolean, IsIn, IsNumber, IsOptional, IsString, Matches, Max, MaxLength, Min, MinLength, ValidateIf, ValidateNested } from "class-validator";
 import { AuthGuard } from "../auth/auth.guard";
 import { CurrentUser } from "../auth/current-user.decorator";
 import { PrismaService } from "../common/prisma.service";
@@ -115,8 +115,8 @@ class TravelSearchDto {
 
 class MapPointsQueryDto {
   @IsOptional()
-  @IsIn(["true", "false"])
-  includeAll?: string;
+  @Matches(/^\d{1,16}$/)
+  offset?: string;
 }
 
 const MAP_CACHE_LIMIT = 5000;
@@ -172,6 +172,14 @@ const COUNTRY_CONTINENTS = new Map(
     ["Russia", "Europe"]
   ].map(([country, continent]) => [country.toLowerCase(), continent])
 );
+
+function mapOffset(value?: string) {
+  const offset = value === undefined ? 0 : Number(value);
+  if (!Number.isSafeInteger(offset) || offset < 0) {
+    throw new BadRequestException("offset must be a non-negative integer");
+  }
+  return offset;
+}
 
 type LocationBucket = {
   name: string;
@@ -276,10 +284,11 @@ export class MapController {
 
   @Get("caches")
   async caches(@CurrentUser() user: AuthUser, @Query() query: MapPointsQueryDto = {}) {
-    const includeAll = query.includeAll === "true";
+    const offset = mapOffset(query.offset);
     const finds = await this.prisma.find.findMany({
       where: await this.countableFindWhereForUser(user.id),
       select: {
+        id: true,
         foundAt: true,
         cache: {
           select: {
@@ -299,15 +308,17 @@ export class MapController {
           }
         }
       },
-      orderBy: { foundAt: "desc" },
-      take: includeAll ? undefined : MAP_CACHE_LIMIT + 1
+      orderBy: [{ foundAt: "desc" }, { id: "desc" }],
+      skip: offset,
+      take: MAP_CACHE_LIMIT + 1
     });
-    const truncated = !includeAll && finds.length > MAP_CACHE_LIMIT;
+    const truncated = finds.length > MAP_CACHE_LIMIT;
     const visibleFinds = truncated ? finds.slice(0, MAP_CACHE_LIMIT) : finds;
 
     return {
       truncated,
       limit: MAP_CACHE_LIMIT,
+      nextOffset: truncated ? offset + MAP_CACHE_LIMIT : null,
       points: visibleFinds.map((find) => ({
         id: find.cache.id,
         gcCode: find.cache.gcCode,
@@ -329,10 +340,11 @@ export class MapController {
 
   @Get("hides")
   async hides(@CurrentUser() user: AuthUser, @Query() query: MapPointsQueryDto = {}) {
-    const includeAll = query.includeAll === "true";
+    const offset = mapOffset(query.offset);
     const hides = await this.prisma.hide.findMany({
       where: { userId: user.id },
       select: {
+        id: true,
         placedAt: true,
         cache: {
           select: {
@@ -352,15 +364,17 @@ export class MapController {
           }
         }
       },
-      orderBy: { placedAt: "desc" },
-      take: includeAll ? undefined : MAP_CACHE_LIMIT + 1
+      orderBy: [{ placedAt: "desc" }, { id: "desc" }],
+      skip: offset,
+      take: MAP_CACHE_LIMIT + 1
     });
-    const truncated = !includeAll && hides.length > MAP_CACHE_LIMIT;
+    const truncated = hides.length > MAP_CACHE_LIMIT;
     const visibleHides = truncated ? hides.slice(0, MAP_CACHE_LIMIT) : hides;
 
     return {
       truncated,
       limit: MAP_CACHE_LIMIT,
+      nextOffset: truncated ? offset + MAP_CACHE_LIMIT : null,
       points: visibleHides.map((hide) => ({
         id: hide.cache.id,
         gcCode: hide.cache.gcCode,

@@ -15,26 +15,47 @@ function mapPointTime(point: CacheMapPoint) {
   return Number.isFinite(timestamp) ? timestamp : 0;
 }
 
+type MapPointsResponse = {
+  points: CacheMapPoint[];
+  truncated?: boolean;
+  nextOffset?: number | null;
+};
+
+async function loadMapPoints(path: "/map/caches" | "/map/hides") {
+  const points: CacheMapPoint[] = [];
+  let offset = 0;
+
+  while (true) {
+    const response = await apiFetch<MapPointsResponse>(`${path}?offset=${offset}`);
+    points.push(...response.points);
+
+    if (!response.truncated) {
+      return points;
+    }
+
+    const nextOffset = response.nextOffset;
+    if (typeof nextOffset !== "number" || !Number.isSafeInteger(nextOffset) || nextOffset <= offset) {
+      throw new Error("Map data pagination did not advance.");
+    }
+    offset = nextOffset;
+  }
+}
+
 export default function MapPage() {
   const [points, setPoints] = useState<CacheMapPoint[]>([]);
   const [filters, setFilters] = useState<MapFilters>(EMPTY_MAP_FILTERS);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [truncated, setTruncated] = useState(false);
 
   useEffect(() => {
     let active = true;
-    void Promise.allSettled([
-      apiFetch<{ points: CacheMapPoint[]; truncated?: boolean }>("/map/caches?includeAll=true"),
-      apiFetch<{ points: CacheMapPoint[]; truncated?: boolean }>("/map/hides?includeAll=true")
-    ]).then(([findResult, hideResult]) => {
+    void Promise.allSettled([loadMapPoints("/map/caches"), loadMapPoints("/map/hides")]).then(([findResult, hideResult]) => {
       if (!active) {
         return;
       }
-      const findPoints = findResult.status === "fulfilled" ? findResult.value.points : [];
-      const hidePoints = hideResult.status === "fulfilled" ? hideResult.value.points : [];
+      const findPoints = findResult.status === "fulfilled" ? findResult.value : [];
+      const hidePoints = hideResult.status === "fulfilled" ? hideResult.value : [];
       setPoints([...findPoints, ...hidePoints]);
-      setTruncated((findResult.status === "fulfilled" && findResult.value.truncated === true) || (hideResult.status === "fulfilled" && hideResult.value.truncated === true));
       setError(
         findResult.status === "rejected" && hideResult.status === "rejected"
           ? "Could not load map points."
@@ -183,7 +204,6 @@ export default function MapPage() {
         </div>
       </section>
       {error ? <p className="notice error">{error}</p> : null}
-      {truncated ? <p className="notice">The map uses the 5,000 most recent finds and 5,000 most recent hides.</p> : null}
       <section className="map-stage">
         <div className="map-toolbar">
           <strong>{loading ? "Loading map points..." : `${filteredPoints.length} of ${points.length} shown`}</strong>

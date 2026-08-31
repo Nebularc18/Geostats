@@ -31,13 +31,15 @@ function controllerWith({ finds = [], hides = [] }: { finds?: any[]; hides?: any
     find: {
       findMany: async (query: any) => {
         calls.finds.push(query);
-        return finds;
+        const start = query.skip ?? 0;
+        return finds.slice(start, query.take === undefined ? undefined : start + query.take);
       }
     },
     hide: {
       findMany: async (query: any) => {
         calls.hides.push(query);
-        return hides;
+        const start = query.skip ?? 0;
+        return hides.slice(start, query.take === undefined ? undefined : start + query.take);
       }
     }
   } as any;
@@ -45,32 +47,34 @@ function controllerWith({ finds = [], hides = [] }: { finds?: any[]; hides?: any
   return { controller: new MapController(prisma, {} as any), calls };
 }
 
-test("map point endpoints can return the complete data set for filtering", async () => {
-  const find = { foundAt: new Date("2024-01-02T00:00:00.000Z"), cache: cache() };
-  const hide = { placedAt: new Date("2024-01-03T00:00:00.000Z"), cache: cache(2) };
-  const { controller, calls } = controllerWith({ finds: [find], hides: [hide] });
-
-  const finds = await controller.caches(user, { includeAll: "true" });
-  const hides = await controller.hides(user, { includeAll: "true" });
-
-  assert.equal(calls.finds[0].take, undefined);
-  assert.equal(calls.hides[0].take, undefined);
-  assert.equal(finds.truncated, false);
-  assert.equal(hides.truncated, false);
-  assert.equal(finds.points.length, 1);
-  assert.equal(hides.points.length, 1);
-});
-
-test("capped map requests retain the existing safety limit", async () => {
-  const finds = Array.from({ length: 5001 }, (_, index) => ({
+test("map point endpoints page complete histories without unbounded queries", async () => {
+  const finds = Array.from({ length: 10001 }, (_, index) => ({
     foundAt: new Date("2024-01-02T00:00:00.000Z"),
     cache: cache(index)
   }));
-  const { controller, calls } = controllerWith({ finds });
+  const hides = [{ placedAt: new Date("2024-01-03T00:00:00.000Z"), cache: cache(10002) }];
+  const { controller, calls } = controllerWith({ finds, hides });
 
-  const result = await controller.caches(user, {});
+  const firstPage = await controller.caches(user, {});
+  const secondPage = await controller.caches(user, { offset: "5000" });
+  const lastPage = await controller.caches(user, { offset: "10000" });
+  const hidePage = await controller.hides(user, {});
 
+  assert.equal(calls.finds[0].skip, 0);
   assert.equal(calls.finds[0].take, 5001);
-  assert.equal(result.truncated, true);
-  assert.equal(result.points.length, 5000);
+  assert.equal(firstPage.truncated, true);
+  assert.equal(firstPage.nextOffset, 5000);
+  assert.equal(firstPage.points.length, 5000);
+  assert.equal(calls.finds[1].skip, 5000);
+  assert.equal(secondPage.truncated, true);
+  assert.equal(secondPage.nextOffset, 10000);
+  assert.equal(secondPage.points.length, 5000);
+  assert.equal(calls.finds[2].skip, 10000);
+  assert.equal(lastPage.truncated, false);
+  assert.equal(lastPage.nextOffset, null);
+  assert.equal(lastPage.points.length, 1);
+  assert.equal(calls.hides[0].skip, 0);
+  assert.equal(calls.hides[0].take, 5001);
+  assert.equal(hidePage.truncated, false);
+  assert.equal(hidePage.nextOffset, null);
 });
