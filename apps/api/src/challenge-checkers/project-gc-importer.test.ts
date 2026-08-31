@@ -91,6 +91,11 @@ test("rejects an outer return that changes the c_number verdict", () => {
   assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /additional pass\/fail condition/);
 });
 
+test("rejects overriding the c_number result after invocation", () => {
+  const script = numberScript.replace("return c_number(conf)", "local res = c_number(conf)\nres.ok = false\nreturn res");
+  assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /result must not be reassigned/);
+});
+
 test("rejects unsupported config fields instead of changing checker meaning", () => {
   assert.throws(() => importProjectGcNumberScript(numberScript, '{"limit":1,"radius":10}'), /radius.*not supported/);
 });

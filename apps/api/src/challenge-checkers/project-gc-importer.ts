@@ -294,6 +294,15 @@ function validateCountCondition(source: string) {
       throw new BadRequestException("c_number has an additional pass/fail condition");
     }
   }
+  const resultInvocation = /(?:\blocal\s+)?([A-Za-z_]\w*)\s*=\s*c_number\s*\(\s*conf\s*\)(?=\s*(?:[,;\n]|$))/g;
+  for (const match of source.matchAll(resultInvocation)) {
+    const resultName = match[1]!;
+    const afterInvocation = source.slice((match.index ?? 0) + match[0].length);
+    const resultAssignment = new RegExp("\\b" + resultName + "\\s*(?:\\.\\s*ok\\s*=|\\[[^\\]]*\\]\\s*=|=)");
+    if (resultAssignment.test(afterInvocation)) {
+      throw new BadRequestException("The c_number result must not be reassigned or have its verdict overridden");
+    }
+  }
   const allOkAssignments = [...source.matchAll(/\bok\s*=\s*([^\n;}]*)/g)].map((match) => match[1]!.trim().replace(/[,}].*$/, "").replace(/\bend\s*$/, "").trim());
   const allowedCountExpression = /^#\s*finds\s*>=\s*conf\s*\.\s*limit$/;
   if (allOkAssignments.some((value) => value !== "true" && value !== "false" && value !== "ok" && value !== "nil" && value !== "res.ok" && !allowedCountExpression.test(value))) {
