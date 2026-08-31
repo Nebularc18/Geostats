@@ -212,8 +212,8 @@ function coordinateDistanceSquared(first: Coordinates, second: Coordinates) {
 function routeDistance(points: typeof maintenanceItems) {
   return points.reduce((total, point, index) => {
     const previous = index === 0 ? maintenanceRouteOrigin : points[index - 1];
-    return total + coordinateDistanceSquared(previous, point);
-  }, 0) + (points.length ? coordinateDistanceSquared(points.at(-1)!, maintenanceRouteOrigin) : 0);
+    return total + Math.sqrt(coordinateDistanceSquared(previous, point));
+  }, 0) + (points.length ? Math.sqrt(coordinateDistanceSquared(points.at(-1)!, maintenanceRouteOrigin)) : 0);
 }
 
 function permutations<T>(items: T[]): T[][] {
