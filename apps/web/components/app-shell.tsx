@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { BarChart3, Code2, Database, Flag, Globe2, Home, Map, Navigation, Puzzle, Settings, ShieldCheck, Trophy, Upload } from "lucide-react";
+import { BarChart3, BookOpen, Code2, Database, Flag, Globe2, Home, Map, Navigation, Puzzle, Settings, ShieldCheck, Trophy, Upload } from "lucide-react";
 import { API_URL, apiFetch } from "../lib/api";
 
 const nav = [
@@ -19,6 +19,7 @@ const nav = [
   { href: "/map", label: "Map", icon: Map },
   { href: "/mysteries", label: "Mysteries", icon: Puzzle },
   { href: "/travel", label: "Travel", icon: Navigation },
+  { href: "/field-kit", label: "Field kit", icon: BookOpen },
   { href: "/scratch", label: "Scratch Map", icon: Globe2 },
   { href: "/settings/profile", label: "Profile", icon: Settings }
 ];
