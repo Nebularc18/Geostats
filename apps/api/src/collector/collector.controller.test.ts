@@ -117,9 +117,10 @@ test("gsakImportBaseUrl falls back to the normal API origin", () => {
   );
 });
 
-test("GSAK macro uploads only found or owned caches in bounded batches without refreshing GSAK", () => {
+test("GSAK macro refreshes found and owned caches before uploading bounded batches", () => {
   const macro = gsakImportMacro("https://api.geostats.example", "gst_secret");
 
+  assert.match(macro, /# MacVersion = 1\.7/);
   assert.match(macro, /\$cacheBatchSize = 50/);
   assert.match(macro, /\$logBatchSize = 25/);
   assert.match(macro, /\/collector\/gsak\/import/);
@@ -142,13 +143,14 @@ test("GSAK macro uploads only found or owned caches in bounded batches without r
   assert.doesNotMatch(macro, /limit " \+ \$(?:cacheBatchSize|logBatchSize)/);
   assert.match(macro, /GcStatusCheck Scope=Filter ShowSummary=N/);
   assert.match(macro, /GcGetLogs Scope=Filter Type=Newer ShowSummary=N/);
+  assert.match(macro, /GcRefresh Scope=Filter LogsPerCache=30 Format=Full ShowSummary=No/);
+  assert.ok(macro.indexOf("GcRefresh Scope=Filter") < macro.indexOf('ShowStatus msg="Sending caches to Geostats..."'));
   assert.match(macro, /update Caches set Found=1/);
   assert.doesNotMatch(macro, /FoundCount\s*=/);
   assert.match(macro, /Geostats rejected the cache batch/);
   assert.match(macro, /Geostats rejected the placed-cache log batch/);
   assert.match(macro, /Geostats rejected the account-log batch/);
   assert.match(macro, /Geostats did not complete the import/);
-  assert.doesNotMatch(macro, /GcRefresh/);
 });
 
 test("GSAK setup replaces only the dedicated scoped token", async () => {

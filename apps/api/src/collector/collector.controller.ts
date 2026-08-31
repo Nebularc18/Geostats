@@ -143,7 +143,7 @@ export function gsakImportMacro(serverUrl: string, token: string) {
   const server = gsakString(serverUrl);
   const credential = gsakString(token);
   return `# MacDescription = Send found and owned caches from GSAK to Geostats
-# MacVersion = 1.6
+# MacVersion = 1.7
 # NoVersionCheck
 
 $server = ${server}
@@ -223,8 +223,9 @@ edtCodes.Text=
 <enddata>
 MacroSet Dialog=GcGeocaches VarName=$geostatsCodeSettings Name=<macro>
 
-# Get every found, attended, and webcam log from the active account. Only cache
-# records missing from this GSAK database consume the full-cache API allowance.
+# Get every found, attended, and webcam log from the active account. Cache
+# records missing from this GSAK database are loaded during this pass; all
+# relevant cache records are refreshed before the export below.
 $result = Sqlite("sql","drop table if exists GeostatsUserLogs")
 $result = Sqlite("sql","create temp table GeostatsUserLogs (ReferenceCode text, GeocacheCode text, LoggedDate text, Text text, Type text)")
 $apiSkip = 0
@@ -258,6 +259,19 @@ ShowStatus msg="Finding caches you have placed..."
 GcGetCaches Settings=<macro> Load=Y ShowSummary=No
 
 # Correct GSAK's own found flags and dates from the authoritative account logs.
+$result = Sqlite("sql","update Caches set Found=1, FoundByMeDate=(select substr(max(g.LoggedDate),1,10) from GeostatsUserLogs g where g.GeocacheCode=Caches.Code) where Code in (select GeocacheCode from GeostatsUserLogs)")
+ReSync
+
+# Refresh the latest cache data before exporting it. GcRefresh uses the current
+# filter, so this includes every found or owned cache that will be imported.
+MFilter Expression=$d_Found OR IsOwner()
+If $_FilterCount > 0
+  ShowStatus msg="Refreshing cache data in GSAK..."
+  GcRefresh Scope=Filter LogsPerCache=30 Format=Full ShowSummary=No
+EndIf
+
+# The refresh is a GPX load and can update GSAK's found fields. Reapply the
+# account log values so old finds and their dates remain authoritative.
 $result = Sqlite("sql","update Caches set Found=1, FoundByMeDate=(select substr(max(g.LoggedDate),1,10) from GeostatsUserLogs g where g.GeocacheCode=Caches.Code) where Code in (select GeocacheCode from GeostatsUserLogs)")
 ReSync
 
