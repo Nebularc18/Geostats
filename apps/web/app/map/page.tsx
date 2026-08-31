@@ -19,19 +19,50 @@ type MapPointsResponse = {
   points: CacheMapPoint[];
   truncated?: boolean;
   nextCursor?: string | null;
+  snapshot?: string;
 };
 
-async function loadMapPoints(path: "/map/caches" | "/map/hides") {
+type LoadedMapPoints = {
+  points: CacheMapPoint[];
+  truncated: boolean;
+};
+
+const MAX_MAP_POINTS = 20_000;
+
+async function loadMapPoints(path: "/map/caches" | "/map/hides", signal: AbortSignal): Promise<LoadedMapPoints> {
   const points: CacheMapPoint[] = [];
   let cursor: string | undefined;
+  let snapshot: string | undefined;
 
   while (true) {
-    const query = cursor ? `?cursor=${encodeURIComponent(cursor)}` : "";
-    const response = await apiFetch<MapPointsResponse>(`${path}${query}`);
-    points.push(...response.points);
+    const params = new URLSearchParams();
+    if (cursor) {
+      params.set("cursor", cursor);
+    }
+    if (snapshot) {
+      params.set("snapshot", snapshot);
+    }
+    const query = params.toString();
+    const response = await apiFetch<MapPointsResponse>(`${path}${query ? `?${query}` : ""}`, { signal });
+
+    if (!snapshot) {
+      if (typeof response.snapshot !== "string" || response.snapshot.length === 0) {
+        throw new Error("Map data pagination did not return a snapshot.");
+      }
+      snapshot = response.snapshot;
+    } else if (response.snapshot !== snapshot) {
+      throw new Error("Map data pagination changed its snapshot.");
+    }
+
+    const remaining = MAX_MAP_POINTS - points.length;
+    const pageExceedsLimit = response.points.length > remaining;
+    points.push(...response.points.slice(0, remaining));
 
     if (!response.truncated) {
-      return points;
+      return { points, truncated: pageExceedsLimit };
+    }
+    if (points.length >= MAX_MAP_POINTS) {
+      return { points, truncated: true };
     }
 
     const nextCursor = response.nextCursor;
@@ -47,16 +78,21 @@ export default function MapPage() {
   const [filters, setFilters] = useState<MapFilters>(EMPTY_MAP_FILTERS);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [historyTruncated, setHistoryTruncated] = useState(false);
 
   useEffect(() => {
     let active = true;
-    void Promise.allSettled([loadMapPoints("/map/caches"), loadMapPoints("/map/hides")]).then(([findResult, hideResult]) => {
+    const abortController = new AbortController();
+    void Promise.allSettled([loadMapPoints("/map/caches", abortController.signal), loadMapPoints("/map/hides", abortController.signal)]).then(([findResult, hideResult]) => {
       if (!active) {
         return;
       }
-      const findPoints = findResult.status === "fulfilled" ? findResult.value : [];
-      const hidePoints = hideResult.status === "fulfilled" ? hideResult.value : [];
+      const findPoints = findResult.status === "fulfilled" ? findResult.value.points : [];
+      const hidePoints = hideResult.status === "fulfilled" ? hideResult.value.points : [];
       setPoints([...findPoints, ...hidePoints]);
+      setHistoryTruncated(
+        (findResult.status === "fulfilled" && findResult.value.truncated) || (hideResult.status === "fulfilled" && hideResult.value.truncated)
+      );
       setError(
         findResult.status === "rejected" && hideResult.status === "rejected"
           ? "Could not load map points."
@@ -70,6 +106,7 @@ export default function MapPage() {
     });
     return () => {
       active = false;
+      abortController.abort();
     };
   }, []);
 
@@ -205,6 +242,7 @@ export default function MapPage() {
         </div>
       </section>
       {error ? <p className="notice error">{error}</p> : null}
+      {historyTruncated ? <p className="notice">Map history is capped at {MAX_MAP_POINTS.toLocaleString()} finds and hides to keep the browser responsive. Older points are not loaded.</p> : null}
       <section className="map-stage">
         <div className="map-toolbar">
           <strong>{loading ? "Loading map points..." : `${filteredPoints.length} of ${points.length} shown`}</strong>

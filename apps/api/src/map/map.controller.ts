@@ -3,7 +3,7 @@ import { AuthUser } from "@geostats/shared";
 import { countableFindWhere, Prisma } from "@geostats/db";
 import { normalizedGcUsername } from "@geostats/stats";
 import { Type } from "class-transformer";
-import { ArrayMaxSize, IsArray, IsBoolean, IsIn, IsNumber, IsOptional, IsString, Max, MaxLength, Min, MinLength, ValidateIf, ValidateNested } from "class-validator";
+import { ArrayMaxSize, IsArray, IsBoolean, IsDateString, IsIn, IsNumber, IsOptional, IsString, Max, MaxLength, Min, MinLength, ValidateIf, ValidateNested } from "class-validator";
 import { AuthGuard } from "../auth/auth.guard";
 import { CurrentUser } from "../auth/current-user.decorator";
 import { PrismaService } from "../common/prisma.service";
@@ -118,6 +118,11 @@ class MapPointsQueryDto {
   @IsString()
   @MaxLength(100)
   cursor?: string;
+
+  @IsOptional()
+  @IsDateString()
+  @MaxLength(40)
+  snapshot?: string;
 }
 
 const MAP_CACHE_LIMIT = 5000;
@@ -176,6 +181,14 @@ const COUNTRY_CONTINENTS = new Map(
 
 function isPrismaError(error: unknown, code: string): boolean {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === code;
+}
+
+function mapSnapshot(value?: string) {
+  const snapshot = value ? new Date(value) : new Date();
+  if (!Number.isFinite(snapshot.getTime())) {
+    throw new BadRequestException("snapshot must be an ISO date");
+  }
+  return snapshot;
 }
 
 type LocationBucket = {
@@ -282,10 +295,14 @@ export class MapController {
   @Get("caches")
   async caches(@CurrentUser() user: AuthUser, @Query() query: MapPointsQueryDto = {}) {
     const cursor = query.cursor?.trim() || undefined;
+    const snapshot = mapSnapshot(query.snapshot);
     let finds: any[];
     try {
       finds = await this.prisma.find.findMany({
-        where: await this.countableFindWhereForUser(user.id),
+        where: {
+          ...(await this.countableFindWhereForUser(user.id)),
+          createdAt: { lte: snapshot }
+        },
         select: {
           id: true,
           foundAt: true,
@@ -307,7 +324,8 @@ export class MapController {
             }
           }
         },
-        orderBy: [{ foundAt: "desc" }, { id: "desc" }],
+        // Imports can update foundAt, so use immutable creation order for the cursor.
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
         take: MAP_CACHE_LIMIT + 1,
         ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {})
       });
@@ -323,6 +341,7 @@ export class MapController {
     return {
       truncated,
       limit: MAP_CACHE_LIMIT,
+      snapshot: snapshot.toISOString(),
       nextCursor: truncated ? visibleFinds.at(-1)?.id ?? null : null,
       points: visibleFinds.map((find) => ({
         id: find.cache.id,
@@ -346,10 +365,11 @@ export class MapController {
   @Get("hides")
   async hides(@CurrentUser() user: AuthUser, @Query() query: MapPointsQueryDto = {}) {
     const cursor = query.cursor?.trim() || undefined;
+    const snapshot = mapSnapshot(query.snapshot);
     let hides: any[];
     try {
       hides = await this.prisma.hide.findMany({
-        where: { userId: user.id },
+        where: { userId: user.id, createdAt: { lte: snapshot } },
         select: {
           id: true,
           placedAt: true,
@@ -371,7 +391,8 @@ export class MapController {
             }
           }
         },
-        orderBy: [{ placedAt: "desc" }, { id: "desc" }],
+        // Imports can update placedAt, so use immutable creation order for the cursor.
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
         take: MAP_CACHE_LIMIT + 1,
         ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {})
       });
@@ -387,6 +408,7 @@ export class MapController {
     return {
       truncated,
       limit: MAP_CACHE_LIMIT,
+      snapshot: snapshot.toISOString(),
       nextCursor: truncated ? visibleHides.at(-1)?.id ?? null : null,
       points: visibleHides.map((hide) => ({
         id: hide.cache.id,

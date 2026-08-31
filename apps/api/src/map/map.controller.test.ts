@@ -104,3 +104,21 @@ test("cursor pagination keeps the next page anchored when an import adds a newer
 
   assert.equal(secondPage.points[0]?.gcCode, "GC5000");
 });
+
+test("map pages keep an immutable ordering and snapshot cutoff", async () => {
+  const finds = [{
+    id: "find-1",
+    foundAt: new Date("2024-01-02T00:00:00.000Z"),
+    cache: cache(1)
+  }];
+  const { controller, calls } = controllerWith({ finds });
+
+  const firstPage = await controller.caches(user, {});
+  const secondPage = await controller.caches(user, { snapshot: firstPage.snapshot });
+
+  assert.equal(typeof firstPage.snapshot, "string");
+  assert.deepEqual(calls.finds[0].orderBy, [{ createdAt: "desc" }, { id: "desc" }]);
+  assert.deepEqual(calls.finds[0].where.createdAt, { lte: new Date(firstPage.snapshot) });
+  assert.deepEqual(calls.finds[1].where.createdAt, { lte: new Date(firstPage.snapshot) });
+  assert.equal(secondPage.snapshot, firstPage.snapshot);
+});
