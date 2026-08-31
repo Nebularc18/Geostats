@@ -91,6 +91,11 @@ test("rejects reassignment of the finds result", () => {
   assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /finds result must not be reassigned/);
 });
 
+test("rejects in-place mutation of the finds result", () => {
+  const script = numberScript.replace("return { ok = #finds >= conf.limit }", "table.remove(finds, 1)\n  return { ok = #finds >= conf.limit }");
+  assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /finds result must not be mutated/);
+});
+
 test("rejects an outer return that changes the c_number verdict", () => {
   const script = numberScript.replace("return c_number(conf)", "local ok = c_number(conf).ok and conf.brief\nreturn { ok = ok }");
   assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /additional pass\/fail condition/);
@@ -104,6 +109,15 @@ test("rejects overriding the c_number result after invocation", () => {
 test("rejects aliases that override the c_number result", () => {
   const script = numberScript.replace("return c_number(conf)", "local res = c_number(conf)\nlocal alias = res\nalias.ok = false\nreturn res");
   assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /result must not be reassigned/);
+});
+
+test("rejects indirect mutations of the c_number result", () => {
+  const scripts = [
+    numberScript.replace("return c_number(conf)", "local res = c_number(conf)\nrawset(res, \"ok\", false)\nreturn res"),
+    numberScript.replace("return c_number(conf)", "local res = c_number(conf)\nlocal box = { result = res }\nbox.result.ok = false\nreturn res"),
+    numberScript.replace("return c_number(conf)", "local res = c_number(conf)\nmutate(res)\nreturn res")
+  ];
+  for (const script of scripts) assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /result must not be reassigned/);
 });
 
 test("rejects unsupported config fields instead of changing checker meaning", () => {

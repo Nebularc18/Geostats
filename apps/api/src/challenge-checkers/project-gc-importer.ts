@@ -178,6 +178,17 @@ function balancedCallArguments(source: string, start: number): string | null {
   return null;
 }
 
+function callSites(source: string) {
+  const calls: Array<{ name: string; argumentsText: string }> = [];
+  const callPattern = /\b([A-Za-z_]\w*(?:\s*\.\s*[A-Za-z_]\w*)?)\s*\(/g;
+  for (const match of source.matchAll(callPattern)) {
+    const open = (match.index ?? 0) + match[0].length - 1;
+    const argumentsText = balancedCallArguments(source, open);
+    if (argumentsText !== null) calls.push({ name: match[1]!.replace(/\s/g, ""), argumentsText });
+  }
+  return calls;
+}
+
 function topLevelArguments(value: string) {
   const result: string[] = [];
   let start = 0;
@@ -284,6 +295,22 @@ function validateCountCondition(source: string) {
   if (!/\bfinds\s*=\s*(?:(?:[A-Za-z_]\w*\s*\.\s*)?[A-Za-z_]\w*)\s*\(/.test(body)) {
     throw new BadRequestException("The c_number finds result must come from a function call");
   }
+  const findsAliases = new Set(["finds"]);
+  const findsAliasAssignments = /(?:^|[;\n])\s*(?:\blocal\s+)?([A-Za-z_]\w*)\s*=\s*([^;\n]*)/g;
+  for (const assignment of body.matchAll(findsAliasAssignments)) {
+    const valueName = assignment[2]!.trim().match(/^([A-Za-z_]\w*)$/)?.[1];
+    if (valueName && findsAliases.has(valueName)) findsAliases.add(assignment[1]!);
+  }
+  const findsAliasPattern = [...findsAliases].map((alias) => "\\b" + alias + "\\b").join("|");
+  if (new RegExp("(?:" + findsAliasPattern + ")\\s*(?:\\.\\s*[A-Za-z_]\\w*|\\[[^\\]]*\\])\\s*=").test(body)) {
+    throw new BadRequestException("The c_number finds result must not be mutated in place");
+  }
+  const mutatingTableCalls = new Set(["table.insert", "table.remove", "table.sort", "table.move", "table.clear", "rawset"]);
+  for (const call of callSites(body)) {
+    if (mutatingTableCalls.has(call.name) && new RegExp("(?:" + findsAliasPattern + ")").test(call.argumentsText)) {
+      throw new BadRequestException("The c_number finds result must not be mutated in place");
+    }
+  }
   const exactIf = body.match(/\bif\s*\(?\s*#\s*finds\s*>=\s*conf\s*\.\s*limit\s*\)?\s*then\b/g) ?? [];
   const exactReturn = body.match(/\bok\s*=\s*#\s*finds\s*>=\s*conf\s*\.\s*limit\b\s*(?=[,}])/g) ?? [];
   if (exactIf.length + exactReturn.length !== 1) throw new BadRequestException("c_number must return exactly the conf.limit count condition");
@@ -309,17 +336,25 @@ function validateCountCondition(source: string) {
       const name = assignment[1]!;
       const value = assignment[2]!.trim();
       const valueName = value.match(/^([A-Za-z_]\w*)$/)?.[1];
+      const isResultRead = [...aliases].some((alias) => new RegExp("^" + alias + "\\s*\\.\\s*ok$").test(value));
       if (aliases.has(name)) {
         if (!valueName || !aliases.has(valueName)) {
           throw new BadRequestException("The c_number result must not be reassigned or have its verdict overridden");
         }
       } else if (valueName && aliases.has(valueName)) {
         aliases.add(name);
+      } else if (!isResultRead && [...aliases].some((alias) => new RegExp("\\b" + alias + "\\b").test(value))) {
+        throw new BadRequestException("The c_number result must not be reassigned or have its verdict overridden");
       }
     }
     const aliasPattern = [...aliases].map((alias) => "\\b" + alias + "\\b").join("|");
     const resultAssignment = new RegExp("(?:" + aliasPattern + ")\\s*(?:\\.\\s*ok\\s*=|\\[[^\\]]*\\]\\s*=)");
-    if (resultAssignment.test(afterInvocation)) {
+    const containerAssignment = /\b[A-Za-z_]\w*\s*(?:\.\s*[A-Za-z_]\w*|\[[^\]]*\])\s*=\s*([^\n;]*)/g;
+    const resultRead = (value: string) => [...aliases].some((alias) => new RegExp("^" + alias + "\\s*\\.\\s*ok$").test(value.trim()));
+    const aliasReference = new RegExp("(?:" + aliasPattern + ")");
+    const containerReference = [...afterInvocation.matchAll(containerAssignment)].some((assignment) => !resultRead(assignment[1]!) && aliasReference.test(assignment[1]!));
+    const callReference = callSites(afterInvocation).some((call) => aliasReference.test(call.argumentsText));
+    if (resultAssignment.test(afterInvocation) || containerReference || callReference) {
       throw new BadRequestException("The c_number result must not be reassigned or have its verdict overridden");
     }
   }
