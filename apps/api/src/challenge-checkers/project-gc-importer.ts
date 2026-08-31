@@ -568,6 +568,17 @@ function validateCountCondition(source: string) {
       }
     }
   }
+  const helperReference = [...returningFindHelpers].map((helper) => new RegExp("\\b" + helper + "\\s*\\("));
+  for (const assignment of findsAssignments) {
+    if (assignment.value.trim().startsWith("{") && helperReference.some((pattern) => pattern.test(assignment.value))) {
+      throw new BadRequestException("The c_number finds result must not escape its local scope");
+    }
+  }
+  for (const assignment of memberAssignmentSites(body)) {
+    if (helperReference.some((pattern) => pattern.test(assignment.value))) {
+      throw new BadRequestException("The c_number finds result must not escape its local scope");
+    }
+  }
   const findsAliasPattern = [...findsAliases].map((alias) => "\\b" + alias + "\\b").join("|");
   if (new RegExp("(?:" + findsAliasPattern + ")\\s*(?:\\.\\s*[A-Za-z_]\\w*|\\[[^\\]]*\\])\\s*=").test(body)) {
     throw new BadRequestException("The c_number finds result must not be mutated in place");
@@ -664,6 +675,7 @@ function validateCountCondition(source: string) {
     }
     const aliasPattern = [...aliases].map((alias) => "\\b" + alias + "\\b").join("|");
     const resultAssignment = new RegExp("(?:" + aliasPattern + ")\\s*(?:\\.\\s*ok\\s*=|\\[[^\\]]*\\]\\s*=)");
+    const methodCall = new RegExp("(?:" + aliasPattern + ")\\s*:\\s*[A-Za-z_]\\w*\\s*\\(");
     const containerAssignment = /\b[A-Za-z_]\w*\s*(?:\.\s*[A-Za-z_]\w*|\[[^\]]*\])\s*=\s*([^\n;]*)/g;
     const resultRead = (value: string) => [...aliases].some((alias) => new RegExp("^" + alias + "\\s*\\.\\s*ok$").test(value.trim()));
     const aliasReference = new RegExp("(?:" + aliasPattern + ")");
@@ -674,7 +686,7 @@ function validateCountCondition(source: string) {
       if (value === undefined) return false;
       return !resultRead(value) && ![...verdictAliases].some((alias) => new RegExp("^" + alias + "$").test(value));
     });
-    if (resultAssignment.test(afterInvocation) || containerReference || callReference || returnVerdict) {
+    if (resultAssignment.test(afterInvocation) || methodCall.test(afterInvocation) || containerReference || callReference || returnVerdict) {
       throw new BadRequestException("The c_number result must not be reassigned or have its verdict overridden");
     }
   }

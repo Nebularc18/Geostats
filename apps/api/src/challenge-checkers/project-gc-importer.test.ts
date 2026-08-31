@@ -251,6 +251,14 @@ test("rejects aliases returned through a closure before mutation", () => {
   assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /finds result must not be mutated/);
 });
 
+test("rejects closure aliases stored in container fields", () => {
+  const script = numberScript.replace(
+    "return { ok = #finds >= conf.limit }",
+    "local function expose()\n    return finds\n  end\n  local box = { rows = expose() }\n  table.remove(box.rows, 1)\n  return { ok = #finds >= conf.limit }"
+  );
+  assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /finds result must not escape/);
+});
+
 test("rejects finds results that escape into mutable storage", () => {
   const scripts = [
     numberScript.replace("return { ok = #finds >= conf.limit }", "local box = { finds }\n  table.remove(box[1], 1)\n  return { ok = #finds >= conf.limit }"),
@@ -280,6 +288,11 @@ test("rejects embedded c_number invocations", () => {
 
 test("rejects overriding the c_number result after invocation", () => {
   const script = numberScript.replace("return c_number(conf)", "local res = c_number(conf)\nres.ok = false\nreturn res");
+  assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /result must not be reassigned/);
+});
+
+test("rejects method calls on the c_number result", () => {
+  const script = numberScript.replace("return c_number(conf)", "local res = c_number(conf)\nres:flip()\nreturn res");
   assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /result must not be reassigned/);
 });
 
