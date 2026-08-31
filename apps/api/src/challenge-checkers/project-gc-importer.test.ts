@@ -55,6 +55,39 @@ return { ok = ok }
   assert.equal(importProjectGcNumberScript(script, '{"limit":1}').rules[0]!.minimum, 1);
 });
 
+test("rejects an expanded filter that ignores its input", () => {
+  const script = `
+local args={...}
+local conf = args[1].config
+function expandFilter(filter) return { country = 'Sweden' } end
+function c_number(conf)
+  local l_config = TableCopy(conf)
+  l_config.filter = expandFilter(conf)
+  local finds = PGC.GetFinds(args[1].profileId, { filter = conf })
+  return { ok = #finds >= conf.limit }
+end
+return c_number(conf)
+`;
+  assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /expandFilter.*derived/);
+});
+
+test("rejects an expanded filter that delegates to a constant helper", () => {
+  const script = `
+local args={...}
+local conf = args[1].config
+function constantFilter(filter) return { country = 'Sweden' } end
+function expandFilter(filter) return constantFilter(filter) end
+function c_number(conf)
+  local l_config = TableCopy(conf)
+  l_config.filter = expandFilter(conf)
+  local finds = PGC.GetFinds(args[1].profileId, { filter = conf })
+  return { ok = #finds >= conf.limit }
+end
+return c_number(conf)
+`;
+  assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /expandFilter.*derived/);
+});
+
 test("merges Project-GC alternative filters with the base filter", () => {
   const imported = importProjectGcNumberScript(numberScript, JSON.stringify({
     limit: 2,
@@ -96,6 +129,11 @@ test("rejects in-place mutation of the finds result", () => {
   assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /finds result must not be mutated/);
 });
 
+test("rejects helper calls that mutate the finds result", () => {
+  const script = numberScript.replace("return { ok = #finds >= conf.limit }", "function dropTop(rows)\n    table.remove(rows, 1)\n  end\n  dropTop(finds)\n  return { ok = #finds >= conf.limit }");
+  assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /finds result must not be mutated/);
+});
+
 test("rejects an outer return that changes the c_number verdict", () => {
   const script = numberScript.replace("return c_number(conf)", "local ok = c_number(conf).ok and conf.brief\nreturn { ok = ok }");
   assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /additional pass\/fail condition/);
@@ -118,6 +156,16 @@ test("rejects indirect mutations of the c_number result", () => {
     numberScript.replace("return c_number(conf)", "local res = c_number(conf)\nmutate(res)\nreturn res")
   ];
   for (const script of scripts) assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /result must not be reassigned/);
+});
+
+test("rejects returning a constant verdict after invoking c_number", () => {
+  const script = numberScript.replace("return c_number(conf)", "local res = c_number(conf)\nreturn { ok = false }");
+  assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /result must not be reassigned/);
+});
+
+test("rejects changing a verdict alias after reading c_number", () => {
+  const script = numberScript.replace("return c_number(conf)", "local res = c_number(conf)\nlocal ok = res.ok\nok = false\nreturn { ok = ok }");
+  assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /result must not be reassigned/);
 });
 
 test("rejects unsupported config fields instead of changing checker meaning", () => {

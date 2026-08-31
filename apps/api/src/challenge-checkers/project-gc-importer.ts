@@ -14,6 +14,9 @@ const TYPE_GROUPS: Record<string, string[]> = {
   Physical: ["Traditional Cache", "Mystery Cache", "Multi-Cache", "Letterbox Hybrid", "Wherigo Cache", "Project A.P.E. Cache", "Geocaching HQ Cache"],
   Events: ["Event Cache", "Cache In Trash Out Event", "Community Celebration Event", "Mega-Event Cache", "Geocaching HQ Block Party", "Giga-Event Cache", "Geocaching HQ Celebration"]
 };
+const MUTATING_TABLE_CALLS = new Set(["table.insert", "table.remove", "table.sort", "table.move", "table.clear", "rawset"]);
+const READ_ONLY_CALLS = new Set(["ipairs", "pairs", "next", "tostring", "table.concat", "TableCopy", "PGC.print", "PrinFindsTable", "PrintFindsText", "PrintFindsHtml"]);
+const CONTROL_CALLS = new Set(["if", "for", "while", "repeat", "until", "return", "function"]);
 
 function objectValue(value: unknown, label: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new BadRequestException(`${label} must be a JSON object`);
@@ -134,12 +137,9 @@ function maskLua(source: string) {
   return chars.join("");
 }
 
-function functionBody(source: string, name: string): string | null {
-  const declaration = new RegExp(`\\bfunction\\s+${name}\\s*\\(\\s*conf\\s*\\)`, "g");
-  const match = declaration.exec(source);
-  if (!match) return null;
+function blockBody(source: string, start: number): string | null {
   let depth = 1;
-  let cursor = match.index + match[0].length;
+  let cursor = start;
   while (cursor < source.length) {
     const lineEnd = source.indexOf("\n", cursor);
     const end = lineEnd < 0 ? source.length : lineEnd;
@@ -152,10 +152,29 @@ function functionBody(source: string, name: string): string | null {
     depth += (line.match(/\brepeat\b/g) ?? []).length;
     depth -= (line.match(/\bend\b/g) ?? []).length;
     depth -= (line.match(/\buntil\b/g) ?? []).length;
-    if (depth <= 0) return source.slice(match.index + match[0].length, cursor);
+    if (depth <= 0) {
+      const closing = [...line.matchAll(/\bend\b|\buntil\b/g)].at(-1);
+      return source.slice(start, closing ? cursor + closing.index : cursor);
+    }
     cursor = end + 1;
   }
   return null;
+}
+
+function functionBody(source: string, name: string): string | null {
+  const declaration = new RegExp(`\\bfunction\\s+${name}\\s*\\(\\s*conf\\s*\\)`, "g");
+  const match = declaration.exec(source);
+  return match ? blockBody(source, match.index + match[0].length) : null;
+}
+
+function functionDefinition(source: string, name: string): { parameters: string[]; body: string } | null {
+  const declaration = new RegExp(`\\bfunction\\s+${name}\\s*\\(([^)]*)\\)`, "g");
+  const match = declaration.exec(source);
+  if (!match) return null;
+  const body = blockBody(source, match.index + match[0].length);
+  if (body === null) return null;
+  const parameters = (match[1] ?? "").split(",").map((parameter) => parameter.trim()).filter((parameter) => /^[A-Za-z_]\w*$/.test(parameter));
+  return { parameters, body };
 }
 
 function balancedCallArguments(source: string, start: number): string | null {
@@ -187,6 +206,106 @@ function callSites(source: string) {
     if (argumentsText !== null) calls.push({ name: match[1]!.replace(/\s/g, ""), argumentsText });
   }
   return calls;
+}
+
+function referencesAny(value: string, names: Set<string>) {
+  return [...names].some((name) => new RegExp("\\b" + name + "\\b").test(value));
+}
+
+function assignmentSites(source: string) {
+  const assignments: Array<{ name: string; value: string }> = [];
+  const assignment = /(?:^|[;\n])\s*(?:\blocal\s+)?([A-Za-z_]\w*)\s*=\s*([^;\n]*)/g;
+  for (const match of source.matchAll(assignment)) assignments.push({ name: match[1]!, value: match[2]!.trim() });
+  return assignments;
+}
+
+function memberAssignmentSites(source: string) {
+  const assignments: Array<{ name: string; value: string }> = [];
+  const assignment = /\b([A-Za-z_]\w*)\s*(?:\.\s*[A-Za-z_]\w*|\[[^\]]*\])\s*=\s*([^\n;]*)/g;
+  for (const match of source.matchAll(assignment)) assignments.push({ name: match[1]!, value: match[2]!.trim() });
+  return assignments;
+}
+
+function validateExpandedFilter(source: string) {
+  const definition = functionDefinition(source, "expandFilter");
+  if (!definition || definition.parameters.length !== 1) {
+    throw new BadRequestException("Project-GC expandFilter must take one filter argument");
+  }
+  const parameter = definition.parameters[0]!;
+  if (functionMutatesParameter(source, "expandFilter", parameter)) {
+    throw new BadRequestException("Project-GC expandFilter must not mutate its argument");
+  }
+  const derived = new Set([parameter]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    const loops = /\bfor\s+(?:([A-Za-z_]\w*)\s*,\s*)?([A-Za-z_]\w*)\s+in\s+([^\n]+)\s+do\b/g;
+    for (const loop of definition.body.matchAll(loops)) {
+      if (!referencesAny(loop[3]!, derived)) continue;
+      for (const name of [loop[1], loop[2]]) {
+        if (name && !derived.has(name)) { derived.add(name); changed = true; }
+      }
+    }
+    for (const assignment of assignmentSites(definition.body)) {
+      if (referencesAny(assignment.value, derived) && !derived.has(assignment.name)) {
+        derived.add(assignment.name); changed = true;
+      }
+    }
+    for (const assignment of memberAssignmentSites(definition.body)) {
+      if (referencesAny(assignment.value, derived) && !derived.has(assignment.name)) {
+        derived.add(assignment.name); changed = true;
+      }
+    }
+  }
+  const returns = [...definition.body.matchAll(/\breturn\b([^\n;]*)/g)].map((match) => match[1]!.replace(/\bend\s*$/, "").trim());
+  const returnsFromUnknownCall = returns.some((value) => {
+    const call = value.match(/^([A-Za-z_]\w*(?:\s*\.\s*[A-Za-z_]\w*)?)\s*\(/)?.[1]?.replace(/\s/g, "");
+    return call !== undefined && call !== "TableCopy";
+  });
+  if (!returns.length || returns.some((value) => !referencesAny(value, derived)) || returnsFromUnknownCall) {
+    throw new BadRequestException("Project-GC expandFilter must return a filter derived from its argument");
+  }
+}
+
+function functionMutatesParameter(source: string, name: string, parameter: string, stack = new Set<string>()): boolean {
+  const key = `${name}:${parameter}`;
+  if (stack.has(key)) return true;
+  const definition = functionDefinition(source, name);
+  if (!definition) return true;
+  const nextStack = new Set(stack);
+  nextStack.add(key);
+  const aliases = new Set([parameter]);
+  for (const assignment of assignmentSites(definition.body)) {
+    const valueName = assignment.value.match(/^([A-Za-z_]\w*)$/)?.[1];
+    const valueRead = [...aliases].some((alias) => new RegExp("^" + alias + "\\s*(?:\\.\\s*[A-Za-z_]\\w*|\\[[^\\]]*\\]|$)").test(assignment.value));
+    const valueCall = /^[A-Za-z_]\w*(?:\s*\.\s*[A-Za-z_]\w*)?\s*\(/.test(assignment.value);
+    if (aliases.has(assignment.name)) {
+      if (!valueName || !aliases.has(valueName)) return true;
+    } else if (valueName && aliases.has(valueName)) {
+      aliases.add(assignment.name);
+    } else if (referencesAny(assignment.value, aliases) && !valueRead && !/^#\s*(?:[A-Za-z_]\w*)$/.test(assignment.value) && !valueCall) {
+      return true;
+    }
+  }
+  const aliasPattern = [...aliases].map((alias) => "\\b" + alias + "\\b").join("|");
+  if (new RegExp("(?:" + aliasPattern + ")\\s*(?:\\.\\s*[A-Za-z_]\\w*|\\[[^\\]]*\\])\\s*=").test(definition.body)) return true;
+  for (const call of callSites(definition.body)) {
+    if (CONTROL_CALLS.has(call.name)) continue;
+    const argumentsList = topLevelArguments(call.argumentsText);
+    for (const [index, argument] of argumentsList.entries()) {
+      if (!referencesAny(argument, aliases)) continue;
+      if (MUTATING_TABLE_CALLS.has(call.name)) return true;
+      if (READ_ONLY_CALLS.has(call.name) && call.name === "TableCopy") continue;
+      const nested = functionDefinition(source, call.name);
+      if (nested) {
+        const nestedParameter = nested.parameters[index];
+        if (!nestedParameter || functionMutatesParameter(source, call.name, nestedParameter, nextStack)) return true;
+      } else if (!READ_ONLY_CALLS.has(call.name)) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 function topLevelArguments(value: string) {
@@ -275,7 +394,9 @@ function validateFindsConfig(source: string) {
       }
       if (property === "fields" || property === "order") continue;
       const allowedCopy = /^TableCopy\s*\(\s*[A-Za-z_]\w*(?:\s*\.\s*filter)?\s*\)$/.test(rhs);
-      const allowed = /^expandFilter\s*\(\s*[A-Za-z_]\w*\s*\)$/.test(rhs) || rhs === "config" || rhs === "conf" || allowedCopy || rhs === "nil" || rhs === "l_filter";
+      const expanded = /^expandFilter\s*\(\s*[A-Za-z_]\w*\s*\)$/.test(rhs);
+      if (expanded) validateExpandedFilter(source);
+      const allowed = expanded || rhs === "config" || rhs === "conf" || allowedCopy || rhs === "nil" || rhs === "l_filter";
       if (!(allowed || property === "filter.filters" && rhs === "nil")) {
         throw new BadRequestException("Project-GC filter is modified from the tag config in an unsupported way");
       }
@@ -305,10 +426,23 @@ function validateCountCondition(source: string) {
   if (new RegExp("(?:" + findsAliasPattern + ")\\s*(?:\\.\\s*[A-Za-z_]\\w*|\\[[^\\]]*\\])\\s*=").test(body)) {
     throw new BadRequestException("The c_number finds result must not be mutated in place");
   }
-  const mutatingTableCalls = new Set(["table.insert", "table.remove", "table.sort", "table.move", "table.clear", "rawset"]);
   for (const call of callSites(body)) {
-    if (mutatingTableCalls.has(call.name) && new RegExp("(?:" + findsAliasPattern + ")").test(call.argumentsText)) {
-      throw new BadRequestException("The c_number finds result must not be mutated in place");
+    if (CONTROL_CALLS.has(call.name)) continue;
+    const argumentsList = topLevelArguments(call.argumentsText);
+    for (const [index, argument] of argumentsList.entries()) {
+      if (!new RegExp("(?:" + findsAliasPattern + ")").test(argument)) continue;
+      if (MUTATING_TABLE_CALLS.has(call.name)) {
+        throw new BadRequestException("The c_number finds result must not be mutated in place");
+      }
+      const definition = functionDefinition(source, call.name);
+      if (definition) {
+        const parameter = definition.parameters[index];
+        if (!parameter || functionMutatesParameter(source, call.name, parameter)) {
+          throw new BadRequestException("The c_number finds result must not be mutated in place");
+        }
+      } else if (!READ_ONLY_CALLS.has(call.name)) {
+        throw new BadRequestException("The c_number finds result must not be mutated in place");
+      }
     }
   }
   const exactIf = body.match(/\bif\s*\(?\s*#\s*finds\s*>=\s*conf\s*\.\s*limit\s*\)?\s*then\b/g) ?? [];
@@ -331,12 +465,17 @@ function validateCountCondition(source: string) {
     const resultName = match[1]!;
     const afterInvocation = source.slice((match.index ?? 0) + match[0].length);
     const aliases = new Set([resultName]);
+    const verdictAliases = new Set<string>();
     const assignments = /(?:^|[;\n])\s*(?:\blocal\s+)?([A-Za-z_]\w*)\s*=\s*([^;\n]*)/g;
     for (const assignment of afterInvocation.matchAll(assignments)) {
       const name = assignment[1]!;
       const value = assignment[2]!.trim();
       const valueName = value.match(/^([A-Za-z_]\w*)$/)?.[1];
       const isResultRead = [...aliases].some((alias) => new RegExp("^" + alias + "\\s*\\.\\s*ok$").test(value));
+      if (isResultRead) verdictAliases.add(name);
+      if (verdictAliases.has(name) && !isResultRead && value !== name) {
+        throw new BadRequestException("The c_number result must not be reassigned or have its verdict overridden");
+      }
       if (aliases.has(name)) {
         if (!valueName || !aliases.has(valueName)) {
           throw new BadRequestException("The c_number result must not be reassigned or have its verdict overridden");
@@ -354,7 +493,12 @@ function validateCountCondition(source: string) {
     const aliasReference = new RegExp("(?:" + aliasPattern + ")");
     const containerReference = [...afterInvocation.matchAll(containerAssignment)].some((assignment) => !resultRead(assignment[1]!) && aliasReference.test(assignment[1]!));
     const callReference = callSites(afterInvocation).some((call) => aliasReference.test(call.argumentsText));
-    if (resultAssignment.test(afterInvocation) || containerReference || callReference) {
+    const returnVerdict = [...afterInvocation.matchAll(/\breturn\s*\{([^}]*)\}/g)].some((statement) => {
+      const value = statement[1]!.match(/\bok\s*=\s*([^,}\n]+)/)?.[1]?.trim();
+      if (value === undefined) return false;
+      return !resultRead(value) && ![...verdictAliases].some((alias) => new RegExp("^" + alias + "$").test(value));
+    });
+    if (resultAssignment.test(afterInvocation) || containerReference || callReference || returnVerdict) {
       throw new BadRequestException("The c_number result must not be reassigned or have its verdict overridden");
     }
   }
