@@ -86,6 +86,11 @@ test("rejects mutation of the config passed to GetFinds", () => {
   assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /must not be mutated/);
 });
 
+test("rejects reassignment of the finds result", () => {
+  const script = numberScript.replace("return { ok = #finds >= conf.limit }", "finds = {}\n  return { ok = #finds >= conf.limit }");
+  assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /finds result must not be reassigned/);
+});
+
 test("rejects an outer return that changes the c_number verdict", () => {
   const script = numberScript.replace("return c_number(conf)", "local ok = c_number(conf).ok and conf.brief\nreturn { ok = ok }");
   assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /additional pass\/fail condition/);
@@ -93,6 +98,11 @@ test("rejects an outer return that changes the c_number verdict", () => {
 
 test("rejects overriding the c_number result after invocation", () => {
   const script = numberScript.replace("return c_number(conf)", "local res = c_number(conf)\nres.ok = false\nreturn res");
+  assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /result must not be reassigned/);
+});
+
+test("rejects aliases that override the c_number result", () => {
+  const script = numberScript.replace("return c_number(conf)", "local res = c_number(conf)\nlocal alias = res\nalias.ok = false\nreturn res");
   assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /result must not be reassigned/);
 });
 

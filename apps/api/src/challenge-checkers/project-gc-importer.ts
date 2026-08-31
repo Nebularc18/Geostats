@@ -279,6 +279,11 @@ function validateCountCondition(source: string) {
     throw new BadRequestException("The importer requires one c_number(conf) checker invocation");
   }
   if ((source.match(/#\s*finds/g) ?? []).length !== 1 || (body.match(/#\s*finds/g) ?? []).length !== 1) throw new BadRequestException("c_number must compare the complete find count exactly once");
+  const findsAssignments = body.match(/\bfinds\s*=\s*/g) ?? [];
+  if (findsAssignments.length !== 1) throw new BadRequestException("The c_number finds result must not be reassigned");
+  if (!/\bfinds\s*=\s*(?:(?:[A-Za-z_]\w*\s*\.\s*)?[A-Za-z_]\w*)\s*\(/.test(body)) {
+    throw new BadRequestException("The c_number finds result must come from a function call");
+  }
   const exactIf = body.match(/\bif\s*\(?\s*#\s*finds\s*>=\s*conf\s*\.\s*limit\s*\)?\s*then\b/g) ?? [];
   const exactReturn = body.match(/\bok\s*=\s*#\s*finds\s*>=\s*conf\s*\.\s*limit\b\s*(?=[,}])/g) ?? [];
   if (exactIf.length + exactReturn.length !== 1) throw new BadRequestException("c_number must return exactly the conf.limit count condition");
@@ -298,7 +303,22 @@ function validateCountCondition(source: string) {
   for (const match of source.matchAll(resultInvocation)) {
     const resultName = match[1]!;
     const afterInvocation = source.slice((match.index ?? 0) + match[0].length);
-    const resultAssignment = new RegExp("\\b" + resultName + "\\s*(?:\\.\\s*ok\\s*=|\\[[^\\]]*\\]\\s*=|=)");
+    const aliases = new Set([resultName]);
+    const assignments = /(?:^|[;\n])\s*(?:\blocal\s+)?([A-Za-z_]\w*)\s*=\s*([^;\n]*)/g;
+    for (const assignment of afterInvocation.matchAll(assignments)) {
+      const name = assignment[1]!;
+      const value = assignment[2]!.trim();
+      const valueName = value.match(/^([A-Za-z_]\w*)$/)?.[1];
+      if (aliases.has(name)) {
+        if (!valueName || !aliases.has(valueName)) {
+          throw new BadRequestException("The c_number result must not be reassigned or have its verdict overridden");
+        }
+      } else if (valueName && aliases.has(valueName)) {
+        aliases.add(name);
+      }
+    }
+    const aliasPattern = [...aliases].map((alias) => "\\b" + alias + "\\b").join("|");
+    const resultAssignment = new RegExp("(?:" + aliasPattern + ")\\s*(?:\\.\\s*ok\\s*=|\\[[^\\]]*\\]\\s*=)");
     if (resultAssignment.test(afterInvocation)) {
       throw new BadRequestException("The c_number result must not be reassigned or have its verdict overridden");
     }
