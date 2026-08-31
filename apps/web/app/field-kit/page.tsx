@@ -7,6 +7,7 @@ import {
   Sparkles, Trophy, Upload, Users, Vote, Wrench
 } from "lucide-react";
 import { AppShell } from "../../components/app-shell";
+import { apiFetch } from "../../lib/api";
 
 type Section = "logbook" | "trips" | "goals" | "maintenance" | "challenges";
 
@@ -18,7 +19,13 @@ const sections: Array<{ id: Section; label: string; icon: typeof BookOpen }> = [
   { id: "challenges", label: "Challenges", icon: Trophy }
 ];
 
-const FIELD_KIT_STORAGE_KEY = "geostats-field-kit-v1";
+const FIELD_KIT_STORAGE_KEY_PREFIX = "geostats-field-kit-v1";
+const DEV_OFFLINE = process.env.NODE_ENV === "development" && process.env.NEXT_PUBLIC_DEV_OFFLINE === "true";
+
+// Legacy unsuffixed state has no verifiable owner, so it is never migrated into an account.
+function fieldKitStorageKey(accountId: string) {
+  return `${FIELD_KIT_STORAGE_KEY_PREFIX}:${encodeURIComponent(accountId)}`;
+}
 
 type GoalItem = {
   id: string;
@@ -272,6 +279,7 @@ export default function FieldKitPage() {
   const [newGoalKind, setNewGoalKind] = useState("Personal");
   const [routeOptimized, setRouteOptimized] = useState(false);
   const [maintenanceRouteOrder, setMaintenanceRouteOrder] = useState(() => maintenanceItems.map((item) => item.id));
+  const [storageKey, setStorageKey] = useState<string | null>(() => DEV_OFFLINE ? fieldKitStorageKey("offline") : null);
   const [storageReady, setStorageReady] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -291,9 +299,37 @@ export default function FieldKitPage() {
   }, [maintenanceRouteOrder, routeStops]);
 
   useEffect(() => {
-    try {
-      const saved = window.localStorage.getItem(FIELD_KIT_STORAGE_KEY);
-      if (saved) {
+    let active = true;
+    let checking = false;
+    let knownAccountId: string | null = null;
+
+    function resetWorkspaceState() {
+      setSection("logbook");
+      setWarning(true);
+      setNotice("");
+      setVotes(new Set(["GC8JQ2K"]));
+      setTripShared(true);
+      setActiveGoals(new Set(goalData.map((goal) => goal.id)));
+      setCustomGoals([]);
+      setRouteStops(new Set(maintenanceItems.map((item) => item.id)));
+      setJoined(true);
+      setSuggestions([]);
+      setSuggestionOpen(false);
+      setSuggestionName("");
+      setShowAllLogs(false);
+      setGoalComposerOpen(false);
+      setGoalMenuId(null);
+      setNewGoalTitle("");
+      setNewGoalTarget("10");
+      setNewGoalKind("Personal");
+      setRouteOptimized(false);
+      setMaintenanceRouteOrder(maintenanceItems.map((item) => item.id));
+    }
+
+    function applySavedState(key: string) {
+      try {
+        const saved = window.localStorage.getItem(key);
+        if (!saved) return;
         const parsed = JSON.parse(saved) as {
           warning?: unknown;
           votes?: unknown;
@@ -330,18 +366,70 @@ export default function FieldKitPage() {
         }
         if (typeof parsed.routeOptimized === "boolean") setRouteOptimized(parsed.routeOptimized);
         if (Array.isArray(parsed.maintenanceRouteOrder)) setMaintenanceRouteOrder(parsed.maintenanceRouteOrder.filter((value): value is number => typeof value === "number"));
+      } catch {
+        // A bad or unavailable account copy should not prevent the workspace from opening.
       }
-    } catch {
-      // A bad or unavailable local copy should not prevent the workspace from opening.
-    } finally {
-      setStorageReady(true);
     }
+
+    async function resolveAccount() {
+      if (!active || checking) return;
+      checking = true;
+      if (knownAccountId !== null) setStorageReady(false);
+
+      let accountId = "offline";
+      if (!DEV_OFFLINE) {
+        try {
+          const data = await apiFetch<{ user?: { id?: unknown } }>("/auth/me", { cache: "no-store" });
+          if (typeof data.user?.id !== "string" || !data.user.id.trim()) {
+            checking = false;
+            return;
+          }
+          accountId = data.user.id;
+        } catch {
+          // AppShell will handle the authenticated redirect. Do not use an unscoped fallback key.
+          if (active) {
+            knownAccountId = null;
+            setStorageReady(false);
+          }
+          checking = false;
+          return;
+        }
+      }
+
+      const key = fieldKitStorageKey(accountId);
+      if (!active) {
+        checking = false;
+        return;
+      }
+      if (knownAccountId !== accountId) {
+        resetWorkspaceState();
+        applySavedState(key);
+        knownAccountId = accountId;
+      }
+      setStorageKey(key);
+      setStorageReady(true);
+      checking = false;
+    }
+
+    const revalidateAccount = () => {
+      if (document.visibilityState === "hidden") return;
+      void resolveAccount();
+    };
+
+    void resolveAccount();
+    window.addEventListener("focus", revalidateAccount);
+    document.addEventListener("visibilitychange", revalidateAccount);
+    return () => {
+      active = false;
+      window.removeEventListener("focus", revalidateAccount);
+      document.removeEventListener("visibilitychange", revalidateAccount);
+    };
   }, []);
 
   useEffect(() => {
-    if (!storageReady) return;
+    if (!storageReady || !storageKey) return;
     try {
-      window.localStorage.setItem(FIELD_KIT_STORAGE_KEY, JSON.stringify({
+      window.localStorage.setItem(storageKey, JSON.stringify({
         warning,
         votes: [...votes],
         tripShared,
@@ -356,7 +444,7 @@ export default function FieldKitPage() {
     } catch {
       // Storage can be disabled in private browsing. The controls still work for this visit.
     }
-  }, [storageReady, warning, votes, tripShared, activeGoals, customGoals, routeStops, joined, suggestions, routeOptimized, maintenanceRouteOrder]);
+  }, [storageReady, storageKey, warning, votes, tripShared, activeGoals, customGoals, routeStops, joined, suggestions, routeOptimized, maintenanceRouteOrder]);
 
   async function importFile(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -455,6 +543,18 @@ export default function FieldKitPage() {
       return next;
     });
     setRouteOptimized(false);
+  }
+
+  if (!storageReady) {
+    return (
+      <AppShell>
+        <section className="feature-section" aria-busy="true">
+          <p className="eyebrow">Planning and progress</p>
+          <h1>Field kit</h1>
+          <p className="page-intro">Loading your account workspace…</p>
+        </section>
+      </AppShell>
+    );
   }
 
   return (
