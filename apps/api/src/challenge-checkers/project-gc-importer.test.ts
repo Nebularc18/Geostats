@@ -108,6 +108,52 @@ return c_number(conf)
   assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /expandFilter.*semantics/);
 });
 
+test("rejects an expanded filter that clears a type field", () => {
+  const script = `
+local args={...}
+local conf = args[1].config
+function expandFilter(filter)
+  local result = TableCopy(filter)
+  result.types = {}
+  return result
+end
+function c_number(conf)
+  local l_config = TableCopy(conf)
+  l_config.filter = expandFilter(conf)
+  local finds = PGC.GetFinds(args[1].profileId, { filter = conf })
+  return { ok = #finds >= conf.limit }
+end
+return c_number(conf)
+`;
+  assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /expandFilter.*semantics/);
+});
+
+test("accepts a populated type expansion accumulator", () => {
+  const script = `
+local args={...}
+local conf = args[1].config
+function expandFilter(filter)
+  local result = {}
+  for k, value in pairs(filter) do
+    result[k] = TableCopy(value)
+  end
+  result.types = {}
+  for _, value in ipairs(filter.types) do
+    table.insert(result.types, value)
+  end
+  return result
+end
+function c_number(conf)
+  local l_config = TableCopy(conf)
+  l_config.filter = expandFilter(conf)
+  local finds = PGC.GetFinds(args[1].profileId, { filter = conf })
+  return { ok = #finds >= conf.limit }
+end
+return c_number(conf)
+`;
+  assert.equal(importProjectGcNumberScript(script, '{"limit":1}').rules[0]!.minimum, 1);
+});
+
 test("merges Project-GC alternative filters with the base filter", () => {
   const imported = importProjectGcNumberScript(numberScript, JSON.stringify({
     limit: 2,

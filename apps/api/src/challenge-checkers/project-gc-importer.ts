@@ -229,10 +229,31 @@ function assignmentSites(source: string) {
 }
 
 function memberAssignmentSites(source: string) {
-  const assignments: Array<{ name: string; member: string; value: string }> = [];
+  const assignments: Array<{ name: string; member: string; value: string; index: number }> = [];
   const assignment = /\b([A-Za-z_]\w*)\s*(\.\s*[A-Za-z_]\w*|\[[^\]]*\])\s*=\s*([^\n;]*)/g;
-  for (const match of source.matchAll(assignment)) assignments.push({ name: match[1]!, member: match[2]!.replace(/\s/g, ""), value: match[3]!.trim() });
+  for (const match of source.matchAll(assignment)) assignments.push({ name: match[1]!, member: match[2]!.replace(/\s/g, ""), value: match[3]!.trim(), index: match.index ?? 0 });
   return assignments;
+}
+
+function sameTableReference(value: string, target: string) {
+  const normalized = value.replace(/\s/g, "");
+  return normalized === target || normalized.startsWith(`${target}.`) || normalized.startsWith(`${target}[`);
+}
+
+function accumulatorIsPopulated(body: string, assignment: { name: string; member: string; index: number }, derived: Set<string>) {
+  const target = `${assignment.name}${assignment.member}`;
+  const suffix = body.slice(assignment.index);
+  for (const call of callSites(suffix)) {
+    if (call.name !== "table.insert") continue;
+    const argumentsList = topLevelArguments(call.argumentsText);
+    if (argumentsList.length < 2 || !sameTableReference(argumentsList[0]!, target)) continue;
+    if (referencesAny(argumentsList[1]!, derived) || (argumentsList[2] !== undefined && referencesAny(argumentsList[2]!, derived))) return true;
+    // The Project-GC expansion uses known type constants while iterating an
+    // input type list. Require that loop shape before accepting such inserts.
+    if (/\bfor\s+(?:[A-Za-z_]\w*\s*,\s*)?[A-Za-z_]\w*\s+in\s+[^\n]+\s+do\b/.test(suffix)) return true;
+  }
+  const nestedAssignment = new RegExp("\\b" + assignment.name + "\\s*" + assignment.member.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&") + "(?:\\s*(?:\\.\\s*[A-Za-z_]\\w*|\\[[^\\]]*\\]))\\s*=\\s*");
+  return nestedAssignment.test(suffix);
 }
 
 function validateExpandedFilter(source: string) {
@@ -270,7 +291,7 @@ function validateExpandedFilter(source: string) {
     if (!derived.has(assignment.name)) continue;
     const simpleValue = [...derived].some((name) => new RegExp("^" + name + "(?:\\s*(?:\\.\\s*[A-Za-z_]\\w*|\\[[^\\]]*\\]))?$").test(assignment.value));
     const copiedValue = /^TableCopy\s*\(\s*[A-Za-z_]\w*(?:\s*\.\s*[A-Za-z_]\w*|\s*\[[^\]]*\])?\s*\)$/.test(assignment.value);
-    const emptyAccumulator = assignment.value === "{}" && (assignment.member === ".types" || assignment.member === ".excludeTypes" || assignment.member.startsWith("["));
+    const emptyAccumulator = assignment.value === "{}" && (assignment.member === ".types" || assignment.member === ".excludeTypes" || assignment.member.startsWith("[")) && accumulatorIsPopulated(definition.body, assignment, derived);
     if (!simpleValue && !copiedValue && !emptyAccumulator) {
       throw new BadRequestException("Project-GC expandFilter must preserve the input filter semantics");
     }
