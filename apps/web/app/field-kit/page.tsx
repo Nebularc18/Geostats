@@ -42,6 +42,13 @@ type Coordinates = {
   longitude: number;
 };
 
+type RoutePoint = Coordinates & {
+  code: string;
+  name: string;
+  top?: number;
+  left?: number;
+};
+
 const logs = [
   { code: "GC9F3A2", name: "Old Quarry View", date: "Aug 24", type: "Traditional", place: "Skane", km: 14.2 },
   { code: "GC7K91P", name: "Under the Copper Beech", date: "Aug 23", type: "Multi-cache", place: "Halland", km: 8.7 },
@@ -69,6 +76,8 @@ const maintenanceItems = [
   { id: 2, code: "GC91M4B", name: "The Mill Race", issue: "Needs a fresh logbook", age: "6 days", distance: "4.8 km", latitude: 56.27406, longitude: 12.53972 },
   { id: 3, code: "GCA5R7P", name: "Birch and Stone", issue: "Coordinates reported off", age: "2 days", distance: "7.3 km", latitude: 56.25217, longitude: 12.56601 }
 ];
+
+const maintenanceRouteOrigin: Coordinates = { latitude: 56.238, longitude: 12.58 };
 
 const challengeRows = [
   { rank: 1, name: "MajaK", finds: 18, change: "+3 today" },
@@ -105,20 +114,124 @@ function gpxRoutePoint(point: Coordinates & { code: string; name: string }) {
   return `    <rtept lat="${point.latitude}" lon="${point.longitude}"><name>${escapeXml(point.code)} ${escapeXml(point.name)}</name></rtept>`;
 }
 
+function parseCsvRecords(contents: string, delimiter: "," | ";" = ",") {
+  const records: string[][] = [];
+  let record: string[] = [];
+  let field = "";
+  let quoted = false;
+
+  for (let index = 0; index < contents.length; index += 1) {
+    const character = contents[index];
+    const nextCharacter = contents[index + 1];
+    if (quoted) {
+      if (character === '"' && nextCharacter === '"') {
+        field += '"';
+        index += 1;
+      } else if (character === '"') {
+        quoted = false;
+      } else {
+        field += character;
+      }
+    } else if (character === '"' && field.trim().length === 0) {
+      quoted = true;
+    } else if (character === delimiter) {
+      record.push(field);
+      field = "";
+    } else if (character === "\n") {
+      record.push(field.replace(/\r$/, ""));
+      if (record.some((value) => value.trim())) records.push(record);
+      record = [];
+      field = "";
+    } else {
+      field += character;
+    }
+  }
+
+  if (field || record.length) {
+    record.push(field.replace(/\r$/, ""));
+    if (record.some((value) => value.trim())) records.push(record);
+  }
+  return records;
+}
+
+function detectCsvDelimiter(contents: string) {
+  let firstRecord = contents;
+  let quoted = false;
+  for (let index = 0; index < contents.length; index += 1) {
+    const character = contents[index];
+    const nextCharacter = contents[index + 1];
+    if (quoted) {
+      if (character === '"' && nextCharacter === '"') index += 1;
+      else if (character === '"') quoted = false;
+    } else if (character === '"') {
+      quoted = true;
+    } else if (character === "\n") {
+      firstRecord = contents.slice(0, index);
+      break;
+    }
+  }
+  let commaCount = 0;
+  let semicolonCount = 0;
+  quoted = false;
+  for (let index = 0; index < firstRecord.length; index += 1) {
+    const character = firstRecord[index];
+    if (character === '"' && firstRecord[index + 1] === '"') {
+      index += 1;
+      continue;
+    }
+    if (character === '"') quoted = !quoted;
+    if (!quoted && character === ",") commaCount += 1;
+    if (!quoted && character === ";") semicolonCount += 1;
+  }
+  return semicolonCount > commaCount ? ";" : ",";
+}
+
 function importPreview(fileName: string, contents: string) {
   if (fileName.toLowerCase().endsWith(".gpx")) {
-    const points = contents.match(/<wpt\b/gi)?.length ?? 0;
-    const logs = contents.match(/<(?:groundspeak:)?log\b/gi)?.length ?? 0;
+    if (typeof DOMParser === "undefined") throw new Error("XML parsing is unavailable");
+    const document = new DOMParser().parseFromString(contents, "application/xml");
+    if (document.getElementsByTagName("parsererror").length) throw new Error("Invalid GPX");
+    const elements = Array.from(document.getElementsByTagName("*"));
+    const points = elements.filter((element) => element.localName === "wpt").length;
+    const logs = elements.filter((element) => element.localName === "log").length;
     return { records: points, recordLabel: "cache point", logs };
   }
 
-  const rows = contents.split(/\r?\n/).map((row) => row.trim()).filter(Boolean);
-  const hasHeader = rows[0]?.toLowerCase().includes("code") || rows[0]?.toLowerCase().includes("latitude");
-  return { records: Math.max(rows.length - (hasHeader ? 1 : 0), 0), recordLabel: "CSV row", logs: 0 };
+  const records = parseCsvRecords(contents, detectCsvDelimiter(contents));
+  const header = records[0]?.map((field) => field.trim().toLowerCase()) ?? [];
+  const hasHeader = header.some((field) => field === "code" || field === "gc code" || field === "latitude");
+  return { records: Math.max(records.length - (hasHeader ? 1 : 0), 0), recordLabel: "CSV row", logs: 0 };
 }
 
-function RouteSketch({ maintenance = false }: { maintenance?: boolean }) {
-  const points = maintenance ? maintenanceItems : tripStops;
+function coordinateDistanceSquared(first: Coordinates, second: Coordinates) {
+  const latitudeDelta = first.latitude - second.latitude;
+  const longitudeDelta = first.longitude - second.longitude;
+  return latitudeDelta * latitudeDelta + longitudeDelta * longitudeDelta;
+}
+
+function routeDistance(points: typeof maintenanceItems) {
+  return points.reduce((total, point, index) => {
+    const previous = index === 0 ? maintenanceRouteOrigin : points[index - 1];
+    return total + coordinateDistanceSquared(previous, point);
+  }, 0) + (points.length ? coordinateDistanceSquared(points.at(-1)!, maintenanceRouteOrigin) : 0);
+}
+
+function permutations<T>(items: T[]): T[][] {
+  if (items.length < 2) return [items];
+  return items.flatMap((item, index) => permutations([...items.slice(0, index), ...items.slice(index + 1)]).map((rest) => [item, ...rest]));
+}
+
+function optimizeMaintenanceStops(stops: typeof maintenanceItems) {
+  return permutations(stops).reduce((best, candidate) => {
+    const distanceDifference = routeDistance(candidate) - routeDistance(best);
+    const startsCloser = candidate.length > 0 && best.length > 0
+      && coordinateDistanceSquared(maintenanceRouteOrigin, candidate[0]) < coordinateDistanceSquared(maintenanceRouteOrigin, best[0]);
+    return distanceDifference < -1e-12 || (Math.abs(distanceDifference) <= 1e-12 && startsCloser) ? candidate : best;
+  }, [...stops]);
+}
+
+function RouteSketch({ maintenance = false, routePoints }: { maintenance?: boolean; routePoints?: RoutePoint[] }) {
+  const points = routePoints ?? (maintenance ? maintenanceItems : tripStops);
   return (
     <div className="route-sketch" aria-label={maintenance ? "Maintenance route map" : "Trip route map"}>
       <div className="route-road route-road-one" />
@@ -158,6 +271,7 @@ export default function FieldKitPage() {
   const [newGoalTarget, setNewGoalTarget] = useState("10");
   const [newGoalKind, setNewGoalKind] = useState("Personal");
   const [routeOptimized, setRouteOptimized] = useState(false);
+  const [maintenanceRouteOrder, setMaintenanceRouteOrder] = useState(() => maintenanceItems.map((item) => item.id));
   const [storageReady, setStorageReady] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -168,6 +282,13 @@ export default function FieldKitPage() {
     { code: "GCB1R5T", name: "Granite Shoreline", date: "Aug 04", type: "EarthCache", place: "Blekinge", km: 31.6 }
   ]] : logs, [showAllLogs]);
   const visibleTripStops = useMemo(() => [...tripStops, ...suggestions], [suggestions]);
+  const orderedMaintenanceItems = useMemo(() => {
+    const selected = new Set(routeStops);
+    const byId = new Map(maintenanceItems.map((item) => [item.id, item]));
+    const ordered = maintenanceRouteOrder.flatMap((id) => selected.has(id) && byId.has(id) ? [byId.get(id)!] : []);
+    const alreadyOrdered = new Set(ordered.map((item) => item.id));
+    return [...ordered, ...maintenanceItems.filter((item) => selected.has(item.id) && !alreadyOrdered.has(item.id))];
+  }, [maintenanceRouteOrder, routeStops]);
 
   useEffect(() => {
     try {
@@ -183,6 +304,7 @@ export default function FieldKitPage() {
           joined?: unknown;
           suggestions?: unknown;
           routeOptimized?: unknown;
+          maintenanceRouteOrder?: unknown;
         };
         if (typeof parsed.warning === "boolean") setWarning(parsed.warning);
         if (Array.isArray(parsed.votes)) setVotes(new Set(parsed.votes.filter((value): value is string => typeof value === "string")));
@@ -207,6 +329,7 @@ export default function FieldKitPage() {
           }));
         }
         if (typeof parsed.routeOptimized === "boolean") setRouteOptimized(parsed.routeOptimized);
+        if (Array.isArray(parsed.maintenanceRouteOrder)) setMaintenanceRouteOrder(parsed.maintenanceRouteOrder.filter((value): value is number => typeof value === "number"));
       }
     } catch {
       // A bad or unavailable local copy should not prevent the workspace from opening.
@@ -227,12 +350,13 @@ export default function FieldKitPage() {
         routeStops: [...routeStops],
         joined,
         suggestions,
-        routeOptimized
+        routeOptimized,
+        maintenanceRouteOrder
       }));
     } catch {
       // Storage can be disabled in private browsing. The controls still work for this visit.
     }
-  }, [storageReady, warning, votes, tripShared, activeGoals, customGoals, routeStops, joined, suggestions, routeOptimized]);
+  }, [storageReady, warning, votes, tripShared, activeGoals, customGoals, routeStops, joined, suggestions, routeOptimized, maintenanceRouteOrder]);
 
   async function importFile(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -269,7 +393,7 @@ export default function FieldKitPage() {
   }
 
   function exportMaintenanceRoute() {
-    const selected = maintenanceItems.filter((item) => routeStops.has(item.id));
+    const selected = orderedMaintenanceItems;
     if (!selected.length) {
       setNotice("Select at least one maintenance stop before exporting a route.");
       return;
@@ -322,6 +446,15 @@ export default function FieldKitPage() {
       next.has(goalId) ? next.delete(goalId) : next.add(goalId);
       return next;
     });
+  }
+
+  function toggleMaintenanceStop(stopId: number) {
+    setRouteStops((current) => {
+      const next = new Set(current);
+      next.has(stopId) ? next.delete(stopId) : next.add(stopId);
+      return next;
+    });
+    setRouteOptimized(false);
   }
 
   return (
@@ -399,9 +532,9 @@ export default function FieldKitPage() {
         <div className="feature-grid maintenance-grid">
           <article className="panel feature-panel maintenance-list">
             <div className="board-summary"><span><strong>3</strong> needs attention</span><span><strong>8</strong> healthy</span><span><strong>1</strong> disabled</span></div>
-            {maintenanceItems.map((item) => <label key={item.id} className="maintenance-row"><input type="checkbox" checked={routeStops.has(item.id)} onChange={() => setRouteStops((current) => { const next = new Set(current); next.has(item.id) ? next.delete(item.id) : next.add(item.id); return next; })} /><span className="maintenance-tool"><Wrench size={16} /></span><div><strong>{item.name}</strong><small>{item.code} · Reported {item.age} ago</small><p>{item.issue}</p></div><span className="maintenance-distance">{item.distance}</span></label>)}
+            {maintenanceItems.map((item) => <label key={item.id} className="maintenance-row"><input type="checkbox" checked={routeStops.has(item.id)} onChange={() => toggleMaintenanceStop(item.id)} /><span className="maintenance-tool"><Wrench size={16} /></span><div><strong>{item.name}</strong><small>{item.code} · Reported {item.age} ago</small><p>{item.issue}</p></div><span className="maintenance-distance">{item.distance}</span></label>)}
           </article>
-          <article className="panel feature-panel"><RouteSketch maintenance /><div className="route-plan-footer"><div><strong>{routeStops.size} stops selected</strong><small>{routeOptimized ? "Optimized order · " : "Suggested order · "}1 hr 10 min · 18.6 km round trip</small></div><button type="button" className={routeOptimized ? "secondary-button optimized-button" : "secondary-button"} onClick={() => { if (!routeStops.size) { setRouteOptimized(false); setNotice("Select at least one maintenance stop to optimize a route."); return; } setRouteOptimized(true); setNotice(`Optimized the route for ${routeStops.size} selected maintenance stops.`); }}><Route size={16} /> {routeOptimized ? "Optimized" : "Optimize"}</button></div></article>
+          <article className="panel feature-panel"><RouteSketch maintenance routePoints={orderedMaintenanceItems} /><div className="route-plan-footer"><div><strong>{routeStops.size} stops selected</strong><small>{routeOptimized ? "Optimized order · " : "Suggested order · "}1 hr 10 min · 18.6 km round trip</small></div><button type="button" className={routeOptimized ? "secondary-button optimized-button" : "secondary-button"} onClick={() => { if (!routeStops.size) { setRouteOptimized(false); setNotice("Select at least one maintenance stop to optimize a route."); return; } const optimized = optimizeMaintenanceStops(orderedMaintenanceItems); setMaintenanceRouteOrder((current) => [...optimized.map((item) => item.id), ...current.filter((id) => !routeStops.has(id))]); setRouteOptimized(true); setNotice(`Optimized the route for ${optimized.length} selected maintenance stops.`); }}><Route size={16} /> {routeOptimized ? "Optimized" : "Optimize"}</button></div></article>
         </div>
       </section>}
 
