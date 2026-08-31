@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { AppShell } from "../../components/app-shell";
 import { apiFetch } from "../../lib/api";
 import { comparisonBucketRows, comparisonCountries, FriendComparison, readSavedFriends } from "../../lib/friend-comparison";
@@ -52,6 +52,7 @@ export default function FriendsPage() {
   const [comparison, setComparison] = useState<FriendComparison | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const latestRequestRef = useRef(0);
 
   useEffect(() => {
     setSavedFriends(readSavedFriends(localStorage.getItem(SAVED_FRIENDS_KEY)));
@@ -60,9 +61,12 @@ export default function FriendsPage() {
   const countryGroups = useMemo(() => (comparison ? comparisonCountries(comparison.you.stats.countries, comparison.friend.stats.countries) : null), [comparison]);
   const cacheTypeRows = useMemo(() => (comparison ? comparisonBucketRows(comparison.you.stats.cacheTypes, comparison.friend.stats.cacheTypes) : []), [comparison]);
 
-  function storeFriends(friends: string[]) {
-    setSavedFriends(friends);
-    localStorage.setItem(SAVED_FRIENDS_KEY, JSON.stringify(friends));
+  function updateSavedFriends(update: (friends: string[]) => string[]) {
+    setSavedFriends((current) => {
+      const next = update(current);
+      localStorage.setItem(SAVED_FRIENDS_KEY, JSON.stringify(next));
+      return next;
+    });
   }
 
   async function compareWith(candidate: string) {
@@ -72,18 +76,28 @@ export default function FriendsPage() {
       return;
     }
 
+    const requestId = latestRequestRef.current + 1;
+    latestRequestRef.current = requestId;
     setLoading(true);
     setError(null);
     try {
       const result = await apiFetch<FriendComparison>(`/stats/compare/${encodeURIComponent(cleanUsername)}`);
+      if (requestId !== latestRequestRef.current) {
+        return;
+      }
       setComparison(result);
       setUsername(result.friend.username);
-      storeFriends([result.friend.username, ...savedFriends.filter((friend) => friend.toLowerCase() !== result.friend.username.toLowerCase())].slice(0, 20));
+      updateSavedFriends((friends) => [result.friend.username, ...friends.filter((friend) => friend.toLowerCase() !== result.friend.username.toLowerCase())].slice(0, 20));
     } catch (requestError) {
+      if (requestId !== latestRequestRef.current) {
+        return;
+      }
       setComparison(null);
       setError(requestError instanceof Error ? requestError.message : "Could not compare profiles.");
     } finally {
-      setLoading(false);
+      if (requestId === latestRequestRef.current) {
+        setLoading(false);
+      }
     }
   }
 
@@ -93,7 +107,9 @@ export default function FriendsPage() {
   }
 
   function removeFriend(friend: string) {
-    storeFriends(savedFriends.filter((candidate) => candidate !== friend));
+    latestRequestRef.current += 1;
+    setLoading(false);
+    updateSavedFriends((friends) => friends.filter((candidate) => candidate !== friend));
     if (comparison?.friend.username === friend) {
       setComparison(null);
     }

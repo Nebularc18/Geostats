@@ -113,6 +113,12 @@ class TravelSearchDto {
   destinationPlace?: TravelPlaceDto;
 }
 
+class MapPointsQueryDto {
+  @IsOptional()
+  @IsIn(["true", "false"])
+  includeAll?: string;
+}
+
 const MAP_CACHE_LIMIT = 5000;
 const UNKNOWN_LOCATION = "Unknown";
 const COUNTRY_CONTINENTS = new Map(
@@ -269,7 +275,8 @@ export class MapController {
   }
 
   @Get("caches")
-  async caches(@CurrentUser() user: AuthUser) {
+  async caches(@CurrentUser() user: AuthUser, @Query() query: MapPointsQueryDto = {}) {
+    const includeAll = query.includeAll === "true";
     const finds = await this.prisma.find.findMany({
       where: await this.countableFindWhereForUser(user.id),
       select: {
@@ -293,9 +300,9 @@ export class MapController {
         }
       },
       orderBy: { foundAt: "desc" },
-      take: MAP_CACHE_LIMIT + 1
+      take: includeAll ? undefined : MAP_CACHE_LIMIT + 1
     });
-    const truncated = finds.length > MAP_CACHE_LIMIT;
+    const truncated = !includeAll && finds.length > MAP_CACHE_LIMIT;
     const visibleFinds = truncated ? finds.slice(0, MAP_CACHE_LIMIT) : finds;
 
     return {
@@ -321,7 +328,8 @@ export class MapController {
   }
 
   @Get("hides")
-  async hides(@CurrentUser() user: AuthUser) {
+  async hides(@CurrentUser() user: AuthUser, @Query() query: MapPointsQueryDto = {}) {
+    const includeAll = query.includeAll === "true";
     const hides = await this.prisma.hide.findMany({
       where: { userId: user.id },
       select: {
@@ -345,9 +353,9 @@ export class MapController {
         }
       },
       orderBy: { placedAt: "desc" },
-      take: MAP_CACHE_LIMIT + 1
+      take: includeAll ? undefined : MAP_CACHE_LIMIT + 1
     });
-    const truncated = hides.length > MAP_CACHE_LIMIT;
+    const truncated = !includeAll && hides.length > MAP_CACHE_LIMIT;
     const visibleHides = truncated ? hides.slice(0, MAP_CACHE_LIMIT) : hides;
 
     return {

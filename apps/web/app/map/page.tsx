@@ -25,8 +25,8 @@ export default function MapPage() {
   useEffect(() => {
     let active = true;
     void Promise.allSettled([
-      apiFetch<{ points: CacheMapPoint[]; truncated?: boolean }>("/map/caches"),
-      apiFetch<{ points: CacheMapPoint[]; truncated?: boolean }>("/map/hides")
+      apiFetch<{ points: CacheMapPoint[]; truncated?: boolean }>("/map/caches?includeAll=true"),
+      apiFetch<{ points: CacheMapPoint[]; truncated?: boolean }>("/map/hides?includeAll=true")
     ]).then(([findResult, hideResult]) => {
       if (!active) {
         return;
