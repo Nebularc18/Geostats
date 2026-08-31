@@ -273,7 +273,8 @@ function functionsReturningAliases(source: string, aliases: Set<string>) {
         aliasesChanged = false;
         for (const assignment of assignmentSites(definition.body)) {
           const valueName = assignment.value.match(/^([A-Za-z_]\w*)$/)?.[1];
-          if (valueName && localAliases.has(valueName) && !localAliases.has(assignment.name)) {
+          const helper = assignment.value.match(/^([A-Za-z_]\w*)\s*\(/)?.[1];
+          if ((valueName && localAliases.has(valueName) || helper && returning.has(helper)) && !localAliases.has(assignment.name)) {
             localAliases.add(assignment.name);
             aliasesChanged = true;
           }
@@ -287,6 +288,27 @@ function functionsReturningAliases(source: string, aliases: Set<string>) {
     }
   }
   return returning;
+}
+
+function memberField(member: string) {
+  return member.match(/^\.([A-Za-z_]\w*)$/)?.[1];
+}
+
+function preservesMemberField(value: string, member: string, derived: Set<string>) {
+  const field = memberField(member);
+  if (!field) return false;
+  const source = value.match(/^([A-Za-z_]\w*)\s*\.\s*([A-Za-z_]\w*)(?:\s*(?:\.\s*[A-Za-z_]\w*|\[[^\]]*\]))*$/);
+  return source !== null && source[2] === field && derived.has(source[1]!);
+}
+
+function copiesDerivedValue(value: string, member: string, derived: Set<string>) {
+  const argument = value.match(/^TableCopy\s*\(\s*([A-Za-z_]\w*(?:\s*\.\s*[A-Za-z_]\w*|\s*\[[^\]]*\])?)\s*\)$/)?.[1];
+  if (!argument) return false;
+  const root = argument.match(/^[A-Za-z_]\w*/)?.[0];
+  if (!root || !derived.has(root)) return false;
+  const field = memberField(member);
+  if (!field) return true;
+  return preservesMemberField(argument, member, derived);
 }
 
 function validateExpandedFilter(source: string) {
@@ -322,8 +344,8 @@ function validateExpandedFilter(source: string) {
   }
   for (const assignment of memberAssignmentSites(definition.body)) {
     if (!derived.has(assignment.name)) continue;
-    const simpleValue = [...derived].some((name) => new RegExp("^" + name + "(?:\\s*(?:\\.\\s*[A-Za-z_]\\w*|\\[[^\\]]*\\]))?$").test(assignment.value));
-    const copiedValue = /^TableCopy\s*\(\s*[A-Za-z_]\w*(?:\s*\.\s*[A-Za-z_]\w*|\s*\[[^\]]*\])?\s*\)$/.test(assignment.value);
+    const simpleValue = preservesMemberField(assignment.value, assignment.member, derived);
+    const copiedValue = copiesDerivedValue(assignment.value, assignment.member, derived);
     const emptyAccumulator = assignment.value === "{}" && (assignment.member === ".types" || assignment.member === ".excludeTypes" || assignment.member.startsWith("[")) && accumulatorIsPopulated(definition.body, assignment, derived);
     if (!simpleValue && !copiedValue && !emptyAccumulator) {
       throw new BadRequestException("Project-GC expandFilter must preserve the input filter semantics");

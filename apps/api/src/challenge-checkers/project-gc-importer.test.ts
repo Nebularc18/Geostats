@@ -108,6 +108,26 @@ return c_number(conf)
   assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /expandFilter.*semantics/);
 });
 
+test("rejects an expanded filter that copies across fields", () => {
+  const script = `
+local args={...}
+local conf = args[1].config
+function expandFilter(filter)
+  local result = TableCopy(filter)
+  result.types = filter.country
+  return result
+end
+function c_number(conf)
+  local l_config = TableCopy(conf)
+  l_config.filter = expandFilter(conf)
+  local finds = PGC.GetFinds(args[1].profileId, { filter = conf })
+  return { ok = #finds >= conf.limit }
+end
+return c_number(conf)
+`;
+  assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /expandFilter.*(?:semantics|must not mutate)/);
+});
+
 test("rejects an expanded filter that clears a type field", () => {
   const script = `
 local args={...}
