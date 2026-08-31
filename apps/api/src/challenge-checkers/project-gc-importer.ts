@@ -17,6 +17,7 @@ const TYPE_GROUPS: Record<string, string[]> = {
 const MUTATING_TABLE_CALLS = new Set(["table.insert", "table.remove", "table.sort", "table.move", "table.clear", "rawset"]);
 const READ_ONLY_CALLS = new Set(["ipairs", "pairs", "next", "tostring", "table.concat", "TableCopy", "PGC.print", "PrinFindsTable", "PrintFindsText", "PrintFindsHtml"]);
 const CONTROL_CALLS = new Set(["if", "for", "while", "repeat", "until", "return", "function"]);
+const SUPPORTED_FIND_CALLS = new Set(["PGC.GetFinds", "GetCombinedFinds"]);
 
 function objectValue(value: unknown, label: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new BadRequestException(`${label} must be a JSON object`);
@@ -206,6 +207,14 @@ function callSites(source: string) {
     if (argumentsText !== null) calls.push({ name: match[1]!.replace(/\s/g, ""), argumentsText });
   }
   return calls;
+}
+
+function isWholeCallExpression(value: string, name: string) {
+  const match = new RegExp("^" + name.replace(".", "\\.") + "\\s*\\(").exec(value);
+  if (!match) return false;
+  const open = match[0].length - 1;
+  const argumentsText = balancedCallArguments(value, open);
+  return argumentsText !== null && !value.slice(open + argumentsText.length + 2).trim();
 }
 
 function referencesAny(value: string, names: Set<string>) {
@@ -423,6 +432,14 @@ function validateCountCondition(source: string) {
   }
   const findsAliases = new Set(["finds"]);
   const findsAssignments = assignmentSites(body);
+  const findsBinding = findsAssignments.find((assignment) => assignment.name === "finds");
+  const findsCall = findsBinding?.value.match(/^([A-Za-z_]\w*(?:\s*\.\s*[A-Za-z_]\w*)?)\s*\(/)?.[1]?.replace(/\s/g, "");
+  if (!findsBinding || !findsCall || !SUPPORTED_FIND_CALLS.has(findsCall) || !isWholeCallExpression(findsBinding.value, findsCall)) {
+    throw new BadRequestException("The c_number finds result must come from a supported Project-GC find call");
+  }
+  if (findsCall === "GetCombinedFinds" && !functionDefinition(source, findsCall)) {
+    throw new BadRequestException("The c_number finds result must come from a supported Project-GC find call");
+  }
   const localNames = new Set([
     ...findsAssignments.filter((assignment) => assignment.local).map((assignment) => assignment.name),
     ...[...body.matchAll(/\blocal\s+([A-Za-z_]\w*)/g)].map((match) => match[1]!)

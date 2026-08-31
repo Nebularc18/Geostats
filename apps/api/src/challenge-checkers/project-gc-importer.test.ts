@@ -143,6 +143,14 @@ test("rejects finds results that escape into mutable storage", () => {
   for (const script of scripts) assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /finds result must not escape|finds result must not be mutated/);
 });
 
+test("rejects wrappers that transform the Project-GC finds result", () => {
+  const script = numberScript.replace(
+    "local finds = PGC.GetFinds(args[1].profileId, { filter = conf })",
+    "function shrink(rows)\n    table.remove(rows, 1)\n    return rows\n  end\n  local finds = shrink(PGC.GetFinds(args[1].profileId, { filter = conf }))"
+  );
+  assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /supported Project-GC find call/);
+});
+
 test("rejects an outer return that changes the c_number verdict", () => {
   const script = numberScript.replace("return c_number(conf)", "local ok = c_number(conf).ok and conf.brief\nreturn { ok = ok }");
   assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /additional pass\/fail condition/);
