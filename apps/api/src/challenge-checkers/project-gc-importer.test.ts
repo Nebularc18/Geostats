@@ -154,6 +154,29 @@ return c_number(conf)
   assert.equal(importProjectGcNumberScript(script, '{"limit":1}').rules[0]!.minimum, 1);
 });
 
+test("rejects an accumulator populated from an unrelated loop", () => {
+  const script = `
+local args={...}
+local conf = args[1].config
+function expandFilter(filter)
+  local result = TableCopy(filter)
+  result.types = {}
+  for _, value in ipairs(otherValues) do
+    table.insert(result.types, 'Traditional Cache')
+  end
+  return result
+end
+function c_number(conf)
+  local l_config = TableCopy(conf)
+  l_config.filter = expandFilter(conf)
+  local finds = PGC.GetFinds(args[1].profileId, { filter = conf })
+  return { ok = #finds >= conf.limit }
+end
+return c_number(conf)
+`;
+  assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /expandFilter.*semantics/);
+});
+
 test("merges Project-GC alternative filters with the base filter", () => {
   const imported = importProjectGcNumberScript(numberScript, JSON.stringify({
     limit: 2,
@@ -200,6 +223,14 @@ test("rejects helper calls that mutate the finds result", () => {
   assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /finds result must not be mutated/);
 });
 
+test("rejects aliases returned through a closure before mutation", () => {
+  const script = numberScript.replace(
+    "return { ok = #finds >= conf.limit }",
+    "local function expose()\n    return finds\n  end\n  local rows = expose()\n  table.remove(rows, 1)\n  return { ok = #finds >= conf.limit }"
+  );
+  assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /finds result must not be mutated/);
+});
+
 test("rejects finds results that escape into mutable storage", () => {
   const scripts = [
     numberScript.replace("return { ok = #finds >= conf.limit }", "local box = { finds }\n  table.remove(box[1], 1)\n  return { ok = #finds >= conf.limit }"),
@@ -219,7 +250,12 @@ test("rejects wrappers that transform the Project-GC finds result", () => {
 
 test("rejects an outer return that changes the c_number verdict", () => {
   const script = numberScript.replace("return c_number(conf)", "local ok = c_number(conf).ok and conf.brief\nreturn { ok = ok }");
-  assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /additional pass\/fail condition/);
+  assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /c_number result must be returned or assigned directly/);
+});
+
+test("rejects embedded c_number invocations", () => {
+  const script = numberScript.replace("return c_number(conf)", "res = force(c_number(conf), true)\nreturn res");
+  assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /returned or assigned directly/);
 });
 
 test("rejects overriding the c_number result after invocation", () => {

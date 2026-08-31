@@ -248,12 +248,45 @@ function accumulatorIsPopulated(body: string, assignment: { name: string; member
     const argumentsList = topLevelArguments(call.argumentsText);
     if (argumentsList.length < 2 || !sameTableReference(argumentsList[0]!, target)) continue;
     if (referencesAny(argumentsList[1]!, derived) || (argumentsList[2] !== undefined && referencesAny(argumentsList[2]!, derived))) return true;
-    // The Project-GC expansion uses known type constants while iterating an
-    // input type list. Require that loop shape before accepting such inserts.
-    if (/\bfor\s+(?:[A-Za-z_]\w*\s*,\s*)?[A-Za-z_]\w*\s+in\s+[^\n]+\s+do\b/.test(suffix)) return true;
   }
-  const nestedAssignment = new RegExp("\\b" + assignment.name + "\\s*" + assignment.member.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&") + "(?:\\s*(?:\\.\\s*[A-Za-z_]\\w*|\\[[^\\]]*\\]))\\s*=\\s*");
-  return nestedAssignment.test(suffix);
+  const nestedAssignment = new RegExp("\\b" + assignment.name + "\\s*" + assignment.member.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&") + "(?:\\s*(?:\\.\\s*[A-Za-z_]\\w*|\\[[^\\]]*\\]))\\s*=\\s*([^\\n;]*)", "g");
+  return [...suffix.matchAll(nestedAssignment)].some((match) => referencesAny(match[1]!.trim(), derived));
+}
+
+function functionNames(source: string) {
+  return new Set([...source.matchAll(/\bfunction\s+([A-Za-z_]\w*)\s*\(/g)].map((match) => match[1]!));
+}
+
+function functionsReturningAliases(source: string, aliases: Set<string>) {
+  const returning = new Set<string>();
+  const names = functionNames(source);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const name of names) {
+      if (name === "c_number" || returning.has(name)) continue;
+      const definition = functionDefinition(source, name);
+      if (!definition) continue;
+      const localAliases = new Set(aliases);
+      let aliasesChanged = true;
+      while (aliasesChanged) {
+        aliasesChanged = false;
+        for (const assignment of assignmentSites(definition.body)) {
+          const valueName = assignment.value.match(/^([A-Za-z_]\w*)$/)?.[1];
+          if (valueName && localAliases.has(valueName) && !localAliases.has(assignment.name)) {
+            localAliases.add(assignment.name);
+            aliasesChanged = true;
+          }
+        }
+      }
+      const returns = [...definition.body.matchAll(/\breturn\b([^\n;]*)/g)].map((match) => match[1]!.replace(/\bend\s*$/, "").trim());
+      if (returns.some((value) => referencesAny(value, localAliases) || [...returning].some((helper) => new RegExp("^" + helper + "\\s*\\(").test(value)))) {
+        returning.add(name);
+        changed = true;
+      }
+    }
+  }
+  return returning;
 }
 
 function validateExpandedFilter(source: string) {
@@ -497,6 +530,22 @@ function validateCountCondition(source: string) {
       }
     }
   }
+  const returningFindHelpers = functionsReturningAliases(source, findsAliases);
+  aliasesChanged = true;
+  while (aliasesChanged) {
+    aliasesChanged = false;
+    for (const assignment of findsAssignments) {
+      const helper = assignment.value.match(/^([A-Za-z_]\w*)\s*\(/)?.[1];
+      if (!helper || !returningFindHelpers.has(helper)) continue;
+      if (!assignment.local && !localNames.has(assignment.name)) {
+        throw new BadRequestException("The c_number finds result must not escape its local scope");
+      }
+      if (!findsAliases.has(assignment.name)) {
+        findsAliases.add(assignment.name);
+        aliasesChanged = true;
+      }
+    }
+  }
   const findsAliasPattern = [...findsAliases].map((alias) => "\\b" + alias + "\\b").join("|");
   if (new RegExp("(?:" + findsAliasPattern + ")\\s*(?:\\.\\s*[A-Za-z_]\\w*|\\[[^\\]]*\\])\\s*=").test(body)) {
     throw new BadRequestException("The c_number finds result must not be mutated in place");
@@ -525,6 +574,13 @@ function validateCountCondition(source: string) {
       }
     }
   }
+  for (const call of callSites(body)) {
+    const argumentsList = topLevelArguments(call.argumentsText);
+    if (!argumentsList.some((argument) => [...returningFindHelpers].some((helper) => new RegExp("^" + helper + "\\s*\\(").test(argument.trim())))) continue;
+    if (MUTATING_TABLE_CALLS.has(call.name) || !READ_ONLY_CALLS.has(call.name)) {
+      throw new BadRequestException("The c_number finds result must not be mutated in place");
+    }
+  }
   const exactIf = body.match(/\bif\s*\(?\s*#\s*finds\s*>=\s*conf\s*\.\s*limit\s*\)?\s*then\b/g) ?? [];
   const exactReturn = body.match(/\bok\s*=\s*#\s*finds\s*>=\s*conf\s*\.\s*limit\b\s*(?=[,}])/g) ?? [];
   if (exactIf.length + exactReturn.length !== 1) throw new BadRequestException("c_number must return exactly the conf.limit count condition");
@@ -540,10 +596,28 @@ function validateCountCondition(source: string) {
       throw new BadRequestException("c_number has an additional pass/fail condition");
     }
   }
-  const resultInvocation = /(?:\blocal\s+)?([A-Za-z_]\w*)\s*=\s*c_number\s*\(\s*conf\s*\)(?=\s*(?:[,;\n]|$))/g;
-  for (const match of source.matchAll(resultInvocation)) {
-    const resultName = match[1]!;
-    const afterInvocation = source.slice((match.index ?? 0) + match[0].length);
+  const cNumberCalls = [...source.matchAll(/\bc_number\s*\(\s*conf\s*\)/g)].filter((match) => !/\bfunction\s*$/.test(source.slice(0, match.index ?? 0)));
+  if (cNumberCalls.length !== 1) throw new BadRequestException("The importer requires one direct c_number(conf) checker invocation");
+  const invocation = cNumberCalls[0]!;
+  const invocationIndex = invocation.index ?? 0;
+  const statementStart = Math.max(source.lastIndexOf("\n", invocationIndex), source.lastIndexOf(";", invocationIndex)) + 1;
+  const invocationEnd = invocationIndex + invocation[0]!.length;
+  const nextNewline = source.indexOf("\n", invocationEnd);
+  const nextSemicolon = source.indexOf(";", invocationEnd);
+  const statementEnd = [nextNewline, nextSemicolon].filter((index) => index >= 0).sort((left, right) => left - right)[0] ?? source.length;
+  const beforeInvocation = source.slice(statementStart, invocationIndex);
+  const afterInvocationStatement = source.slice(invocationEnd, statementEnd);
+  const assignmentMatch = /^\s*$/.test(afterInvocationStatement) ? beforeInvocation.match(/^\s*(?:local\s+)?([A-Za-z_]\w*)\s*=\s*$/) : null;
+  const directReturn = /^\s*return\s*$/.test(beforeInvocation) && /^\s*$/.test(afterInvocationStatement);
+  if (!assignmentMatch && !directReturn) {
+    throw new BadRequestException("The c_number result must be returned or assigned directly");
+  }
+  if (directReturn) {
+    if (source.slice(statementEnd).trim()) throw new BadRequestException("The c_number result must be returned or assigned directly");
+  } else {
+    const resultName = assignmentMatch?.[1];
+    if (!resultName) throw new BadRequestException("The c_number result must be returned or assigned directly");
+    const afterInvocation = source.slice(invocationEnd);
     const aliases = new Set([resultName]);
     const verdictAliases = new Set<string>();
     const assignments = /(?:^|[;\n])\s*(?:\blocal\s+)?([A-Za-z_]\w*)\s*=\s*([^;\n]*)/g;
