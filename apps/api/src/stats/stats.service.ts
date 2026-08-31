@@ -9,6 +9,11 @@ import { friendComparisonStats } from "./friend-comparison";
 const DEFAULT_FTF_FIND_LIMIT = 100;
 const MAX_FTF_FIND_LIMIT = 200;
 const MAX_FTF_LOG_TEXT_LENGTH = 1_000;
+// PostgreSQL's POSIX space class does not include every code point removed by
+// JavaScript trim(), so include the remaining ECMAScript whitespace characters
+// explicitly when matching legacy profile values.
+const USERNAME_TRIM_WHITESPACE = "\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff";
+const USERNAME_TRIM_PATTERN = `^[[:space:]${USERNAME_TRIM_WHITESPACE}]+|[[:space:]${USERNAME_TRIM_WHITESPACE}]+$`;
 type PrismaClientLike = PrismaService | Prisma.TransactionClient;
 type FtfFindRow = {
   id: string;
@@ -161,7 +166,7 @@ export class StatsService {
     const profiles = await this.prisma.$queryRaw<Array<{ userId: string; gcUsername: string }>>(Prisma.sql`
       SELECT "user_id" AS "userId", "gc_username" AS "gcUsername"
       FROM "geocaching_profiles"
-      WHERE LOWER(REGEXP_REPLACE("gc_username", '^[[:space:]]+|[[:space:]]+$', '', 'g')) = ${normalizedUsername}
+      WHERE LOWER(REGEXP_REPLACE("gc_username", ${USERNAME_TRIM_PATTERN}, '', 'g')) = ${normalizedUsername}
       ORDER BY "updated_at" DESC
       LIMIT 2
     `);

@@ -9,10 +9,11 @@ test("rejects ambiguous case-insensitive geocaching usernames", async () => {
   const prisma = {
     $queryRaw: async (query: any) => {
       assert.match(query.sql, /REGEXP_REPLACE/);
-      assert.deepEqual(query.values, ["alice"]);
+      assert.equal(query.values.at(-1), "alice");
+      assert.ok(query.values.some((value: unknown) => typeof value === "string" && value.includes("\u00a0")));
       return [
         { userId: "user-1", gcUsername: " Alice " },
-        { userId: "user-2", gcUsername: "alice" },
+        { userId: "user-2", gcUsername: "alice\u00a0" },
       ];
     },
     import: {

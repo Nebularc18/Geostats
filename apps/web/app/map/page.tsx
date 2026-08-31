@@ -20,6 +20,7 @@ type MapPointsResponse = {
   truncated?: boolean;
   nextCursor?: string | null;
   snapshot?: string;
+  snapshotRevision?: string;
   totalCount?: number;
 };
 
@@ -30,6 +31,7 @@ type LoadedMapPoints = {
 };
 
 const MAX_MAP_POINTS = 20_000;
+const MAP_SNAPSHOT_EXPIRED = "map snapshot expired";
 
 function mapFilterParams(filters: MapFilters) {
   const params = new URLSearchParams();
@@ -54,10 +56,16 @@ function mapFilterParams(filters: MapFilters) {
   return params;
 }
 
-async function loadMapPoints(path: "/map/caches" | "/map/hides", signal: AbortSignal, filters: MapFilters): Promise<LoadedMapPoints> {
+async function loadMapPoints(
+  path: "/map/caches" | "/map/hides",
+  signal: AbortSignal,
+  filters: MapFilters,
+  restartCount = 0
+): Promise<LoadedMapPoints> {
   const points: CacheMapPoint[] = [];
   let cursor: string | undefined;
   let snapshot: string | undefined;
+  let snapshotRevision: string | undefined;
   let totalCount: number | undefined;
   // The API applies active filters before paging, so filtered searches can traverse every match.
   const bounded = activeMapFilterCount(filters) === 0;
@@ -70,12 +78,26 @@ async function loadMapPoints(path: "/map/caches" | "/map/hides", signal: AbortSi
     if (snapshot) {
       params.set("snapshot", snapshot);
     }
+    if (snapshotRevision) {
+      params.set("snapshotRevision", snapshotRevision);
+    }
     const query = params.toString();
-    const response = await apiFetch<MapPointsResponse>(`${path}${query ? `?${query}` : ""}`, { signal });
+    let response: MapPointsResponse;
+    try {
+      response = await apiFetch<MapPointsResponse>(`${path}${query ? `?${query}` : ""}`, { signal });
+    } catch (error) {
+      if (error instanceof Error && error.message === MAP_SNAPSHOT_EXPIRED && restartCount < 2) {
+        return loadMapPoints(path, signal, filters, restartCount + 1);
+      }
+      throw error;
+    }
 
     if (!snapshot) {
       if (typeof response.snapshot !== "string" || response.snapshot.length === 0) {
         throw new Error("Map data pagination did not return a snapshot.");
+      }
+      if (typeof response.snapshotRevision !== "string" || response.snapshotRevision.length === 0) {
+        throw new Error("Map data pagination did not return a snapshot revision.");
       }
       const pageTotalCount = response.totalCount;
       if (typeof pageTotalCount !== "number" || !Number.isSafeInteger(pageTotalCount) || pageTotalCount < 0) {
@@ -83,8 +105,11 @@ async function loadMapPoints(path: "/map/caches" | "/map/hides", signal: AbortSi
       }
       totalCount = pageTotalCount;
       snapshot = response.snapshot;
+      snapshotRevision = response.snapshotRevision;
     } else if (response.snapshot !== snapshot) {
       throw new Error("Map data pagination changed its snapshot.");
+    } else if (response.snapshotRevision !== snapshotRevision) {
+      throw new Error("Map data pagination changed its snapshot revision.");
     } else if (response.totalCount !== undefined && response.totalCount !== totalCount) {
       throw new Error("Map data pagination changed its total count.");
     }

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { ConflictException } from "@nestjs/common";
 import { MapController } from "./map.controller";
 
 const user = { id: "user-1" } as any;
@@ -24,6 +25,7 @@ function cache(index = 1) {
 
 function controllerWith({ finds = [], hides = [] }: { finds?: any[]; hides?: any[] } = {}) {
   const calls = { finds: [] as any[], hides: [] as any[] };
+  let latestImport: any = null;
   const prisma = {
     geocachingProfile: {
       findUnique: async () => ({ gcUsername: "owner" })
@@ -45,10 +47,23 @@ function controllerWith({ finds = [], hides = [] }: { finds?: any[]; hides?: any
         const start = cursorIndex >= 0 ? cursorIndex + (query.skip ?? 0) : 0;
         return hides.slice(start, query.take === undefined ? undefined : start + query.take);
       }
+    },
+    import: {
+      findFirst: async () => latestImport
     }
   } as any;
 
-  return { controller: new MapController(prisma, {} as any), calls };
+  return {
+    controller: new MapController(prisma, {} as any),
+    calls,
+    setLatestImport: (id: string) => {
+      latestImport = {
+        id,
+        createdAt: new Date("2024-01-01T00:00:00.000Z"),
+        updatedAt: new Date("2024-01-01T00:00:00.000Z")
+      };
+    }
+  };
 }
 
 test("map point endpoints page complete histories without unbounded queries", async () => {
@@ -61,8 +76,16 @@ test("map point endpoints page complete histories without unbounded queries", as
   const { controller, calls } = controllerWith({ finds, hides });
 
   const firstPage = await controller.caches(user, {});
-  const secondPage = await controller.caches(user, { cursor: firstPage.nextCursor });
-  const lastPage = await controller.caches(user, { cursor: secondPage.nextCursor });
+  const secondPage = await controller.caches(user, {
+    cursor: firstPage.nextCursor,
+    snapshot: firstPage.snapshot,
+    snapshotRevision: firstPage.snapshotRevision
+  });
+  const lastPage = await controller.caches(user, {
+    cursor: secondPage.nextCursor,
+    snapshot: secondPage.snapshot,
+    snapshotRevision: secondPage.snapshotRevision
+  });
   const hidePage = await controller.hides(user, {});
 
   assert.equal(calls.finds[0].cursor, undefined);
@@ -89,7 +112,7 @@ test("map point endpoints page complete histories without unbounded queries", as
   assert.equal(hidePage.nextCursor, null);
 });
 
-test("cursor pagination keeps the next page anchored when an import adds a newer find", async () => {
+test("rejects a cursor when an import adds a newer find", async () => {
   const finds = Array.from({ length: 5001 }, (_, index) => ({
     id: `find-${index}`,
     foundAt: new Date("2024-01-02T00:00:00.000Z"),
@@ -103,9 +126,14 @@ test("cursor pagination keeps the next page anchored when an import adds a newer
     foundAt: new Date("2025-01-02T00:00:00.000Z"),
     cache: cache(6000)
   });
-  const secondPage = await controller.caches(user, { cursor: firstPage.nextCursor });
-
-  assert.equal(secondPage.points[0]?.gcCode, "GC5000");
+  await assert.rejects(
+    () => controller.caches(user, {
+      cursor: firstPage.nextCursor,
+      snapshot: firstPage.snapshot,
+      snapshotRevision: firstPage.snapshotRevision
+    }),
+    (error: unknown) => error instanceof ConflictException && error.message === "map snapshot expired"
+  );
 });
 
 test("map pages keep an immutable ordering and snapshot cutoff", async () => {
@@ -117,13 +145,37 @@ test("map pages keep an immutable ordering and snapshot cutoff", async () => {
   const { controller, calls } = controllerWith({ finds });
 
   const firstPage = await controller.caches(user, {});
-  const secondPage = await controller.caches(user, { snapshot: firstPage.snapshot });
+  const secondPage = await controller.caches(user, {
+    snapshot: firstPage.snapshot,
+    snapshotRevision: firstPage.snapshotRevision
+  });
 
   assert.equal(typeof firstPage.snapshot, "string");
   assert.deepEqual(calls.finds[0].orderBy, [{ createdAt: "desc" }, { id: "desc" }]);
   assert.deepEqual(calls.finds[0].where.AND.find((condition: any) => condition.createdAt)?.createdAt, { lte: new Date(firstPage.snapshot) });
   assert.deepEqual(calls.finds[1].where.AND.find((condition: any) => condition.createdAt)?.createdAt, { lte: new Date(firstPage.snapshot) });
   assert.equal(secondPage.snapshot, firstPage.snapshot);
+});
+
+test("rejects a cursor when an import changes the map snapshot", async () => {
+  const finds = Array.from({ length: 5001 }, (_, index) => ({
+    id: `find-${index}`,
+    foundAt: new Date("2024-01-02T00:00:00.000Z"),
+    cache: cache(index)
+  }));
+  const { controller, setLatestImport } = controllerWith({ finds });
+
+  const firstPage = await controller.caches(user, {});
+  setLatestImport("import-1");
+
+  await assert.rejects(
+    () => controller.caches(user, {
+      cursor: firstPage.nextCursor,
+      snapshot: firstPage.snapshot,
+      snapshotRevision: firstPage.snapshotRevision
+    }),
+    (error: unknown) => error instanceof ConflictException && error.message === "map snapshot expired"
+  );
 });
 
 test("map filters are applied before pagination", async () => {

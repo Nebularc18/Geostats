@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Get, Post, Query, UseGuards } from "@nestjs/common";
+import { BadRequestException, Body, ConflictException, Controller, Get, Post, Query, UseGuards } from "@nestjs/common";
 import { AuthUser } from "@geostats/shared";
 import { countableFindWhere, Prisma } from "@geostats/db";
 import { normalizedGcUsername } from "@geostats/stats";
@@ -178,6 +178,11 @@ class MapPointsQueryDto {
   @IsDateString()
   @MaxLength(40)
   snapshot?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(300)
+  snapshotRevision?: string;
 }
 
 const MAP_CACHE_LIMIT = 5000;
@@ -438,6 +443,40 @@ export class MapController {
     return countableFindWhere(userId, normalizedGcUsername(profile));
   }
 
+  private async mapSnapshotRevision(userId: string) {
+    // A cursor spans separate requests, so a timestamp alone cannot freeze a
+    // history while an import transaction is committing. Detect changed rows
+    // and make the client restart from a fresh snapshot instead.
+    const [latestImport, findCount, hideCount] = await Promise.all([
+      this.prisma.import.findFirst({
+        where: { userId },
+        orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }, { id: "desc" }],
+        select: { id: true, updatedAt: true, createdAt: true }
+      }),
+      this.prisma.find.count({ where: { userId } }),
+      this.prisma.hide.count({ where: { userId } })
+    ]);
+    const importRevision = latestImport
+      ? `${latestImport.id}:${latestImport.updatedAt.toISOString()}:${latestImport.createdAt.toISOString()}`
+      : "none";
+    return `${importRevision}:${findCount}:${hideCount}`;
+  }
+
+  private async validateMapSnapshot(userId: string, query: MapPointsQueryDto, cursor: string | undefined) {
+    const requestedRevision = query.snapshotRevision?.trim() || undefined;
+    const revision = await this.mapSnapshotRevision(userId);
+    if (cursor && !query.snapshot) {
+      throw new BadRequestException("snapshot is required for pagination");
+    }
+    if (cursor && !requestedRevision) {
+      throw new BadRequestException("snapshot revision is required for pagination");
+    }
+    if (requestedRevision && requestedRevision !== revision) {
+      throw new ConflictException("map snapshot expired");
+    }
+    return revision;
+  }
+
   @Get("place-suggestions")
   async placeSuggestions(@CurrentUser() user: AuthUser, @Query() query: PlaceSuggestionQueryDto) {
     return this.travelSearch.suggestPlaces(user.id, query.q);
@@ -465,6 +504,7 @@ export class MapController {
   @Get("caches")
   async caches(@CurrentUser() user: AuthUser, @Query() query: MapPointsQueryDto = {}) {
     const cursor = query.cursor?.trim() || undefined;
+    const snapshotRevision = await this.validateMapSnapshot(user.id, query, cursor);
     const snapshot = mapSnapshot(query.snapshot);
     const where = findMapWhere(await this.countableFindWhereForUser(user.id), query, snapshot);
     const totalCount = cursor ? undefined : await this.prisma.find.count({ where });
@@ -504,6 +544,9 @@ export class MapController {
       }
       throw error;
     }
+    if (await this.mapSnapshotRevision(user.id) !== snapshotRevision) {
+      throw new ConflictException("map snapshot expired");
+    }
     const truncated = finds.length > MAP_CACHE_LIMIT;
     const visibleFinds = truncated ? finds.slice(0, MAP_CACHE_LIMIT) : finds;
 
@@ -511,6 +554,7 @@ export class MapController {
       truncated,
       limit: MAP_CACHE_LIMIT,
       snapshot: snapshot.toISOString(),
+      snapshotRevision,
       totalCount,
       nextCursor: truncated ? visibleFinds.at(-1)?.id ?? null : null,
       points: visibleFinds.map((find) => ({
@@ -535,6 +579,7 @@ export class MapController {
   @Get("hides")
   async hides(@CurrentUser() user: AuthUser, @Query() query: MapPointsQueryDto = {}) {
     const cursor = query.cursor?.trim() || undefined;
+    const snapshotRevision = await this.validateMapSnapshot(user.id, query, cursor);
     const snapshot = mapSnapshot(query.snapshot);
     const where = hideMapWhere({ userId: user.id }, query, snapshot);
     const totalCount = cursor ? undefined : await this.prisma.hide.count({ where });
@@ -574,6 +619,9 @@ export class MapController {
       }
       throw error;
     }
+    if (await this.mapSnapshotRevision(user.id) !== snapshotRevision) {
+      throw new ConflictException("map snapshot expired");
+    }
     const truncated = hides.length > MAP_CACHE_LIMIT;
     const visibleHides = truncated ? hides.slice(0, MAP_CACHE_LIMIT) : hides;
 
@@ -581,6 +629,7 @@ export class MapController {
       truncated,
       limit: MAP_CACHE_LIMIT,
       snapshot: snapshot.toISOString(),
+      snapshotRevision,
       totalCount,
       nextCursor: truncated ? visibleHides.at(-1)?.id ?? null : null,
       points: visibleHides.map((hide) => ({
