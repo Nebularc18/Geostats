@@ -96,9 +96,9 @@ export function GsakImportPanel({ onImportActivity }: GsakImportPanelProps) {
         <div>
           <h2>Import from GSAK</h2>
           <p className="muted">
-            Optional. Install the connector once, then send the current GSAK
-            database to Geostats directly from GSAK. GPX and ZIP imports
-            continue to work without it.
+            Optional. Install the connector once. Each run refreshes found and
+            owned cache data in GSAK before sending it to Geostats. GPX and ZIP
+            imports continue to work without it.
           </p>
         </div>
         <button
