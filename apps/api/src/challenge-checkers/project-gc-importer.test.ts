@@ -174,6 +174,29 @@ return c_number(conf)
   assert.equal(importProjectGcNumberScript(script, '{"limit":1}').rules[0]!.minimum, 1);
 });
 
+test("rejects a partial type expansion accumulator", () => {
+  const script = `
+local args={...}
+local conf = args[1].config
+function expandFilter(filter)
+  local result = TableCopy(filter)
+  result.types = {}
+  for _, value in ipairs(filter.types) do
+    if value == filter.types[1] then table.insert(result.types, value) end
+  end
+  return result
+end
+function c_number(conf)
+  local l_config = TableCopy(conf)
+  l_config.filter = expandFilter(conf)
+  local finds = PGC.GetFinds(args[1].profileId, { filter = conf })
+  return { ok = #finds >= conf.limit }
+end
+return c_number(conf)
+`;
+  assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /expandFilter.*semantics/);
+});
+
 test("rejects an accumulator populated from an unrelated loop", () => {
   const script = `
 local args={...}
@@ -284,6 +307,11 @@ test("rejects an outer return that changes the c_number verdict", () => {
 test("rejects embedded c_number invocations", () => {
   const script = numberScript.replace("return c_number(conf)", "res = force(c_number(conf), true)\nreturn res");
   assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /returned or assigned directly/);
+});
+
+test("rejects duplicate verdict fields in the outer result", () => {
+  const script = numberScript.replace("return c_number(conf)", "local res = c_number(conf)\nreturn { ok = res.ok, ok = false }");
+  assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /duplicate verdict fields/);
 });
 
 test("rejects overriding the c_number result after invocation", () => {

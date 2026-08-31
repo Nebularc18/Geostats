@@ -243,6 +243,8 @@ function sameTableReference(value: string, target: string) {
 function accumulatorIsPopulated(body: string, assignment: { name: string; member: string; index: number }, derived: Set<string>) {
   const target = `${assignment.name}${assignment.member}`;
   const suffix = body.slice(assignment.index);
+  const inputField = assignment.member === ".types" ? "types" : assignment.member === ".excludeTypes" ? "excludeTypes" : undefined;
+  if (inputField && new RegExp("\\b(?:if|elseif)\\b[^\\n]*\\b" + inputField + "\\b").test(suffix)) return false;
   for (const call of callSites(suffix)) {
     if (call.name !== "table.insert") continue;
     const argumentsList = topLevelArguments(call.argumentsText);
@@ -618,6 +620,9 @@ function validateCountCondition(source: string) {
   const exactReturn = body.match(/\bok\s*=\s*#\s*finds\s*>=\s*conf\s*\.\s*limit\b\s*(?=[,}])/g) ?? [];
   if (exactIf.length + exactReturn.length !== 1) throw new BadRequestException("c_number must return exactly the conf.limit count condition");
   const returnStatements = [...body.matchAll(/\breturn\s*\{([^}]*)\}/g)].map((match) => match[1] ?? "");
+  if (returnStatements.some((value) => (value.match(/\bok\s*=/g) ?? []).length > 1)) {
+    throw new BadRequestException("The c_number result must not contain duplicate verdict fields");
+  }
   const hasFinalReturn = exactReturn.length === 1 || returnStatements.some((value) => /\bok\s*=\s*ok\b/.test(value));
   const hasAllowedEarlyReturn = returnStatements.some((value) => /\bok\s*=\s*nil\b/.test(value));
   if ((body.match(/\breturn\b/g) ?? []).length !== returnStatements.length || !hasFinalReturn || (returnStatements.length > 2 || returnStatements.length === 2 && !hasAllowedEarlyReturn)) {
@@ -679,6 +684,9 @@ function validateCountCondition(source: string) {
     const containerAssignment = /\b[A-Za-z_]\w*\s*(?:\.\s*[A-Za-z_]\w*|\[[^\]]*\])\s*=\s*([^\n;]*)/g;
     const resultRead = (value: string) => [...aliases].some((alias) => new RegExp("^" + alias + "\\s*\\.\\s*ok$").test(value.trim()));
     const aliasReference = new RegExp("(?:" + aliasPattern + ")");
+    if ([...afterInvocation.matchAll(/\breturn\s*\{([^}]*)\}/g)].some((statement) => (statement[1]!.match(/\bok\s*=/g) ?? []).length > 1)) {
+      throw new BadRequestException("The c_number result must not contain duplicate verdict fields");
+    }
     const containerReference = [...afterInvocation.matchAll(containerAssignment)].some((assignment) => !resultRead(assignment[1]!) && aliasReference.test(assignment[1]!));
     const callReference = callSites(afterInvocation).some((call) => aliasReference.test(call.argumentsText));
     const returnVerdict = [...afterInvocation.matchAll(/\breturn\s*\{([^}]*)\}/g)].some((statement) => {
