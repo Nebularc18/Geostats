@@ -153,25 +153,18 @@ export class StatsService {
   }
 
   private async snapshotForUsername(username: string) {
-    const cleanUsername = username.trim();
-    if (!cleanUsername) {
+    const normalizedUsername = normalizedGcUsername(username);
+    if (!normalizedUsername) {
       throw new NotFoundException("Profile not found");
     }
 
-    const profiles = await this.prisma.geocachingProfile.findMany({
-      where: {
-        gcUsername: {
-          equals: cleanUsername,
-          mode: "insensitive"
-        }
-      },
-      select: {
-        userId: true,
-        gcUsername: true
-      },
-      orderBy: { updatedAt: "desc" },
-      take: 2
-    });
+    const profiles = await this.prisma.$queryRaw<Array<{ userId: string; gcUsername: string }>>(Prisma.sql`
+      SELECT "user_id" AS "userId", "gc_username" AS "gcUsername"
+      FROM "geocaching_profiles"
+      WHERE LOWER(REGEXP_REPLACE("gc_username", '^[[:space:]]+|[[:space:]]+$', '', 'g')) = ${normalizedUsername}
+      ORDER BY "updated_at" DESC
+      LIMIT 2
+    `);
 
     if (!profiles.length) {
       throw new NotFoundException("Profile not found");

@@ -110,6 +110,10 @@ export class ProfileController {
 
   @Put()
   async updateProfile(@CurrentUser() user: AuthUser, @Body() body: ProfileDto) {
+    const gcUsername = body.gcUsername.trim();
+    if (!gcUsername) {
+      throw new BadRequestException("Geocaching username is required");
+    }
     const profile = await this.prisma.$transaction(async (tx) => {
       const ftfDetectionTerms = cleanFtfDetectionTerms(body.ftfDetectionTerms);
       const ftfDetectionData = body.ftfDetectionTerms === undefined ? {} : { ftfDetectionTerms };
@@ -118,14 +122,14 @@ export class ProfileController {
         where: { userId: user.id },
         create: {
           userId: user.id,
-          gcUsername: body.gcUsername,
+          gcUsername,
           homeLatitude: body.homeLatitude ?? null,
           homeLongitude: body.homeLongitude ?? null,
           timeZone,
           ...ftfDetectionData
         },
         update: {
-          gcUsername: body.gcUsername,
+          gcUsername,
           homeLatitude: body.homeLatitude ?? null,
           homeLongitude: body.homeLongitude ?? null,
           timeZone,
