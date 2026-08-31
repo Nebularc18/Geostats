@@ -88,6 +88,26 @@ return c_number(conf)
   assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /expandFilter.*derived/);
 });
 
+test("rejects an expanded filter that adds a restriction", () => {
+  const script = `
+local args={...}
+local conf = args[1].config
+function expandFilter(filter)
+  local result = TableCopy(filter)
+  result.country = 'Sweden'
+  return result
+end
+function c_number(conf)
+  local l_config = TableCopy(conf)
+  l_config.filter = expandFilter(conf)
+  local finds = PGC.GetFinds(args[1].profileId, { filter = conf })
+  return { ok = #finds >= conf.limit }
+end
+return c_number(conf)
+`;
+  assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /expandFilter.*semantics/);
+});
+
 test("merges Project-GC alternative filters with the base filter", () => {
   const imported = importProjectGcNumberScript(numberScript, JSON.stringify({
     limit: 2,
