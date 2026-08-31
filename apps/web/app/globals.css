@@ -1905,6 +1905,115 @@ select:focus {
   cursor: pointer;
 }
 
+.inline-action-form,
+.goal-composer {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(237, 244, 232, 0.03);
+}
+
+.inline-action-form > label,
+.goal-composer > label,
+.goal-composer-fields label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.inline-action-form > div,
+.goal-composer-fields,
+.goal-composer-actions {
+  display: flex;
+  gap: 9px;
+  align-items: center;
+}
+
+.inline-action-form > div input {
+  flex: 1;
+  min-width: 0;
+}
+
+.form-cancel {
+  justify-self: start;
+  padding: 2px 0;
+  border: 0;
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+  font-size: 0.78rem;
+}
+
+.goal-composer {
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 0.55fr) auto;
+  align-items: end;
+  margin: 0 0 16px;
+}
+
+.goal-composer > div:first-child {
+  align-self: start;
+}
+
+.goal-composer h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.goal-composer-fields {
+  align-items: stretch;
+}
+
+.goal-composer-fields label {
+  flex: 1;
+}
+
+.goal-composer-actions {
+  align-self: end;
+}
+
+.goal-menu-wrap {
+  position: relative;
+  justify-self: end;
+}
+
+.goal-action-menu {
+  position: absolute;
+  top: calc(100% + 5px);
+  right: 0;
+  z-index: 3;
+  display: grid;
+  min-width: 125px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel-strong);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.32);
+}
+
+.goal-action-menu button {
+  padding: 8px 9px;
+  border: 0;
+  color: var(--ink);
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.goal-action-menu button:hover {
+  border-radius: 4px;
+  background: rgba(95, 191, 133, 0.14);
+}
+
+.optimized-button {
+  border-color: rgba(95, 191, 133, 0.5);
+  color: var(--green);
+}
+
 .goal-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -2180,6 +2289,9 @@ select:focus {
   .maintenance-row { grid-template-columns: auto auto minmax(0, 1fr); }
   .maintenance-distance { grid-column: 3; }
   .route-sketch { height: 230px; }
+  .goal-composer { grid-template-columns: 1fr; align-items: stretch; }
+  .goal-composer-actions { justify-content: flex-end; }
+  .inline-action-form > div { align-items: stretch; flex-direction: column; }
 }
 
 .oauth-button {
