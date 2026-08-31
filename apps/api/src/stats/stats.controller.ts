@@ -15,10 +15,18 @@ export class StatsController {
     return { stats };
   }
 
+  @Get("compare/:username")
+  async compare(@CurrentUser() user: AuthUser, @Param("username") username: string) {
+    return this.stats.friendComparisonForUser(user.id, username);
+  }
+
   @Get("finds-by-month")
   async findsByMonth(@CurrentUser() user: AuthUser) {
     const stats = (await this.stats.snapshotForUser(user.id)) as any;
-    return { findsByMonth: stats.findsByMonth ?? [], findsByYear: stats.findsByYear ?? [] };
+    return {
+      findsByMonth: stats.findsByMonth ?? [],
+      findsByYear: stats.findsByYear ?? []
+    };
   }
 
   @Get("cache-types")
@@ -62,20 +70,12 @@ export class StatsController {
   }
 
   @Get("extreme-caches")
-  async extremeCaches(
-    @CurrentUser() user: AuthUser,
-    @Query("country") country?: string,
-    @Query("region") region?: string
-  ) {
+  async extremeCaches(@CurrentUser() user: AuthUser, @Query("country") country?: string, @Query("region") region?: string) {
     return this.stats.extremeCachesForUser(user.id, country ?? null, region ?? null);
   }
 
   @Get("ftf/finds")
-  async ftfFinds(
-    @CurrentUser() user: AuthUser,
-    @Query("cursor") cursor?: string,
-    @Query("limit") limit?: string
-  ) {
+  async ftfFinds(@CurrentUser() user: AuthUser, @Query("cursor") cursor?: string, @Query("limit") limit?: string) {
     const parsedLimit = limit === undefined ? undefined : Number(limit);
     if (parsedLimit !== undefined && (!Number.isInteger(parsedLimit) || parsedLimit < 1)) {
       throw new BadRequestException("limit must be a positive integer");
@@ -84,11 +84,7 @@ export class StatsController {
   }
 
   @Patch("ftf/finds/:id")
-  async updateFtfFind(
-    @CurrentUser() user: AuthUser,
-    @Param("id") id: string,
-    @Body() body: { isFtf?: unknown }
-  ) {
+  async updateFtfFind(@CurrentUser() user: AuthUser, @Param("id") id: string, @Body() body: { isFtf?: unknown }) {
     if (typeof body.isFtf !== "boolean") {
       throw new BadRequestException("isFtf must be a boolean");
     }

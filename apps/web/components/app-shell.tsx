@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { BarChart3, BookOpen, Code2, Database, Flag, Globe2, Home, Map, Navigation, Puzzle, Settings, ShieldCheck, Trophy, Upload } from "lucide-react";
+import { BarChart3, BookOpen, Code2, Database, Flag, Globe2, Home, Map, Navigation, Puzzle, Settings, ShieldCheck, Trophy, Upload, Users } from "lucide-react";
 import { API_URL, apiFetch } from "../lib/api";
 
 const nav = [
@@ -11,10 +11,15 @@ const nav = [
   { href: "/upload", label: "Upload", icon: Upload },
   { href: "/imports", label: "Imports", icon: Database },
   { href: "/stats", label: "Stats", icon: BarChart3 },
+  { href: "/friends", label: "Friends", icon: Users },
   { href: "/ftf", label: "FTF", icon: Trophy },
   { href: "/hides", label: "Hides", icon: Flag },
   { href: "/milestones", label: "Milestones", icon: Flag },
-  { href: "/challenge-checkers", label: "Challenge Checkers", icon: ShieldCheck },
+  {
+    href: "/challenge-checkers",
+    label: "Challenge Checkers",
+    icon: ShieldCheck
+  },
   { href: "/profile-html", label: "Profile HTML", icon: Code2 },
   { href: "/map", label: "Map", icon: Map },
   { href: "/mysteries", label: "Mysteries", icon: Puzzle },
@@ -130,7 +135,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             );
           })}
         </nav>
-        {!DEV_OFFLINE && <button className="ghost-button" type="button" onClick={logout}>Sign out</button>}
+        {!DEV_OFFLINE && (
+          <button className="ghost-button" type="button" onClick={logout}>
+            Sign out
+          </button>
+        )}
         <p className="sidebar-attribution">Inspired by Project-GC</p>
       </aside>
       <main className="content">{profileChecked ? children : null}</main>

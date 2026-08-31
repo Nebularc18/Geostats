@@ -377,6 +377,14 @@ export class ImportProcessor {
           });
           shouldRecalculateStats = true;
         }
+
+        // Advance the map revision in the same transaction as the imported
+        // rows. This keeps cursor pagination from observing a partial update
+        // while the import record is still marked as processing.
+        await tx.import.update({
+          where: { id: payload.importId },
+          data: { updatedAt: new Date() }
+        });
       });
 
       if (shouldRecalculateStats) {
