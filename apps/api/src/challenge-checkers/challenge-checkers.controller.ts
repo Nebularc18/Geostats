@@ -23,6 +23,9 @@ export class ChallengeCheckersController {
     return this.checkers.locationCatalogForUser(user.id, country, region);
   }
 
+  @Post("import-project-gc")
+  importProjectGc(@Body() body: Record<string, unknown>) { return this.checkers.importProjectGc(body); }
+
   @Post()
   async create(@CurrentUser() user: AuthUser, @Body() body: Record<string, unknown>) {
     return { checker: await this.checkers.create(user.id, body) };

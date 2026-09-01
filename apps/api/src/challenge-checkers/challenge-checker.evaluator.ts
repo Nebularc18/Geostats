@@ -1,6 +1,27 @@
 import { cacheTypeIdentity, cacheTypeLabel } from "./cache-type-catalog";
 import { geocacheAttributeLabel } from "./geocache-attribute-catalog";
 
+export type ProjectGcFindFilter = {
+  countries?: string[];
+  regions?: string[];
+  counties?: string[];
+  cacheTypeIds?: string[];
+  excludedCacheTypeIds?: string[];
+  sizes?: string[];
+  difficulties?: number[];
+  terrains?: number[];
+  minVisitDate?: string;
+  maxVisitDate?: string;
+  minHiddenDate?: string;
+  maxHiddenDate?: string;
+  minLatitude?: number;
+  maxLatitude?: number;
+  minLongitude?: number;
+  maxLongitude?: number;
+};
+
+export type ProjectGcNumberRule = { type: "PROJECT_GC_NUMBER"; minimum: number; filters: ProjectGcFindFilter[]; filterLabel: string };
+
 export type ChallengeRule =
   | { type: "TOTAL_FINDS"; minimum: number }
   | { type: "CACHE_TYPE"; cacheTypeId: string; cacheTypeLabel: string; minimum: number }
@@ -15,7 +36,8 @@ export type ChallengeRule =
   | { type: "DIFFICULTY_RATING"; rating: number; minimum: number }
   | { type: "TERRAIN_RATING"; rating: number; minimum: number }
   | { type: "FAVORITE_POINTS"; minimumFavoritePoints: number; minimum: number }
-  | { type: "ATTRIBUTE"; attributeId: string; attributeLabel: string; minimum: number };
+  | { type: "ATTRIBUTE"; attributeId: string; attributeLabel: string; minimum: number }
+  | ProjectGcNumberRule;
 
 export type CheckerFind = {
   foundAt: Date;
@@ -88,6 +110,31 @@ function favoritePoints(find: CheckerFind) {
   const value = rawText(extension["groundspeak:favorite_points"], extension["groundspeak:favorites"], extension.favorite_points, extension.favorites, extension.favpoints);
   const number = Number(value);
   return Number.isFinite(number) ? number : 0;
+}
+
+function projectGcFilterMatches(filter: ProjectGcFindFilter, find: CheckerFind) {
+  const inTextList = (value: string | null | undefined, choices: string[] | undefined) => !choices || choices.some((choice) => sameText(value ?? null, choice));
+  const cacheTypeId = find.cache.cacheType ? cacheTypeIdentity(find.cache.cacheType).id : null;
+  const visitDate = loggedEvidenceDate(find);
+  const hiddenDate = find.cache.hiddenDate?.toISOString().slice(0, 10);
+  const latitude = Number(find.cache.latitude);
+  const longitude = Number(find.cache.longitude);
+  return inTextList(find.cache.country, filter.countries) &&
+    inTextList(find.cache.region, filter.regions) &&
+    inTextList(find.cache.county, filter.counties) &&
+    (!filter.cacheTypeIds || cacheTypeId !== null && filter.cacheTypeIds.includes(cacheTypeId)) &&
+    (!filter.excludedCacheTypeIds || cacheTypeId === null || !filter.excludedCacheTypeIds.includes(cacheTypeId)) &&
+    inTextList(find.cache.size, filter.sizes) &&
+    (!filter.difficulties || filter.difficulties.includes(Number(find.cache.difficulty))) &&
+    (!filter.terrains || filter.terrains.includes(Number(find.cache.terrain))) &&
+    (!filter.minVisitDate || visitDate >= filter.minVisitDate) &&
+    (!filter.maxVisitDate || visitDate <= filter.maxVisitDate) &&
+    (!filter.minHiddenDate || hiddenDate !== undefined && hiddenDate >= filter.minHiddenDate) &&
+    (!filter.maxHiddenDate || hiddenDate !== undefined && hiddenDate <= filter.maxHiddenDate) &&
+    (filter.minLatitude === undefined || Number.isFinite(latitude) && latitude > filter.minLatitude) &&
+    (filter.maxLatitude === undefined || Number.isFinite(latitude) && latitude < filter.maxLatitude) &&
+    (filter.minLongitude === undefined || Number.isFinite(longitude) && longitude > filter.minLongitude) &&
+    (filter.maxLongitude === undefined || Number.isFinite(longitude) && longitude < filter.maxLongitude);
 }
 
 export function attributesFromRaw(raw: unknown): Array<{ id: string; label: string }> {
@@ -194,10 +241,14 @@ export function evaluateChallenge(rules: ChallengeRule[], finds: CheckerFind[], 
       matchingFinds = finds.filter((find) => favoritePoints(find) >= rule.minimumFavoritePoints);
       current = matchingFinds.length;
       label = `Caches with at least ${rule.minimumFavoritePoints} Favorite points`;
-    } else {
+    } else if (rule.type === "ATTRIBUTE") {
       matchingFinds = finds.filter((find) => attributesFromRaw(find.cache.raw).some((attribute) => attribute.id === rule.attributeId));
       current = matchingFinds.length;
       label = `${rule.attributeLabel} attribute finds`;
+    } else {
+      matchingFinds = finds.filter((find) => rule.filters.some((filter) => projectGcFilterMatches(filter, find)));
+      current = matchingFinds.length;
+      label = `Project-GC count: ${rule.filterLabel}`;
     }
 
     const passed = current >= rule.minimum;

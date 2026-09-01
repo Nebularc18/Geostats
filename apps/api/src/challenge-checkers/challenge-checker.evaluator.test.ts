@@ -114,3 +114,22 @@ test("evaluates the expanded imported-data rules", () => {
   assert.equal(result.passed, true);
   assert.deepEqual(result.rules.map((rule) => rule.current), [2, 2, 2, 3, 1, 2, 2, 1, 1]);
 });
+
+test("evaluates imported Project-GC count filters as alternatives without double counting", () => {
+  const result = evaluateChallenge([{
+    type: "PROJECT_GC_NUMBER",
+    minimum: 2,
+    filterLabel: "Sweden Micro; or EarthCache",
+    filters: [
+      { countries: ["Sweden"], sizes: ["Micro"] },
+      { cacheTypeIds: ["137"] }
+    ]
+  }], [
+    { ...finds[0]!, cache: { ...finds[0]!.cache, size: "Micro" } },
+    { ...finds[1]!, cache: { ...finds[1]!.cache, cacheType: "EarthCache", size: "Micro" } },
+    { ...finds[2]!, cache: { ...finds[2]!.cache, size: "Regular" } }
+  ]);
+  assert.equal(result.passed, true);
+  assert.equal(result.rules[0]!.current, 2);
+  assert.match(result.rules[0]!.label, /Project-GC count/);
+});

@@ -3,9 +3,10 @@ import { countableFindWhere, Prisma } from "@geostats/db";
 import { randomBytes } from "node:crypto";
 import timezoneAt from "tz-lookup";
 import { PrismaService } from "../common/prisma.service";
-import { attributesFromRaw, ChallengeRule, evaluateChallenge, proofText } from "./challenge-checker.evaluator";
+import { attributesFromRaw, ChallengeRule, evaluateChallenge, ProjectGcFindFilter, proofText } from "./challenge-checker.evaluator";
 import { cacheTypeIdentity, cacheTypeOptions } from "./cache-type-catalog";
 import { BoundaryGeometry, GeographicBoundariesService, pointInBoundary } from "./geographic-boundaries";
+import { importProjectGcNumberScript, projectGcFilterLabel } from "./project-gc-importer";
 
 type CheckerInput = { name?: unknown; gcCode?: unknown; description?: unknown; rules?: unknown };
 
@@ -104,8 +105,27 @@ function parseRules(value: unknown): ChallengeRule[] {
       if (!attributeId || !attributeLabel) throw new BadRequestException("attributeId and attributeLabel are required");
       return { type: rule.type, attributeId, attributeLabel, minimum };
     }
+    if (rule.type === "PROJECT_GC_NUMBER") {
+      if (!Array.isArray(rule.filters) || rule.filters.length < 1 || rule.filters.length > 50) throw new BadRequestException("Imported Project-GC rule must contain filters");
+      const filters = rule.filters.map((filter) => validateStoredProjectGcFilter(filter));
+      return { type: rule.type, minimum, filters, filterLabel: projectGcFilterLabel(filters) };
+    }
     throw new BadRequestException("Unsupported challenge rule type");
   });
+}
+
+function validateStoredProjectGcFilter(value: unknown): ProjectGcFindFilter {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new BadRequestException("Invalid imported Project-GC filter");
+  const filter = value as Record<string, unknown>;
+  const allowed = new Set(["countries", "regions", "counties", "cacheTypeIds", "excludedCacheTypeIds", "sizes", "difficulties", "terrains", "minVisitDate", "maxVisitDate", "minHiddenDate", "maxHiddenDate", "minLatitude", "maxLatitude", "minLongitude", "maxLongitude"]);
+  if (Object.keys(filter).some((key) => !allowed.has(key))) throw new BadRequestException("Invalid imported Project-GC filter field");
+  const textArrays = ["countries", "regions", "counties", "cacheTypeIds", "excludedCacheTypeIds", "sizes"];
+  const numberArrays = ["difficulties", "terrains"];
+  for (const key of textArrays) if (filter[key] !== undefined && (!Array.isArray(filter[key]) || !(filter[key] as unknown[]).every((item) => typeof item === "string" && item.length <= 120))) throw new BadRequestException(`Invalid ${key} filter`);
+  for (const key of numberArrays) if (filter[key] !== undefined && (!Array.isArray(filter[key]) || !(filter[key] as unknown[]).every((item) => typeof item === "number" && Number.isFinite(item)))) throw new BadRequestException(`Invalid ${key} filter`);
+  for (const key of ["minVisitDate", "maxVisitDate", "minHiddenDate", "maxHiddenDate"]) if (filter[key] !== undefined && (typeof filter[key] !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(filter[key] as string))) throw new BadRequestException(`Invalid ${key} filter`);
+  for (const key of ["minLatitude", "maxLatitude", "minLongitude", "maxLongitude"]) if (filter[key] !== undefined && (typeof filter[key] !== "number" || !Number.isFinite(filter[key]))) throw new BadRequestException(`Invalid ${key} filter`);
+  return filter as ProjectGcFindFilter;
 }
 
 @Injectable()
@@ -178,6 +198,10 @@ export class ChallengeCheckersService {
     }
     const attributes = [...attributeMap].map(([id, label]) => ({ id, label })).sort((left, right) => compare(left.label, right.label));
     return { cacheTypes: cacheTypeOptions(finds.map((find) => find.cache.cacheType)), sizes, attributes };
+  }
+
+  importProjectGc(input: Record<string, unknown>) {
+    return importProjectGcNumberScript(input.script, input.config);
   }
 
   async locationCatalogForUser(userId: string, countryValue: unknown, regionValue: unknown) {

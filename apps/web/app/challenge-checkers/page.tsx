@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { Check, Clipboard, Globe2, Pencil, Play, Plus, Search, Trash2, X } from "lucide-react";
+import { Check, Clipboard, FileUp, Globe2, Pencil, Play, Plus, Search, Trash2, X } from "lucide-react";
 import { AppShell } from "../../components/app-shell";
 import { apiFetch } from "../../lib/api";
 import { copyText } from "../../lib/copy-text";
@@ -20,7 +20,8 @@ type Rule =
   | { type: "DIFFICULTY_RATING"; rating: number; minimum: number }
   | { type: "TERRAIN_RATING"; rating: number; minimum: number }
   | { type: "FAVORITE_POINTS"; minimumFavoritePoints: number; minimum: number }
-  | { type: "ATTRIBUTE"; attributeId: string; attributeLabel: string; minimum: number };
+  | { type: "ATTRIBUTE"; attributeId: string; attributeLabel: string; minimum: number }
+  | { type: "PROJECT_GC_NUMBER"; minimum: number; filters: Array<Record<string, unknown>>; filterLabel: string };
 type Checker = { id: string; name: string; gcCode: string | null; description: string | null; rules: Rule[]; publicSlug: string | null; publishedAt: string | null; updatedAt: string };
 type Evidence = { date: string; gcCode: string; name: string };
 type Result = { passed: boolean; username: string; checkedAt: string; dataUpdatedAt: string | null; proofText: string; rules: Array<{ label: string; current: number; required: number; passed: boolean; detail: string; evidence: Evidence[]; evidenceLimited: boolean }> };
@@ -33,6 +34,7 @@ const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Frida
 const RATINGS = Array.from({ length: 9 }, (_, index) => 1 + index / 2);
 
 function defaultRule(type: Rule["type"]): Rule {
+  if (type === "PROJECT_GC_NUMBER") return { type, minimum: 1, filters: [{}], filterLabel: "all finds" };
   if (type === "CACHE_TYPE") return { type, cacheTypeId: "2", cacheTypeLabel: "Traditional Cache", minimum: 100 };
   if (type === "LOCATION") return { type, field: "country", value: "", minimum: 1 };
   if (type === "CALENDAR_DAYS") return { type, minimum: 365 };
@@ -70,6 +72,10 @@ export default function ChallengeCheckersPage() {
   const [checkerSort, setCheckerSort] = useState("updated-desc");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [batchProgress, setBatchProgress] = useState<{ done: number; total: number } | null>(null);
+  const [showProjectGcImport, setShowProjectGcImport] = useState(false);
+  const [projectGcScript, setProjectGcScript] = useState("");
+  const [projectGcConfig, setProjectGcConfig] = useState('{\n  "limit": 100\n}');
+  const [projectGcSummary, setProjectGcSummary] = useState("");
   const formSectionRef = useRef<HTMLElement>(null);
 
   async function load() {
@@ -109,7 +115,7 @@ export default function ChallengeCheckersPage() {
   }
 
   function resetForm() {
-    setName(""); setGcCode(""); setDescription(""); setRules([defaultRule("TOTAL_FINDS")]); setEditingId(null);
+    setName(""); setGcCode(""); setDescription(""); setRules([defaultRule("TOTAL_FINDS")]); setEditingId(null); setProjectGcSummary("");
   }
 
   async function save(event: React.FormEvent) {
@@ -122,6 +128,20 @@ export default function ChallengeCheckersPage() {
       await load();
     } catch (cause) { setError(cause instanceof Error ? cause.message : `Could not ${editingId ? "update" : "create"} checker`); }
     finally { setBusy(null); }
+  }
+
+  async function importProjectGc() {
+    setBusy("project-gc-import"); setError(""); setProjectGcSummary("");
+    try {
+      const imported = await apiFetch<{ rules: Rule[]; summary: string }>("/challenge-checkers/import-project-gc", {
+        method: "POST",
+        body: JSON.stringify({ script: projectGcScript, config: projectGcConfig })
+      });
+      setRules(imported.rules);
+      setProjectGcSummary(imported.summary);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not import the Project-GC script");
+    } finally { setBusy(null); }
   }
 
   function edit(checker: Checker) {
@@ -222,7 +242,14 @@ export default function ChallengeCheckersPage() {
     <div className="challenge-notice"><strong>Independent checker</strong><span>Geostats can validate and share your imported-data result, but Project-GC remains the checker accepted for newly published challenge caches on Geocaching.com.</span></div>
 
     <section className="panel" ref={formSectionRef}>
-      <h2>{editingId ? "Edit checker" : "Create a checker"}</h2>
+      <div className="challenge-form-heading"><div><h2>{editingId ? "Edit checker" : "Create a checker"}</h2><p className="muted">Build the rules here or translate a supported Project-GC script.</p></div><button className="ghost-button challenge-small-button" type="button" onClick={() => setShowProjectGcImport((current) => !current)}><FileUp size={17} />{showProjectGcImport ? "Close importer" : "Import from Project-GC"}</button></div>
+      {showProjectGcImport && <div className="challenge-project-gc-import">
+        <div><h3>Import a Project-GC count checker</h3><p className="muted">Paste the Lua checker and its tag config. Geostats translates the <code>c_number</code> rules and does not run the Lua.</p></div>
+        <label>Lua script<textarea value={projectGcScript} onChange={(event) => setProjectGcScript(event.target.value)} placeholder="Paste the Project-GC Lua script…" rows={9} /></label>
+        <label className="challenge-file-button"><span>Or choose a .lua file</span><input type="file" accept=".lua,text/plain" onChange={(event) => { const file = event.target.files?.[0]; if (!file) return; void file.text().then(setProjectGcScript).catch(() => setError("Could not read the Lua file")); }} /></label>
+        <label>Project-GC tag config <small>JSON</small><textarea value={projectGcConfig} onChange={(event) => setProjectGcConfig(event.target.value)} rows={6} spellCheck={false} /></label>
+        <div className="challenge-actions"><button className="ghost-button challenge-small-button" type="button" disabled={busy !== null || !projectGcScript.trim() || !projectGcConfig.trim()} onClick={() => void importProjectGc()}><FileUp size={17} />{busy === "project-gc-import" ? "Importing…" : "Use imported rules"}</button>{projectGcSummary && <span className="challenge-import-success"><Check size={16} />Imported {projectGcSummary}</span>}</div>
+      </div>}
       <form className="form" onSubmit={save}>
         <div className="challenge-form-grid">
           <label>Name<input required maxLength={120} value={name} onChange={(event) => setName(event.target.value)} placeholder="365-day calendar challenge" /></label>
@@ -232,6 +259,7 @@ export default function ChallengeCheckersPage() {
         <div className="challenge-rules">
           {rules.map((rule, index) => <div className="challenge-rule" key={index}>
             <label>Rule type<select value={rule.type} onChange={(event) => replaceRule(index, defaultRule(event.target.value as Rule["type"]))}>
+              {rule.type === "PROJECT_GC_NUMBER" && <option value="PROJECT_GC_NUMBER">Imported Project-GC count</option>}
               <option value="TOTAL_FINDS">Total finds</option>
               <option value="CACHE_TYPE">Finds by cache type</option>
               <option value="CACHE_SIZE">Finds by cache size</option>
@@ -255,11 +283,12 @@ export default function ChallengeCheckersPage() {
             {(rule.type === "DIFFICULTY_RATING" || rule.type === "TERRAIN_RATING") && <label>{rule.type === "DIFFICULTY_RATING" ? "Difficulty" : "Terrain"}<select value={rule.rating} onChange={(event) => replaceRule(index, { ...rule, rating: Number(event.target.value) })}>{RATINGS.map((rating) => <option value={rating} key={rating}>{rating.toFixed(1)}</option>)}</select></label>}
             {rule.type === "FAVORITE_POINTS" && <label>Favorite points per cache<input type="number" min={1} max={1000000} required value={rule.minimumFavoritePoints} onChange={(event) => replaceRule(index, { ...rule, minimumFavoritePoints: Number(event.target.value) })} /></label>}
             {rule.type === "ATTRIBUTE" && <label>Positive attribute<select required value={rule.attributeId} onChange={(event) => { const selected = attributes.find((attribute) => attribute.id === event.target.value); replaceRule(index, { ...rule, attributeId: event.target.value, attributeLabel: selected?.label ?? event.target.value }); }}><option value="" disabled>Select an attribute</option>{attributes.map((attribute) => <option value={attribute.id} key={attribute.id}>{attribute.label}</option>)}</select></label>}
+            {rule.type === "PROJECT_GC_NUMBER" && <div className="challenge-imported-filter"><span>Imported filters</span><strong>{rule.filterLabel}</strong><small>Re-import the script to change these filters.</small></div>}
             <label>Required<input type="number" min={1} max={rule.type === "CALENDAR_DAYS" ? 366 : rule.type === "DIFFICULTY_TERRAIN" ? 81 : rule.type === "FIND_STREAK" ? 365 : 1000000} required value={rule.minimum} onChange={(event) => replaceRule(index, { ...rule, minimum: Number(event.target.value) })} /></label>
             {rules.length > 1 && <button className="challenge-icon-button" type="button" aria-label="Remove rule" onClick={() => setRules((current) => current.filter((_, itemIndex) => itemIndex !== index))}><X size={18} /></button>}
           </div>)}
         </div>
-        <div className="challenge-actions"><button className="ghost-button challenge-small-button" type="button" disabled={rules.length >= 10} onClick={() => setRules((current) => [...current, defaultRule("TOTAL_FINDS")])}><Plus size={17} />Add AND rule</button>{editingId && <button className="ghost-button challenge-small-button" type="button" onClick={resetForm}><X size={17} />Cancel editing</button>}<button className="primary-button" disabled={busy === "save"}>{busy === "save" ? "Saving…" : editingId ? "Update checker" : "Save checker"}</button></div>
+        <div className="challenge-actions"><button className="ghost-button challenge-small-button" type="button" disabled={rules.length >= 10} onClick={() => setRules((current) => [...current, defaultRule("TOTAL_FINDS")])}><Plus size={17} />Add AND rule</button>{editingId && <button className="ghost-button challenge-small-button" type="button" onClick={resetForm}><X size={17} />Cancel editing</button>}<button className="primary-button" disabled={busy !== null}>{busy === "save" ? "Saving…" : editingId ? "Update checker" : "Save checker"}</button></div>
       </form>
     </section>
 
