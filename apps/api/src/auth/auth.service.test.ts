@@ -76,6 +76,16 @@ function authServiceWithUsers() {
           passwordHash: data.passwordHash ?? null
         };
         users.push(user);
+        if (data.oauthAccounts?.create) {
+          const account = data.oauthAccounts.create;
+          oauthAccounts.push({
+            id: `oauth-${oauthAccounts.length + 1}`,
+            userId: user.id,
+            provider: account.provider,
+            providerAccountId: account.providerAccountId,
+            providerUsername: account.providerUsername ?? null
+          });
+        }
         return user;
       }
     },
@@ -188,258 +198,109 @@ test("login verifies legacy bcrypt password hashes", async () => {
   });
 });
 
-test("external auth requires email_verified to be true by default", async () => {
-  await withEnv(
+test("Clerk is the production default", () => {
+  withEnv(
     {
-      AUTH_MODE: "external",
-      EXTERNAL_AUTH_REQUIRE_VERIFIED_EMAIL: undefined,
-      EXTERNAL_AUTH_PROVIDER_ID: "external",
-      EXTERNAL_AUTH_CLIENT_ID: "client",
-      EXTERNAL_AUTH_TOKEN_URL: "https://auth.example/token",
-      EXTERNAL_AUTH_USERINFO_URL: "https://auth.example/userinfo"
+      AUTH_MODE: undefined,
+      NODE_ENV: "production"
     },
-    async () => {
-      const originalFetch = globalThis.fetch;
-      globalThis.fetch = (async (url: string) => {
-        if (url === "https://auth.example/token") {
-          return new Response(JSON.stringify({ access_token: "token" }), { status: 200 });
-        }
-        return new Response(JSON.stringify({ sub: "external-user-1", email: "user@example.com" }), { status: 200 });
-      }) as typeof fetch;
-      try {
-        const { service } = authServiceWithUsers();
-
-        await assert.rejects(() => service.loginWithExternalProvider("code", "verifier"), {
-          message: "External auth account email must be verified"
-        });
-      } finally {
-        globalThis.fetch = originalFetch;
-      }
+    () => {
+      const { service } = authServiceWithUsers();
+      assert.equal(service.authMode(), "clerk");
     }
   );
 });
 
-test("external auth can allow unverified email only when explicitly configured", async () => {
-  await withEnv(
-    {
-      AUTH_MODE: "external",
-      EXTERNAL_AUTH_REQUIRE_VERIFIED_EMAIL: "false",
-      EXTERNAL_AUTH_PROVIDER_ID: "external",
-      EXTERNAL_AUTH_CLIENT_ID: "client",
-      EXTERNAL_AUTH_TOKEN_URL: "https://auth.example/token",
-      EXTERNAL_AUTH_USERINFO_URL: "https://auth.example/userinfo"
-    },
-    async () => {
-      const originalFetch = globalThis.fetch;
-      globalThis.fetch = (async (url: string) => {
-        if (url === "https://auth.example/token") {
-          return new Response(JSON.stringify({ access_token: "token" }), { status: 200 });
-        }
-        return new Response(JSON.stringify({ sub: "external-user-1", email: "user@example.com" }), { status: 200 });
-      }) as typeof fetch;
-      try {
-        const { service } = authServiceWithUsers();
-
-        const user = await service.loginWithExternalProvider("code", "verifier");
-
-        assert.equal(user.email, "user@example.com");
-      } finally {
-        globalThis.fetch = originalFetch;
-      }
-    }
-  );
-});
-
-test("login rejects malformed scrypt hashes without throwing", async () => {
-  await withEnv({ AUTH_MODE: undefined }, async () => {
-    const { service, users } = authServiceWithUsers();
-    users.push({
-      id: "user-1",
-      email: "user@example.com",
-      username: "user",
-      passwordHash: "scrypt$NaN$8$1$salt$key"
-    });
-
-    await assert.rejects(() => service.login("user@example.com", "correct-password"), UnauthorizedException);
+test("development auth is never selected in production", () => {
+  withEnv({ AUTH_MODE: "dev", NODE_ENV: "production" }, () => {
+    const { service } = authServiceWithUsers();
+    assert.equal(service.authMode(), "clerk");
   });
 });
 
-test("external auth mode keeps password registration as an alternative", async () => {
-  await withEnv({ AUTH_MODE: "external" }, async () => {
+test("Clerk token exchange verifies the session and links the local account", async () => {
+  await withEnv(
+    {
+      AUTH_MODE: "clerk",
+      NODE_ENV: "development",
+      CLERK_SECRET_KEY: "sk_test_secret",
+      CLERK_JWT_KEY: undefined,
+      CLERK_AUTHORIZED_PARTIES: "http://localhost:3000"
+    },
+    async () => {
+      const { service, users, oauthAccounts } = authServiceWithUsers();
+      let verificationArgs: unknown[] = [];
+      (service as any).verifyClerkSessionToken = async (...args: unknown[]) => {
+        verificationArgs = args;
+        return { sub: "clerk-user-1" };
+      };
+      (service as any).getClerkUser = async () => ({
+        id: "clerk-user-1",
+        username: "geo-user",
+        firstName: "Geo",
+        primaryEmailAddress: { emailAddress: "User@Example.com" }
+      });
+
+      const user = await service.loginWithClerkToken("clerk-session");
+
+      assert.deepEqual(verificationArgs, [
+        "clerk-session",
+        "sk_test_secret",
+        undefined,
+        ["http://localhost:3000"]
+      ]);
+      assert.deepEqual(user, { id: "user-1", email: "user@example.com", username: "geo-user" });
+      assert.deepEqual(users, [
+        { id: "user-1", email: "user@example.com", username: "geo-user", passwordHash: null }
+      ]);
+      assert.deepEqual(oauthAccounts, [
+        {
+          id: "oauth-1",
+          userId: "user-1",
+          provider: "clerk",
+          providerAccountId: "clerk-user-1",
+          providerUsername: "geo-user"
+        }
+      ]);
+    }
+  );
+});
+
+test("Clerk token exchange rejects invalid sessions", async () => {
+  await withEnv(
+    {
+      AUTH_MODE: "clerk",
+      CLERK_SECRET_KEY: "sk_test_secret"
+    },
+    async () => {
+      const { service } = authServiceWithUsers();
+      (service as any).verifyClerkSessionToken = async () => {
+        throw new UnauthorizedException("Invalid Clerk session token");
+      };
+
+      await assert.rejects(() => service.loginWithClerkToken("invalid-token"), {
+        message: "Invalid Clerk session token"
+      });
+    }
+  );
+});
+
+test("Clerk token exchange requires server credentials", async () => {
+  await withEnv({ AUTH_MODE: "clerk", CLERK_SECRET_KEY: undefined }, async () => {
+    const { service } = authServiceWithUsers();
+
+    await assert.rejects(() => service.loginWithClerkToken("clerk-session"), {
+      message: "Clerk auth is not configured"
+    });
+  });
+});
+
+test("Clerk mode keeps password registration as a staged-migration alternative", async () => {
+  await withEnv({ AUTH_MODE: "clerk" }, async () => {
     const { service } = authServiceWithUsers();
     const user = await service.register("user@example.com", "user", "correct-password");
     assert.equal(user.email, "user@example.com");
   });
-});
-
-test("dev auth cannot be enabled in production", () => {
-  withEnv({ AUTH_MODE: "dev", NODE_ENV: "production" }, () => {
-    const { service } = authServiceWithUsers();
-    assert.equal(service.authMode(), "external");
-  });
-});
-
-test("Shoo external auth is the production default", () => {
-  withEnv(
-    {
-      AUTH_MODE: undefined,
-      NODE_ENV: "production",
-      EXTERNAL_AUTH_PROVIDER_ID: undefined,
-      API_ORIGIN: "https://api.example.com",
-      EXTERNAL_AUTH_CALLBACK_URL: "https://api.example.com/auth/external/callback"
-    },
-    () => {
-      const { service } = authServiceWithUsers();
-      assert.equal(service.authMode(), "external");
-      const url = new URL(service.externalAuthorizationUrl("state", "challenge"));
-      assert.equal(url.origin, "https://shoo.dev");
-    }
-  );
-});
-
-test("shoo external auth builds a Shoo authorize URL with PII consent", () => {
-  withEnv(
-    {
-      AUTH_MODE: "external",
-      EXTERNAL_AUTH_PROVIDER_ID: "shoo",
-      EXTERNAL_AUTH_CALLBACK_URL: "https://api.example.com/auth/external/callback",
-      SHOO_BASE_URL: "https://shoo.dev",
-      SHOO_REQUEST_PII: "true"
-    },
-    () => {
-      const { service } = authServiceWithUsers();
-      const url = new URL(service.externalAuthorizationUrl("state", "challenge"));
-
-      assert.equal(url.origin, "https://shoo.dev");
-      assert.equal(url.pathname, "/authorize");
-      assert.equal(url.searchParams.get("client_id"), "origin:https://api.example.com");
-      assert.equal(url.searchParams.get("redirect_uri"), "https://api.example.com/auth/external/callback");
-      assert.equal(url.searchParams.get("state"), "state");
-      assert.equal(url.searchParams.get("code_challenge"), "challenge");
-      assert.equal(url.searchParams.get("code_challenge_method"), "S256");
-      assert.equal(url.searchParams.get("pii"), "true");
-    }
-  );
-});
-
-test("shoo external auth exchanges codes against the Shoo token endpoint", async () => {
-  await withEnv(
-    {
-      AUTH_MODE: "external",
-      EXTERNAL_AUTH_PROVIDER_ID: "shoo",
-      EXTERNAL_AUTH_CALLBACK_URL: "https://api.example.com/auth/external/callback",
-      SHOO_BASE_URL: "https://shoo.dev"
-    },
-    async () => {
-      const originalFetch = globalThis.fetch;
-      let requestedUrl = "";
-      let requestedBody = "";
-      globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
-        requestedUrl = input.toString();
-        requestedBody = init?.body?.toString() ?? "";
-        return new Response(JSON.stringify({ error: "invalid_grant" }), { status: 401 });
-      }) as typeof fetch;
-      try {
-        const { service } = authServiceWithUsers();
-
-        await assert.rejects(() => service.loginWithExternalProvider("code", "verifier"), {
-          message: "invalid_grant"
-        });
-
-        assert.equal(requestedUrl, "https://shoo.dev/token");
-        const body = new URLSearchParams(requestedBody);
-        assert.equal(body.get("grant_type"), "authorization_code");
-        assert.equal(body.get("client_id"), "origin:https://api.example.com");
-        assert.equal(body.get("redirect_uri"), "https://api.example.com/auth/external/callback");
-        assert.equal(body.get("code"), "code");
-        assert.equal(body.get("code_verifier"), "verifier");
-      } finally {
-        globalThis.fetch = originalFetch;
-      }
-    }
-  );
-});
-
-test("shoo external auth ignores unverified response body pairwise_sub", async () => {
-  await withEnv(
-    {
-      AUTH_MODE: "external",
-      EXTERNAL_AUTH_PROVIDER_ID: "shoo",
-      EXTERNAL_AUTH_CALLBACK_URL: "https://api.example.com/auth/external/callback",
-      SHOO_BASE_URL: "https://shoo.dev"
-    },
-    async () => {
-      const originalFetch = globalThis.fetch;
-      globalThis.fetch = (async () =>
-        new Response(JSON.stringify({ id_token: "verified-token", pairwise_sub: "unverified-body-sub" }), {
-          status: 200
-        })) as typeof fetch;
-      try {
-        const { service } = authServiceWithUsers();
-        (service as any).importJose = async () => ({
-          createRemoteJWKSet: () => "jwks",
-          jwtVerify: async () => ({
-            payload: {
-              email: "user@example.com",
-              email_verified: true,
-              name: "User"
-            }
-          })
-        });
-
-        await assert.rejects(() => service.loginWithExternalProvider("code", "verifier"), {
-          message: "Shoo token missing pairwise_sub"
-        });
-      } finally {
-        globalThis.fetch = originalFetch;
-      }
-    }
-  );
-});
-
-test("shoo JWKS fetcher is cached across token exchanges", async () => {
-  await withEnv(
-    {
-      AUTH_MODE: "external",
-      EXTERNAL_AUTH_PROVIDER_ID: "shoo",
-      EXTERNAL_AUTH_CALLBACK_URL: "https://api.example.com/auth/external/callback",
-      SHOO_BASE_URL: "https://shoo.dev"
-    },
-    async () => {
-      const originalFetch = globalThis.fetch;
-      globalThis.fetch = (async () => new Response(JSON.stringify({ id_token: "verified-token" }), { status: 200 })) as typeof fetch;
-      try {
-        const { service } = authServiceWithUsers();
-        let jwksCreationCount = 0;
-        let verifyCount = 0;
-        (service as any).importJose = async () => ({
-          createRemoteJWKSet: () => {
-            jwksCreationCount += 1;
-            return "jwks";
-          },
-          jwtVerify: async () => {
-            verifyCount += 1;
-            return {
-              payload: {
-                pairwise_sub: `shoo-user-${verifyCount}`,
-                email: "user@example.com",
-                email_verified: true,
-                name: "User"
-              }
-            };
-          }
-        });
-
-        await (service as any).exchangeAndVerifyShooCode("code-1", "verifier-1");
-        await (service as any).exchangeAndVerifyShooCode("code-2", "verifier-2");
-
-        assert.equal(jwksCreationCount, 1);
-        assert.equal(verifyCount, 2);
-      } finally {
-        globalThis.fetch = originalFetch;
-      }
-    }
-  );
 });
 
 test("upsertOAuthUser recovers when concurrent account linking wins the race", async () => {
@@ -466,7 +327,7 @@ test("upsertOAuthUser recovers when concurrent account linking wins the race", a
   const service = new AuthService(prisma as any, {} as any);
 
   const result = await (service as any).upsertOAuthUser({
-    provider: "external",
+    provider: "clerk",
     providerAccountId: "provider-user-1",
     providerUsername: "provider-user",
     email: user.email,
@@ -491,7 +352,7 @@ test("upsertOAuthUser skips account update when provider username is unchanged",
   const service = new AuthService(prisma as any, {} as any);
 
   const result = await (service as any).upsertOAuthUser({
-    provider: "external",
+    provider: "clerk",
     providerAccountId: "provider-user-1",
     providerUsername: "provider-user",
     email: user.email,

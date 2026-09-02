@@ -7,12 +7,13 @@ import * as DocumentPicker from "expo-document-picker";
 import { File, Paths } from "expo-file-system";
 import * as SecureStore from "expo-secure-store";
 import * as Clipboard from "expo-clipboard";
-import * as Crypto from "expo-crypto";
 import * as Sharing from "expo-sharing";
 import * as Updates from "expo-updates";
 import MapView, { Callout, Marker, Polygon, PROVIDER_GOOGLE, type MapStyleElement, type Region } from "react-native-maps";
 import * as Linking from "expo-linking";
-import * as WebBrowser from "expo-web-browser";
+import { ClerkProvider, useAuth } from "@clerk/expo";
+import { useHostedAuth } from "@clerk/expo/hosted-auth";
+import { tokenCache } from "@clerk/expo/token-cache";
 import { parseCoordinate } from "@geostats/shared";
 import { pickAndUploadDocument, type UploadKind } from "./upload";
 import { hasNativeMapSupport, scratchMapGeometryBudget, SCRATCH_WORLD_REGION, selectNativeMapPoints } from "./mobile-map";
@@ -24,14 +25,12 @@ import {
   replaceJsonFile,
 } from "./mystery-storage";
 
-WebBrowser.maybeCompleteAuthSession();
-
 type CountBucket = { key: string; count: number };
 type LocationBucket = { name: string; count: number };
 type PercentBucket = CountBucket & { percent: number };
 type CachePoint = { id: string; gcCode: string; name: string; cacheType: string | null; latitude: number; longitude: number; foundAt?: string; placedAt?: string; isOwnHide?: boolean };
 type ImportListItem = { id: string; fileName: string; source: string; status: string; createdAt: string; errorMessage: string | null };
-type AuthConfig = { mode: "dev" | "external" | "password"; providerName: string };
+type AuthConfig = { mode: "dev" | "clerk" | "password"; providerName: string; clerkPublishableKey?: string };
 type ServerProbeState = {
   url: string | null;
   status: "checking" | "connected" | "unreachable";
@@ -148,7 +147,7 @@ const TOKEN_KEY = "geostats_session";
 const SERVER_URL_KEY = "geostats_server_url";
 const DEFAULT_AUTH_CONFIG: AuthConfig = __DEV__
   ? { mode: "password", providerName: "Home Auth" }
-  : { mode: "external", providerName: "Shoo" };
+  : { mode: "clerk", providerName: "Clerk" };
 const monthLabels = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const defaultTimeZone = "Europe/Stockholm";
 const defaultFtfTerms = ["FTF", "first to find"];
@@ -315,16 +314,6 @@ function requireServerUrl(value: string) {
     throw new Error("Enter your public API URL before signing in.");
   }
   return normalized;
-}
-
-function randomBase64Url(length: number) {
-  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
-  const bytes = Crypto.getRandomBytes(length);
-  return Array.from(bytes, (byte) => alphabet[byte % alphabet.length]).join("");
-}
-
-function mobileCodeVerifier() {
-  return randomBase64Url(86);
 }
 
 async function apiFetch<T>(baseUrl: string, path: string, token: string | null, options: RequestInit = {}): Promise<T> {
@@ -894,6 +883,53 @@ function useApi<T>(baseUrl: string, token: string, path: string, fallback: T) {
   return { data, loading, error, refresh };
 }
 
+function ClerkAuthButton({
+  mode,
+  saveServerUrl,
+  onSession,
+  onMessage
+}: {
+  mode: "login" | "register";
+  saveServerUrl: () => Promise<string | null>;
+  onSession: (session: Session, baseUrl: string) => void;
+  onMessage: (message: string | null) => void;
+}) {
+  const { getToken } = useAuth();
+  const { startHostedAuth } = useHostedAuth();
+
+  async function continueWithClerk() {
+    onMessage("Opening Clerk...");
+    try {
+      const nextUrl = await saveServerUrl();
+      if (!nextUrl) return;
+
+      const result = await startHostedAuth({ mode: mode === "login" ? "sign-in" : "sign-up" });
+      if (!result.createdSessionId) {
+        onMessage("Clerk sign-in was cancelled.");
+        return;
+      }
+
+      const token = await getToken();
+      if (!token) {
+        onMessage("Clerk did not return a session token.");
+        return;
+      }
+      const data = await apiFetch<Session>(nextUrl, "/auth/mobile/clerk", token, { method: "POST" });
+      await SecureStore.setItemAsync(TOKEN_KEY, data.token);
+      onSession(data, nextUrl);
+    } catch (error) {
+      onMessage(error instanceof Error ? error.message : "Could not sign in with Clerk");
+    }
+  }
+
+  return (
+    <>
+      <PrimaryButton label={`${mode === "login" ? "Sign in" : "Register"} with Clerk`} onPress={() => void continueWithClerk()} />
+      <Text style={styles.authAlternative}>Your account is managed by Clerk.</Text>
+    </>
+  );
+}
+
 function AuthScreen({ apiBaseUrl, onApiBaseUrlChange, onSession }: { apiBaseUrl: string; onApiBaseUrlChange: (value: string) => void; onSession: (session: Session, baseUrl: string) => void }) {
   const [mode, setMode] = useState<"login" | "register">("login");
   const [serverUrl, setServerUrl] = useState(apiBaseUrl);
@@ -914,6 +950,7 @@ function AuthScreen({ apiBaseUrl, onApiBaseUrlChange, onSession }: { apiBaseUrl:
   const serverProbeMatches = serverProbe.url === normalizedServerUrl;
   const serverStatus = serverProbeMatches ? serverProbe.status : normalizedServerUrl ? "checking" : "unreachable";
   const config = serverProbeMatches && serverProbe.status === "connected" ? serverProbe.config : DEFAULT_AUTH_CONFIG;
+  const clerkPublishableKey = config.mode === "clerk" ? config.clerkPublishableKey?.trim() : undefined;
   useEffect(() => {
     const probeId = ++serverProbeId.current;
     const controller = new AbortController();
@@ -1014,41 +1051,6 @@ function AuthScreen({ apiBaseUrl, onApiBaseUrlChange, onSession }: { apiBaseUrl:
       setMessage(error instanceof Error ? error.message : "Could not sign in");
     }
   }
-  async function continueExternal() {
-    setMessage(`Opening ${config.providerName}...`);
-    try {
-      const baseUrl = await saveServerUrl();
-      if (!baseUrl) return;
-      const redirectUri = process.env.EXPO_PUBLIC_MOBILE_AUTH_REDIRECT_URI ?? Linking.createURL("auth", { scheme: "geostats" });
-      const codeVerifier = mobileCodeVerifier();
-      const authUrl = `${baseUrl}/auth/mobile/external?redirectUri=${encodeURIComponent(redirectUri)}&codeChallenge=${encodeURIComponent(codeVerifier)}`;
-      const result = await WebBrowser.openAuthSessionAsync(authUrl, redirectUri);
-      if (result.type !== "success") {
-        setMessage("Sign in was cancelled.");
-        return;
-      }
-      const parsed = new URL(result.url);
-      const params = new URLSearchParams(parsed.hash.replace(/^#/, "") || parsed.search.replace(/^\?/, ""));
-      const authError = params.get("authError");
-      const code = params.get("code");
-      if (authError) {
-        setMessage("External sign in failed.");
-        return;
-      }
-      if (!code) {
-        setMessage("External sign in did not return a session.");
-        return;
-      }
-      const data = await apiFetch<Session>(baseUrl, "/auth/mobile/exchange", null, {
-        method: "POST",
-        body: JSON.stringify({ code, codeVerifier })
-      });
-      await SecureStore.setItemAsync(TOKEN_KEY, data.token);
-      onSession(data, baseUrl);
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Could not sign in");
-    }
-  }
   return (
     <SafeAreaView style={styles.safe}>
       <StatusBar style="light" />
@@ -1085,24 +1087,29 @@ function AuthScreen({ apiBaseUrl, onApiBaseUrlChange, onSession }: { apiBaseUrl:
             </View>
           ) : null}
         </View>
-        {config.mode === "external" ? (
-          <>
-            <PrimaryButton label={`${mode === "login" ? "Sign in" : "Register"} with ${config.providerName}`} onPress={continueExternal} />
-            <Text style={styles.authAlternative}>or use a password</Text>
-          </>
+        {config.mode === "clerk" ? (
+          clerkPublishableKey ? (
+            <ClerkProvider key={clerkPublishableKey} publishableKey={clerkPublishableKey} tokenCache={tokenCache}>
+              <ClerkAuthButton mode={mode} saveServerUrl={saveServerUrl} onSession={onSession} onMessage={setMessage} />
+            </ClerkProvider>
+          ) : (
+            <Text style={styles.note}>Clerk is selected on this server, but it did not provide a publishable key.</Text>
+          )
         ) : null}
-        {config.mode !== "dev" ? (
+        {config.mode === "password" ? (
           <>
             <Field label="Email" value={email} onChangeText={setEmail} autoCapitalize="none" keyboardType="email-address" />
             {mode === "register" ? <Field label="Username" value={username} onChangeText={setUsername} autoCapitalize="none" /> : null}
             <Field label="Password" value={password} onChangeText={setPassword} secureTextEntry />
             <PrimaryButton label={mode === "login" ? "Sign in" : "Register"} onPress={submit} />
-            <Pressable onPress={() => setMode(mode === "login" ? "register" : "login")} style={styles.textButton}>
-              <Text style={styles.textButtonText}>{mode === "login" ? "Need an account?" : "Already have an account?"}</Text>
-            </Pressable>
           </>
         ) : null}
         {config.mode === "dev" ? <PrimaryButton label="Continue in dev mode" onPress={continueDev} /> : null}
+        {config.mode !== "dev" ? (
+          <Pressable onPress={() => setMode(mode === "login" ? "register" : "login")} style={styles.textButton}>
+            <Text style={styles.textButtonText}>{mode === "login" ? "Need an account?" : "Already have an account?"}</Text>
+          </Pressable>
+        ) : null}
         {message ? <Text style={styles.note}>{message}</Text> : null}
       </ScrollView>
     </SafeAreaView>

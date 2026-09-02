@@ -88,84 +88,57 @@ Use `.env.agent.example` only for local development. Its secrets are intentional
 
 ## Authentication
 
-Geostats supports password, external, and development authentication. The API's
-runtime environment determines the effective mode:
+Geostats uses Clerk for hosted web and native sign-in. After Clerk verifies a
+session, the API links the Clerk user to the existing local `User` record and
+issues Geostats' own cookie or bearer token. Existing local IDs and application
+data therefore remain stable.
 
-| Environment | `AUTH_MODE`                           | Sign-in options                                                  |
-| ----------- | ------------------------------------- | ---------------------------------------------------------------- |
-| Development | unset or `password`                   | Local email and password                                         |
-| Development | `external`                            | External provider plus local email and password                  |
-| Development | `dev`                                 | Automatic disposable development user; password auth is disabled |
-| Production  | `password`                            | Local email and password                                         |
-| Production  | unset, `external`, or any other value | External provider plus local email and password                  |
+The web app reads the auth mode from `GET /auth/config`; `NEXT_PUBLIC_AUTH_MODE`
+is the build-time fallback when that request fails. Keep it aligned with
+`AUTH_MODE`. The provider label is controlled by
+`NEXT_PUBLIC_AUTH_PROVIDER_NAME`.
 
-Production deliberately ignores `AUTH_MODE=dev`. When production selects
-external auth, Shoo is the provider unless `EXTERNAL_AUTH_PROVIDER_ID` names a
-different provider.
+### Clerk authentication
 
-The web app normally gets this mode from `GET /auth/config` at runtime.
-`NEXT_PUBLIC_AUTH_MODE` is its build-time fallback when that request fails, so
-keep it aligned with `AUTH_MODE`. `NEXT_PUBLIC_AUTH_PROVIDER_NAME` controls the
-provider label shown by the web and mobile login screens.
+Each installation can use its own Clerk application. The Clerk app ID and keys
+used for one deployment are not part of the repository. People using a hosted
+Geostats instance simply sign up through that instance; people self-hosting
+Geostats should create or select their own Clerk application and configure its
+keys below.
 
-### Password authentication
+With the Clerk CLI, authenticate and link the checkout to your application:
 
-The example development environment uses local email and password login:
-
-```env
-AUTH_MODE=password
-NEXT_PUBLIC_AUTH_MODE=password
+```bash
+clerk auth login
+clerk init --app <your-clerk-app-id>
+clerk env pull --instance dev
 ```
 
-Accounts can register and sign in without an external identity provider. Set
-`AUTH_MODE=password` explicitly to use password-only authentication in
-production.
+Alternatively, copy the values from your Clerk Dashboard into the environment
+file. Never commit that file or share the secret key.
 
-### Shoo authentication
-
-Shoo is the built-in external provider and the default in production:
+Set the publishable key in the web build and the secret key in the API runtime:
 
 ```env
-AUTH_MODE=external
-NEXT_PUBLIC_AUTH_MODE=external
-NEXT_PUBLIC_AUTH_PROVIDER_NAME=Shoo
-EXTERNAL_AUTH_PROVIDER_ID=shoo
-EXTERNAL_AUTH_CALLBACK_URL=https://api.example.com/auth/external/callback
-SHOO_BASE_URL=https://shoo.dev
-SHOO_ISSUER=https://shoo.dev
-SHOO_REQUEST_PII=true
+AUTH_MODE=clerk
+NEXT_PUBLIC_AUTH_MODE=clerk
+NEXT_PUBLIC_AUTH_PROVIDER_NAME=Clerk
+NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_live_or_pk_test_...
+CLERK_SECRET_KEY=sk_live_or_sk_test_...
+CLERK_PUBLISHABLE_KEY=pk_live_or_pk_test_...
+CLERK_AUTHORIZED_PARTIES=https://geostats.example.com
 ```
 
-Set `EXTERNAL_AUTH_CALLBACK_URL` to the callback on the public API origin. Shoo
-derives its client ID from that callback origin and does not use
-`EXTERNAL_AUTH_CLIENT_ID`, `EXTERNAL_AUTH_CLIENT_SECRET`, or the generic
-authorize, token, and user-info URL settings. Email consent and a verified email
-are required when signing in with Shoo.
+`CLERK_JWT_KEY` is optional. If set, the API verifies Clerk session tokens with
+that public key instead of discovering the instance JWKS. The web and mobile
+clients exchange their Clerk session token at `/auth/clerk/exchange` and
+`/auth/mobile/clerk`, respectively. The API also returns `CLERK_PUBLISHABLE_KEY`
+from its public `/auth/config` endpoint so a mobile client can use the Clerk
+application configured by the selected Geostats server.
 
-### Generic external authentication
-
-To use another OIDC-compatible provider that supports authorization code flow
-with PKCE and a user-info endpoint, choose a provider ID other than `shoo` and
-set:
-
-```env
-AUTH_MODE=external
-NEXT_PUBLIC_AUTH_MODE=external
-NEXT_PUBLIC_AUTH_PROVIDER_NAME=Home Auth
-EXTERNAL_AUTH_PROVIDER_ID=home-auth
-EXTERNAL_AUTH_CLIENT_ID=your-client-id
-EXTERNAL_AUTH_CLIENT_SECRET=your-client-secret-if-required
-EXTERNAL_AUTH_AUTHORIZE_URL=https://auth.example.com/oauth2/authorize
-EXTERNAL_AUTH_TOKEN_URL=https://auth.example.com/oauth2/token
-EXTERNAL_AUTH_USERINFO_URL=https://auth.example.com/oauth2/userinfo
-EXTERNAL_AUTH_CALLBACK_URL=https://api.example.com/auth/external/callback
-EXTERNAL_AUTH_REQUIRE_VERIFIED_EMAIL=true
-```
-
-The client secret is optional for public clients. Unless
-`EXTERNAL_AUTH_REQUIRE_VERIFIED_EMAIL=false`, the user-info response must contain
-`email_verified: true`; it must always provide `sub` and `email`. External mode
-keeps local password registration and sign-in available as an alternative.
+Password registration and sign-in remain available when `AUTH_MODE=password` is
+selected explicitly. They are useful during a staged migration, but Clerk is
+the default production mode.
 
 ### Development authentication
 
@@ -239,7 +212,6 @@ Before deploying, replace these public URLs with the real URLs from your Dockhan
 WEB_ORIGIN=https://geostats.example.com
 API_ORIGIN=https://geostats-api.example.com
 NEXT_PUBLIC_API_URL=https://geostats-api.example.com
-EXTERNAL_AUTH_CALLBACK_URL=https://geostats-api.example.com/auth/external/callback
 ```
 
 Then replace all `change-this-*` secrets in the env file. Mark these as secrets in Dockhand if you use its secret toggle:
@@ -250,7 +222,7 @@ REDIS_PASSWORD
 MINIO_ROOT_PASSWORD
 JWT_SECRET
 COLLECTOR_TOKEN_ENCRYPTION_KEY
-EXTERNAL_AUTH_CLIENT_SECRET (when configured)
+CLERK_SECRET_KEY
 ```
 
 For a Git-backed Dockhand stack that builds this repo, keep:
@@ -293,9 +265,11 @@ build settings:
 - `NEXT_PUBLIC_API_URL` — public API URL embedded in the web image; defaults to
   `http://localhost:3001` and must be changed for a remote deployment.
 - `NEXT_PUBLIC_AUTH_MODE` — fallback login mode if `/auth/config` cannot be
-  reached; defaults to `external`.
+  reached; defaults to `clerk`.
 - `NEXT_PUBLIC_AUTH_PROVIDER_NAME` — fallback provider label; defaults to
-  `Shoo`.
+  `Clerk`.
+- `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` — Clerk publishable key embedded in the
+  web image.
 
 On deployment hardware, set the image prefix and pull the prebuilt app images before starting Compose:
 
@@ -372,7 +346,6 @@ Copy-Item apps/mobile/.env.example apps/mobile/.env
 
 ```env
 EXPO_PUBLIC_API_URL=https://api.example.com
-EXPO_PUBLIC_MOBILE_AUTH_REDIRECT_URI=geostats://auth
 EXPO_PUBLIC_GOOGLE_MAPS_ANDROID_API_KEY=your-google-maps-android-api-key
 ```
 
@@ -400,13 +373,11 @@ For Play Store submission instead:
 corepack pnpm mobile:build:aab
 ```
 
-If you use external auth in production, make sure the API deployment allows the mobile redirect URI:
-
-```env
-MOBILE_AUTH_REDIRECT_URI=geostats://auth
-```
-
-Production API deployments reject mobile external-auth redirects unless `MOBILE_AUTH_REDIRECT_URI` is set exactly.
+The mobile app uses Clerk's hosted Account Portal and exchanges the resulting
+session token with `/auth/mobile/clerk`. The Expo Clerk config plugin is already
+included in the app config. The selected Geostats server supplies its public
+Clerk publishable key through `/auth/config`, so the same mobile build can
+connect to different self-hosted Clerk applications.
 
 ### GitHub mobile releases
 

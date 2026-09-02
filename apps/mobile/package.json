@@ -3,9 +3,12 @@
   "version": "0.1.0",
   "main": "index.ts",
   "dependencies": {
+    "@clerk/expo": "^4.6.1",
     "@geostats/shared": "workspace:*",
     "expo": "~56.0.19",
+    "expo-auth-session": "~7.0.11",
     "expo-clipboard": "~56.0.4",
+    "expo-constants": "~56.0.23",
     "expo-crypto": "~56.0.4",
     "expo-document-picker": "~56.0.4",
     "expo-file-system": "~56.0.9",

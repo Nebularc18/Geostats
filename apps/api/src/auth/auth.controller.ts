@@ -1,34 +1,25 @@
 import {
-  BadRequestException,
   Body,
   Controller,
   Get,
-  Logger,
   Post,
+  Req,
   Query,
   Res,
-  ServiceUnavailableException,
   UnauthorizedException,
   UseGuards
 } from "@nestjs/common";
-import { Response } from "express";
+import { Request, Response } from "express";
 import { AuthUser } from "@geostats/shared";
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { Throttle } from "@nestjs/throttler";
 import { AuthService } from "./auth.service";
 import { AuthGuard } from "./auth.guard";
 import { CurrentUser } from "./current-user.decorator";
 import { envOrDefault } from "../common/env";
-import { MobileExchangeCodeService } from "./mobile-exchange-code.service";
 
 @Controller("auth")
 export class AuthController {
-  private readonly logger = new Logger(AuthController.name);
-
-  constructor(
-    private readonly auth: AuthService,
-    private readonly mobileExchangeCodes: MobileExchangeCodeService
-  ) {}
+  constructor(private readonly auth: AuthService) {}
 
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @Post("register")
@@ -52,84 +43,24 @@ export class AuthController {
     return { user };
   }
 
-  @Get("external")
-  external(@Res({ passthrough: true }) response: Response) {
-    const state = randomBytes(32).toString("hex");
-    const codeVerifier = this.base64Url(randomBytes(32));
-    const codeChallenge = this.base64Url(createHash("sha256").update(codeVerifier).digest());
-    response.cookie("geostats_oauth_state", state, {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: process.env.NODE_ENV === "production",
-      maxAge: 10 * 60 * 1000
-    });
-    response.cookie("geostats_oauth_code_verifier", codeVerifier, {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: process.env.NODE_ENV === "production",
-      maxAge: 10 * 60 * 1000
-    });
-    const directLoginUrl = process.env.EXTERNAL_AUTH_DIRECT_LOGIN_URL?.trim();
-    if (directLoginUrl) {
-      if (!this.isAbsoluteHttpUrl(directLoginUrl)) {
-        this.logger.error(`EXTERNAL_AUTH_DIRECT_LOGIN_URL is not an absolute HTTP(S) URL: ${directLoginUrl}`);
-        throw new ServiceUnavailableException("External auth direct login URL is invalid");
-      }
-      response.type("html").send(this.externalLoginForm(directLoginUrl, this.auth.externalAuthorizationUrl(state, codeChallenge)));
-      return;
-    }
-    response.redirect(this.auth.externalAuthorizationUrl(state, codeChallenge));
-  }
-
   @Get("config")
   config() {
+    const mode = this.auth.authMode();
+    const clerkPublishableKey =
+      process.env.CLERK_PUBLISHABLE_KEY?.trim() || process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY?.trim();
     return {
-      mode: this.auth.authMode(),
-      providerName: process.env.NEXT_PUBLIC_AUTH_PROVIDER_NAME?.trim() || "Shoo"
+      mode,
+      providerName: process.env.NEXT_PUBLIC_AUTH_PROVIDER_NAME?.trim() || "Clerk",
+      ...(mode === "clerk" && clerkPublishableKey ? { clerkPublishableKey } : {})
     };
   }
 
-  @Get("mobile/external")
-  mobileExternal(
-    @Query("redirectUri") redirectUri: string | undefined,
-    @Query("codeChallenge") mobileCodeChallenge: string | undefined,
-    @Res({ passthrough: true }) response: Response
-  ) {
-    if (!redirectUri || !this.isAllowedMobileRedirectUri(redirectUri)) {
-      throw new BadRequestException("Invalid mobile redirect URI");
-    }
-    if (!mobileCodeChallenge || !this.isValidCodeVerifier(mobileCodeChallenge)) {
-      throw new BadRequestException("Invalid mobile code challenge");
-    }
-
-    const state = randomBytes(32).toString("hex");
-    const codeVerifier = this.base64Url(randomBytes(32));
-    const codeChallenge = this.base64Url(createHash("sha256").update(codeVerifier).digest());
-    response.cookie("geostats_oauth_state", state, {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: process.env.NODE_ENV === "production",
-      maxAge: 10 * 60 * 1000
-    });
-    response.cookie("geostats_oauth_code_verifier", codeVerifier, {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: process.env.NODE_ENV === "production",
-      maxAge: 10 * 60 * 1000
-    });
-    response.cookie("geostats_mobile_redirect_uri", redirectUri, {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: process.env.NODE_ENV === "production",
-      maxAge: 10 * 60 * 1000
-    });
-    response.cookie("geostats_mobile_code_challenge", mobileCodeChallenge, {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: process.env.NODE_ENV === "production",
-      maxAge: 10 * 60 * 1000
-    });
-    response.redirect(this.auth.externalAuthorizationUrl(state, codeChallenge));
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @Post("clerk/exchange")
+  async clerkExchange(@Req() request: Request, @Res({ passthrough: true }) response: Response) {
+    const user = await this.auth.loginWithClerkToken(this.bearerToken(request));
+    this.setCookie(response, user);
+    return { user };
   }
 
   @Get("mobile/dev")
@@ -153,72 +84,10 @@ export class AuthController {
   }
 
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
-  @Post("mobile/exchange")
-  async mobileExchange(@Body() body: { code?: unknown; codeVerifier?: unknown }) {
-    if (typeof body.code !== "string" || typeof body.codeVerifier !== "string") {
-      throw new BadRequestException("Mobile auth code and verifier are required");
-    }
-    const record = await this.mobileExchangeCodes.get(body.code);
-    if (!record) {
-      throw new UnauthorizedException("Invalid or expired mobile auth code");
-    }
-    if (!this.isValidCodeVerifier(body.codeVerifier) || !this.safeEqual(record.codeChallenge, body.codeVerifier)) {
-      throw new UnauthorizedException("Invalid mobile auth verifier");
-    }
-    if (!await this.mobileExchangeCodes.consume(body.code, record.serialized)) {
-      throw new UnauthorizedException("Invalid or expired mobile auth code");
-    }
-    return { user: record.user, token: record.token };
-  }
-
-  @Get("external/callback")
-  async externalCallback(
-    @Query("code") code: string | undefined,
-    @Query("state") state: string | undefined,
-    @Res({ passthrough: true }) response: Response
-  ) {
-    const expectedState = response.req.cookies?.geostats_oauth_state;
-    const codeVerifier = response.req.cookies?.geostats_oauth_code_verifier;
-    const mobileRedirectUri = response.req.cookies?.geostats_mobile_redirect_uri;
-    const mobileCodeChallenge = response.req.cookies?.geostats_mobile_code_challenge;
-    response.clearCookie("geostats_oauth_state");
-    response.clearCookie("geostats_oauth_code_verifier");
-    if (mobileRedirectUri) {
-      response.clearCookie("geostats_mobile_redirect_uri");
-    }
-    if (mobileCodeChallenge) {
-      response.clearCookie("geostats_mobile_code_challenge");
-    }
-    if (!code || !state || !expectedState || state !== expectedState || !codeVerifier) {
-      if (mobileRedirectUri && this.isAllowedMobileRedirectUri(mobileRedirectUri)) {
-        response.redirect(this.mobileLoginUrl(mobileRedirectUri, "external"));
-        return;
-      }
-      response.redirect(this.loginUrl("external"));
-      return;
-    }
-
-    try {
-      const user = await this.auth.loginWithExternalProvider(code, codeVerifier);
-      const token = this.setCookie(response, user);
-      if (mobileRedirectUri && this.isAllowedMobileRedirectUri(mobileRedirectUri)) {
-        if (!this.isValidCodeVerifier(mobileCodeChallenge)) {
-          response.redirect(this.mobileLoginUrl(mobileRedirectUri, "external"));
-          return;
-        }
-        const mobileCode = await this.mobileExchangeCodes.create(token, user, mobileCodeChallenge);
-        response.redirect(this.mobileLoginUrl(mobileRedirectUri, undefined, mobileCode));
-        return;
-      }
-      response.redirect(`${envOrDefault("WEB_ORIGIN", "http://localhost:3000")}/dashboard`);
-    } catch (error) {
-      this.logger.error("External OAuth callback error", error);
-      if (mobileRedirectUri && this.isAllowedMobileRedirectUri(mobileRedirectUri)) {
-        response.redirect(this.mobileLoginUrl(mobileRedirectUri, "external"));
-        return;
-      }
-      response.redirect(this.loginUrl("external"));
-    }
+  @Post("mobile/clerk")
+  async mobileClerk(@Req() request: Request) {
+    const user = await this.auth.loginWithClerkToken(this.bearerToken(request));
+    return { user, token: this.auth.sign(user) };
   }
 
   @Get("dev")
@@ -257,35 +126,6 @@ export class AuthController {
     return token;
   }
 
-  private base64Url(value: Buffer): string {
-    return value.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
-  }
-
-  private externalLoginForm(action: string, returnTo: string): string {
-    return `<!doctype html><html><head><meta charset="utf-8"><title>Redirecting</title></head><body><form method="post" action="${this.escapeHtml(action)}"><input type="hidden" name="returnTo" value="${this.escapeHtml(returnTo)}"><button type="submit">Continue</button></form><script>document.forms[0].submit();</script></body></html>`;
-  }
-
-  private escapeHtml(value: string): string {
-    return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  }
-
-  private isAbsoluteHttpUrl(value: string): boolean {
-    try {
-      const url = new URL(value);
-      return url.protocol === "http:" || url.protocol === "https:";
-    } catch {
-      return false;
-    }
-  }
-
-  private loginUrl(authError?: string): string {
-    const url = new URL("/login", envOrDefault("WEB_ORIGIN", "http://localhost:3000"));
-    if (authError) {
-      url.searchParams.set("authError", authError);
-    }
-    return url.toString();
-  }
-
   private webRedirectUrl(returnTo?: string): string {
     if (returnTo && returnTo.startsWith("/") && !returnTo.startsWith("//")) {
       return new URL(returnTo, envOrDefault("WEB_ORIGIN", "http://localhost:3000")).toString();
@@ -293,67 +133,11 @@ export class AuthController {
     return new URL("/dashboard", envOrDefault("WEB_ORIGIN", "http://localhost:3000")).toString();
   }
 
-  private mobileLoginUrl(redirectUri: string, authError?: string, code?: string): string {
-    const url = new URL(redirectUri);
-    const params = new URLSearchParams();
-    if (authError) params.set("authError", authError);
-    if (code) params.set("code", code);
-    url.hash = params.toString();
-    return url.toString();
-  }
-
-  private isValidCodeVerifier(value: unknown): value is string {
-    return typeof value === "string" && /^[A-Za-z0-9._~-]{43,128}$/.test(value);
-  }
-
-  private safeEqual(left: string, right: string) {
-    const leftBuffer = Buffer.from(left);
-    const rightBuffer = Buffer.from(right);
-    return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
-  }
-
-  private isAllowedMobileRedirectUri(redirectUri: string): boolean {
-    let url: URL;
-    try {
-      url = new URL(redirectUri);
-    } catch {
-      return false;
+  private bearerToken(request: Request): string {
+    const authorization = request.headers.authorization;
+    if (!authorization?.startsWith("Bearer ")) {
+      throw new UnauthorizedException("Clerk bearer token is required");
     }
-    const configured = process.env.MOBILE_AUTH_REDIRECT_URI?.trim();
-    if (configured) {
-      return redirectUri === configured;
-    }
-    if (process.env.NODE_ENV === "production") {
-      return false;
-    }
-    if (url.protocol === "geostats:" && url.hostname === "auth" && (url.pathname === "" || url.pathname === "/")) {
-      return true;
-    }
-    return this.isAllowedExpoGoRedirectUri(url);
-  }
-
-  private isAllowedExpoGoRedirectUri(url: URL): boolean {
-    if (url.protocol !== "exp:" && url.protocol !== "exps:") {
-      return false;
-    }
-    if (url.pathname !== "/--/auth") {
-      return false;
-    }
-    const hostname = url.hostname.toLowerCase();
-    return hostname === "localhost" || hostname === "127.0.0.1" || this.isPrivateIpv4Host(hostname);
-  }
-
-  private isPrivateIpv4Host(hostname: string): boolean {
-    const parts = hostname.split(".");
-    if (parts.length !== 4 || parts.some((part) => !/^\d+$/.test(part))) {
-      return false;
-    }
-    const octets = parts.map(Number);
-    if (octets.some((octet) => octet > 255)) {
-      return false;
-    }
-    return octets[0] === 10
-      || (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31)
-      || (octets[0] === 192 && octets[1] === 168);
+    return authorization.slice("Bearer ".length).trim();
   }
 }
