@@ -42,10 +42,12 @@ export function ClerkSessionGate({ children }: { children: React.ReactNode }) {
     }
 
     let active = true;
+    setState("waiting");
     setErrorMessage(null);
 
     async function synchronizeSession() {
       try {
+        await apiFetch("/auth/logout", { method: "POST" });
         const token = await getToken();
         if (!token) {
           throw new Error("Clerk did not return a session token");
