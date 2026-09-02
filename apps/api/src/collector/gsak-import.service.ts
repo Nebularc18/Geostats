@@ -321,10 +321,10 @@ export class GsakImportService {
   constructor(private readonly prisma: PrismaService, private readonly stats: StatsService) {}
 
   /**
-   * Return cache codes that were discovered in a trackable journey but still
-   * have a code-only placeholder in the user's archive. The GSAK connector
-   * requests this list in pages, loads those codes through Geocaching.com, and
-   * then includes the resulting cache records in its normal export.
+   * Return cache codes that were discovered in a trackable journey but are not
+   * linked to a named cache in the user's archive. The GSAK connector requests
+   * this list in pages, loads those codes through Geocaching.com, and then
+   * includes the resulting cache records in its normal export.
    */
   async trackableCacheCodes(userId: string, skipInput: unknown, takeInput: unknown) {
     const parsedSkip = Number(skipInput);
@@ -333,20 +333,22 @@ export class GsakImportService {
     const take = Number.isSafeInteger(parsedTake) && parsedTake > 0 ? Math.min(parsedTake, 500) : 500;
     const [countRows, codeRows] = await Promise.all([
       this.prisma.$queryRaw<Array<{ count: bigint | number }>>(Prisma.sql`
-        SELECT COUNT(DISTINCT c.id) AS count
+        SELECT COUNT(DISTINCT COALESCE(l.gc_code, c.gc_code)) AS count
         FROM "trackable_logs" l
-        JOIN "caches" c ON c.id = l.cache_id
+        LEFT JOIN "caches" c ON c.id = l.cache_id
         WHERE l.user_id = ${userId}
-          AND upper(trim(c.name)) = upper(trim(c.gc_code))
+          AND COALESCE(l.gc_code, c.gc_code) IS NOT NULL
+          AND (l.cache_id IS NULL OR upper(trim(c.name)) = upper(trim(c.gc_code)))
       `),
       this.prisma.$queryRaw<Array<{ gcCode: string }>>(Prisma.sql`
-        SELECT c.gc_code AS "gcCode"
+        SELECT COALESCE(l.gc_code, c.gc_code) AS "gcCode"
         FROM "trackable_logs" l
-        JOIN "caches" c ON c.id = l.cache_id
+        LEFT JOIN "caches" c ON c.id = l.cache_id
         WHERE l.user_id = ${userId}
-          AND upper(trim(c.name)) = upper(trim(c.gc_code))
-        GROUP BY c.gc_code
-        ORDER BY c.gc_code
+          AND COALESCE(l.gc_code, c.gc_code) IS NOT NULL
+          AND (l.cache_id IS NULL OR upper(trim(c.name)) = upper(trim(c.gc_code)))
+        GROUP BY COALESCE(l.gc_code, c.gc_code)
+        ORDER BY COALESCE(l.gc_code, c.gc_code)
         OFFSET ${skip}
         LIMIT ${take}
       `)
@@ -417,6 +419,15 @@ export class GsakImportService {
           create: { userId, cacheId: cache.id, raw },
           update: { raw }
         });
+        // Journey imports keep cache metadata on the user's movement log until
+        // a trusted GSAK/cache import supplies the shared cache record. Link
+        // those existing rows now so the missing-cache queue is cleared.
+        if (tx.trackableLog) {
+          await tx.trackableLog.updateMany({
+            where: { userId, gcCode: row.gcCode, cacheId: null },
+            data: { cacheId: cache.id }
+          });
+        }
         if (row.isOwner) {
           await tx.hide.upsert({
             where: { userId_cacheId: { userId, cacheId: cache.id } },

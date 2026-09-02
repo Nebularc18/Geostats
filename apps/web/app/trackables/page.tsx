@@ -41,7 +41,7 @@ const blankForm: FormValues = {
 };
 const STOP_PAGE_SIZE = 50;
 
-type TrackableMapResponse = { points: TrackableMapPoint[]; total: number; unmapped: number };
+type TrackableMapResponse = { points: TrackableMapPoint[]; total: number; truncated: boolean; unmapped: number };
 type TrackableImportResponse = {
   import: {
     importedTrackables: number;
@@ -111,6 +111,8 @@ export default function TrackablesPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [mapPoints, setMapPoints] = useState<TrackableMapPoint[]>([]);
+  const [mapTotal, setMapTotal] = useState(0);
+  const [mapTruncated, setMapTruncated] = useState(false);
   const [mapUnmapped, setMapUnmapped] = useState(0);
   const [mapLoading, setMapLoading] = useState(true);
   const [selectedMapTrackable, setSelectedMapTrackable] = useState<string>("");
@@ -142,6 +144,8 @@ export default function TrackablesPage() {
     try {
       const data = await apiFetch<TrackableMapResponse>("/trackables/map");
       setMapPoints(data.points);
+      setMapTotal(data.total);
+      setMapTruncated(data.truncated);
       setMapUnmapped(data.unmapped);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not load trackable map");
@@ -272,7 +276,7 @@ export default function TrackablesPage() {
       setMissingCacheCodes(summary.unresolvedCaches);
       const dateNote = summary.estimatedLogs > 0 ? " The KML did not include dates, so the file order was used." : "";
       const codeNote = summary.inferredTrackables > 0 ? " No TB code was present, so a temporary KML identifier was generated; edit it to the printed code when you have it." : "";
-      setImportMessage(`Imported ${summary.importedLogs} movement${summary.importedLogs === 1 ? "" : "s"} for ${summary.importedTrackables} trackable${summary.importedTrackables === 1 ? "" : "s"}; ${summary.importedCaches} cache location${summary.importedCaches === 1 ? "" : "s"} saved.${dateNote}${codeNote}`);
+      setImportMessage(`Imported ${summary.importedLogs} movement${summary.importedLogs === 1 ? "" : "s"} for ${summary.importedTrackables} trackable${summary.importedTrackables === 1 ? "" : "s"}; ${summary.importedCaches} cache record${summary.importedCaches === 1 ? "" : "s"} linked.${dateNote}${codeNote}`);
       form.reset();
       setImportTrackingCode("");
       await Promise.all([load(), loadMap()]);
@@ -351,7 +355,7 @@ export default function TrackablesPage() {
         <div className="upload-zone-copy">
           <p className="eyebrow">Bring your history with you</p>
           <h2>Import from Geocaching or GSAK</h2>
-          <p className="muted">Upload a trackable journey export as GPX, ZIP, KMZ, CSV, KML, or Geocaching API JSON. Cache coordinates found in the file are added to your archive when they are not already there.</p>
+          <p className="muted">Upload a trackable journey export as GPX, ZIP, KMZ, CSV, KML, or Geocaching API JSON. Journey cache details stay with your private movement history; matching cache records are linked from your archive.</p>
         </div>
         <form onSubmit={importHistory} className="trackable-import-form">
           <input name="file" type="file" accept=".gpx,.zip,.kmz,.csv,.kml,.json,application/gpx+xml,application/zip,application/vnd.google-earth.kml+xml,text/csv,application/json" required />
@@ -359,7 +363,7 @@ export default function TrackablesPage() {
           <button className="primary-button" disabled={importBusy} type="submit">{importBusy ? "Importing…" : "Import movement history"}</button>
         </form>
         {importMessage ? <p className="muted" role="status">{importMessage}</p> : null}
-        {missingCacheCodes.length > 0 ? <p className="trackable-import-warning" role="alert"><strong>Cache import needed.</strong> {missingCacheCodes.length} cache{missingCacheCodes.length === 1 ? "" : "s"} could not be matched to coordinates. Export those caches from GSAK as GPX/ZIP, or upload a Geocaching cache export, then import this journey again. <span>Missing: {missingCacheCodes.slice(0, 8).join(", ")}{missingCacheCodes.length > 8 ? "…" : ""}</span> <a href="/upload#travel-cache-import">Open cache import</a></p> : null}
+        {missingCacheCodes.length > 0 ? <p className="trackable-import-warning" role="alert"><strong>Cache import needed.</strong> {missingCacheCodes.length} cache{missingCacheCodes.length === 1 ? "" : "s"} could not be matched to your cache archive. The journey details are still saved privately. Export those caches from GSAK as GPX/ZIP, or upload a Geocaching cache export, then import this journey again. <span>Missing: {missingCacheCodes.slice(0, 8).join(", ")}{missingCacheCodes.length > 8 ? "…" : ""}</span> <a href="/upload#travel-cache-import">Open cache import</a></p> : null}
       </section>
 
       <section className="map-stage trackable-map-stage">
@@ -369,6 +373,7 @@ export default function TrackablesPage() {
           <label className="trackable-map-filter"><span>Trackable</span><select value={selectedMapTrackable} onChange={(event) => { mapSelectionUserChanged.current = true; setSelectedMapTrackable(event.target.value); }}><option value="" disabled>Choose a trackable</option>{trackables.map((trackable) => <option key={trackable.id} value={trackable.id}>{trackable.trackingCode} · {trackable.name}</option>)}</select></label>
           <p className="trackable-map-hint">Clusters group nearby stops. Search narrows the stop list and highlights matches; the full route stays visible.</p>
         </div>
+        {mapTruncated ? <p className="trackable-import-warning trackable-map-warning" role="status"><strong>Map history is limited.</strong> Showing the newest 20,000 of {mapTotal.toLocaleString()} movement points for performance. The full history remains in your logbook export.</p> : null}
         <div className="trackable-map-canvas">
           <TrackableMap points={visibleMapPoints} focusPointId={focusedMapPointId} highlightPointIds={highlightedMapPointIds} onPointSelect={handleMapPointSelect} />
           <div className="trackable-map-legend" aria-label="Journey map legend"><span><b className="trackable-legend-swatch start">S</b>Start</span><span><b className="trackable-legend-swatch end">E</b>End</span><span><b className="trackable-legend-swatch stop">#</b>Stop number</span><span><b className="trackable-legend-swatch route" />Journey progress</span></div>

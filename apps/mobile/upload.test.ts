@@ -50,7 +50,7 @@ test("GPX uploads use a cached document and the imports multipart endpoint", asy
   assert.equal(harness.refreshes(), 1);
 });
 
-test("trackable uploads explain missing cache coordinates", async () => {
+test("trackable uploads explain missing cache records", async () => {
   const harness = uploadHarness("trackable", {
     request: async (path: string, body: FormData) => {
       harness.requests.push({ path, body });
@@ -59,7 +59,7 @@ test("trackable uploads explain missing cache coordinates", async () => {
   });
 
   assert.equal(await pickAndUploadDocument("trackable", harness.dependencies), "uploaded");
-  assert.match(harness.messages.at(-1) ?? "", /2 cache locations are missing/);
+  assert.match(harness.messages.at(-1) ?? "", /2 cache records are missing/);
   assert.match(harness.messages.at(-1) ?? "", /GSAK as GPX\/ZIP/);
 });
 

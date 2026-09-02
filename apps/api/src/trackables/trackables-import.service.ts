@@ -6,6 +6,9 @@ import { PrismaService } from "../common/prisma.service";
 
 const TRACKABLE_IMPORT_MAX_BYTES = 25 * 1024 * 1024;
 const TRACKABLE_IMPORT_MAX_LOGS = 100_000;
+const TRACKABLE_IMPORT_MAX_TRACKABLES = 10_000;
+const TRACKABLE_IMPORT_QUERY_BATCH_SIZE = 5_000;
+const TRACKABLE_IMPORT_WRITE_BATCH_SIZE = 500;
 
 type PreparedLog = ParsedTrackableLog & {
   cacheId: string | null;
@@ -14,16 +17,17 @@ type PreparedLog = ParsedTrackableLog & {
   sourceKey: string;
 };
 
-type CacheInput = {
-  cacheName?: string | null;
-  latitude?: number | null;
-  longitude?: number | null;
-  raw?: unknown;
-};
-
 function cleanText(value: string | null | undefined): string | null {
   const trimmed = value?.trim();
   return trimmed ? trimmed : null;
+}
+
+function batches<T>(values: T[], size: number): T[][] {
+  const result: T[][] = [];
+  for (let index = 0; index < values.length; index += size) {
+    result.push(values.slice(index, index + size));
+  }
+  return result;
 }
 
 function trackingCode(value: string): string {
@@ -139,70 +143,46 @@ export class TrackablesImportService {
         metadataByCode.set(code, { trackingCode: code, name: cleanText(log.trackableName) ?? code, raw: log.raw });
       }
     }
+    if (metadataByCode.size > TRACKABLE_IMPORT_MAX_TRACKABLES) {
+      throw new Error(`Trackable import contains more than ${TRACKABLE_IMPORT_MAX_TRACKABLES} trackables`);
+    }
 
     const logRows = [...uniqueLogs.entries()].map(([sourceKey, log]) => ({ ...log, sourceKey }));
     const cacheCodes = new Set<string>();
-    const cacheInputs = new Map<string, CacheInput>();
-    const rememberCacheInput = (code: string, item: CacheInput) => {
-      const previous = cacheInputs.get(code);
-      const hasCoordinates = validCoordinate(item.latitude, item.longitude);
-      cacheInputs.set(code, {
-        cacheName: cleanText(item.cacheName) ?? previous?.cacheName ?? null,
-        latitude: hasCoordinates ? item.latitude! : previous?.latitude ?? null,
-        longitude: hasCoordinates ? item.longitude! : previous?.longitude ?? null,
-        raw: item.raw ?? previous?.raw
-      });
-    };
     for (const item of metadataByCode.values()) {
       const code = gcCode(item.gcCode);
       if (code) {
         cacheCodes.add(code);
-        rememberCacheInput(code, item);
       }
     }
     for (const log of logRows) {
       const code = gcCode(log.gcCode);
       if (code) {
         cacheCodes.add(code);
-        rememberCacheInput(code, log);
       }
     }
 
     // A journey export can contain hundreds (or thousands) of cache stops. The
     // default Prisma interactive-transaction timeout is only five seconds,
-    // which is too short for the per-cache enrichment/upsert work below on the
+    // which is too short for the per-trackable upsert work below on the
     // Pi. Keep the import atomic, but give it the same bounded two-minute
     // transaction window used by the larger portability importer.
     const result = await this.prisma.$transaction(async (tx) => {
-      const cacheCodeList = [...cacheInputs.keys()];
-      const existingCaches = cacheCodeList.length === 0
-        ? []
-        : await tx.cache.findMany({
-            where: { gcCode: { in: cacheCodeList } },
-            select: { id: true, gcCode: true, name: true, latitude: true, longitude: true }
-          });
-      const existingByCode = new Map(existingCaches.map((cache) => [cache.gcCode, cache]));
-      const cacheRowsToCreate = cacheCodeList.flatMap((code) => {
-        const input = cacheInputs.get(code)!;
-        if (existingByCode.has(code) || !validCoordinate(input.latitude, input.longitude)) return [];
-        return [{
-          gcCode: code,
-          name: cleanText(input.cacheName) ?? code,
-          latitude: input.latitude!,
-          longitude: input.longitude!
-        }];
-      });
-      if (cacheRowsToCreate.length > 0) {
-        await tx.cache.createMany({ data: cacheRowsToCreate, skipDuplicates: true });
-      }
-      const storedCaches = cacheCodeList.length === 0
-        ? []
-        : await tx.cache.findMany({
-            where: { gcCode: { in: cacheCodeList } },
-            select: { id: true, gcCode: true, name: true, latitude: true, longitude: true }
-          });
+      const cacheCodeList = [...cacheCodes];
+      // Cache rows are shared across users and must only be populated by a
+      // trusted cache import. Journey metadata is kept on TrackableLog below.
+      const existingCaches = (
+        await Promise.all(
+          batches(cacheCodeList, TRACKABLE_IMPORT_QUERY_BATCH_SIZE).map((batch) =>
+            tx.cache.findMany({
+              where: { gcCode: { in: batch } },
+              select: { id: true, gcCode: true, name: true, latitude: true, longitude: true }
+            })
+          )
+        )
+      ).flat();
       const cachesByCode = new Map<string, { id: string; name: string; latitude: number; longitude: number }>(
-        storedCaches.map((cache) => [cache.gcCode, {
+        existingCaches.map((cache) => [cache.gcCode, {
           id: cache.id,
           name: cache.name,
           latitude: Number(cache.latitude),
@@ -210,44 +190,6 @@ export class TrackablesImportService {
         }])
       );
       const unresolved = new Set(cacheCodeList.filter((code) => !cachesByCode.has(code)));
-
-      // Preserve the old enrichment behavior for cache rows already in the
-      // archive, while avoiding one lookup and one upsert for every log point.
-      for (const existing of existingCaches) {
-        const input = cacheInputs.get(existing.gcCode);
-        if (!input) continue;
-        const hasCoordinates = validCoordinate(input.latitude, input.longitude);
-        const normalizedName = cleanText(input.cacheName);
-        const coordinatesChanged = hasCoordinates && (Number(existing.latitude) !== input.latitude || Number(existing.longitude) !== input.longitude);
-        const nameChanged = normalizedName != null && normalizedName !== existing.name;
-        if (coordinatesChanged || nameChanged) {
-          await tx.cache.update({
-            where: { id: existing.id },
-            data: {
-              ...(nameChanged ? { name: normalizedName! } : {}),
-              ...(coordinatesChanged ? { latitude: input.latitude!, longitude: input.longitude! } : {})
-            }
-          });
-          const cached = cachesByCode.get(existing.gcCode);
-          if (cached) {
-            cachesByCode.set(existing.gcCode, {
-              ...cached,
-              ...(nameChanged ? { name: normalizedName! } : {}),
-              ...(coordinatesChanged ? { latitude: input.latitude!, longitude: input.longitude! } : {})
-            });
-          }
-        }
-      }
-
-      const userCacheDataRows: Array<{ userId: string; cacheId: string; raw: Prisma.InputJsonValue }> = [];
-      for (const created of cacheRowsToCreate) {
-        const cache = cachesByCode.get(created.gcCode);
-        const raw = jsonValue(cacheInputs.get(created.gcCode)?.raw);
-        if (cache && raw !== undefined) userCacheDataRows.push({ userId, cacheId: cache.id, raw });
-      }
-      if (userCacheDataRows.length > 0) {
-        await tx.userCacheData.createMany({ data: userCacheDataRows, skipDuplicates: true });
-      }
 
       const preparedLogs: PreparedLog[] = [];
       for (const log of logRows) {
@@ -258,9 +200,15 @@ export class TrackablesImportService {
         preparedLogs.push({ ...log, cacheId: cache?.id ?? null, latitude, longitude, sourceKey: log.sourceKey });
       }
 
+      const logsByTrackable = new Map<string, PreparedLog[]>();
+      for (const log of preparedLogs) {
+        const logs = logsByTrackable.get(log.trackingCode);
+        if (logs) logs.push(log);
+        else logsByTrackable.set(log.trackingCode, [log]);
+      }
       const trackableIds = new Map<string, string>();
       for (const [code, metadata] of metadataByCode) {
-        const codeLogs = preparedLogs.filter((log) => log.trackingCode === code).sort((left, right) => left.loggedAt.getTime() - right.loggedAt.getTime());
+        const codeLogs = [...(logsByTrackable.get(code) ?? [])].sort((left, right) => left.loggedAt.getTime() - right.loggedAt.getTime());
         const latestLog = codeLogs.at(-1);
         const latestDatedLog = [...codeLogs].reverse().find((log) => !dateEstimated(log.raw));
         const latestDate = latestDatedLog?.loggedAt ?? metadata.lastSeenAt ?? null;
@@ -270,7 +218,6 @@ export class TrackablesImportService {
         const calculatedDistance = coordinateLogs.slice(1).reduce((total, log, index) => total + haversineKm(coordinateLogs[index]!, log), 0);
         const distanceKm = explicitDistance ?? (calculatedDistance > 0 ? calculatedDistance : null);
         const desiredState = stateFromLog(latestLog?.logType ?? "NOTE") ?? metadata.state ?? "DISCOVERED";
-        const existing = await tx.trackable.findUnique({ where: { userId_trackingCode: { userId, trackingCode: code } }, select: { id: true } });
         const row = await tx.trackable.upsert({
           where: { userId_trackingCode: { userId, trackingCode: code } },
           create: {
@@ -294,36 +241,38 @@ export class TrackablesImportService {
           select: { id: true }
         });
         trackableIds.set(code, row.id);
-        if (!existing && !latestDate && metadata.gcCode && !metadata.latitude && !metadata.longitude) {
-          const cache = cachesByCode.get(gcCode(metadata.gcCode) ?? "");
-          if (!cache) unresolved.add(gcCode(metadata.gcCode) ?? metadata.gcCode);
-        }
       }
 
       const sourceKeys = preparedLogs.map((log) => log.sourceKey);
       const existingKeys = new Set(
-        sourceKeys.length === 0
-          ? []
-          : (await tx.trackableLog.findMany({ where: { userId, sourceKey: { in: sourceKeys } }, select: { sourceKey: true } })).map((row) => row.sourceKey)
+        (
+          await Promise.all(
+            batches(sourceKeys, TRACKABLE_IMPORT_QUERY_BATCH_SIZE).map((batch) =>
+              tx.trackableLog.findMany({ where: { userId, sourceKey: { in: batch } }, select: { sourceKey: true } })
+            )
+          )
+        ).flat().map((row) => row.sourceKey)
       );
       const newLogs = preparedLogs.filter((log) => !existingKeys.has(log.sourceKey));
-      if (newLogs.length > 0) {
+      for (const batch of batches(newLogs, TRACKABLE_IMPORT_WRITE_BATCH_SIZE)) {
         await tx.trackableLog.createMany({
-          data: newLogs.map((log) => ({
-            userId,
-            trackableId: trackableIds.get(log.trackingCode)!,
-            cacheId: log.cacheId,
-            logType: prismaLogType(log.logType),
-            loggedAt: log.loggedAt,
-            locationName: cleanText(log.locationName),
-            holderName: cleanText(log.holderName),
-            latitude: validCoordinate(log.latitude, log.longitude) ? log.latitude : null,
-            longitude: validCoordinate(log.latitude, log.longitude) ? log.longitude : null,
-            notes: cleanText(log.notes),
-            source,
-            sourceKey: log.sourceKey,
-            raw: jsonValue(log.raw)
-          }))
+          data: batch.map((log) => ({
+              userId,
+              trackableId: trackableIds.get(log.trackingCode)!,
+              cacheId: log.cacheId,
+              gcCode: gcCode(log.gcCode),
+              cacheName: cleanText(log.cacheName),
+              logType: prismaLogType(log.logType),
+              loggedAt: log.loggedAt,
+              locationName: cleanText(log.locationName),
+              holderName: cleanText(log.holderName),
+              latitude: validCoordinate(log.latitude, log.longitude) ? log.latitude : null,
+              longitude: validCoordinate(log.latitude, log.longitude) ? log.longitude : null,
+              notes: cleanText(log.notes),
+              source,
+              sourceKey: log.sourceKey,
+              raw: jsonValue(log.raw)
+            }))
         });
       }
       return {

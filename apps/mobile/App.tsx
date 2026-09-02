@@ -1665,7 +1665,7 @@ function HidesScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string 
 
 function TrackablesScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
   const trackables = useApi<{ trackables: MobileTrackable[]; summary: { total: number; stuck: number; byState: Partial<Record<TrackableState, number>> } }>(apiBaseUrl, token, "/trackables", { trackables: [], summary: { total: 0, stuck: 0, byState: {} } });
-  const journey = useApi<{ points: TrackableJourneyPoint[]; total: number; unmapped: number }>(apiBaseUrl, token, "/trackables/map", { points: [], total: 0, unmapped: 0 });
+  const journey = useApi<{ points: TrackableJourneyPoint[]; total: number; truncated: boolean; unmapped: number }>(apiBaseUrl, token, "/trackables/map", { points: [], total: 0, truncated: false, unmapped: 0 });
   const [trackingCode, setTrackingCode] = useState("");
   const [name, setName] = useState("");
   const [state, setState] = useState<TrackableState>("DISCOVERED");
@@ -1750,7 +1750,7 @@ function TrackablesScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: st
         {actionError ? <Text style={styles.error}>{actionError}</Text> : null}
       </Panel>
       <Panel title="Import movement history" subtitle="Geocaching or GSAK GPX, ZIP/KMZ, CSV, KML, or API JSON.">
-        <Text style={styles.muted}>Cache coordinates in the file are saved to your archive if they are missing there.</Text>
+        <Text style={styles.muted}>Journey cache details stay with your private movement history; matching cache records are linked from your archive.</Text>
         <PrimaryButton label={importing ? "Importing..." : "Choose history export"} onPress={() => void importHistory()} />
       </Panel>
       <Panel title="Movement map" subtitle={journey.data.total ? `${visibleJourney.length} movement points` : "Import a journey to see its path."}>
@@ -1760,6 +1760,7 @@ function TrackablesScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: st
           return <Pressable key={value} accessibilityRole="button" accessibilityState={{ selected: active }} onPress={() => setMapTrackableId(value)} style={[styles.trackableFilterButton, active && styles.trackableFilterButtonActive]}><Text style={[styles.trackableFilterText, active && styles.trackableFilterTextActive]}>{label}</Text></Pressable>;
         })}</View>
         <NativeTrackableMap points={visibleJourney} />
+        {journey.data.truncated ? <Text style={styles.trackableWarning}>Map is showing the newest 20,000 of {journey.data.total.toLocaleString()} movement points. The full history remains in your logbook export.</Text> : null}
         {journey.data.unmapped > 0 ? <Text style={styles.muted}>{journey.data.unmapped} movement points have no coordinates.</Text> : null}
       </Panel>
       <Panel title="Logbook" subtitle={`${visible.length} shown`}>
@@ -2831,6 +2832,7 @@ function NativeTrackableMap({ points }: { points: TrackableJourneyPoint[] }) {
                 <Text style={styles.calloutTitle}>{point.trackingCode} · {point.logType}</Text>
                 <Text style={styles.calloutMeta}>Stop {point.sequence} of {point.sequenceTotal}</Text>
                 <Text style={styles.calloutBody}>{point.cacheName ?? point.locationName ?? "Unknown location"}</Text>
+                {point.gcCode ? <Text style={styles.calloutMeta}>{point.gcCode}</Text> : null}
                 <Text style={styles.calloutMeta}>{point.dateEstimated ? "Date not supplied by KML (file order shown)" : dateText(point.loggedAt)}</Text>
               </View>
             </Callout>

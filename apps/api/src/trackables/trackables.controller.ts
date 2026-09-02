@@ -106,10 +106,16 @@ function cleanText(value: string | null | undefined) {
   return trimmed || null;
 }
 
-function cacheNameForDisplay(cache: { gcCode: string; name: string } | null | undefined) {
-  if (!cache) return null;
-  const name = cleanText(cache.name);
-  return name && name.toUpperCase() !== cache.gcCode.toUpperCase() ? name : null;
+function cacheNameForDisplay(
+  cache: { gcCode: string; name: string } | null | undefined,
+  fallbackName?: string | null,
+  gcCode?: string | null
+) {
+  const code = cache?.gcCode ?? gcCode;
+  const archivedName = cleanText(cache?.name);
+  const journeyName = cleanText(fallbackName);
+  const name = archivedName && (!code || archivedName.toUpperCase() !== code.toUpperCase()) ? archivedName : journeyName;
+  return name && (!code || name.toUpperCase() !== code.toUpperCase()) ? name : null;
 }
 
 function requiredText(value: string, label: string) {
@@ -163,20 +169,36 @@ export class TrackablesController {
     // This endpoint intentionally returns movement rows rather than one row per
     // cache. A trackable can visit the same cache more than once, and the map
     // uses the chronological rows to draw its journey.
-    const rows = await this.prisma.trackableLog.findMany({
-      where: { userId: user.id },
-      orderBy: [{ loggedAt: "asc" }, { id: "asc" }],
-      take: 20_000,
-      include: {
-        trackable: { select: { id: true, trackingCode: true, name: true } },
-        cache: { select: { id: true, gcCode: true, name: true, latitude: true, longitude: true } }
-      }
-    });
-    const totalByTrackable = new Map<string, number>();
+    const [recentRows, groupedCounts] = await Promise.all([
+      this.prisma.trackableLog.findMany({
+        where: { userId: user.id },
+        // Keep the newest window when a history is larger than the map budget.
+        // The response advertises truncation so the client can explain it.
+        orderBy: [{ loggedAt: "desc" }, { id: "desc" }],
+        take: 20_000,
+        include: {
+          trackable: { select: { id: true, trackingCode: true, name: true } },
+          cache: { select: { id: true, gcCode: true, name: true, latitude: true, longitude: true } }
+        }
+      }),
+      this.prisma.trackableLog.groupBy({
+        where: { userId: user.id },
+        by: ["trackableId"],
+        _count: { _all: true }
+      })
+    ]);
+    const rows = [...recentRows].reverse();
+    const totalByTrackable = new Map(groupedCounts.map((row) => [row.trackableId, row._count._all]));
+    const visibleByTrackable = new Map<string, number>();
     for (const row of rows) {
-      totalByTrackable.set(row.trackable.id, (totalByTrackable.get(row.trackable.id) ?? 0) + 1);
+      visibleByTrackable.set(row.trackable.id, (visibleByTrackable.get(row.trackable.id) ?? 0) + 1);
     }
+    const total = groupedCounts.reduce((sum, row) => sum + row._count._all, 0);
+    const truncated = rows.length < total;
     const sequenceByTrackable = new Map<string, number>();
+    for (const [trackableId, count] of visibleByTrackable) {
+      sequenceByTrackable.set(trackableId, (totalByTrackable.get(trackableId) ?? count) - count);
+    }
     const points = rows.map((row) => {
       const sequence = (sequenceByTrackable.get(row.trackable.id) ?? 0) + 1;
       sequenceByTrackable.set(row.trackable.id, sequence);
@@ -189,8 +211,8 @@ export class TrackablesController {
         loggedAt: row.loggedAt.toISOString(),
         sequence,
         sequenceTotal: totalByTrackable.get(row.trackable.id) ?? sequence,
-        gcCode: row.cache?.gcCode ?? null,
-        cacheName: cacheNameForDisplay(row.cache),
+        gcCode: row.gcCode ?? row.cache?.gcCode ?? null,
+        cacheName: cacheNameForDisplay(row.cache, row.cacheName, row.gcCode),
         dateEstimated: dateEstimated(row.raw),
         locationName: row.locationName,
         holderName: row.holderName,
@@ -199,7 +221,7 @@ export class TrackablesController {
         notes: row.notes
       };
     });
-    return { points, total: points.length, unmapped: points.filter((point) => point.latitude == null || point.longitude == null).length };
+    return { points, total, truncated, unmapped: points.filter((point) => point.latitude == null || point.longitude == null).length };
   }
 
   @Get()
@@ -243,8 +265,8 @@ export class TrackablesController {
         loggedAt: log.loggedAt.toISOString(),
         locationName: log.locationName,
         holderName: log.holderName,
-        gcCode: log.cache?.gcCode ?? null,
-        cacheName: cacheNameForDisplay(log.cache),
+        gcCode: log.gcCode ?? log.cache?.gcCode ?? null,
+        cacheName: cacheNameForDisplay(log.cache, log.cacheName, log.gcCode),
         dateEstimated: dateEstimated(log.raw),
         latitude: log.latitude == null ? log.cache == null ? null : Number(log.cache.latitude) : Number(log.latitude),
         longitude: log.longitude == null ? log.cache == null ? null : Number(log.cache.longitude) : Number(log.longitude),

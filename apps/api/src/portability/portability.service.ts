@@ -380,7 +380,8 @@ export class PortabilityService implements OnModuleInit, OnModuleDestroy {
         })),
         trackableLogs: trackableLogs.map((row) => ({
           trackingCode: row.trackable.trackingCode,
-          gcCode: row.cache?.gcCode ?? null,
+          gcCode: row.gcCode ?? row.cache?.gcCode ?? null,
+          cacheName: row.cacheName ?? null,
           logType: row.logType,
           loggedAt: row.loggedAt,
           locationName: row.locationName,
@@ -733,7 +734,12 @@ export class PortabilityService implements OnModuleInit, OnModuleDestroy {
             const logType = text(row.logType, `${label}.logType`, 20).toUpperCase();
             if (!TRACKABLE_LOG_TYPES.has(logType)) throw new BadRequestException(`${label}.logType is invalid`);
             const rawGcCode = optionalText(row.gcCode, `${label}.gcCode`, 40);
-            const trackableCacheId = rawGcCode ? cacheId(rawGcCode, `${label}.gcCode`) : null;
+            const normalizedGcCode = rawGcCode?.trim().toUpperCase() || null;
+            if (normalizedGcCode && !/^GC[A-Z0-9]{2,20}$/.test(normalizedGcCode)) {
+              throw new BadRequestException(`${label}.gcCode is invalid`);
+            }
+            const trackableCacheId = normalizedGcCode ? cacheIds.get(normalizedGcCode) ?? null : null;
+            const cacheName = optionalText(row.cacheName, `${label}.cacheName`, 1_000);
             const latitude = row.latitude == null ? null : decimal(row.latitude, `${label}.latitude`, -90, 90);
             const longitude = row.longitude == null ? null : decimal(row.longitude, `${label}.longitude`, -180, 180);
             const sourceKey = optionalText(row.sourceKey, `${label}.sourceKey`, 200) ?? `${code}:${date(row.loggedAt, `${label}.loggedAt`).toISOString()}:${logType}:${index}`;
@@ -741,6 +747,8 @@ export class PortabilityService implements OnModuleInit, OnModuleDestroy {
               userId: user.id,
               trackableId,
               cacheId: trackableCacheId,
+              gcCode: normalizedGcCode,
+              cacheName,
               logType: logType as any,
               loggedAt: date(row.loggedAt, `${label}.loggedAt`),
               locationName: optionalText(row.locationName, `${label}.locationName`, 200),

@@ -48,7 +48,7 @@ function trackableImportMessage(response: unknown): string | null {
   const missing = Array.isArray(summary.unresolvedCaches) ? summary.unresolvedCaches.filter((code): code is string => typeof code === "string") : [];
   if (missing.length > 0) {
     const preview = missing.slice(0, 5).join(", ");
-    return `Trackable history imported, but ${missing.length} cache location${missing.length === 1 ? " is" : "s are"} missing. Export those caches from GSAK as GPX/ZIP and import them, then retry this journey.${preview ? ` Missing: ${preview}${missing.length > 5 ? "…" : ""}` : ""}`;
+    return `Trackable history imported, but ${missing.length} cache record${missing.length === 1 ? " is" : "s are"} missing from your archive. Export those caches from GSAK as GPX/ZIP and import them, then retry this journey.${preview ? ` Missing: ${preview}${missing.length > 5 ? "…" : ""}` : ""}`;
   }
   if (typeof summary.estimatedLogs === "number" && summary.estimatedLogs > 0) {
     return "Trackable history imported. Dates were not supplied, so the file order was used.";

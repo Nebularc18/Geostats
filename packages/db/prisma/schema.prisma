@@ -408,6 +408,8 @@ model TrackableLog {
   userId        String           @map("user_id")
   trackableId   String           @map("trackable_id")
   cacheId       String?          @map("cache_id")
+  gcCode        String?          @map("gc_code")
+  cacheName     String?          @map("cache_name")
   logType       TrackableLogType @map("log_type")
   loggedAt      DateTime         @map("logged_at")
   locationName  String?          @map("location_name")
@@ -426,6 +428,7 @@ model TrackableLog {
 
   @@unique([userId, sourceKey])
   @@index([userId, trackableId, loggedAt])
+  @@index([userId, gcCode])
   @@index([cacheId])
   @@map("trackable_logs")
 }
