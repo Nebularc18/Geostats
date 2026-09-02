@@ -74,6 +74,11 @@ export function ClerkSessionGate({ children }: { children: React.ReactNode }) {
     };
   }, [getToken, isLoaded, isSignedIn, syncedUserId, userId]);
 
+  const sessionIsSynchronized =
+    state === "ready" &&
+    isLoaded &&
+    ((isSignedIn && Boolean(userId) && syncedUserId === userId) || (!isSignedIn && !userId && syncedUserId === null));
+
   if (state === "error") {
     return (
       <main className="auth-page">
@@ -90,7 +95,7 @@ export function ClerkSessionGate({ children }: { children: React.ReactNode }) {
     );
   }
 
-  if (state !== "ready") {
+  if (!sessionIsSynchronized) {
     return (
       <main className="auth-page">
         <section className="auth-panel">
