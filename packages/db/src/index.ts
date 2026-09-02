@@ -9,6 +9,10 @@ export type {
   GeocachingProfile,
   Import,
   StatSnapshot,
+  Trackable,
+  TrackableLog,
+  TrackableLogType,
+  TrackableState,
   User
 } from "@prisma/client";
 

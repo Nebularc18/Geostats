@@ -78,6 +78,9 @@ importers:
       '@geostats/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@geostats/gpx-parser':
+        specifier: workspace:*
+        version: link:../../packages/gpx-parser
       '@geostats/shared':
         specifier: workspace:*
         version: link:../../packages/shared

@@ -120,9 +120,10 @@ test("gsakImportBaseUrl falls back to the normal API origin", () => {
 test("GSAK macro refreshes found and owned caches before uploading bounded batches", () => {
   const macro = gsakImportMacro("https://api.geostats.example", "gst_secret");
 
-  assert.match(macro, /# MacVersion = 1\.7/);
+  assert.match(macro, /# MacVersion = 1\.8/);
   assert.match(macro, /\$cacheBatchSize = 50/);
   assert.match(macro, /\$logBatchSize = 25/);
+  assert.match(macro, /\$journeyTake = 500/);
   assert.match(macro, /\/collector\/gsak\/import/);
   assert.match(macro, /SqlQuote\(\$token\)/);
   assert.match(macro, /'kind','complete'/);
@@ -132,6 +133,10 @@ test("GSAK macro refreshes found and owned caches before uploading bounded batch
   assert.match(macro, /from Caches where " \+ \$cacheFilter/);
   assert.match(macro, /join Caches c on c\.Code = l\.lParent where " \+ \$logFilter/);
   assert.match(macro, /GcUpdateUserInfo UpdateHome=N UpdateMatching=Y/);
+  assert.match(macro, /'kind','trackable-codes'/);
+  assert.match(macro, /GeostatsTrackableCodes/);
+  assert.match(macro, /Code in \(select GeocacheCode from GeostatsTrackableCodes\)/);
+  assert.match(macro, /GcGetCaches Settings=<macro> GcCodes=\$journeyCodes/);
   assert.match(macro, /users\/me\/geocachelogs\?logTypes=2,10,11/);
   assert.match(macro, /not exists \(select 1 from Caches c where c\.Code = a\.GeocacheCode\)/);
   assert.match(macro, /GcGetCaches Settings=<macro> GcCodes=\$missingCodes/);

@@ -9,6 +9,12 @@ Pocket Query, and owner-log imports.
   owner-log CSV files.
 - Explore find statistics, milestones, achievement badges, FTF history, hides,
   and received logs.
+- Keep a trackable logbook with owned, discovered, retrieved, dropped, visited,
+  and missing states, plus last-seen notes and stale-item warnings.
+- Import trackable journeys from Geocaching/GSAK GPX, ZIP/KMZ, CSV, KML, or
+  Geocaching API JSON. Movement logs are deduplicated, missing cache records
+  with coordinates are added to the cache database, and every journey can be
+  viewed as a map with chronological route lines.
 - Compare summary stats, country coverage, and cache-type finds with friends who
   also use Geostats.
 - Build reusable challenge checkers and publish a result page for a cache.
@@ -207,7 +213,7 @@ Kinds are `approach`, `keyword`, and `coordinate`. States are `planned` (not tri
 
 Every signed-in user can download a server-independent JSON backup from **Settings → Profile → Move or back up all your data** and import it into an account on another Geostats server.
 
-The versioned `geostats-portable-data` format contains the geocaching profile, finds and log text, hides and received logs, associated cache metadata, corrected coordinates, finder-country statistics, generated stat snapshots, and owned mystery workspaces. Import is transactional and can safely be repeated. It merges by stable cache code and record identity, updates matching user-owned records, and keeps unrelated records already in the destination account.
+The versioned `geostats-portable-data` format contains the geocaching profile, finds and log text, hides and received logs, trackable logbook entries, associated cache metadata, corrected coordinates, finder-country statistics, generated stat snapshots, and owned mystery workspaces. Import is transactional and can safely be repeated. It merges by stable cache code and record identity, updates matching user-owned records, and keeps unrelated records already in the destination account.
 
 Authentication secrets and server-local capabilities are intentionally not portable: password hashes, OAuth links, login sessions, collector tokens, object-storage keys, and mystery sharing grants remain on the server that issued them. The export includes account identity only as informational metadata and never changes the destination account's email or username.
 
@@ -449,9 +455,8 @@ builds do not create a release.
 
 ## Work in progress
 
-- Trackable logbook with owned, discovered, retrieved, dropped, and visited
-  states; GPX or CSV history import; distance and journey maps; and a last-seen
-  warning for trackables that may be stuck.
+- Direct Geocaching API synchronization and richer editing for individual
+  movement log entries.
 - Shared trip lists so friends can collect solved mysteries, vote on stops, and
   open one route on caching day.
 - Personal goals for yearly find counts, Jasmer months, D/T grid cells, counties,

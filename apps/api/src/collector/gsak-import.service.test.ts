@@ -43,6 +43,25 @@ test("GSAK completion records the run in import history", async () => {
   assert.match(created[0].data.objectKey, /^gsak\/user-1\/\d+\.json$/);
 });
 
+test("trackable cache code pages return code-only journey placeholders", async () => {
+  const queries: any[] = [];
+  const prisma = {
+    $queryRaw: async (query: any) => {
+      queries.push(query);
+      return queries.length === 1 ? [{ count: 2n }] : [{ gcCode: "GC123" }, { gcCode: "GC456" }];
+    }
+  };
+  const service = new GsakImportService(prisma as any, {} as any);
+
+  const result = await service.trackableCacheCodes("user-1", "200", "500");
+
+  assert.deepEqual(result, { total: 2, codes: "GC123,GC456" });
+  assert.match(queries[0].sql, /trackable_logs/);
+  assert.match(queries[0].sql, /upper\(trim\(c\.name\)\)/);
+  assert.deepEqual(queries[0].values, ["user-1"]);
+  assert.deepEqual(queries[1].values, ["user-1", 200, 500]);
+});
+
 test("GSAK cache batches upsert owned caches and corrected coordinates", async () => {
   const actions: Array<[string, any]> = [];
   const tx = {
@@ -80,6 +99,35 @@ test("GSAK cache batches upsert owned caches and corrected coordinates", async (
     actions[1][1].create.raw["groundspeak:cache"]["groundspeak:attributes"]["groundspeak:attribute"],
     [{ id: "1", inc: "1" }, { id: "2", inc: "0" }]
   );
+});
+
+test("GSAK cache batches enrich a cache placeholder created by a trackable import", async () => {
+  const updates: any[] = [];
+  const existingCache = { id: "cache-1", gcCode: "GC123", name: "GC123", userData: [] };
+  const tx = {
+    cache: {
+      upsert: async (input: any) => {
+        updates.push(input);
+        return { id: existingCache.id };
+      }
+    },
+    userCacheData: { upsert: async () => ({}) },
+    hide: { upsert: async () => ({}) },
+    correctedCoordinate: { upsert: async () => ({}) }
+  };
+  const prisma = {
+    cache: { findMany: async () => [existingCache] },
+    $transaction: async (run: (client: any) => Promise<unknown>) => run(tx)
+  };
+  const service = new GsakImportService(prisma as any, {} as any);
+  const csv = [
+    "gcCode,name,cacheType,difficulty,terrain,size,latitude,longitude",
+    "GC123,Named cache,Traditional Cache,2,2.5,Small,56.1,15.6"
+  ].join("\r\n");
+
+  await service.importBatch("user-1", "caches", csv);
+
+  assert.deepEqual(updates[0].update, { name: "Named cache" });
 });
 
 test("GSAK log batches merge owned logs and preserve manual FTF choices", async () => {

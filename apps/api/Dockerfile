@@ -15,6 +15,7 @@ COPY apps/api/nest-cli.json apps/api/nest-cli.json
 COPY apps/api/tsconfig.json apps/api/tsconfig.json
 RUN pnpm --filter @geostats/shared build
 RUN pnpm --filter @geostats/stats build
+RUN pnpm --filter @geostats/gpx-parser build
 RUN pnpm --filter @geostats/db build
 RUN pnpm --filter @geostats/api build
 

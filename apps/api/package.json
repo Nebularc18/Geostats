@@ -13,6 +13,7 @@
   "dependencies": {
     "@aws-sdk/client-s3": "^3.716.0",
     "@geostats/db": "workspace:*",
+    "@geostats/gpx-parser": "workspace:*",
     "@geostats/shared": "workspace:*",
     "@geostats/stats": "workspace:*",
     "@nestjs/common": "^10.4.15",
