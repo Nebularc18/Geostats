@@ -8,9 +8,12 @@ export function ClerkSignOutButton({ onLocalLogout }: { onLocalLogout: () => Pro
   const router = useRouter();
 
   async function signOutEverywhere() {
-    await onLocalLogout();
-    await signOut();
-    router.push("/login");
+    try {
+      await onLocalLogout();
+    } finally {
+      await signOut();
+      router.push("/login");
+    }
   }
 
   return (
