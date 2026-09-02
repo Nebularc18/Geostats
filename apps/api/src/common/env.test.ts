@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { envOrDefault, requiredEnv } from "./env";
+import { envOrDefault, requiredEnv, validateAuthEnv } from "./env";
 
 async function withEnv(values: Record<string, string | undefined>, run: () => void | Promise<void>) {
   const previous = new Map<string, string | undefined>();
@@ -82,6 +82,62 @@ test("requiredEnv accepts strong production secrets", async () => {
     },
     () => {
       assert.equal(requiredEnv("JWT_SECRET"), "0123456789abcdef0123456789abcdef");
+    }
+  );
+});
+
+test("Clerk auth requires both Clerk credentials", async () => {
+  await withEnv(
+    {
+      NODE_ENV: "development",
+      AUTH_MODE: "clerk",
+      CLERK_SECRET_KEY: undefined,
+      CLERK_PUBLISHABLE_KEY: undefined
+    },
+    () => {
+      assert.throws(() => validateAuthEnv(), /CLERK_SECRET_KEY must be set/);
+    }
+  );
+
+  await withEnv(
+    {
+      NODE_ENV: "development",
+      AUTH_MODE: "clerk",
+      CLERK_SECRET_KEY: "sk_test_secret",
+      CLERK_PUBLISHABLE_KEY: undefined
+    },
+    () => {
+      assert.throws(() => validateAuthEnv(), /CLERK_PUBLISHABLE_KEY must be set/);
+    }
+  );
+});
+
+test("password and development auth do not require Clerk credentials", async () => {
+  for (const authMode of ["password", "dev"]) {
+    await withEnv(
+      {
+        NODE_ENV: "development",
+        AUTH_MODE: authMode,
+        CLERK_SECRET_KEY: undefined,
+        CLERK_PUBLISHABLE_KEY: undefined
+      },
+      () => {
+        assert.doesNotThrow(() => validateAuthEnv());
+      }
+    );
+  }
+});
+
+test("production defaults to Clerk auth and requires credentials", async () => {
+  await withEnv(
+    {
+      NODE_ENV: "production",
+      AUTH_MODE: undefined,
+      CLERK_SECRET_KEY: undefined,
+      CLERK_PUBLISHABLE_KEY: undefined
+    },
+    () => {
+      assert.throws(() => validateAuthEnv(), /CLERK_SECRET_KEY must be set/);
     }
   );
 });

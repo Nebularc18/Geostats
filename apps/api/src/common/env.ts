@@ -42,7 +42,20 @@ export function validateRuntimeEnv() {
   for (const name of REQUIRED_RUNTIME_ENV) {
     requiredEnv(name);
   }
+  validateAuthEnv();
   portEnvOrDefault("API_PORT", 3001);
+}
+
+export function validateAuthEnv() {
+  const configuredMode = process.env.AUTH_MODE?.trim();
+  const clerkMode =
+    configuredMode === "clerk" || (process.env.NODE_ENV === "production" && configuredMode !== "password");
+  if (!clerkMode) {
+    return;
+  }
+
+  requiredEnv("CLERK_SECRET_KEY");
+  requiredEnv("CLERK_PUBLISHABLE_KEY");
 }
 
 export function envOrDefault(name: string, fallback: string): string {
