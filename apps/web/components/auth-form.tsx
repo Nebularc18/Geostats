@@ -3,10 +3,11 @@
 import { FormEvent, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { SignIn, SignUp } from "@clerk/nextjs";
 import { LogIn } from "lucide-react";
 import { API_URL, apiFetch } from "../lib/api";
 
-type AuthMode = "dev" | "external" | "password";
+type AuthMode = "dev" | "clerk" | "password";
 type AuthConfig = {
   mode: AuthMode;
   providerName: string;
@@ -19,9 +20,9 @@ export function AuthForm({ mode }: { mode: "login" | "register" }) {
   const [config, setConfig] = useState<AuthConfig | null>(null);
   const action = mode === "login" ? "Sign in" : "Create account";
   const authMode = config?.mode;
-  const providerName = config?.providerName ?? "Shoo";
   const isDevMode = authMode === "dev";
-  const isExternalMode = authMode === "external";
+  const isClerkMode = authMode === "clerk";
+  const clerkIsConfigured = Boolean(process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY);
 
   useEffect(() => {
     let cancelled = false;
@@ -32,8 +33,8 @@ export function AuthForm({ mode }: { mode: "login" | "register" }) {
       .catch(() => {
         if (!cancelled) {
           setConfig({
-            mode: (process.env.NEXT_PUBLIC_AUTH_MODE as AuthMode | undefined) ?? "password",
-            providerName: process.env.NEXT_PUBLIC_AUTH_PROVIDER_NAME ?? "Shoo"
+            mode: (process.env.NEXT_PUBLIC_AUTH_MODE as AuthMode | undefined) ?? (process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY ? "clerk" : "password"),
+            providerName: process.env.NEXT_PUBLIC_AUTH_PROVIDER_NAME ?? "Clerk"
           });
         }
       });
@@ -74,21 +75,39 @@ export function AuthForm({ mode }: { mode: "login" | "register" }) {
         {!config ? (
           <p className="muted">Loading sign-in options...</p>
         ) : isDevMode ? (
-          <a className="primary-button oauth-button" href={`${API_URL}${isDevMode ? "/auth/dev" : "/auth/external"}`}>
+          <a className="primary-button oauth-button" href={`${API_URL}/auth/dev`}>
             <LogIn aria-hidden="true" size={18} />
             Continue in dev mode
           </a>
+        ) : isClerkMode ? (
+          clerkIsConfigured ? (
+            <div className="clerk-auth-card">
+              {mode === "login" ? (
+                <SignIn
+                  routing="path"
+                  path="/login"
+                  signUpUrl="/register"
+                  fallbackRedirectUrl="/dashboard"
+                />
+              ) : (
+                <SignUp
+                  routing="path"
+                  path="/register"
+                  signInUrl="/login"
+                  fallbackRedirectUrl="/onboarding"
+                />
+              )}
+            </div>
+          ) : (
+            <div className="auth-setup-card">
+              <h2>Clerk is selected</h2>
+              <p className="muted">
+                Add <code>NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY</code> to the web app and <code>CLERK_SECRET_KEY</code> to the API to enable sign-in.
+              </p>
+            </div>
+          )
         ) : (
           <>
-            {isExternalMode ? (
-              <>
-                <a className="primary-button oauth-button" href={`${API_URL}/auth/external`}>
-                  <LogIn aria-hidden="true" size={18} />
-                  {action} with {providerName}
-                </a>
-                <p className="auth-separator">or use a password</p>
-              </>
-            ) : null}
             <form onSubmit={submit} className="form">
               {mode === "register" ? (
                 <label>

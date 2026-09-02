@@ -5,7 +5,6 @@ import { requiredEnv } from "../common/env";
 import { AuthController } from "./auth.controller";
 import { AuthService } from "./auth.service";
 import { AuthGuard } from "./auth.guard";
-import { MobileExchangeCodeService } from "./mobile-exchange-code.service";
 
 @Module({
   imports: [
@@ -15,7 +14,7 @@ import { MobileExchangeCodeService } from "./mobile-exchange-code.service";
     })
   ],
   controllers: [AuthController],
-  providers: [AuthService, AuthGuard, MobileExchangeCodeService, PrismaService],
+  providers: [AuthService, AuthGuard, PrismaService],
   exports: [AuthService, AuthGuard]
 })
 export class AuthModule {}

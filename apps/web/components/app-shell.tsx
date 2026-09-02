@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { BarChart3, BookOpen, Code2, Database, Flag, Globe2, Home, Map, Navigation, Puzzle, Settings, ShieldCheck, Trophy, Upload, Users } from "lucide-react";
 import { API_URL, apiFetch } from "../lib/api";
+import { ClerkSignOutButton } from "./clerk-sign-out-button";
 
 const nav = [
   { href: "/dashboard", label: "Dashboard", icon: Home },
@@ -34,6 +35,8 @@ let hasCompletedProfileCheck = false;
 const DEV_AUTO_LOGIN = process.env.NEXT_PUBLIC_DEV_AUTO_LOGIN === "true";
 const DEV_OFFLINE = process.env.NODE_ENV === "development" && process.env.NEXT_PUBLIC_DEV_OFFLINE === "true";
 const DEV_AUTO_LOGIN_ATTEMPT_KEY = "geostats_dev_auto_login_attempted";
+const CONFIGURED_AUTH_MODE = process.env.NEXT_PUBLIC_AUTH_MODE?.trim();
+const CLERK_ENABLED = Boolean(process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY) && CONFIGURED_AUTH_MODE !== "password" && CONFIGURED_AUTH_MODE !== "dev";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -105,12 +108,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     };
   }, [router]);
 
-  async function logout() {
+  async function clearLocalSession() {
     if (DEV_OFFLINE) {
       return;
     }
     await apiFetch("/auth/logout", { method: "POST" });
     hasCompletedProfileCheck = false;
+  }
+
+  async function logout() {
+    await clearLocalSession();
     router.push("/login");
   }
 
@@ -135,11 +142,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             );
           })}
         </nav>
-        {!DEV_OFFLINE && (
-          <button className="ghost-button" type="button" onClick={logout}>
-            Sign out
-          </button>
-        )}
+        {!DEV_OFFLINE && (CLERK_ENABLED ? <ClerkSignOutButton onLocalLogout={clearLocalSession} /> : <button className="ghost-button" type="button" onClick={() => void logout()}>Sign out</button>)}
         <p className="sidebar-attribution">Inspired by Project-GC</p>
       </aside>
       <main className="content">{profileChecked ? children : null}</main>

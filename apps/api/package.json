@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.716.0",
+    "@clerk/backend": "^3.16.13",
     "@geostats/db": "workspace:*",
     "@geostats/shared": "workspace:*",
     "@geostats/stats": "workspace:*",

@@ -49,6 +49,7 @@ module.exports = {
       }
     },
     plugins: [
+      "@clerk/expo",
       "expo-secure-store",
       [
         "react-native-maps",

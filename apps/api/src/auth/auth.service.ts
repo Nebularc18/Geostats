@@ -6,6 +6,7 @@ import {
   UnauthorizedException
 } from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
+import { createClerkClient, verifyToken } from "@clerk/backend";
 import { Prisma } from "@geostats/db";
 import bcrypt from "bcryptjs";
 import { PrismaService } from "../common/prisma.service";
@@ -20,7 +21,7 @@ export interface AuthTokenPayload {
   username: string;
 }
 
-type AuthMode = "dev" | "external" | "password";
+export type AuthMode = "dev" | "clerk" | "password";
 
 const scryptAsync = promisify(scrypt) as (
   password: string,
@@ -33,35 +34,8 @@ const PASSWORD_HASH_KEYLEN = 64;
 const PASSWORD_HASH_OPTIONS = { N: 16_384, r: 8, p: 1, maxmem: 32 * 1024 * 1024 };
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-interface OAuthTokenResponse {
-  access_token?: string;
-  error?: string;
-  error_description?: string;
-}
-
-interface ShooTokenResponse {
-  id_token?: string;
-  pairwise_sub?: string;
-  error?: string;
-  error_description?: string;
-}
-
-interface OidcUserInfoResponse {
-  sub: string;
-  email?: string | null;
-  email_verified?: boolean;
-  name?: string | null;
-  preferred_username?: string | null;
-}
-
-type JoseModule = typeof import("jose");
-type RemoteJwks = ReturnType<JoseModule["createRemoteJWKSet"]>;
-
 @Injectable()
 export class AuthService {
-  private shooJwks?: RemoteJwks;
-  private joseModule?: Promise<JoseModule>;
-
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwt: JwtService
@@ -69,13 +43,13 @@ export class AuthService {
 
   authMode(): AuthMode {
     if (process.env.NODE_ENV === "production") {
-      return process.env.AUTH_MODE === "password" ? "password" : "external";
+      return process.env.AUTH_MODE === "password" ? "password" : "clerk";
     }
     if (process.env.AUTH_MODE === "dev") {
       return "dev";
     }
-    if (process.env.AUTH_MODE === "external") {
-      return "external";
+    if (process.env.AUTH_MODE === "clerk") {
+      return "clerk";
     }
     return "password";
   }
@@ -134,46 +108,40 @@ export class AuthService {
     });
   }
 
-  externalAuthorizationUrl(state: string, codeChallenge: string): string {
-    this.assertExternalAuthMode();
-    if (this.isShooProvider()) {
-      return this.shooAuthorizationUrl(state, codeChallenge);
+  async loginWithClerkToken(token: string): Promise<AuthUser> {
+    if (this.authMode() !== "clerk") {
+      throw new ServiceUnavailableException("Clerk auth is disabled");
+    }
+    if (!token.trim()) {
+      throw new UnauthorizedException("Clerk session token is required");
     }
 
-    const url = new URL(this.requiredExternalEnv("EXTERNAL_AUTH_AUTHORIZE_URL"));
-    url.searchParams.set("client_id", this.requiredExternalEnv("EXTERNAL_AUTH_CLIENT_ID"));
-    url.searchParams.set("redirect_uri", this.externalCallbackUrl());
-    url.searchParams.set("response_type", "code");
-    url.searchParams.set("scope", "openid email profile");
-    url.searchParams.set("state", state);
-    url.searchParams.set("code_challenge", codeChallenge);
-    url.searchParams.set("code_challenge_method", "S256");
-    return url.toString();
-  }
+    const secretKey = this.requiredClerkEnv("CLERK_SECRET_KEY");
+    const jwtKey = process.env.CLERK_JWT_KEY?.trim();
+    const authorizedParties = (process.env.CLERK_AUTHORIZED_PARTIES ?? "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean);
 
-  async loginWithExternalProvider(code: string, codeVerifier: string): Promise<AuthUser> {
-    this.assertExternalAuthMode();
-    if (this.isShooProvider()) {
-      return this.loginWithShoo(code, codeVerifier);
+    const verifiedToken = await this.verifyClerkSessionToken(token.trim(), secretKey, jwtKey, authorizedParties);
+
+    if (!verifiedToken.sub) {
+      throw new UnauthorizedException("Clerk session token has no user id");
     }
 
-    const accessToken = await this.exchangeExternalCode(code, codeVerifier);
-    const profile = await this.fetchExternalProfile(accessToken);
-    const email = profile.email?.trim().toLowerCase();
-    const requireVerifiedEmail = envOrDefault("EXTERNAL_AUTH_REQUIRE_VERIFIED_EMAIL", "true") !== "false";
+    const clerkUser = await this.getClerkUser(secretKey, verifiedToken.sub);
+
+    const email = clerkUser.primaryEmailAddress?.emailAddress.trim().toLowerCase();
     if (!email) {
-      throw new BadRequestException("External auth account must have an email address");
-    }
-    if (requireVerifiedEmail && profile.email_verified !== true) {
-      throw new BadRequestException("External auth account email must be verified");
+      throw new BadRequestException("Clerk account must have a primary email address");
     }
 
     const user = await this.upsertOAuthUser({
-      provider: envOrDefault("EXTERNAL_AUTH_PROVIDER_ID", "external"),
-      providerAccountId: profile.sub,
-      providerUsername: profile.preferred_username ?? profile.email ?? null,
+      provider: "clerk",
+      providerAccountId: clerkUser.id,
+      providerUsername: clerkUser.username ?? clerkUser.firstName ?? null,
       email,
-      username: profile.preferred_username || profile.name || email.split("@")[0]
+      username: clerkUser.username || clerkUser.firstName || email.split("@")[0]
     });
     return this.toAuthUser(user);
   }
@@ -220,178 +188,43 @@ export class AuthService {
     };
   }
 
-  private externalCallbackUrl(): string {
-    return envOrDefault(
-      "EXTERNAL_AUTH_CALLBACK_URL",
-      `${envOrDefault("API_ORIGIN", "http://localhost:3001")}/auth/external/callback`
-    );
-  }
-
-  private assertExternalAuthMode() {
-    if (this.authMode() !== "external") {
-      throw new ServiceUnavailableException("External auth is disabled");
-    }
-  }
-
   private assertPasswordAuthMode() {
     if (this.authMode() === "dev") {
       throw new ServiceUnavailableException("Password auth is disabled");
     }
   }
 
-  private requiredExternalEnv(name: string): string {
+  private requiredClerkEnv(name: string): string {
     const value = process.env[name]?.trim();
     if (!value) {
-      throw new ServiceUnavailableException("External auth is not configured");
+      throw new ServiceUnavailableException("Clerk auth is not configured");
     }
     return value;
   }
 
-  private isShooProvider(): boolean {
-    return (process.env.EXTERNAL_AUTH_PROVIDER_ID?.trim() || "shoo").toLowerCase() === "shoo";
+  private async verifyClerkSessionToken(
+    token: string,
+    secretKey: string,
+    jwtKey: string | undefined,
+    authorizedParties: string[]
+  ) {
+    try {
+      return await verifyToken(token, {
+        ...(jwtKey ? { jwtKey } : { secretKey }),
+        ...(authorizedParties.length ? { authorizedParties } : {})
+      });
+    } catch {
+      throw new UnauthorizedException("Invalid Clerk session token");
+    }
   }
 
-  private shooBaseUrl(): string {
-    return (process.env.SHOO_BASE_URL?.trim() || "https://shoo.dev").replace(/\/+$/, "");
-  }
-
-  private shooIssuer(): string {
-    return (process.env.SHOO_ISSUER?.trim() || this.shooBaseUrl()).replace(/\/+$/, "");
-  }
-
-  private shooClientId(): string {
-    return `origin:${new URL(this.externalCallbackUrl()).origin}`;
-  }
-
-  private shooAuthorizationUrl(state: string, codeChallenge: string): string {
-    const url = new URL("/authorize", this.shooBaseUrl());
-    url.searchParams.set("client_id", this.shooClientId());
-    url.searchParams.set("redirect_uri", this.externalCallbackUrl());
-    url.searchParams.set("state", state);
-    url.searchParams.set("code_challenge", codeChallenge);
-    url.searchParams.set("code_challenge_method", "S256");
-    if ((process.env.SHOO_REQUEST_PII?.trim() || "true") !== "false") {
-      url.searchParams.set("pii", "true");
+  private async getClerkUser(secretKey: string, userId: string) {
+    try {
+      const clerk = createClerkClient({ secretKey });
+      return await clerk.users.getUser(userId);
+    } catch {
+      throw new UnauthorizedException("Could not load the Clerk user");
     }
-    return url.toString();
-  }
-
-  private async loginWithShoo(code: string, codeVerifier: string): Promise<AuthUser> {
-    const profile = await this.exchangeAndVerifyShooCode(code, codeVerifier);
-    const email = typeof profile.email === "string" ? profile.email.trim().toLowerCase() : "";
-    if (!email) {
-      throw new BadRequestException("Shoo auth requires email consent; keep SHOO_REQUEST_PII=true");
-    }
-    if (profile.emailVerified !== true) {
-      throw new BadRequestException("Shoo account email must be verified");
-    }
-
-    const user = await this.upsertOAuthUser({
-      provider: "shoo",
-      providerAccountId: profile.pairwiseSub,
-      providerUsername: profile.name ?? email,
-      email,
-      username: profile.name ?? email.split("@")[0]
-    });
-    return this.toAuthUser(user);
-  }
-
-  private async exchangeAndVerifyShooCode(code: string, codeVerifier: string) {
-    const body = new URLSearchParams({
-      grant_type: "authorization_code",
-      client_id: this.shooClientId(),
-      redirect_uri: this.externalCallbackUrl(),
-      code,
-      code_verifier: codeVerifier
-    });
-
-    const response = await fetch(new URL("/token", this.shooBaseUrl()), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded"
-      },
-      body: body.toString()
-    });
-    const json = (await response.json()) as ShooTokenResponse;
-    if (!response.ok || !json.id_token) {
-      throw new UnauthorizedException(json.error_description || json.error || "Shoo token exchange failed");
-    }
-
-    const [{ jwtVerify }, jwks] = await Promise.all([this.importJose(), this.shooRemoteJwks()]);
-    const { payload } = await jwtVerify(json.id_token, jwks, {
-      issuer: this.shooIssuer(),
-      audience: this.shooClientId()
-    });
-    const pairwiseSub = typeof payload.pairwise_sub === "string" ? payload.pairwise_sub : "";
-    if (!pairwiseSub) {
-      throw new UnauthorizedException("Shoo token missing pairwise_sub");
-    }
-
-    return {
-      pairwiseSub,
-      email: typeof payload.email === "string" ? payload.email : null,
-      emailVerified: typeof payload.email_verified === "boolean" ? payload.email_verified : null,
-      name: typeof payload.name === "string" ? payload.name : null
-    };
-  }
-
-  private importJose(): Promise<JoseModule> {
-    if (!this.joseModule) {
-      // jose v6 is ESM-only, while this Nest app currently builds to CommonJS.
-      // Indirect dynamic import keeps TypeScript from rewriting this to require().
-      const dynamicImport = new Function("specifier", "return import(specifier)") as (
-        specifier: string
-      ) => Promise<JoseModule>;
-      this.joseModule = dynamicImport("jose");
-    }
-    return this.joseModule;
-  }
-
-  private async shooRemoteJwks(): Promise<RemoteJwks> {
-    if (!this.shooJwks) {
-      const { createRemoteJWKSet } = await this.importJose();
-      this.shooJwks = createRemoteJWKSet(new URL("/.well-known/jwks.json", this.shooBaseUrl()));
-    }
-    return this.shooJwks;
-  }
-
-  private async exchangeExternalCode(code: string, codeVerifier: string): Promise<string> {
-    const body = new URLSearchParams({
-      client_id: this.requiredExternalEnv("EXTERNAL_AUTH_CLIENT_ID"),
-      code,
-      code_verifier: codeVerifier,
-      grant_type: "authorization_code",
-      redirect_uri: this.externalCallbackUrl()
-    });
-    const clientSecret = process.env.EXTERNAL_AUTH_CLIENT_SECRET?.trim();
-    if (clientSecret) {
-      body.set("client_secret", clientSecret);
-    }
-
-    const response = await fetch(this.requiredExternalEnv("EXTERNAL_AUTH_TOKEN_URL"), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded"
-      },
-      body: body.toString()
-    });
-    const json = (await response.json()) as OAuthTokenResponse;
-    if (!response.ok || !json.access_token) {
-      throw new UnauthorizedException(json.error_description || json.error || "External OAuth token exchange failed");
-    }
-    return json.access_token;
-  }
-
-  private async fetchExternalProfile(accessToken: string): Promise<OidcUserInfoResponse> {
-    const response = await fetch(this.requiredExternalEnv("EXTERNAL_AUTH_USERINFO_URL"), {
-      headers: {
-        Authorization: `Bearer ${accessToken}`
-      }
-    });
-    if (!response.ok) {
-      throw new UnauthorizedException("Could not fetch external auth profile");
-    }
-    return (await response.json()) as OidcUserInfoResponse;
   }
 
   private async upsertOAuthUser(input: {

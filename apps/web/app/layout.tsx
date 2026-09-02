@@ -1,7 +1,9 @@
 import type { Metadata } from "next";
+import { ClerkProvider } from "@clerk/nextjs";
 import "flag-icons/css/flag-icons.min.css";
 import "maplibre-gl/dist/maplibre-gl.css";
 import "./globals.css";
+import { ClerkSessionGate } from "../components/clerk-session-gate";
 
 export const metadata: Metadata = {
   title: "Geostats",
@@ -19,9 +21,21 @@ export const metadata: Metadata = {
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+  const publishableKey = process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY?.trim();
+  const configuredAuthMode = process.env.NEXT_PUBLIC_AUTH_MODE?.trim();
+  const clerkEnabled = Boolean(publishableKey) && configuredAuthMode !== "password" && configuredAuthMode !== "dev";
+
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body>
+        {clerkEnabled ? (
+          <ClerkProvider publishableKey={publishableKey}>
+            <ClerkSessionGate>{children}</ClerkSessionGate>
+          </ClerkProvider>
+        ) : (
+          children
+        )}
+      </body>
     </html>
   );
 }

@@ -2327,6 +2327,31 @@ select:focus {
   font-size: clamp(2.5rem, 8vw, 5rem);
 }
 
+.clerk-auth-card {
+  display: grid;
+  justify-items: center;
+  margin-top: 18px;
+}
+
+.auth-setup-card {
+  display: grid;
+  gap: 10px;
+  margin-top: 18px;
+  padding: 16px;
+  border: 1px solid rgba(217, 145, 69, 0.3);
+  border-radius: 8px;
+  background: rgba(217, 145, 69, 0.08);
+}
+
+.auth-setup-card h2 {
+  margin: 0;
+}
+
+.auth-setup-card p {
+  margin: 0;
+  line-height: 1.5;
+}
+
 .onboarding-options {
   display: grid;
 }
