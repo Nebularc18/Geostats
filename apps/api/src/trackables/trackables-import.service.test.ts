@@ -32,10 +32,19 @@ function serviceHarness(existingCaches: unknown[] = []) {
       update: async (input: unknown) => cacheUpdates.push(input),
     },
     trackable: {
-      upsert: async ({ where }: any) => ({
-        id: `trackable-${where.userId_trackingCode.trackingCode}`,
-      }),
+      findMany: async ({ where }: any) =>
+        (where.trackingCode?.in ?? []).map((trackingCode: string) => ({
+          id: `trackable-${trackingCode}`,
+          trackingCode,
+          name: trackingCode,
+          state: "DISCOVERED",
+          lastSeenAt: null,
+          lastSeenLocation: null,
+          distanceKm: null,
+          notes: null,
+        })),
     },
+    $executeRaw: async () => 1,
     trackableLog: {
       findMany: async () => [],
       createMany: async (input: unknown) => createdLogs.push(input),

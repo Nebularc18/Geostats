@@ -1,7 +1,7 @@
 import { Injectable } from "@nestjs/common";
 import { Prisma, TrackableLogType } from "@geostats/db";
 import { parseTrackableImportFile, type ParsedTrackable, type ParsedTrackableImport, type ParsedTrackableLog, type ParsedTrackableLogType } from "@geostats/gpx-parser";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { PrismaService } from "../common/prisma.service";
 
 const TRACKABLE_IMPORT_MAX_BYTES = 25 * 1024 * 1024;
@@ -15,6 +15,18 @@ type PreparedLog = ParsedTrackableLog & {
   latitude: number | null;
   longitude: number | null;
   sourceKey: string;
+};
+
+type TrackableWrite = {
+  id: string;
+  userId: string;
+  trackingCode: string;
+  name: string;
+  state: string;
+  lastSeenAt: Date | null;
+  lastSeenLocation: string | null;
+  distanceKm: Prisma.Decimal | null;
+  notes: string | null;
 };
 
 function cleanText(value: string | null | undefined): string | null {
@@ -206,7 +218,28 @@ export class TrackablesImportService {
         if (logs) logs.push(log);
         else logsByTrackable.set(log.trackingCode, [log]);
       }
-      const trackableIds = new Map<string, string>();
+      const trackableCodes = [...metadataByCode.keys()];
+      const existingTrackables = (
+        await Promise.all(
+          batches(trackableCodes, TRACKABLE_IMPORT_QUERY_BATCH_SIZE).map((batch) =>
+            tx.trackable.findMany({
+              where: { userId, trackingCode: { in: batch } },
+              select: {
+                id: true,
+                trackingCode: true,
+                name: true,
+                state: true,
+                lastSeenAt: true,
+                lastSeenLocation: true,
+                distanceKm: true,
+                notes: true
+              }
+            })
+          )
+        )
+      ).flat();
+      const existingTrackableByCode = new Map(existingTrackables.map((trackable) => [trackable.trackingCode, trackable]));
+      const trackableWrites: TrackableWrite[] = [];
       for (const [code, metadata] of metadataByCode) {
         const codeLogs = [...(logsByTrackable.get(code) ?? [])].sort((left, right) => left.loggedAt.getTime() - right.loggedAt.getTime());
         const latestLog = codeLogs.at(-1);
@@ -218,30 +251,64 @@ export class TrackablesImportService {
         const calculatedDistance = coordinateLogs.slice(1).reduce((total, log, index) => total + haversineKm(coordinateLogs[index]!, log), 0);
         const distanceKm = explicitDistance ?? (calculatedDistance > 0 ? calculatedDistance : null);
         const desiredState = stateFromLog(latestLog?.logType ?? "NOTE") ?? metadata.state ?? "DISCOVERED";
-        const row = await tx.trackable.upsert({
-          where: { userId_trackingCode: { userId, trackingCode: code } },
-          create: {
-            userId,
-            trackingCode: code,
-            name: cleanText(metadata.name) ?? code,
-            state: desiredState as any,
-            lastSeenAt: dayValue(latestDate),
-            lastSeenLocation: cleanText(latestLocation),
-            distanceKm: distanceKm == null ? null : new Prisma.Decimal(Math.max(0, distanceKm)),
-            notes: cleanText(metadata.notes)
-          },
-          update: {
-            ...(cleanText(metadata.name) ? { name: cleanText(metadata.name)! } : {}),
-            ...(desiredState ? { state: desiredState as any } : {}),
-            ...(latestDate ? { lastSeenAt: dayValue(latestDate) } : {}),
-            ...(latestLocation ? { lastSeenLocation: cleanText(latestLocation) } : {}),
-            ...(distanceKm != null ? { distanceKm: new Prisma.Decimal(Math.max(0, distanceKm)) } : {}),
-            ...(metadata.notes !== undefined ? { notes: cleanText(metadata.notes) } : {})
-          },
-          select: { id: true }
+        const existing = existingTrackableByCode.get(code);
+        trackableWrites.push({
+          id: randomUUID(),
+          userId,
+          trackingCode: code,
+          name: cleanText(metadata.name) ?? existing?.name ?? code,
+          state: desiredState,
+          lastSeenAt: latestDate ? dayValue(latestDate) : existing?.lastSeenAt ?? null,
+          lastSeenLocation: latestLocation ? cleanText(latestLocation) : existing?.lastSeenLocation ?? null,
+          distanceKm: distanceKm != null
+            ? new Prisma.Decimal(Math.max(0, distanceKm))
+            : existing?.distanceKm ?? null,
+          notes: metadata.notes !== undefined ? cleanText(metadata.notes) : existing?.notes ?? null
         });
-        trackableIds.set(code, row.id);
       }
+
+      // Use one PostgreSQL upsert per bounded batch instead of one interactive
+      // transaction round trip for every distinct trackable in the file.
+      for (const batch of batches(trackableWrites, TRACKABLE_IMPORT_WRITE_BATCH_SIZE)) {
+        const values = batch.map((trackable) => Prisma.sql`(
+          ${trackable.id},
+          ${trackable.userId},
+          ${trackable.trackingCode},
+          ${trackable.name},
+          ${trackable.state}::"TrackableState",
+          ${trackable.lastSeenAt},
+          ${trackable.lastSeenLocation},
+          ${trackable.distanceKm},
+          ${trackable.notes}
+        )`);
+        await tx.$executeRaw(Prisma.sql`
+          INSERT INTO "trackables" (
+            "id", "user_id", "tracking_code", "name", "state", "last_seen_at",
+            "last_seen_location", "distance_km", "notes"
+          )
+          VALUES ${Prisma.join(values)}
+          ON CONFLICT ("user_id", "tracking_code") DO UPDATE SET
+            "name" = EXCLUDED."name",
+            "state" = EXCLUDED."state",
+            "last_seen_at" = EXCLUDED."last_seen_at",
+            "last_seen_location" = EXCLUDED."last_seen_location",
+            "distance_km" = EXCLUDED."distance_km",
+            "notes" = EXCLUDED."notes",
+            "updated_at" = CURRENT_TIMESTAMP
+        `);
+      }
+
+      const storedTrackables = (
+        await Promise.all(
+          batches(trackableCodes, TRACKABLE_IMPORT_QUERY_BATCH_SIZE).map((batch) =>
+            tx.trackable.findMany({
+              where: { userId, trackingCode: { in: batch } },
+              select: { id: true, trackingCode: true }
+            })
+          )
+        )
+      ).flat();
+      const trackableIds = new Map(storedTrackables.map((trackable) => [trackable.trackingCode, trackable.id]));
 
       const sourceKeys = preparedLogs.map((log) => log.sourceKey);
       const existingKeys = new Set(
