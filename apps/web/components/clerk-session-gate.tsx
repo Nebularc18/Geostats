@@ -6,6 +6,17 @@ import { apiFetch } from "../lib/api";
 
 type GateState = "waiting" | "ready" | "error";
 
+let sessionSyncQueue: Promise<void> = Promise.resolve();
+
+function enqueueSessionSync<T>(task: () => Promise<T>) {
+  const next = sessionSyncQueue.then(task, task);
+  sessionSyncQueue = next.then(
+    () => undefined,
+    () => undefined
+  );
+  return next;
+}
+
 export function ClerkSessionGate({ children }: { children: React.ReactNode }) {
   const { getToken, isLoaded, isSignedIn, userId } = useAuth();
   const [state, setState] = useState<GateState>("waiting");
@@ -21,7 +32,10 @@ export function ClerkSessionGate({ children }: { children: React.ReactNode }) {
       let active = true;
       setState("waiting");
       setErrorMessage(null);
-      void apiFetch("/auth/logout", { method: "POST" })
+      void enqueueSessionSync(async () => {
+        if (!active) return;
+        await apiFetch("/auth/logout", { method: "POST" });
+      })
         .then(() => {
           if (!active) return;
           setSyncedUserId(null);
@@ -47,11 +61,14 @@ export function ClerkSessionGate({ children }: { children: React.ReactNode }) {
 
     async function synchronizeSession() {
       try {
+        if (!active) return;
         await apiFetch("/auth/logout", { method: "POST" });
+        if (!active) return;
         const token = await getToken();
         if (!token) {
           throw new Error("Clerk did not return a session token");
         }
+        if (!active) return;
         await apiFetch("/auth/clerk/exchange", {
           method: "POST",
           headers: { Authorization: `Bearer ${token}` }
@@ -68,7 +85,7 @@ export function ClerkSessionGate({ children }: { children: React.ReactNode }) {
       }
     }
 
-    void synchronizeSession();
+    void enqueueSessionSync(synchronizeSession);
     return () => {
       active = false;
     };
