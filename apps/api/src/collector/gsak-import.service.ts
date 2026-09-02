@@ -183,6 +183,19 @@ function cacheRow(row: CsvRecord): CacheRow {
   };
 }
 
+function cacheNameIsPlaceholder(name: unknown, gcCode: string): boolean {
+  const normalizedName = String(name ?? "").trim().toUpperCase();
+  return !normalizedName || normalizedName === gcCode.toUpperCase();
+}
+
+function cacheMetadataUpdate(existing: Record<string, any>, row: CacheRow): Prisma.CacheUncheckedUpdateInput {
+  const update: Prisma.CacheUncheckedUpdateInput = {};
+  if (row.name !== row.gcCode && cacheNameIsPlaceholder(existing.name, row.gcCode)) {
+    update.name = row.name;
+  }
+  return update;
+}
+
 function logRow(row: CsvRecord): LogRow {
   return {
     gcCode: gcCode(row.gccode),
@@ -307,6 +320,46 @@ function cacheMarkedFtf(raw: unknown) {
 export class GsakImportService {
   constructor(private readonly prisma: PrismaService, private readonly stats: StatsService) {}
 
+  /**
+   * Return cache codes that were discovered in a trackable journey but are not
+   * linked to a named cache in the user's archive. The GSAK connector requests
+   * this list in pages, loads those codes through Geocaching.com, and then
+   * includes the resulting cache records in its normal export.
+   */
+  async trackableCacheCodes(userId: string, skipInput: unknown, takeInput: unknown) {
+    const parsedSkip = Number(skipInput);
+    const parsedTake = Number(takeInput);
+    const skip = Number.isSafeInteger(parsedSkip) && parsedSkip >= 0 ? parsedSkip : 0;
+    const take = Number.isSafeInteger(parsedTake) && parsedTake > 0 ? Math.min(parsedTake, 500) : 500;
+    const [countRows, codeRows] = await Promise.all([
+      this.prisma.$queryRaw<Array<{ count: bigint | number }>>(Prisma.sql`
+        SELECT COUNT(DISTINCT COALESCE(l.gc_code, c.gc_code)) AS count
+        FROM "trackable_logs" l
+        LEFT JOIN "caches" c ON c.id = l.cache_id
+        WHERE l.user_id = ${userId}
+          AND COALESCE(l.gc_code, c.gc_code) IS NOT NULL
+          AND (l.cache_id IS NULL OR upper(trim(c.name)) = upper(trim(c.gc_code)))
+      `),
+      this.prisma.$queryRaw<Array<{ gcCode: string }>>(Prisma.sql`
+        SELECT COALESCE(l.gc_code, c.gc_code) AS "gcCode"
+        FROM "trackable_logs" l
+        LEFT JOIN "caches" c ON c.id = l.cache_id
+        WHERE l.user_id = ${userId}
+          AND COALESCE(l.gc_code, c.gc_code) IS NOT NULL
+          AND (l.cache_id IS NULL OR upper(trim(c.name)) = upper(trim(c.gc_code)))
+        GROUP BY COALESCE(l.gc_code, c.gc_code)
+        ORDER BY COALESCE(l.gc_code, c.gc_code)
+        OFFSET ${skip}
+        LIMIT ${take}
+      `)
+    ]);
+    const total = Number(countRows[0]?.count ?? 0);
+    return {
+      total: Number.isFinite(total) && total >= 0 ? total : 0,
+      codes: codeRows.map((row) => row.gcCode).filter((code) => Boolean(code)).join(",")
+    };
+  }
+
   async importBatch(userId: string, kind: unknown, csv: unknown) {
     if (kind === "caches") return this.importCaches(userId, gsakCsvRecords(csv).map(cacheRow));
     if (kind === "logs") return this.importLogs(userId, gsakCsvRecords(csv).map(logRow));
@@ -341,6 +394,7 @@ export class GsakImportService {
     await this.prisma.$transaction(async (tx) => {
       for (const row of rows) {
         const raw = cacheRaw(existingByCode.get(row.gcCode)?.userData?.[0]?.raw, row) as Prisma.InputJsonValue;
+        const existingCache = existingByCode.get(row.gcCode);
         const cache = await tx.cache.upsert({
           where: { gcCode: row.gcCode },
           create: {
@@ -358,13 +412,22 @@ export class GsakImportService {
             hiddenDate: row.hiddenDate,
             ownerName: row.ownerName
           },
-          update: {}
+          update: existingCache ? cacheMetadataUpdate(existingCache, row) : {}
         });
         await tx.userCacheData.upsert({
           where: { userId_cacheId: { userId, cacheId: cache.id } },
           create: { userId, cacheId: cache.id, raw },
           update: { raw }
         });
+        // Journey imports keep cache metadata on the user's movement log until
+        // a trusted GSAK/cache import supplies the shared cache record. Link
+        // those existing rows now so the missing-cache queue is cleared.
+        if (tx.trackableLog) {
+          await tx.trackableLog.updateMany({
+            where: { userId, gcCode: row.gcCode, cacheId: null },
+            data: { cacheId: cache.id }
+          });
+        }
         if (row.isOwner) {
           await tx.hide.upsert({
             where: { userId_cacheId: { userId, cacheId: cache.id } },

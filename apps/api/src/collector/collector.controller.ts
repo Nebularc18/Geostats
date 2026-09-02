@@ -142,8 +142,8 @@ function gsakString(value: string) {
 export function gsakImportMacro(serverUrl: string, token: string) {
   const server = gsakString(serverUrl);
   const credential = gsakString(token);
-  return `# MacDescription = Send found and owned caches from GSAK to Geostats
-# MacVersion = 1.7
+  return `# MacDescription = Send found, owned, and trackable journey caches from GSAK to Geostats
+# MacVersion = 1.8
 # NoVersionCheck
 
 $server = ${server}
@@ -151,7 +151,7 @@ $token = ${credential}
 $endpoint = $server + "/collector/gsak/import"
 $cacheBatchSize = 50
 $logBatchSize = 25
-$cacheFilter = "(ifnull(FoundByMeDate,'') <> '' or IsOwner = 1)"
+$cacheFilter = "(ifnull(FoundByMeDate,'') <> '' or IsOwner = 1 or Code in (select GeocacheCode from GeostatsTrackableCodes))"
 $logFilter = "(c.IsOwner = 1)"
 
 # Make GSAK use the active Geocaching account when identifying finds and hides.
@@ -222,6 +222,32 @@ edtPublishTo=1899-12-30
 edtCodes.Text=
 <enddata>
 MacroSet Dialog=GcGeocaches VarName=$geostatsCodeSettings Name=<macro>
+
+# Trackable imports can contain cache coordinates before the matching cache
+# record exists in GSAK. Ask Geostats for those codes in small pages, load them
+# through GcGetCaches, and include them in the cache export below.
+$result = Sqlite("sql","drop table if exists GeostatsTrackableCodes")
+$result = Sqlite("sql","create temp table GeostatsTrackableCodes (GeocacheCode text primary key)")
+$journeySkip = 0
+$journeyTake = 500
+$journeyTotal = 1
+ShowStatus msg="Loading trackable journey caches..."
+While $journeySkip < $journeyTotal
+  $post = "'token'," + SqlQuote($token) + ",'kind','trackable-codes','skip'," + NumToStr($journeySkip) + ",'take'," + NumToStr($journeyTake)
+  $result = PostUrl($endpoint,$post,"Loading journey cache codes",120)
+  If Left($result,7) = "*Error*"
+    Pause Msg=$result
+    Cancel
+  EndIf
+  $journeyTotal = Val(RegExSub($_Quote + "total" + $_Quote + ":[ ]*(\\d+)",$result,1,1))
+  $journeyCodes = RegExSub($_Quote + "codes" + $_Quote + ":[ ]*" + $_Quote + "([^" + $_Quote + "]*)" + $_Quote,$result,1,1)
+  If not(IsEmpty($journeyCodes))
+    $journeyValues = "('" + Replace($journeyCodes,",","'),('") + "')"
+    $result = Sqlite("sql","insert or ignore into GeostatsTrackableCodes values " + $journeyValues)
+    GcGetCaches Settings=<macro> GcCodes=$journeyCodes Load=Y ShowSummary=No
+  EndIf
+  $journeySkip = $journeySkip + $journeyTake
+EndWhile
 
 # Get every found, attended, and webcam log from the active account. Cache
 # records missing from this GSAK database are loaded during this pass; all
@@ -954,11 +980,12 @@ export class CollectorController {
   }
 
   @Post("gsak/import")
-  async importGsak(@Body() body: { token?: unknown; kind?: unknown; csv?: unknown }) {
+  async importGsak(@Body() body: { token?: unknown; kind?: unknown; csv?: unknown; skip?: unknown; take?: unknown }) {
     const token = typeof body.token === "string" ? body.token.trim() : "";
     if (!token) throw new UnauthorizedException("Missing GSAK import token");
     const userId = await this.tokenUserValue(token, GSAK_IMPORT_SCOPE);
     if (!this.gsakImporter) throw new NotFoundException("GSAK importer is not available in this deployment");
+    if (body.kind === "trackable-codes") return this.gsakImporter.trackableCacheCodes(userId, body.skip, body.take);
     return this.gsakImporter.importBatch(userId, body.kind, body.csv);
   }
 

@@ -116,6 +116,9 @@ export default function DashboardPage() {
         <Link className="primary-link" href="/upload">
           Upload GPX or ZIP
         </Link>
+        <Link className="secondary-button" href="/trackables">
+          Open trackables
+        </Link>
       </header>
       <section className="stat-grid">
         <StatCard label="Total finds" value={stats?.totalFinds ?? 0} />

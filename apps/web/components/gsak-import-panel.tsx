@@ -97,8 +97,10 @@ export function GsakImportPanel({ onImportActivity }: GsakImportPanelProps) {
           <h2>Import from GSAK</h2>
           <p className="muted">
             Optional. Install the connector once. Each run refreshes found and
-            owned cache data in GSAK before sending it to Geostats. GPX and ZIP
-            imports continue to work without it.
+            owned cache data in GSAK before sending it to Geostats, and loads
+            cache codes that are missing from your trackable journeys. If GSAK
+            cannot fetch a cache, export it as GPX or ZIP and upload that file
+            in the cache import above.
           </p>
         </div>
         <button

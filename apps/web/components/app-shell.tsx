@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { BarChart3, BookOpen, Code2, Database, Flag, Globe2, Home, Map, Navigation, Puzzle, Settings, ShieldCheck, Trophy, Upload, Users } from "lucide-react";
+import { BarChart3, BookOpen, Code2, Database, Flag, Footprints, Globe2, Home, Map, Navigation, Puzzle, Settings, ShieldCheck, Trophy, Upload, Users } from "lucide-react";
 import { API_URL, apiFetch } from "../lib/api";
 import { ClerkSignOutButton } from "./clerk-sign-out-button";
 
@@ -15,6 +15,7 @@ const nav = [
   { href: "/friends", label: "Friends", icon: Users },
   { href: "/ftf", label: "FTF", icon: Trophy },
   { href: "/hides", label: "Hides", icon: Flag },
+  { href: "/trackables", label: "Trackables", icon: Footprints },
   { href: "/milestones", label: "Milestones", icon: Flag },
   {
     href: "/challenge-checkers",

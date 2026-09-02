@@ -118,7 +118,7 @@ export default function UploadPage() {
         <Route size={42} />
         <div className="upload-zone-copy">
           <h2>Cache lists for Travel</h2>
-          <p className="muted">Upload a Geocaching Pocket Query GPX or ZIP. Travel accepts every cache type in the file, including Traditional, Multi, Mystery, Virtual, EarthCache, Wherigo, and events.</p>
+          <p className="muted">Upload a Geocaching or GSAK cache GPX or ZIP. This also fills in cache coordinates needed by a trackable journey.</p>
         </div>
         <form onSubmit={submitTravelCaches} className="form">
           <label>
@@ -148,9 +148,13 @@ export default function UploadPage() {
         <div className="form">
           <div>
             <h2>Import from GSAK</h2>
-            <p className="muted">
-              Optional. Install the connector once. Each run refreshes found and owned cache data in GSAK before sending it to Geostats. GPX and ZIP imports continue to work without it.
-            </p>
+          <p className="muted">
+            Optional. Install the connector once. Each run refreshes found and
+            owned cache data in GSAK before sending it to Geostats, and loads
+            cache codes that are missing from your trackable journeys. If GSAK
+            cannot fetch a cache, export it as GPX or ZIP and upload that file
+            above.
+          </p>
           </div>
           <button className="secondary-button" type="button" disabled={gsakBusy} onClick={() => void downloadGsakConnector()}>
             <Download size={18} />

@@ -9,7 +9,7 @@ import * as SecureStore from "expo-secure-store";
 import * as Clipboard from "expo-clipboard";
 import * as Sharing from "expo-sharing";
 import * as Updates from "expo-updates";
-import MapView, { Callout, Marker, Polygon, PROVIDER_GOOGLE, type MapStyleElement, type Region } from "react-native-maps";
+import MapView, { Callout, Marker, Polygon, Polyline, PROVIDER_GOOGLE, type MapStyleElement, type Region } from "react-native-maps";
 import * as Linking from "expo-linking";
 import { ClerkProvider, useAuth } from "@clerk/expo";
 import { useHostedAuth } from "@clerk/expo/hosted-auth";
@@ -37,7 +37,7 @@ type ServerProbeState = {
   config: AuthConfig;
 };
 type ScratchLevel = "countries" | "regions" | "counties";
-type ScreenId = "dashboard" | "explore" | "upload" | "imports" | "stats" | "ftf" | "hides" | "milestones" | "map" | "mysteries" | "travel" | "scratch" | "profile";
+type ScreenId = "dashboard" | "explore" | "upload" | "imports" | "stats" | "ftf" | "hides" | "milestones" | "map" | "mysteries" | "travel" | "trackables" | "scratch" | "profile";
 type Session = { token: string; user: { id: string; email: string; username: string } };
 type CheckState = "correct" | "wrong" | "unchecked";
 type MysteryStatus = "solving" | "solved" | "planned";
@@ -123,6 +123,9 @@ type TravelSearchResult = {
   resultLimit: number;
 };
 type TravelPoolSummary = { total: number; found: number; unfound: number; poolTruncated: boolean; types: LocationBucket[] };
+type TrackableState = "OWNED" | "DISCOVERED" | "RETRIEVED" | "DROPPED" | "VISITED" | "MISSING";
+type MobileTrackable = { id: string; trackingCode: string; name: string; state: TrackableState; lastSeenAt: string | null; lastSeenLocation: string | null; distanceKm: number | null; notes: string | null; stuck: boolean };
+type TrackableJourneyPoint = { id: string; trackableId: string; trackingCode: string; name: string; logType: string; loggedAt: string; dateEstimated: boolean; sequence: number; sequenceTotal: number; gcCode: string | null; cacheName: string | null; locationName: string | null; holderName: string | null; latitude: number | null; longitude: number | null; notes: string | null };
 type ReferenceExtremeEntry = { gcCode: string; name: string; elevationMeters: number | null; found: boolean };
 type ExtremeCachesData = {
   countries: string[];
@@ -240,6 +243,7 @@ const screenDetails: Record<ScreenId, { label: string; eyebrow: string; icon: st
   milestones: { label: "Milestones", eyebrow: "Memorable firsts", icon: "◇" },
   ftf: { label: "First to Find", eyebrow: "Track your FTF history", icon: "⚑" },
   hides: { label: "Owned Caches", eyebrow: "Your hides and finders", icon: "△" },
+  trackables: { label: "Trackables", eyebrow: "Keep track of items on the move", icon: "⌁" },
   mysteries: { label: "Mysteries", eyebrow: "Solve and collaborate", icon: "?" },
   travel: { label: "Trip Planner", eyebrow: "Build a caching route", icon: "↗" },
   upload: { label: "Import Data", eyebrow: "Add caches to your archive", icon: "+" },
@@ -249,7 +253,7 @@ const screenDetails: Record<ScreenId, { label: string; eyebrow: string; icon: st
 const primaryScreens: ScreenId[] = ["dashboard", "stats", "map", "explore", "profile"];
 const exploreGroups: Array<{ title: string; subtitle: string; screens: ScreenId[] }> = [
   { title: "Maps & progress", subtitle: "See where you have cached and what comes next.", screens: ["scratch", "milestones", "ftf"] },
-  { title: "Caching tools", subtitle: "Manage hides, puzzles, and upcoming trips.", screens: ["hides", "mysteries", "travel"] },
+  { title: "Caching tools", subtitle: "Manage hides, trackables, puzzles, and upcoming trips.", screens: ["hides", "trackables", "mysteries", "travel"] },
   { title: "Data", subtitle: "Keep your archive current and review recent imports.", screens: ["upload", "imports"] }
 ];
 
@@ -593,7 +597,7 @@ function mobileBadges(stats: any): MobileBadge[] {
     { id: "rugged", name: "The Rugged Cacher", metric: "T5 finds", current: countDifficultyTerrain(difficultyTerrain, undefined, 5), thresholds: [5, 10, 20, 30, 50, 70, 100, 150] },
     { id: "all-around", name: "The All Around Cacher", metric: "Bearing degrees", current: distanceStats.bearingBuckets?.filter((bucket: PercentBucket) => bucket.count > 0).length ?? 0, thresholds: [90, 120, 180, 270, 300, 330, 350, 360] },
     { id: "ftf", name: "The FTF Addict", metric: "First-to-Finds", current: stats.ftfStats?.total ?? 0, thresholds: [15, 20, 30, 50, 80, 120, 180, 300] },
-    { id: "trackable", name: "The Trackable Lover", metric: "Discovered Trackables", current: null, thresholds: [50, 100, 200, 300, 500, 800, 1200, 1800] },
+    { id: "trackable", name: "The Trackable Lover", metric: "Discovered Trackables", current: stats.trackableCount ?? null, thresholds: [50, 100, 200, 300, 500, 800, 1200, 1800] },
     { id: "author", name: "The Author", metric: "Long logs written", current: achievementStats.longLogsWritten ?? null, thresholds: [30, 40, 50, 60, 70, 80, 90, 100] },
     { id: "owner", name: "The Cache Owner", metric: "Hidden caches", current: stats.hideStats?.totalHides ?? 0, thresholds: [10, 15, 20, 30, 50, 80, 120, 200] },
     { id: "favorited-owner", name: "The Favorited Owner", metric: "Favorite points received", current: stats.hideStats?.totalFavoritePoints ?? 0, thresholds: [25, 40, 60, 90, 150, 210, 320, 500] },
@@ -1222,6 +1226,7 @@ function ScreenSwitch({ apiBaseUrl, screen, token, userId, username, onNavigate,
   if (screen === "milestones") return <MilestonesScreen apiBaseUrl={apiBaseUrl} token={token} />;
   if (screen === "ftf") return <FtfScreen apiBaseUrl={apiBaseUrl} token={token} />;
   if (screen === "hides") return <HidesScreen apiBaseUrl={apiBaseUrl} token={token} />;
+  if (screen === "trackables") return <TrackablesScreen apiBaseUrl={apiBaseUrl} token={token} />;
   if (screen === "mysteries") return <MysteriesScreen apiBaseUrl={apiBaseUrl} token={token} userId={userId} onRequestScrollTop={onRequestScrollTop} />;
   if (screen === "travel") return <TravelScreen apiBaseUrl={apiBaseUrl} token={token} userId={userId} />;
   if (screen === "upload") return <UploadScreen apiBaseUrl={apiBaseUrl} token={token} />;
@@ -1332,7 +1337,7 @@ function DashboardScreen({ apiBaseUrl, token, username, onNavigate }: { apiBaseU
       </View>
       <StatGrid rows={[["Total finds", s.totalFinds ?? 0], ["Cache types", s.cacheTypes?.length ?? 0], ["Countries", s.countries?.length ?? 0], ["Longest streak", `${s.streaks?.longest ?? 0} days`]]} />
       <View style={styles.quickActions}>
-        {(["scratch", "milestones", "mysteries", "travel"] as ScreenId[]).map((item) => <QuickAction key={item} screen={item} onPress={() => onNavigate(item)} />)}
+        {(["scratch", "milestones", "trackables", "mysteries", "travel"] as ScreenId[]).map((item) => <QuickAction key={item} screen={item} onPress={() => onNavigate(item)} />)}
       </View>
       <Panel title="At a glance" subtitle={`Last import: ${dateText(imports.data.imports[0]?.createdAt)}`}>
         <Bars data={latestTwelveMonths(s.findsByMonth ?? [])} />
@@ -1661,6 +1666,120 @@ function HidesScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string 
       <Panel title="Logs received"><Rows rows={(h.logsReceived ?? []).map((row: any) => [row.gcCode, row.name, `${row.finds} logs`])} /></Panel>
       <Panel title="Recent imported logs"><Rows rows={(h.recentReceivedLogs ?? []).map((row: any) => [row.date, `${row.type} · ${row.finder}`, row.gcCode])} /></Panel>
       <LoadState loading={loading} error={error} />
+    </>
+  );
+}
+
+function TrackablesScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
+  const trackables = useApi<{ trackables: MobileTrackable[]; summary: { total: number; stuck: number; byState: Partial<Record<TrackableState, number>> } }>(apiBaseUrl, token, "/trackables", { trackables: [], summary: { total: 0, stuck: 0, byState: {} } });
+  const journey = useApi<{ points: TrackableJourneyPoint[]; total: number; truncated: boolean; unmapped: number }>(apiBaseUrl, token, "/trackables/map", { points: [], total: 0, truncated: false, unmapped: 0 });
+  const [trackingCode, setTrackingCode] = useState("");
+  const [name, setName] = useState("");
+  const [state, setState] = useState<TrackableState>("DISCOVERED");
+  const [lastSeenAt, setLastSeenAt] = useState("");
+  const [lastSeenLocation, setLastSeenLocation] = useState("");
+  const [distanceKm, setDistanceKm] = useState("");
+  const [notes, setNotes] = useState("");
+  const [stateFilter, setStateFilter] = useState<TrackableState | "ALL">("ALL");
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [mapTrackableId, setMapTrackableId] = useState("ALL");
+  const [importing, setImporting] = useState(false);
+  const labels: Record<TrackableState, string> = { OWNED: "Owned", DISCOVERED: "Discovered", RETRIEVED: "Retrieved", DROPPED: "Dropped", VISITED: "Visited", MISSING: "Missing" };
+  const filterValues = ["ALL", ...Object.keys(labels)] as Array<TrackableState | "ALL">;
+  const visible = trackables.data.trackables.filter((item) => stateFilter === "ALL" || item.state === stateFilter);
+
+  function reset() {
+    setTrackingCode(""); setName(""); setState("DISCOVERED"); setLastSeenAt(""); setLastSeenLocation(""); setDistanceKm(""); setNotes(""); setEditingId(null);
+  }
+
+  function edit(item: MobileTrackable) {
+    setEditingId(item.id); setTrackingCode(item.trackingCode); setName(item.name); setState(item.state); setLastSeenAt(item.lastSeenAt?.slice(0, 10) ?? ""); setLastSeenLocation(item.lastSeenLocation ?? ""); setDistanceKm(item.distanceKm == null ? "" : String(item.distanceKm)); setNotes(item.notes ?? "");
+  }
+
+  async function save() {
+    if (!trackingCode.trim() || !name.trim() || busy) return;
+    setBusy(true); setActionError(null);
+    try {
+      await apiFetch(apiBaseUrl, editingId ? `/trackables/${editingId}` : "/trackables", token, { method: editingId ? "PATCH" : "POST", body: JSON.stringify({ trackingCode: trackingCode.trim(), name: name.trim(), state, lastSeenAt: lastSeenAt || null, lastSeenLocation: lastSeenLocation.trim() || null, distanceKm: distanceKm.trim() ? Number(distanceKm) : null, notes: notes.trim() || null }) });
+      reset(); await trackables.refresh();
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Could not save trackable");
+    } finally { setBusy(false); }
+  }
+
+  function remove(item: MobileTrackable) {
+    Alert.alert("Remove trackable?", `${item.trackingCode} will be removed from your logbook.`, [
+      { text: "Cancel", style: "cancel" },
+      { text: "Remove", style: "destructive", onPress: () => void (async () => {
+        setBusy(true); setActionError(null);
+        try { await apiFetch(apiBaseUrl, `/trackables/${item.id}`, token, { method: "DELETE" }); if (editingId === item.id) reset(); await trackables.refresh(); }
+        catch (error) { setActionError(error instanceof Error ? error.message : "Could not remove trackable"); }
+        finally { setBusy(false); }
+      })() }
+    ]);
+  }
+
+  async function importHistory() {
+    if (importing) return;
+    setImporting(true);
+    await pickAndUploadDocument("trackable", {
+      pick: (options) => DocumentPicker.getDocumentAsync(options),
+      createFile: (uri) => new File(uri),
+      request: (path, body) => apiFetch(apiBaseUrl, path, token, { method: "POST", body }),
+      refresh: async () => {
+        await Promise.all([trackables.refresh(), journey.refresh()]);
+      },
+      onMessage: setActionError
+    });
+    setImporting(false);
+  }
+
+  const visibleJourney = mapTrackableId === "ALL" ? journey.data.points : journey.data.points.filter((point) => point.trackableId === mapTrackableId);
+
+  return (
+    <>
+      <PageTitle eyebrow="Trackable logbook" title="Trackables" />
+      <Text style={styles.muted}>Record what you own, what you have found, and where each item was last seen.</Text>
+      <StatGrid rows={[["Total", trackables.data.summary.total], ["Owned", trackables.data.summary.byState.OWNED ?? 0], ["In the wild", (trackables.data.summary.byState.DROPPED ?? 0) + (trackables.data.summary.byState.VISITED ?? 0)], ["Needs a look", trackables.data.summary.stuck]]} />
+      <Panel title={editingId ? "Edit trackable" : "Add a trackable"} subtitle="Use the code printed on the item.">
+        <Field label="Tracking code" value={trackingCode} onChangeText={setTrackingCode} autoCapitalize="characters" placeholder="TB1234" />
+        <Field label="Name" value={name} onChangeText={setName} placeholder="A red geocoin" />
+        <Text style={styles.fieldLabel}>State</Text>
+        <Segmented values={(["OWNED", "DISCOVERED", "RETRIEVED", "DROPPED", "VISITED", "MISSING"] as TrackableState[]).map((item) => labels[item])} active={labels[state]} onPress={(value) => { const next = (Object.keys(labels) as TrackableState[]).find((item) => labels[item] === value); if (next) setState(next); }} />
+        <Field label="Last seen date" value={lastSeenAt} onChangeText={setLastSeenAt} placeholder="YYYY-MM-DD" />
+        <Field label="Last-seen location" value={lastSeenLocation} onChangeText={setLastSeenLocation} placeholder="GC7ABC or Stockholm" />
+        <Field label="Distance (km)" value={distanceKm} onChangeText={setDistanceKm} keyboardType="numeric" />
+        <Field label="Notes" value={notes} onChangeText={setNotes} multiline placeholder="Who has it, or where it is headed" />
+        <PrimaryButton label={busy ? "Saving..." : editingId ? "Save changes" : "Add trackable"} onPress={() => void save()} />
+        {editingId ? <SecondaryButton label="Cancel edit" onPress={reset} /> : null}
+        {actionError ? <Text style={styles.error}>{actionError}</Text> : null}
+      </Panel>
+      <Panel title="Import movement history" subtitle="Geocaching or GSAK GPX, ZIP/KMZ, CSV, KML, or API JSON.">
+        <Text style={styles.muted}>Journey cache details stay with your private movement history; matching cache records are linked from your archive.</Text>
+        <PrimaryButton label={importing ? "Importing..." : "Choose history export"} onPress={() => void importHistory()} />
+      </Panel>
+      <Panel title="Movement map" subtitle={journey.data.total ? `${visibleJourney.length} movement points` : "Import a journey to see its path."}>
+        <View style={styles.trackableFilter}>{["ALL", ...trackables.data.trackables.map((item) => item.id)].map((value) => {
+          const active = mapTrackableId === value;
+          const label = value === "ALL" ? "All" : trackables.data.trackables.find((item) => item.id === value)?.trackingCode ?? value;
+          return <Pressable key={value} accessibilityRole="button" accessibilityState={{ selected: active }} onPress={() => setMapTrackableId(value)} style={[styles.trackableFilterButton, active && styles.trackableFilterButtonActive]}><Text style={[styles.trackableFilterText, active && styles.trackableFilterTextActive]}>{label}</Text></Pressable>;
+        })}</View>
+        <NativeTrackableMap points={visibleJourney} />
+        {journey.data.truncated ? <Text style={styles.trackableWarning}>Map is showing the newest 20,000 of {journey.data.total.toLocaleString()} movement points. The full history remains in your logbook export.</Text> : null}
+        {journey.data.unmapped > 0 ? <Text style={styles.muted}>{journey.data.unmapped} movement points have no coordinates.</Text> : null}
+      </Panel>
+      <Panel title="Logbook" subtitle={`${visible.length} shown`}>
+        <View style={styles.trackableFilter}>{filterValues.map((value) => {
+          const active = stateFilter === value;
+          const label = value === "ALL" ? "All" : labels[value];
+          return <Pressable key={value} accessibilityRole="button" accessibilityState={{ selected: active }} onPress={() => setStateFilter(value)} style={[styles.trackableFilterButton, active && styles.trackableFilterButtonActive]}><Text style={[styles.trackableFilterText, active && styles.trackableFilterTextActive]}>{label}</Text></Pressable>;
+        })}</View>
+        {visible.map((item) => <View key={item.id} style={styles.trackableRow}><View style={styles.flex}><Text style={styles.rowTitle}>{item.name}</Text><Text style={styles.trackableCode}>{item.trackingCode}</Text><Text style={styles.muted}>{labels[item.state]} · {item.lastSeenAt ? dateText(item.lastSeenAt) : "No last-seen date"}{item.lastSeenLocation ? ` · ${item.lastSeenLocation}` : ""}{item.distanceKm != null ? ` · ${item.distanceKm} km` : ""}</Text>{item.stuck ? <Text style={styles.trackableWarning}>Last seen over 90 days ago</Text> : null}{item.notes ? <Text style={styles.muted}>{item.notes}</Text> : null}</View><View style={styles.trackableActions}><SecondaryButton label="Edit" onPress={() => edit(item)} /><SecondaryButton label="Remove" danger onPress={() => remove(item)} /></View></View>)}
+        {!visible.length ? <Text style={styles.muted}>{trackables.data.trackables.length ? "No trackables match this state." : "Your logbook is empty. Add your first trackable above."}</Text> : null}
+      </Panel>
+      <LoadState loading={trackables.loading} error={trackables.error} />
     </>
   );
 }
@@ -2692,6 +2811,45 @@ function NativeMap({ points }: { points: CachePoint[] }) {
   );
 }
 
+function NativeTrackableMap({ points }: { points: TrackableJourneyPoint[] }) {
+  const visible = points.filter((point) => Number.isFinite(point.latitude) && Number.isFinite(point.longitude));
+  if (visible.length === 0) return <Text style={styles.muted}>No movement coordinates yet.</Text>;
+  if (!NATIVE_MAP_AVAILABLE) {
+    return <View style={styles.mapUnavailable}><Text style={styles.mapUnavailableTitle}>Map preview unavailable</Text><Text style={styles.muted}>This Android build does not have a Google Maps key. Movement locations remain available in the logbook.</Text></View>;
+  }
+  const groups = new Map<string, TrackableJourneyPoint[]>();
+  for (const point of visible) groups.set(point.trackableId, [...(groups.get(point.trackableId) ?? []), point]);
+  const colorFor = (type: string) => type === "DROPPED" ? "#f3b34d" : type === "MISSING" ? "#ff8db3" : type === "RETRIEVED" || type === "GRABBED" ? "#d9468f" : "#4ec878";
+  return (
+    <View style={styles.nativeMapFrame}>
+      <MapView style={styles.nativeMap} initialRegion={regionForPoints(visible.map((point) => ({ id: point.id, gcCode: point.gcCode ?? point.trackingCode, name: point.name, cacheType: null, latitude: point.latitude!, longitude: point.longitude! })))} provider={ANDROID_MAP_PROVIDER} showsCompass showsScale>
+        {[...groups.entries()].map(([trackableId, entries]) => {
+          const ordered = [...entries].sort((left, right) => left.sequence - right.sequence || Date.parse(left.loggedAt) - Date.parse(right.loggedAt));
+          if (ordered.length <= 1) return null;
+          const coordinates = ordered.map((point) => ({ latitude: point.latitude!, longitude: point.longitude! }));
+          return [
+            <Polyline key={`route-casing-${trackableId}`} coordinates={coordinates} strokeColor="#10251b" strokeWidth={9} />,
+            <Polyline key={`route-highlight-${trackableId}`} coordinates={coordinates} strokeColor="#ffe033" strokeWidth={4} />
+          ];
+        })}
+        {visible.map((point) => (
+          <Marker key={point.id} coordinate={{ latitude: point.latitude!, longitude: point.longitude! }} pinColor={colorFor(point.logType)}>
+            <Callout>
+              <View style={styles.callout}>
+                <Text style={styles.calloutTitle}>{point.trackingCode} · {point.logType}</Text>
+                <Text style={styles.calloutMeta}>Stop {point.sequence} of {point.sequenceTotal}</Text>
+                <Text style={styles.calloutBody}>{point.cacheName ?? point.locationName ?? "Unknown location"}</Text>
+                {point.gcCode ? <Text style={styles.calloutMeta}>{point.gcCode}</Text> : null}
+                <Text style={styles.calloutMeta}>{point.dateEstimated ? "Date not supplied by KML (file order shown)" : dateText(point.loggedAt)}</Text>
+              </View>
+            </Callout>
+          </Marker>
+        ))}
+      </MapView>
+    </View>
+  );
+}
+
 function ScratchMapFallback({ buckets, max }: { buckets: any[]; max: number }) {
   const visible = [...buckets].sort((a, b) => (b.count ?? 0) - (a.count ?? 0)).slice(0, 16);
   if (visible.length === 0) {
@@ -2841,6 +2999,7 @@ function MilestoneList({ title, rows, labelKey = "label" }: { title: string; row
 function BadgesPanel({ apiBaseUrl, stats, token }: { apiBaseUrl: string; stats: any; token: string }) {
   const scratch = useApi<{ countries: any[] }>(apiBaseUrl, token, "/map/scratch", { countries: [] });
   const points = useApi<{ points: CachePoint[] }>(apiBaseUrl, token, "/map/caches", { points: [] });
+  const trackables = useApi<{ summary?: { byState?: { DISCOVERED?: number } } }>(apiBaseUrl, token, "/trackables", { summary: { byState: {} } });
   const [showAll, setShowAll] = useState(false);
   const [sortMode, setSortMode] = useState("Highest");
   const [sortReversed, setSortReversed] = useState(false);
@@ -2910,7 +3069,7 @@ function BadgesPanel({ apiBaseUrl, stats, token }: { apiBaseUrl: string; stats: 
   const sortedCountryBadges = [...countryBadges].sort((a, b) => direction * (sortMode === "A-Z"
     ? a.name.localeCompare(b.name)
     : achievedIndex(b) - achievedIndex(a) || b.current - a.current || b.count - a.count || a.name.localeCompare(b.name)));
-  const badges = mobileBadges(stats).map((badge) => ({ ...badge, level: achievedIndex(badge) })).sort((a, b) => direction * (sortMode === "A-Z"
+  const badges = mobileBadges({ ...stats, trackableCount: trackables.data.summary?.byState?.DISCOVERED ?? null }).map((badge) => ({ ...badge, level: achievedIndex(badge) })).sort((a, b) => direction * (sortMode === "A-Z"
     ? a.name.localeCompare(b.name)
     : b.level - a.level || (b.current ?? -1) - (a.current ?? -1) || a.name.localeCompare(b.name)));
   const achieved = badges.filter((badge) => badge.level >= 0).length;
@@ -3207,6 +3366,15 @@ const styles = StyleSheet.create({
   countryRowActive: { backgroundColor: "#132c20" },
   countrySwatch: { width: 18, height: 32, borderRadius: 4, backgroundColor: "#f3b34d" },
   importRow: { flexDirection: "row", alignItems: "center", gap: 10, borderTopWidth: 1, borderColor: "#1b3729", paddingVertical: 10 },
+  trackableRow: { flexDirection: "row", alignItems: "flex-start", gap: 10, borderTopWidth: 1, borderColor: "#1b3729", paddingVertical: 12 },
+  trackableFilter: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
+  trackableFilterButton: { borderWidth: 1, borderColor: "#365346", borderRadius: 999, paddingHorizontal: 12, paddingVertical: 8 },
+  trackableFilterButtonActive: { borderColor: "#f3b34d", backgroundColor: "#f3b34d" },
+  trackableFilterText: { color: "#b9c8bf", fontSize: 12, fontWeight: "800" },
+  trackableFilterTextActive: { color: "#172016" },
+  trackableCode: { color: "#5fbf85", fontFamily: "monospace", fontSize: 12, fontWeight: "800", marginTop: 2 },
+  trackableActions: { alignItems: "stretch", gap: 5 },
+  trackableWarning: { color: "#ffb4a8", fontSize: 12, fontWeight: "800", marginTop: 3 },
   importError: { color: "#ffb4a8", fontSize: 12, marginTop: 3 },
   statusPill: { color: "#3c2d0c", backgroundColor: "#f3b34d", borderRadius: 999, overflow: "hidden", paddingHorizontal: 9, paddingVertical: 5, fontSize: 10, fontWeight: "900" },
   statusPillComplete: { color: "#dff8e8", backgroundColor: "#22613b" },

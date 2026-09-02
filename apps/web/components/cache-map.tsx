@@ -23,8 +23,9 @@ export interface CacheMapPoint {
   isOwnHide?: boolean;
 }
 
-const osmRasterStyle: StyleSpecification = {
+export const osmRasterStyle: StyleSpecification = {
   version: 8,
+  glyphs: "https://fonts.openmaptiles.org/{fontstack}/{range}.pbf",
   sources: {
     osm: {
       type: "raster",

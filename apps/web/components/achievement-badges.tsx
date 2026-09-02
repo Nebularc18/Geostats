@@ -61,6 +61,7 @@ type PercentBucket = CountBucket & { percent: number };
 type DifficultyTerrainCell = { difficulty: number; terrain: number; count: number };
 type StatsSummary = {
   totalFinds?: number;
+  trackableCount?: number | null;
   cacheTypes?: CountBucket[];
   sizes?: CountBucket[];
   countries?: CountBucket[];
@@ -542,7 +543,7 @@ function buildBadges(stats: StatsSummary | null): BadgeDefinition[] {
       id: "trackable",
       name: "The Trackable Lover",
       metric: "Discovered Trackables",
-      current: null,
+      current: stats?.trackableCount ?? null,
       thresholds: [50, 100, 200, 300, 500, 800, 1200, 1800],
       icon: Footprints
     },
@@ -709,6 +710,7 @@ export function AchievementBadges({
   const [countryFlagCodes, setCountryFlagCodes] = useState<Map<string, string>>(() => new Map());
   const [failedCountryFlags, setFailedCountryFlags] = useState<Set<string>>(() => new Set());
   const [countryBadgesLoading, setCountryBadgesLoading] = useState(true);
+  const [discoveredTrackables, setDiscoveredTrackables] = useState<number | null>(null);
   const [error, setError] = useState(false);
   const [sortMode, setSortMode] = useState<BadgeSortMode>("level");
   const [sortReversed, setSortReversed] = useState(false);
@@ -740,6 +742,20 @@ export function AchievementBadges({
       active = false;
     };
   }, [providedStats]);
+
+  useEffect(() => {
+    let active = true;
+    void apiFetch<{ summary?: { byState?: { DISCOVERED?: number } } }>("/trackables")
+      .then((data) => {
+        if (active) setDiscoveredTrackables(data.summary?.byState?.DISCOVERED ?? 0);
+      })
+      .catch(() => {
+        if (active) setDiscoveredTrackables(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -836,7 +852,11 @@ export function AchievementBadges({
     };
   }, [scratchCountries]);
 
-  const badges = useMemo(() => buildBadges(stats), [stats]);
+  const badgeStats = useMemo(
+    () => (stats ? { ...stats, trackableCount: discoveredTrackables ?? stats.trackableCount ?? null } : stats),
+    [discoveredTrackables, stats]
+  );
+  const badges = useMemo(() => buildBadges(badgeStats), [badgeStats]);
   const countryBadges = useMemo(
     () => buildCountryBadges(scratchCountries, countryRegionTotals),
     [countryRegionTotals, scratchCountries]

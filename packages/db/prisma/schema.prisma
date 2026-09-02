@@ -32,6 +32,25 @@ enum ImportFileType {
   JSON
 }
 
+enum TrackableState {
+  OWNED
+  DISCOVERED
+  RETRIEVED
+  DROPPED
+  VISITED
+  MISSING
+}
+
+enum TrackableLogType {
+  DISCOVERED
+  RETRIEVED
+  DROPPED
+  VISITED
+  GRABBED
+  NOTE
+  MISSING
+}
+
 model User {
   id           String   @id @default(cuid())
   email        String   @unique
@@ -57,6 +76,8 @@ model User {
   mysteryDeletions        MysteryWorkspaceDeletion[]
   cacheData               UserCacheData[]
   challengeCheckers       ChallengeChecker[]
+  trackables              Trackable[]
+  trackableLogs           TrackableLog[]
 
   @@map("users")
 }
@@ -263,6 +284,7 @@ model Cache {
   hides       Hide[]
   corrections CorrectedCoordinate[]
   userData    UserCacheData[]
+  trackableLogs TrackableLog[]
 
   @@index([country, region, county])
   @@map("caches")
@@ -357,6 +379,58 @@ model StatSnapshot {
 
   @@index([userId, generatedAt])
   @@map("stat_snapshots")
+}
+
+model Trackable {
+  id                String         @id @default(cuid())
+  userId            String         @map("user_id")
+  trackingCode      String         @map("tracking_code")
+  name              String
+  state             TrackableState  @default(DISCOVERED)
+  lastSeenAt        DateTime?      @map("last_seen_at") @db.Date
+  lastSeenLocation  String?        @map("last_seen_location")
+  distanceKm        Decimal?       @map("distance_km") @db.Decimal(10, 2)
+  notes             String?
+  createdAt         DateTime        @default(now()) @map("created_at")
+  updatedAt         DateTime        @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  logs TrackableLog[]
+
+  @@unique([userId, trackingCode])
+  @@index([userId, state])
+  @@index([userId, lastSeenAt])
+  @@map("trackables")
+}
+
+model TrackableLog {
+  id            String           @id @default(cuid())
+  userId        String           @map("user_id")
+  trackableId   String           @map("trackable_id")
+  cacheId       String?          @map("cache_id")
+  gcCode        String?          @map("gc_code")
+  cacheName     String?          @map("cache_name")
+  logType       TrackableLogType @map("log_type")
+  loggedAt      DateTime         @map("logged_at")
+  locationName  String?          @map("location_name")
+  holderName    String?          @map("holder_name")
+  latitude      Decimal?         @db.Decimal(9, 6)
+  longitude     Decimal?         @db.Decimal(9, 6)
+  notes         String?
+  source        String
+  sourceKey     String           @map("source_key")
+  raw           Json?
+  createdAt     DateTime         @default(now()) @map("created_at")
+
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  trackable Trackable @relation(fields: [trackableId], references: [id], onDelete: Cascade)
+  cache     Cache?    @relation(fields: [cacheId], references: [id], onDelete: SetNull)
+
+  @@unique([userId, sourceKey])
+  @@index([userId, trackableId, loggedAt])
+  @@index([userId, gcCode])
+  @@index([cacheId])
+  @@map("trackable_logs")
 }
 
 model PendingObjectDeletion {

@@ -50,6 +50,19 @@ test("GPX uploads use a cached document and the imports multipart endpoint", asy
   assert.equal(harness.refreshes(), 1);
 });
 
+test("trackable uploads explain missing cache records", async () => {
+  const harness = uploadHarness("trackable", {
+    request: async (path: string, body: FormData) => {
+      harness.requests.push({ path, body });
+      return { import: { unresolvedCaches: ["GC123", "GC456"] } };
+    }
+  });
+
+  assert.equal(await pickAndUploadDocument("trackable", harness.dependencies), "uploaded");
+  assert.match(harness.messages.at(-1) ?? "", /2 cache records are missing/);
+  assert.match(harness.messages.at(-1) ?? "", /GSAK as GPX\/ZIP/);
+});
+
 test("CSV uploads use the owner-log endpoint", async () => {
   const harness = uploadHarness("csv", { createFile: () => new Blob(["owner logs"]) });
 

@@ -33,6 +33,8 @@ const MAX_MYSTERY_WORKSPACES = 500;
 const MAX_MYSTERY_BYTES = 256 * 1024;
 const OBJECT_CLEANUP_INTERVAL_MS = 60_000;
 const OBJECT_CLEANUP_BATCH_SIZE = 100;
+const TRACKABLE_STATES = new Set(["OWNED", "DISCOVERED", "RETRIEVED", "DROPPED", "VISITED", "MISSING"]);
+const TRACKABLE_LOG_TYPES = new Set(["DISCOVERED", "RETRIEVED", "DROPPED", "VISITED", "GRABBED", "NOTE", "MISSING"]);
 
 type PortableArchive = {
   format: typeof FORMAT;
@@ -48,6 +50,8 @@ type PortableArchive = {
     ownerFinderCountryStats: any[];
     statSnapshots: any[];
     mysteryWorkspaces: any[];
+    trackables: any[];
+    trackableLogs: any[];
   };
 };
 
@@ -73,6 +77,12 @@ function text(value: unknown, label: string, max = 10_000): string {
     throw new BadRequestException(`${label} is invalid`);
   }
   return value;
+}
+
+function requiredText(value: unknown, label: string, max = 10_000): string {
+  const trimmed = text(value, label, max).trim();
+  if (!trimmed) throw new BadRequestException(`${label} must not be empty`);
+  return trimmed;
 }
 
 function optionalText(
@@ -186,6 +196,8 @@ export function parsePortableArchive(input: Buffer | string): PortableArchive {
         data.mysteryWorkspaces,
         "data.mysteryWorkspaces",
       ),
+      trackables: records(data.trackables ?? [], "data.trackables"),
+      trackableLogs: records(data.trackableLogs ?? [], "data.trackableLogs"),
     },
   } as PortableArchive;
   if (parsed.data.mysteryWorkspaces.length > MAX_MYSTERY_WORKSPACES) {
@@ -231,6 +243,8 @@ export class PortabilityService implements OnModuleInit, OnModuleDestroy {
       ownerFinderCountryStats,
       statSnapshots,
       mysteryWorkspaces,
+      trackables,
+      trackableLogs,
     ] = await Promise.all([
       this.prisma.user.findUniqueOrThrow({
         where: { id: user.id },
@@ -264,11 +278,23 @@ export class PortabilityService implements OnModuleInit, OnModuleDestroy {
         where: { ownerId: user.id },
         orderBy: { createdAt: "asc" },
       }),
+      this.prisma.trackable?.findMany({
+        where: { userId: user.id },
+        orderBy: [{ updatedAt: "desc" }, { name: "asc" }],
+      }) ?? Promise.resolve([]),
+      this.prisma.trackableLog?.findMany({
+        where: { userId: user.id },
+        include: { trackable: true, cache: true },
+        orderBy: [{ loggedAt: "asc" }, { id: "asc" }],
+      }) ?? Promise.resolve([]),
     ]);
 
     const caches = new Map<string, any>();
     for (const row of [...finds, ...hides, ...corrections])
       caches.set(row.cache.gcCode, row.cache);
+    for (const row of trackableLogs) {
+      if (row.cache) caches.set(row.cache.gcCode, row.cache);
+    }
     const portableCache = (cache: any) => ({
       gcCode: cache.gcCode,
       name: cache.name,
@@ -342,6 +368,30 @@ export class PortabilityService implements OnModuleInit, OnModuleDestroy {
           snapshotRevision: row.snapshotRevision,
           createdAt: row.createdAt,
           updatedAt: row.updatedAt,
+        })),
+        trackables: trackables.map((row) => ({
+          trackingCode: row.trackingCode,
+          name: row.name,
+          state: row.state,
+          lastSeenAt: row.lastSeenAt,
+          lastSeenLocation: row.lastSeenLocation,
+          distanceKm: row.distanceKm == null ? null : Number(row.distanceKm),
+          notes: row.notes,
+        })),
+        trackableLogs: trackableLogs.map((row) => ({
+          trackingCode: row.trackable.trackingCode,
+          gcCode: row.gcCode ?? row.cache?.gcCode ?? null,
+          cacheName: row.cacheName ?? null,
+          logType: row.logType,
+          loggedAt: row.loggedAt,
+          locationName: row.locationName,
+          holderName: row.holderName,
+          latitude: row.latitude,
+          longitude: row.longitude,
+          notes: row.notes,
+          source: row.source,
+          sourceKey: row.sourceKey,
+          raw: row.raw,
         })),
       },
     };
@@ -631,6 +681,90 @@ export class PortabilityService implements OnModuleInit, OnModuleDestroy {
             await tx.correctedCoordinate.createMany({ data: batch });
           }
 
+          const trackableCodes = new Set<string>();
+          const trackables = data.trackables.map((row, index) => {
+            const label = `trackables[${index}]`;
+            const trackingCode = requiredText(row.trackingCode, `${label}.trackingCode`, 80).toUpperCase();
+            if (trackableCodes.has(trackingCode)) {
+              throw new BadRequestException(`Duplicate trackable ${trackingCode}`);
+            }
+            trackableCodes.add(trackingCode);
+            const state = text(row.state, `${label}.state`, 20).toUpperCase();
+            if (!TRACKABLE_STATES.has(state)) {
+              throw new BadRequestException(`${label}.state is invalid`);
+            }
+            return {
+              userId: user.id,
+              trackingCode,
+              name: requiredText(row.name, `${label}.name`, 200),
+              state: state as any,
+              lastSeenAt: row.lastSeenAt == null ? null : dateOnly(row.lastSeenAt, `${label}.lastSeenAt`),
+              lastSeenLocation: optionalText(row.lastSeenLocation, `${label}.lastSeenLocation`, 200),
+              distanceKm: row.distanceKm == null ? null : decimal(row.distanceKm, `${label}.distanceKm`, 0, 1_000_000),
+              notes: optionalText(row.notes, `${label}.notes`, 2_000),
+            };
+          });
+          if (trackables.length > 0 && tx.trackable) {
+            await tx.trackable.deleteMany({
+              where: { userId: user.id, trackingCode: { in: trackables.map((row) => row.trackingCode) } },
+            });
+            for (const batch of batches(trackables)) {
+              await tx.trackable.createMany({ data: batch });
+            }
+          }
+
+          const importedTrackableIds = new Map(
+            (
+              trackables.length > 0
+                ? await tx.trackable.findMany({
+                    where: { userId: user.id, trackingCode: { in: trackables.map((row) => row.trackingCode) } },
+                    select: { id: true, trackingCode: true },
+                  })
+                : []
+            ).map((row) => [row.trackingCode, row.id]),
+          );
+          if (data.trackableLogs.length > 0 && importedTrackableIds.size === 0) {
+            throw new BadRequestException("trackableLogs requires matching trackables");
+          }
+          const trackableLogs = data.trackableLogs.map((row, index) => {
+            const label = `trackableLogs[${index}]`;
+            const code = requiredText(row.trackingCode, `${label}.trackingCode`, 80).toUpperCase();
+            const trackableId = importedTrackableIds.get(code);
+            if (!trackableId) throw new BadRequestException(`${label}.trackingCode does not refer to an imported trackable`);
+            const logType = text(row.logType, `${label}.logType`, 20).toUpperCase();
+            if (!TRACKABLE_LOG_TYPES.has(logType)) throw new BadRequestException(`${label}.logType is invalid`);
+            const rawGcCode = optionalText(row.gcCode, `${label}.gcCode`, 40);
+            const normalizedGcCode = rawGcCode?.trim().toUpperCase() || null;
+            if (normalizedGcCode && !/^GC[A-Z0-9]{2,20}$/.test(normalizedGcCode)) {
+              throw new BadRequestException(`${label}.gcCode is invalid`);
+            }
+            const trackableCacheId = normalizedGcCode ? cacheIds.get(normalizedGcCode) ?? null : null;
+            const cacheName = optionalText(row.cacheName, `${label}.cacheName`, 1_000);
+            const latitude = row.latitude == null ? null : decimal(row.latitude, `${label}.latitude`, -90, 90);
+            const longitude = row.longitude == null ? null : decimal(row.longitude, `${label}.longitude`, -180, 180);
+            const sourceKey = optionalText(row.sourceKey, `${label}.sourceKey`, 200) ?? `${code}:${date(row.loggedAt, `${label}.loggedAt`).toISOString()}:${logType}:${index}`;
+            return {
+              userId: user.id,
+              trackableId,
+              cacheId: trackableCacheId,
+              gcCode: normalizedGcCode,
+              cacheName,
+              logType: logType as any,
+              loggedAt: date(row.loggedAt, `${label}.loggedAt`),
+              locationName: optionalText(row.locationName, `${label}.locationName`, 200),
+              holderName: optionalText(row.holderName, `${label}.holderName`, 200),
+              latitude,
+              longitude,
+              notes: optionalText(row.notes, `${label}.notes`, 100_000),
+              source: optionalText(row.source, `${label}.source`, 100) ?? "PORTABLE",
+              sourceKey,
+              raw: row.raw == null ? Prisma.JsonNull : (row.raw as Prisma.InputJsonValue),
+            };
+          });
+          for (const batch of batches(trackableLogs)) {
+            await tx.trackableLog.createMany({ data: batch, skipDuplicates: true });
+          }
+
           await tx.ownerFinderCountryStat.deleteMany({
             where: { userId: user.id },
           });
@@ -724,15 +858,16 @@ export class PortabilityService implements OnModuleInit, OnModuleDestroy {
               objectKey: `portability-history/${user.id}/${randomUUID()}`,
             },
           });
-          return {
-            imported: {
-              caches: cacheRows.length,
-              finds: finds.length,
-              hides: hides.length,
-              correctedCoordinates: corrections.length,
-              mysteryWorkspaces: data.mysteryWorkspaces.length,
-            },
+          const imported = {
+            caches: cacheRows.length,
+            finds: finds.length,
+            hides: hides.length,
+            correctedCoordinates: corrections.length,
+            mysteryWorkspaces: data.mysteryWorkspaces.length,
+            ...(data.trackables.length > 0 ? { trackables: trackables.length } : {}),
+            ...(data.trackableLogs.length > 0 ? { trackableLogs: trackableLogs.length } : {}),
           };
+          return { imported };
         },
         { maxWait: 10_000, timeout: 120_000 },
       );

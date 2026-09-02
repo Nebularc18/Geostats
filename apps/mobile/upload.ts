@@ -1,4 +1,4 @@
-export type UploadKind = "cache" | "csv";
+export type UploadKind = "cache" | "csv" | "trackable";
 
 type UploadAsset = {
   name: string;
@@ -30,10 +30,34 @@ const uploadSpecs: Record<UploadKind, { types: string[]; path: string; uploading
     path: "/collector/received-logs/csv",
     uploading: "Uploading owner logs...",
     complete: "Owner logs imported."
+  },
+  trackable: {
+    types: ["application/gpx+xml", "application/zip", "text/csv", "application/json", "application/vnd.google-earth.kml+xml", "text/xml", "*/*"],
+    path: "/trackables/import",
+    uploading: "Uploading trackable history...",
+    complete: "Trackable history imported."
   }
 };
 
 const acceptedCsvMimeTypes = new Set(["text/csv", "application/csv", "text/plain"]);
+
+function trackableImportMessage(response: unknown): string | null {
+  if (!response || typeof response !== "object") return null;
+  const summary = (response as { import?: { unresolvedCaches?: unknown; estimatedLogs?: unknown; inferredTrackables?: unknown } }).import;
+  if (!summary || typeof summary !== "object") return null;
+  const missing = Array.isArray(summary.unresolvedCaches) ? summary.unresolvedCaches.filter((code): code is string => typeof code === "string") : [];
+  if (missing.length > 0) {
+    const preview = missing.slice(0, 5).join(", ");
+    return `Trackable history imported, but ${missing.length} cache record${missing.length === 1 ? " is" : "s are"} missing from your archive. Export those caches from GSAK as GPX/ZIP and import them, then retry this journey.${preview ? ` Missing: ${preview}${missing.length > 5 ? "…" : ""}` : ""}`;
+  }
+  if (typeof summary.estimatedLogs === "number" && summary.estimatedLogs > 0) {
+    return "Trackable history imported. Dates were not supplied, so the file order was used.";
+  }
+  if (typeof summary.inferredTrackables === "number" && summary.inferredTrackables > 0) {
+    return "Trackable history imported. The export had no TB code, so a temporary KML identifier was generated.";
+  }
+  return null;
+}
 
 function fileForUpload(kind: UploadKind, asset: UploadAsset, file: Blob) {
   if (kind !== "csv") return file;
@@ -55,8 +79,8 @@ export async function pickAndUploadDocument(kind: UploadKind, dependencies: Uplo
     const form = new FormData();
     form.append("file", fileForUpload(kind, asset, dependencies.createFile(asset.uri)), asset.name);
     dependencies.onMessage(spec.uploading);
-    await dependencies.request(spec.path, form);
-    dependencies.onMessage(spec.complete);
+    const response = await dependencies.request(spec.path, form);
+    dependencies.onMessage(kind === "trackable" ? trackableImportMessage(response) ?? spec.complete : spec.complete);
     await dependencies.refresh();
     return "uploaded" as const;
   } catch (error) {
