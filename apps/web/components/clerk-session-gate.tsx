@@ -10,6 +10,7 @@ export function ClerkSessionGate({ children }: { children: React.ReactNode }) {
   const { getToken, isLoaded, isSignedIn, userId } = useAuth();
   const [state, setState] = useState<GateState>("waiting");
   const [syncedUserId, setSyncedUserId] = useState<string | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   useEffect(() => {
     if (!isLoaded) {
@@ -17,9 +18,23 @@ export function ClerkSessionGate({ children }: { children: React.ReactNode }) {
     }
     const clerkUserId = userId;
     if (!isSignedIn || !clerkUserId) {
-      setSyncedUserId(null);
-      setState("ready");
-      return;
+      let active = true;
+      setState("waiting");
+      setErrorMessage(null);
+      void apiFetch("/auth/logout", { method: "POST" })
+        .then(() => {
+          if (!active) return;
+          setSyncedUserId(null);
+          setState("ready");
+        })
+        .catch(() => {
+          if (!active) return;
+          setErrorMessage("Could not clear your local session");
+          setState("error");
+        });
+      return () => {
+        active = false;
+      };
     }
     if (syncedUserId === clerkUserId) {
       setState("ready");
@@ -27,6 +42,7 @@ export function ClerkSessionGate({ children }: { children: React.ReactNode }) {
     }
 
     let active = true;
+    setErrorMessage(null);
 
     async function synchronizeSession() {
       try {
@@ -44,6 +60,7 @@ export function ClerkSessionGate({ children }: { children: React.ReactNode }) {
         }
       } catch {
         if (active) {
+          setErrorMessage("Could not connect your Clerk session");
           setState("error");
         }
       }
@@ -60,8 +77,12 @@ export function ClerkSessionGate({ children }: { children: React.ReactNode }) {
       <main className="auth-page">
         <section className="auth-panel">
           <p className="eyebrow">Geocaching statistics</p>
-          <h1>Could not connect your Clerk session</h1>
-          <p className="muted">Check the API Clerk keys and try signing in again.</p>
+          <h1>{errorMessage ?? "Could not connect your Clerk session"}</h1>
+          <p className="muted">
+            {errorMessage === "Could not clear your local session"
+              ? "Try again when the API is available."
+              : "Check the API Clerk keys and try signing in again."}
+          </p>
         </section>
       </main>
     );

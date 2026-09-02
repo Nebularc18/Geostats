@@ -14,6 +14,46 @@ test("auth config reports Clerk by default", () => {
 
   assert.deepEqual(controller.config(), { mode: "clerk", providerName: "Clerk" });
 });
+
+test("auth config exposes the Clerk publishable key without the secret", () => {
+  const previousPublishableKey = process.env.CLERK_PUBLISHABLE_KEY;
+  const previousPublicWebKey = process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
+  const previousSecretKey = process.env.CLERK_SECRET_KEY;
+  process.env.CLERK_PUBLISHABLE_KEY = "pk_test_mobile";
+  delete process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
+  process.env.CLERK_SECRET_KEY = "sk_test_secret";
+  try {
+    const controller = testController({ authMode: () => "clerk" });
+
+    assert.deepEqual(controller.config(), {
+      mode: "clerk",
+      providerName: "Clerk",
+      clerkPublishableKey: "pk_test_mobile"
+    });
+  } finally {
+    if (previousPublishableKey === undefined) delete process.env.CLERK_PUBLISHABLE_KEY;
+    else process.env.CLERK_PUBLISHABLE_KEY = previousPublishableKey;
+    if (previousPublicWebKey === undefined) delete process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
+    else process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY = previousPublicWebKey;
+    if (previousSecretKey === undefined) delete process.env.CLERK_SECRET_KEY;
+    else process.env.CLERK_SECRET_KEY = previousSecretKey;
+  }
+});
+
+test("logout clears the local browser session cookie", () => {
+  let clearedCookie: string | null = null;
+  const controller = testController({});
+
+  const result = controller.logout({
+    clearCookie: (name: string) => {
+      clearedCookie = name;
+    }
+  } as any);
+
+  assert.deepEqual(result, { ok: true });
+  assert.equal(clearedCookie, "geostats_session");
+});
+
 test("browser login and register do not expose bearer tokens in response bodies", async () => {
   const auth = {
     register: async () => ({ id: "user-1", email: "a@example.com", username: "a" }),

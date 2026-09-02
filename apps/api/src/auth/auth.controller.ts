@@ -45,9 +45,13 @@ export class AuthController {
 
   @Get("config")
   config() {
+    const mode = this.auth.authMode();
+    const clerkPublishableKey =
+      process.env.CLERK_PUBLISHABLE_KEY?.trim() || process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY?.trim();
     return {
-      mode: this.auth.authMode(),
-      providerName: process.env.NEXT_PUBLIC_AUTH_PROVIDER_NAME?.trim() || "Clerk"
+      mode,
+      providerName: process.env.NEXT_PUBLIC_AUTH_PROVIDER_NAME?.trim() || "Clerk",
+      ...(mode === "clerk" && clerkPublishableKey ? { clerkPublishableKey } : {})
     };
   }
 

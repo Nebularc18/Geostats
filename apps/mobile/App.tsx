@@ -11,8 +11,9 @@ import * as Sharing from "expo-sharing";
 import * as Updates from "expo-updates";
 import MapView, { Callout, Marker, Polygon, PROVIDER_GOOGLE, type MapStyleElement, type Region } from "react-native-maps";
 import * as Linking from "expo-linking";
-import { useAuth } from "@clerk/expo";
+import { ClerkProvider, useAuth } from "@clerk/expo";
 import { useHostedAuth } from "@clerk/expo/hosted-auth";
+import { tokenCache } from "@clerk/expo/token-cache";
 import { parseCoordinate } from "@geostats/shared";
 import { pickAndUploadDocument, type UploadKind } from "./upload";
 import { hasNativeMapSupport, scratchMapGeometryBudget, SCRATCH_WORLD_REGION, selectNativeMapPoints } from "./mobile-map";
@@ -29,7 +30,7 @@ type LocationBucket = { name: string; count: number };
 type PercentBucket = CountBucket & { percent: number };
 type CachePoint = { id: string; gcCode: string; name: string; cacheType: string | null; latitude: number; longitude: number; foundAt?: string; placedAt?: string; isOwnHide?: boolean };
 type ImportListItem = { id: string; fileName: string; source: string; status: string; createdAt: string; errorMessage: string | null };
-type AuthConfig = { mode: "dev" | "clerk" | "password"; providerName: string };
+type AuthConfig = { mode: "dev" | "clerk" | "password"; providerName: string; clerkPublishableKey?: string };
 type ServerProbeState = {
   url: string | null;
   status: "checking" | "connected" | "unreachable";
@@ -147,7 +148,6 @@ const SERVER_URL_KEY = "geostats_server_url";
 const DEFAULT_AUTH_CONFIG: AuthConfig = __DEV__
   ? { mode: "password", providerName: "Home Auth" }
   : { mode: "clerk", providerName: "Clerk" };
-const CLERK_PUBLISHABLE_KEY = process.env.EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY?.trim();
 const monthLabels = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const defaultTimeZone = "Europe/Stockholm";
 const defaultFtfTerms = ["FTF", "first to find"];
@@ -950,6 +950,7 @@ function AuthScreen({ apiBaseUrl, onApiBaseUrlChange, onSession }: { apiBaseUrl:
   const serverProbeMatches = serverProbe.url === normalizedServerUrl;
   const serverStatus = serverProbeMatches ? serverProbe.status : normalizedServerUrl ? "checking" : "unreachable";
   const config = serverProbeMatches && serverProbe.status === "connected" ? serverProbe.config : DEFAULT_AUTH_CONFIG;
+  const clerkPublishableKey = config.mode === "clerk" ? config.clerkPublishableKey?.trim() : undefined;
   useEffect(() => {
     const probeId = ++serverProbeId.current;
     const controller = new AbortController();
@@ -1087,10 +1088,12 @@ function AuthScreen({ apiBaseUrl, onApiBaseUrlChange, onSession }: { apiBaseUrl:
           ) : null}
         </View>
         {config.mode === "clerk" ? (
-          CLERK_PUBLISHABLE_KEY ? (
-            <ClerkAuthButton mode={mode} saveServerUrl={saveServerUrl} onSession={onSession} onMessage={setMessage} />
+          clerkPublishableKey ? (
+            <ClerkProvider key={clerkPublishableKey} publishableKey={clerkPublishableKey} tokenCache={tokenCache}>
+              <ClerkAuthButton mode={mode} saveServerUrl={saveServerUrl} onSession={onSession} onMessage={setMessage} />
+            </ClerkProvider>
           ) : (
-            <Text style={styles.note}>Clerk is selected on this server. Add EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY to enable mobile sign-in.</Text>
+            <Text style={styles.note}>Clerk is selected on this server, but it did not provide a publishable key.</Text>
           )
         ) : null}
         {config.mode === "password" ? (

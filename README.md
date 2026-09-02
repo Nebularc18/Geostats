@@ -125,13 +125,16 @@ NEXT_PUBLIC_AUTH_MODE=clerk
 NEXT_PUBLIC_AUTH_PROVIDER_NAME=Clerk
 NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_live_or_pk_test_...
 CLERK_SECRET_KEY=sk_live_or_sk_test_...
+CLERK_PUBLISHABLE_KEY=pk_live_or_pk_test_...
 CLERK_AUTHORIZED_PARTIES=https://geostats.example.com
 ```
 
 `CLERK_JWT_KEY` is optional. If set, the API verifies Clerk session tokens with
 that public key instead of discovering the instance JWKS. The web and mobile
 clients exchange their Clerk session token at `/auth/clerk/exchange` and
-`/auth/mobile/clerk`, respectively.
+`/auth/mobile/clerk`, respectively. The API also returns `CLERK_PUBLISHABLE_KEY`
+from its public `/auth/config` endpoint so a mobile client can use the Clerk
+application configured by the selected Geostats server.
 
 Password registration and sign-in remain available when `AUTH_MODE=password` is
 selected explicitly. They are useful during a staged migration, but Clerk is
@@ -343,7 +346,6 @@ Copy-Item apps/mobile/.env.example apps/mobile/.env
 
 ```env
 EXPO_PUBLIC_API_URL=https://api.example.com
-EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_live_or_pk_test_...
 EXPO_PUBLIC_GOOGLE_MAPS_ANDROID_API_KEY=your-google-maps-android-api-key
 ```
 
@@ -373,8 +375,9 @@ corepack pnpm mobile:build:aab
 
 The mobile app uses Clerk's hosted Account Portal and exchanges the resulting
 session token with `/auth/mobile/clerk`. The Expo Clerk config plugin is already
-included in the app config; native builds must be rebuilt after adding the
-publishable key or changing the plugin configuration.
+included in the app config. The selected Geostats server supplies its public
+Clerk publishable key through `/auth/config`, so the same mobile build can
+connect to different self-hosted Clerk applications.
 
 ### GitHub mobile releases
 
