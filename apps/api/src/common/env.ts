@@ -47,7 +47,7 @@ export function validateRuntimeEnv() {
 }
 
 export function validateAuthEnv() {
-  const configuredMode = process.env.AUTH_MODE?.trim();
+  const configuredMode = process.env.AUTH_MODE;
   const clerkMode =
     configuredMode === "clerk" || (process.env.NODE_ENV === "production" && configuredMode !== "password");
   if (!clerkMode) {

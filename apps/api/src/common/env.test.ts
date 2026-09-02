@@ -142,6 +142,20 @@ test("production defaults to Clerk auth and requires credentials", async () => {
   );
 });
 
+test("production auth validation matches the runtime mode for padded values", async () => {
+  await withEnv(
+    {
+      NODE_ENV: "production",
+      AUTH_MODE: "password ",
+      CLERK_SECRET_KEY: undefined,
+      CLERK_PUBLISHABLE_KEY: undefined
+    },
+    () => {
+      assert.throws(() => validateAuthEnv(), /CLERK_SECRET_KEY must be set/);
+    }
+  );
+});
+
 test("envOrDefault rejects placeholders embedded in production URLs", async () => {
   await withEnv(
     {
