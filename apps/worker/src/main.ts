@@ -17,7 +17,10 @@ const processor = new ImportProcessor(prisma, storage);
 const worker = new Worker<ImportJobPayload>(
   IMPORT_QUEUE_NAME,
   async (job) => {
-    await processor.process(job.data);
+    await processor.process(job.data, {
+      attemptsMade: job.attemptsMade,
+      maxAttempts: job.opts.attempts ?? 1
+    });
   },
   { connection, concurrency: optionalPositiveIntegerEnv("IMPORT_WORKER_CONCURRENCY", 2) }
 );

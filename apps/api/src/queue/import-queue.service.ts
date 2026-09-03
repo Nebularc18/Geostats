@@ -6,6 +6,10 @@ import { requiredEnv } from "../common/env";
 
 const HEALTH_PING_TIMEOUT_MS = 1_000;
 
+export function importJobId(importId: string) {
+  return `import-${importId}`;
+}
+
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
   let timeout: NodeJS.Timeout;
   const timeoutPromise = new Promise<never>((_, reject) => {
@@ -23,10 +27,11 @@ export class ImportQueueService implements OnModuleDestroy {
 
   async enqueue(payload: ImportJobPayload) {
     await this.queue.add("process-import", payload, {
+      jobId: importJobId(payload.importId),
       attempts: 3,
       backoff: { type: "exponential", delay: 5000 },
-      removeOnComplete: 100,
-      removeOnFail: 100
+      removeOnComplete: true,
+      removeOnFail: true
     });
   }
 

@@ -6,6 +6,7 @@ import { ObjectStorage } from "../storage/object-storage";
 
 type ParsedImportResult = Awaited<ReturnType<typeof parseImportFile>>;
 type ParsedFindWithDate = ParsedImportResult["finds"][number] & { foundAt: Date };
+type ImportAttempt = { attemptsMade: number; maxAttempts: number };
 const FTF_TIME_LOOKAHEAD_LINES = 3;
 
 function elevationFromRaw(raw: unknown): number | null {
@@ -221,7 +222,7 @@ export class ImportProcessor {
     private readonly storage: ObjectStorage
   ) {}
 
-  async process(payload: ImportJobPayload) {
+  async process(payload: ImportJobPayload, attempt: ImportAttempt = { attemptsMade: 0, maxAttempts: 1 }) {
     const importRecord = await this.prisma.import.findFirst({
       where: { id: payload.importId, userId: payload.userId }
     });
@@ -229,10 +230,15 @@ export class ImportProcessor {
       throw new Error(`Import ${payload.importId} was not found`);
     }
 
-    await this.prisma.import.update({
-      where: { id: payload.importId },
+    const claimed = await this.prisma.import.updateMany({
+      where: {
+        id: payload.importId,
+        userId: payload.userId,
+        status: ImportStatus.QUEUED
+      },
       data: { status: ImportStatus.PROCESSING, errorMessage: null }
     });
+    if (claimed.count !== 1) return;
 
     try {
       const importSource = importRecord.source as ImportSource;
@@ -410,11 +416,13 @@ export class ImportProcessor {
         data: { status: ImportStatus.COMPLETED, source: effectiveSource }
       });
     } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown import failure";
+      const willRetry = attempt.attemptsMade + 1 < attempt.maxAttempts;
       await this.prisma.import.update({
         where: { id: payload.importId },
         data: {
-          status: ImportStatus.FAILED,
-          errorMessage: error instanceof Error ? error.message : "Unknown import failure"
+          status: willRetry ? ImportStatus.QUEUED : ImportStatus.FAILED,
+          errorMessage: willRetry ? null : message
         }
       });
       throw error;

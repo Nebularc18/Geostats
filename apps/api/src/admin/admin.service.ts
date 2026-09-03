@@ -729,16 +729,40 @@ export class AdminService {
       throw new BadRequestException("Only failed imports can be retried");
     }
 
-    await this.queue.enqueue({
-      importId: importRecord.id,
-      userId: importRecord.userId,
-      objectKey: importRecord.objectKey,
-      source: importRecord.source as ImportSource,
-    });
-    const updated = await this.prisma.import.update({
-      where: { id },
+    const claimed = await this.prisma.import.updateMany({
+      where: { id, status: ImportStatus.FAILED },
       data: { status: ImportStatus.QUEUED, errorMessage: null },
     });
+    if (claimed.count !== 1) {
+      throw new BadRequestException("Only failed imports can be retried");
+    }
+
+    const updated = {
+      ...importRecord,
+      status: ImportStatus.QUEUED,
+      errorMessage: null,
+    };
+    try {
+      await this.queue.enqueue({
+        importId: importRecord.id,
+        userId: importRecord.userId,
+        objectKey: importRecord.objectKey,
+        source: importRecord.source as ImportSource,
+      });
+    } catch (error) {
+      try {
+        await this.prisma.import.updateMany({
+          where: { id, status: ImportStatus.QUEUED },
+          data: {
+            status: ImportStatus.FAILED,
+            errorMessage: error instanceof Error ? error.message : "Could not queue import retry",
+          },
+        });
+      } catch (rollbackError) {
+        console.error(`Failed to roll back import retry ${id}`, rollbackError);
+      }
+      throw error;
+    }
 
     await this.recordActivity(admin, "IMPORT_RETRIED", "import", updated.id, {
       fileName: importRecord.fileName,

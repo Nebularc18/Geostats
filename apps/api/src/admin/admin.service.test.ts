@@ -282,6 +282,7 @@ test("activity returns newest admin actions with pagination", async () => {
 
 test("retryImport records the operator after requeueing a failed import", async () => {
   let enqueued: any;
+  const updateManyInputs: any[] = [];
   let activityInput: any;
   const prisma = {
     import: {
@@ -293,7 +294,10 @@ test("retryImport records the operator after requeueing a failed import", async 
         status: "FAILED",
         fileName: "export.gpx",
       }),
-      update: async () => ({ id: "import-1", status: "QUEUED" }),
+      updateMany: async (input: any) => {
+        updateManyInputs.push(input);
+        return { count: 1 };
+      },
     },
     adminActivityLog: {
       create: async (input: any) => {
@@ -317,6 +321,12 @@ test("retryImport records the operator after requeueing a failed import", async 
 
   await service.retryImport("import-1", { id: "admin-1" } as any);
 
+  assert.deepEqual(updateManyInputs, [
+    {
+      where: { id: "import-1", status: "FAILED" },
+      data: { status: "QUEUED", errorMessage: null },
+    },
+  ]);
   assert.deepEqual(enqueued, {
     importId: "import-1",
     userId: "user-1",
@@ -330,4 +340,89 @@ test("retryImport records the operator after requeueing a failed import", async 
     targetId: "import-1",
     details: { fileName: "export.gpx", source: "GSAK" },
   });
+});
+
+test("retryImport rolls a claimed import back when queueing fails", async () => {
+  const updateManyInputs: any[] = [];
+  const prisma = {
+    import: {
+      findUnique: async () => ({
+        id: "import-1",
+        userId: "user-1",
+        objectKey: "imports/import-1.gpx",
+        source: "GSAK",
+        status: "FAILED",
+        fileName: "export.gpx",
+      }),
+      updateMany: async (input: any) => {
+        updateManyInputs.push(input);
+        return { count: 1 };
+      },
+    },
+  };
+  const queue = {
+    enqueue: async () => {
+      throw new Error("Redis offline");
+    },
+  };
+
+  const service = new AdminService(
+    prisma as any,
+    {} as any,
+    queue as any,
+    {} as any,
+    {} as any,
+  );
+  await assert.rejects(() => service.retryImport("import-1"), /Redis offline/);
+  assert.deepEqual(updateManyInputs, [
+    {
+      where: { id: "import-1", status: "FAILED" },
+      data: { status: "QUEUED", errorMessage: null },
+    },
+    {
+      where: { id: "import-1", status: "QUEUED" },
+      data: { status: "FAILED", errorMessage: "Redis offline" },
+    },
+  ]);
+});
+
+test("retryImport lets only one concurrent request claim a failed import", async () => {
+  let claimAttempts = 0;
+  let enqueueCalls = 0;
+  const prisma = {
+    import: {
+      findUnique: async () => ({
+        id: "import-1",
+        userId: "user-1",
+        objectKey: "imports/import-1.gpx",
+        source: "GSAK",
+        status: "FAILED",
+        fileName: "export.gpx",
+      }),
+      updateMany: async () => ({ count: ++claimAttempts === 1 ? 1 : 0 }),
+    },
+  };
+  const queue = {
+    enqueue: async () => {
+      enqueueCalls += 1;
+    },
+  };
+  const service = new AdminService(
+    prisma as any,
+    {} as any,
+    queue as any,
+    {} as any,
+    {} as any,
+  );
+
+  const results = await Promise.allSettled([
+    service.retryImport("import-1"),
+    service.retryImport("import-1"),
+  ]);
+
+  assert.equal(enqueueCalls, 1);
+  assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
+  assert.equal(results.filter((result) => result.status === "rejected").length, 1);
+  const rejected = results.find((result) => result.status === "rejected");
+  assert.ok(rejected && rejected.reason instanceof BadRequestException);
 });
