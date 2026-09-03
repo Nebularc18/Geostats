@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { BadRequestException } from "@nestjs/common";
 import { AdminService } from "./admin.service";
+import { ImportQueueRejectedError } from "../queue/import-queue.service";
 
 function serviceWith(prisma: any) {
   return new AdminService(prisma, {} as any, {} as any, {} as any, {} as any);
@@ -378,6 +379,50 @@ test("retryImport keeps a claimed import queued when queueing fails", async () =
     {
       where: { id: "import-1", status: "FAILED" },
       data: { status: "QUEUED", errorMessage: null },
+    },
+  ]);
+});
+
+test("retryImport returns an import to failed when Redis confirms no job was saved", async () => {
+  const updateManyInputs: any[] = [];
+  const prisma = {
+    import: {
+      findUnique: async () => ({
+        id: "import-1",
+        userId: "user-1",
+        objectKey: "imports/import-1.gpx",
+        source: "GSAK",
+        status: "FAILED",
+        fileName: "export.gpx",
+      }),
+      updateMany: async (input: any) => {
+        updateManyInputs.push(input);
+        return { count: 1 };
+      },
+    },
+  };
+  const queue = {
+    enqueue: async () => {
+      throw new ImportQueueRejectedError(new Error("Redis offline"));
+    },
+  };
+  const service = new AdminService(
+    prisma as any,
+    {} as any,
+    queue as any,
+    {} as any,
+    {} as any,
+  );
+
+  await assert.rejects(() => service.retryImport("import-1"), ImportQueueRejectedError);
+  assert.deepEqual(updateManyInputs, [
+    {
+      where: { id: "import-1", status: "FAILED" },
+      data: { status: "QUEUED", errorMessage: null },
+    },
+    {
+      where: { id: "import-1", status: "QUEUED" },
+      data: { status: "FAILED", errorMessage: "Redis rejected the import job" },
     },
   ]);
 });

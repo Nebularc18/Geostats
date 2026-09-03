@@ -1623,7 +1623,7 @@ export default function AdminPage() {
                           {formatShortDate(importItem.createdAt)}
                         </span>
                         <span className="admin-row-action">
-                          {importItem.status === "FAILED" ? (
+                          {importItem.status === "FAILED" || importItem.status === "QUEUED" ? (
                             <button
                               className="text-button"
                               type="button"
@@ -1633,7 +1633,9 @@ export default function AdminPage() {
                               <RotateCcw size={14} />
                               {busyImport === importItem.id
                                 ? "Queueing"
-                                : "Retry"}
+                                : importItem.status === "QUEUED"
+                                  ? "Requeue"
+                                  : "Retry"}
                             </button>
                           ) : (
                             <span className="admin-count-note">

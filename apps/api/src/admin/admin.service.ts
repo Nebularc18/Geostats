@@ -8,7 +8,10 @@ import { AuthUser, ImportSource, ImportStatus } from "@geostats/shared";
 import { Prisma } from "@geostats/db";
 import { AuthService } from "../auth/auth.service";
 import { PrismaService } from "../common/prisma.service";
-import { ImportQueueService } from "../queue/import-queue.service";
+import {
+  ImportQueueRejectedError,
+  ImportQueueService,
+} from "../queue/import-queue.service";
 import { StatsService } from "../stats/stats.service";
 import { StorageService } from "../storage/storage.service";
 
@@ -748,12 +751,29 @@ export class AdminService {
     // Keep QUEUED if Redis gives an ambiguous response. A persisted job can
     // still be claimed by the worker, and retrying this endpoint is safe
     // because enqueue uses the import-derived job id.
-    await this.queue.enqueue({
-      importId: importRecord.id,
-      userId: importRecord.userId,
-      objectKey: importRecord.objectKey,
-      source: importRecord.source as ImportSource,
-    });
+    try {
+      await this.queue.enqueue({
+        importId: importRecord.id,
+        userId: importRecord.userId,
+        objectKey: importRecord.objectKey,
+        source: importRecord.source as ImportSource,
+      });
+    } catch (error) {
+      if (error instanceof ImportQueueRejectedError) {
+        try {
+          await this.prisma.import.updateMany({
+            where: { id, status: ImportStatus.QUEUED },
+            data: {
+              status: ImportStatus.FAILED,
+              errorMessage: error.message,
+            },
+          });
+        } catch (rollbackError) {
+          console.error(`Failed to roll back import retry ${id}`, rollbackError);
+        }
+      }
+      throw error;
+    }
 
     await this.recordActivity(admin, "IMPORT_RETRIED", "import", queuedImport.id, {
       fileName: importRecord.fileName,
