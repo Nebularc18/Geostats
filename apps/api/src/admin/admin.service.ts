@@ -725,51 +725,42 @@ export class AdminService {
     if (!importRecord) {
       throw new NotFoundException("Import not found");
     }
-    if (importRecord.status !== ImportStatus.FAILED) {
+    if (![ImportStatus.FAILED, ImportStatus.QUEUED].includes(importRecord.status as ImportStatus)) {
       throw new BadRequestException("Only failed imports can be retried");
     }
 
-    const claimed = await this.prisma.import.updateMany({
-      where: { id, status: ImportStatus.FAILED },
-      data: { status: ImportStatus.QUEUED, errorMessage: null },
-    });
-    if (claimed.count !== 1) {
-      throw new BadRequestException("Only failed imports can be retried");
-    }
-
-    const updated = {
-      ...importRecord,
-      status: ImportStatus.QUEUED,
-      errorMessage: null,
-    };
-    try {
-      await this.queue.enqueue({
-        importId: importRecord.id,
-        userId: importRecord.userId,
-        objectKey: importRecord.objectKey,
-        source: importRecord.source as ImportSource,
+    let queuedImport = importRecord;
+    if (importRecord.status === ImportStatus.FAILED) {
+      const claim = await this.prisma.import.updateMany({
+        where: { id, status: ImportStatus.FAILED },
+        data: { status: ImportStatus.QUEUED, errorMessage: null },
       });
-    } catch (error) {
-      try {
-        await this.prisma.import.updateMany({
-          where: { id, status: ImportStatus.QUEUED },
-          data: {
-            status: ImportStatus.FAILED,
-            errorMessage: error instanceof Error ? error.message : "Could not queue import retry",
-          },
-        });
-      } catch (rollbackError) {
-        console.error(`Failed to roll back import retry ${id}`, rollbackError);
+      if (claim.count !== 1) {
+        throw new BadRequestException("Only failed imports can be retried");
       }
-      throw error;
+      queuedImport = {
+        ...importRecord,
+        status: ImportStatus.QUEUED,
+        errorMessage: null,
+      };
     }
 
-    await this.recordActivity(admin, "IMPORT_RETRIED", "import", updated.id, {
+    // Keep QUEUED if Redis gives an ambiguous response. A persisted job can
+    // still be claimed by the worker, and retrying this endpoint is safe
+    // because enqueue uses the import-derived job id.
+    await this.queue.enqueue({
+      importId: importRecord.id,
+      userId: importRecord.userId,
+      objectKey: importRecord.objectKey,
+      source: importRecord.source as ImportSource,
+    });
+
+    await this.recordActivity(admin, "IMPORT_RETRIED", "import", queuedImport.id, {
       fileName: importRecord.fileName,
       source: importRecord.source,
     });
 
-    return { import: updated };
+    return { import: queuedImport };
   }
 
   async recalculateUser(userId: string, admin?: AuthUser) {

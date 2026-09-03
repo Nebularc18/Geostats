@@ -342,7 +342,7 @@ test("retryImport records the operator after requeueing a failed import", async 
   });
 });
 
-test("retryImport rolls a claimed import back when queueing fails", async () => {
+test("retryImport keeps a claimed import queued when queueing fails", async () => {
   const updateManyInputs: any[] = [];
   const prisma = {
     import: {
@@ -378,10 +378,6 @@ test("retryImport rolls a claimed import back when queueing fails", async () => 
     {
       where: { id: "import-1", status: "FAILED" },
       data: { status: "QUEUED", errorMessage: null },
-    },
-    {
-      where: { id: "import-1", status: "QUEUED" },
-      data: { status: "FAILED", errorMessage: "Redis offline" },
     },
   ]);
 });
