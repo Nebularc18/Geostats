@@ -131,6 +131,49 @@ test("password auth is the default mode", () => {
   });
 });
 
+test("admin access follows the configured email allowlist", () => {
+  withEnv(
+    {
+      AUTH_MODE: "password",
+      NODE_ENV: "development",
+      ADMIN_EMAILS: " Owner@Example.com,second@example.com "
+    },
+    () => {
+      const { service } = authServiceWithUsers();
+      assert.equal(service.isAdmin({ email: "owner@example.com" }), true);
+      assert.equal(service.isAdmin({ email: "other@example.com" }), false);
+    }
+  );
+});
+
+test("the local development account is an admin only in development mode", () => {
+  withEnv(
+    {
+      AUTH_MODE: "dev",
+      NODE_ENV: "development",
+      ADMIN_EMAILS: undefined,
+      DEV_AUTH_EMAIL: "dev-admin@example.com"
+    },
+    () => {
+      const { service } = authServiceWithUsers();
+      assert.equal(service.isAdmin({ email: "dev-admin@example.com" }), true);
+    }
+  );
+
+  withEnv(
+    {
+      AUTH_MODE: "dev",
+      NODE_ENV: "production",
+      ADMIN_EMAILS: undefined,
+      DEV_AUTH_EMAIL: "dev-admin@example.com"
+    },
+    () => {
+      const { service } = authServiceWithUsers();
+      assert.equal(service.isAdmin({ email: "dev-admin@example.com" }), false);
+    }
+  );
+});
+
 test("user search returns registered usernames without the current user or email addresses", async () => {
   const { service, users } = authServiceWithUsers();
   users.push(

@@ -80,7 +80,10 @@ function parseCsv(text: string): string[][] {
       field += character;
     }
   }
-  if (inQuotes) throw new BadRequestException("GSAK CSV contains an unterminated quoted field");
+  if (inQuotes)
+    throw new BadRequestException(
+      "GSAK CSV contains an unterminated quoted field",
+    );
   if (field || row.length) {
     row.push(field.replace(/\r$/, ""));
     rows.push(row);
@@ -89,32 +92,56 @@ function parseCsv(text: string): string[][] {
 }
 
 export function gsakCsvRecords(text: unknown): CsvRecord[] {
-  if (typeof text !== "string" || !text.trim()) throw new BadRequestException("GSAK CSV data is required");
+  if (typeof text !== "string" || !text.trim())
+    throw new BadRequestException("GSAK CSV data is required");
   const rows = parseCsv(text);
   const headers = rows.shift()?.map((value) => value.trim().toLowerCase());
-  if (!headers?.length || headers.some((header) => !header)) throw new BadRequestException("GSAK CSV headers are required");
-  if (new Set(headers).size !== headers.length) throw new BadRequestException("GSAK CSV headers must be unique");
-  if (rows.length === 0) throw new BadRequestException("GSAK CSV batch is empty");
-  if (rows.length > MAX_BATCH_ROWS) throw new BadRequestException(`GSAK CSV batches may contain at most ${MAX_BATCH_ROWS} rows`);
-  return rows.map((values) => Object.fromEntries(headers.map((header, index) => [header, values[index] ?? ""])));
+  if (!headers?.length || headers.some((header) => !header))
+    throw new BadRequestException("GSAK CSV headers are required");
+  if (new Set(headers).size !== headers.length)
+    throw new BadRequestException("GSAK CSV headers must be unique");
+  if (rows.length === 0)
+    throw new BadRequestException("GSAK CSV batch is empty");
+  if (rows.length > MAX_BATCH_ROWS)
+    throw new BadRequestException(
+      `GSAK CSV batches may contain at most ${MAX_BATCH_ROWS} rows`,
+    );
+  return rows.map((values) =>
+    Object.fromEntries(
+      headers.map((header, index) => [header, values[index] ?? ""]),
+    ),
+  );
 }
 
 function text(value: unknown, max = 500): string | null {
   const normalized = String(value ?? "").trim();
   if (!normalized) return null;
-  if (normalized.length > max) throw new BadRequestException(`GSAK field exceeds ${max} characters`);
+  if (normalized.length > max)
+    throw new BadRequestException(`GSAK field exceeds ${max} characters`);
   return normalized;
 }
 
 function flag(value: unknown): boolean {
-  return ["1", "true", "yes", "y"].includes(String(value ?? "").trim().toLowerCase());
+  return ["1", "true", "yes", "y"].includes(
+    String(value ?? "")
+      .trim()
+      .toLowerCase(),
+  );
 }
 
-function number(value: unknown, label: string, options: { min?: number; max?: number; nullable?: boolean } = {}): number | null {
+function number(
+  value: unknown,
+  label: string,
+  options: { min?: number; max?: number; nullable?: boolean } = {},
+): number | null {
   const raw = String(value ?? "").trim();
   if (!raw && options.nullable) return null;
   const parsed = Number(raw);
-  if (!Number.isFinite(parsed) || (options.min !== undefined && parsed < options.min) || (options.max !== undefined && parsed > options.max)) {
+  if (
+    !Number.isFinite(parsed) ||
+    (options.min !== undefined && parsed < options.min) ||
+    (options.max !== undefined && parsed > options.max)
+  ) {
     throw new BadRequestException(`Invalid GSAK ${label}`);
   }
   return parsed;
@@ -123,9 +150,14 @@ function number(value: unknown, label: string, options: { min?: number; max?: nu
 function dateOnly(value: unknown, label: string): Date | null {
   const raw = String(value ?? "").trim();
   if (!raw) return null;
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) throw new BadRequestException(`Invalid GSAK ${label}`);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(raw))
+    throw new BadRequestException(`Invalid GSAK ${label}`);
   const parsed = new Date(`${raw}T00:00:00.000Z`);
-  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== raw) throw new BadRequestException(`Invalid GSAK ${label}`);
+  if (
+    Number.isNaN(parsed.getTime()) ||
+    parsed.toISOString().slice(0, 10) !== raw
+  )
+    throw new BadRequestException(`Invalid GSAK ${label}`);
   return parsed;
 }
 
@@ -133,28 +165,47 @@ function logDate(row: CsvRecord): Date {
   const day = dateOnly(row.date, "log date");
   if (!day) throw new BadRequestException("GSAK log date is required");
   const time = text(row.time, 8) ?? "12:00:00";
-  if (!/^\d{2}:\d{2}:\d{2}$/.test(time)) throw new BadRequestException("Invalid GSAK log time");
+  if (!/^\d{2}:\d{2}:\d{2}$/.test(time))
+    throw new BadRequestException("Invalid GSAK log time");
   const parsed = new Date(`${day.toISOString().slice(0, 10)}T${time}.000Z`);
-  if (Number.isNaN(parsed.getTime())) throw new BadRequestException("Invalid GSAK log timestamp");
+  if (Number.isNaN(parsed.getTime()))
+    throw new BadRequestException("Invalid GSAK log timestamp");
   return parsed;
 }
 
 function gcCode(value: unknown): string {
-  const normalized = String(value ?? "").trim().toUpperCase();
-  if (!/^GC[A-Z0-9]+$/.test(normalized)) throw new BadRequestException("Invalid GSAK GC code");
+  const normalized = String(value ?? "")
+    .trim()
+    .toUpperCase();
+  if (!/^GC[A-Z0-9]+$/.test(normalized))
+    throw new BadRequestException("Invalid GSAK GC code");
   return normalized;
+}
+
+function normalizedGcCode(value: unknown): string | null {
+  const normalized = String(value ?? "")
+    .trim()
+    .toUpperCase();
+  return /^GC[A-Z0-9]+$/.test(normalized) ? normalized : null;
 }
 
 function cacheRow(row: CsvRecord): CacheRow {
   const latitude = number(row.latitude, "latitude", { min: -90, max: 90 });
   const longitude = number(row.longitude, "longitude", { min: -180, max: 180 });
-  const favoritePoints = number(row.favoritepoints || "0", "favorite points", { min: 0 });
-  if (!Number.isSafeInteger(favoritePoints)) throw new BadRequestException("Invalid GSAK favorite points");
+  const favoritePoints = number(row.favoritepoints || "0", "favorite points", {
+    min: 0,
+  });
+  if (!Number.isSafeInteger(favoritePoints))
+    throw new BadRequestException("Invalid GSAK favorite points");
   return {
     gcCode: gcCode(row.gccode),
     name: text(row.name, 500) ?? gcCode(row.gccode),
     cacheType: text(row.cachetype, 100),
-    difficulty: number(row.difficulty, "difficulty", { min: 1, max: 5, nullable: true }),
+    difficulty: number(row.difficulty, "difficulty", {
+      min: 1,
+      max: 5,
+      nullable: true,
+    }),
     terrain: number(row.terrain, "terrain", { min: 1, max: 5, nullable: true }),
     size: text(row.size, 100),
     latitude: latitude!,
@@ -168,29 +219,47 @@ function cacheRow(row: CsvRecord): CacheRow {
     isFtf: flag(row.isftf),
     isOwner: flag(row.isowner),
     favoritePoints: favoritePoints!,
-    elevationMeters: number(row.elevationmeters, "elevation", { nullable: true }),
+    elevationMeters: number(row.elevationmeters, "elevation", {
+      nullable: true,
+    }),
     status: text(row.status, 100),
     isPremium: flag(row.ispremium),
-    correctedLatitude: number(row.correctedlatitude, "corrected latitude", { min: -90, max: 90, nullable: true }),
-    correctedLongitude: number(row.correctedlongitude, "corrected longitude", { min: -180, max: 180, nullable: true }),
+    correctedLatitude: number(row.correctedlatitude, "corrected latitude", {
+      min: -90,
+      max: 90,
+      nullable: true,
+    }),
+    correctedLongitude: number(row.correctedlongitude, "corrected longitude", {
+      min: -180,
+      max: 180,
+      nullable: true,
+    }),
     hasCorrected: flag(row.hascorrected),
     userNote: text(row.usernote, 100_000),
     attributes: String(row.attributes ?? "")
       .split("|")
       .map((item) => item.match(/^(\d+):([01])$/))
       .filter((match): match is RegExpMatchArray => Boolean(match))
-      .map((match) => ({ id: match[1]!, inc: match[2]! }))
+      .map((match) => ({ id: match[1]!, inc: match[2]! })),
   };
 }
 
 function cacheNameIsPlaceholder(name: unknown, gcCode: string): boolean {
-  const normalizedName = String(name ?? "").trim().toUpperCase();
+  const normalizedName = String(name ?? "")
+    .trim()
+    .toUpperCase();
   return !normalizedName || normalizedName === gcCode.toUpperCase();
 }
 
-function cacheMetadataUpdate(existing: Record<string, any>, row: CacheRow): Prisma.CacheUncheckedUpdateInput {
+function cacheMetadataUpdate(
+  existing: Record<string, any>,
+  row: CacheRow,
+): Prisma.CacheUncheckedUpdateInput {
   const update: Prisma.CacheUncheckedUpdateInput = {};
-  if (row.name !== row.gcCode && cacheNameIsPlaceholder(existing.name, row.gcCode)) {
+  if (
+    row.name !== row.gcCode &&
+    cacheNameIsPlaceholder(existing.name, row.gcCode)
+  ) {
     update.name = row.name;
   }
   return update;
@@ -208,19 +277,27 @@ function logRow(row: CsvRecord): LogRow {
     longitude: text(row.longitude, 50),
     ownerId: text(row.ownerid, 100),
     isOwnLog: flag(row.isownlog),
-    cacheIsOwned: flag(row.cacheisowned)
+    cacheIsOwned: flag(row.cacheisowned),
   };
 }
 
 function object(value: unknown): Record<string, any> {
-  return value && typeof value === "object" && !Array.isArray(value) ? { ...(value as Record<string, any>) } : {};
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? { ...(value as Record<string, any>) }
+    : {};
 }
 
 function cacheRaw(existing: unknown, row: CacheRow) {
   const root = object(existing);
-  const cacheKey = root["groundspeak:cache"] !== undefined || root.cache === undefined ? "groundspeak:cache" : "cache";
+  const cacheKey =
+    root["groundspeak:cache"] !== undefined || root.cache === undefined
+      ? "groundspeak:cache"
+      : "cache";
   const extension = object(root[cacheKey]);
-  const attributes = row.attributes.map((attribute) => ({ id: attribute.id, inc: attribute.inc }));
+  const attributes = row.attributes.map((attribute) => ({
+    id: attribute.id,
+    inc: attribute.inc,
+  }));
   return {
     ...root,
     lat: String(row.latitude),
@@ -240,7 +317,9 @@ function cacheRaw(existing: unknown, row: CacheRow) {
       "groundspeak:county": row.county,
       "groundspeak:owner": row.ownerName,
       "groundspeak:favorite_points": String(row.favoritePoints),
-      ...(attributes.length ? { "groundspeak:attributes": { "groundspeak:attribute": attributes } } : {})
+      ...(attributes.length
+        ? { "groundspeak:attributes": { "groundspeak:attribute": attributes } }
+        : {}),
     },
     "gsak:wptExtension": {
       ...object(root["gsak:wptExtension"]),
@@ -248,8 +327,8 @@ function cacheRaw(existing: unknown, row: CacheRow) {
       "gsak:FTF": row.isFtf,
       "gsak:Status": row.status,
       "gsak:IsPremium": row.isPremium,
-      "gsak:UserNote": row.userNote
-    }
+      "gsak:UserNote": row.userNote,
+    },
   };
 }
 
@@ -262,7 +341,7 @@ function rawLog(row: LogRow) {
     ...(row.logId ? { "geostats:log_id": row.logId } : {}),
     ...(row.ownerId ? { "geostats:finder_id": row.ownerId } : {}),
     ...(row.latitude ? { "groundspeak:lat": row.latitude } : {}),
-    ...(row.longitude ? { "groundspeak:lon": row.longitude } : {})
+    ...(row.longitude ? { "groundspeak:lon": row.longitude } : {}),
   };
 }
 
@@ -273,21 +352,42 @@ function rawLogId(log: Record<string, any>): string | null {
 
 function rawLogKey(log: Record<string, any>) {
   const day = String(log["groundspeak:date"] ?? log.date ?? "").slice(0, 10);
-  return [day, log["groundspeak:type"] ?? log.type, log["groundspeak:finder"] ?? log.finder, log["groundspeak:text"] ?? log.text]
-    .map((value) => String(value ?? "").trim().toLowerCase())
+  return [
+    day,
+    log["groundspeak:type"] ?? log.type,
+    log["groundspeak:finder"] ?? log.finder,
+    log["groundspeak:text"] ?? log.text,
+  ]
+    .map((value) =>
+      String(value ?? "")
+        .trim()
+        .toLowerCase(),
+    )
     .join("\u001f");
 }
 
 function mergeReceivedLogs(raw: unknown, incoming: Record<string, any>[]) {
   const root = object(raw);
-  const cacheKey = root["groundspeak:cache"] !== undefined || root.cache === undefined ? "groundspeak:cache" : "cache";
+  const cacheKey =
+    root["groundspeak:cache"] !== undefined || root.cache === undefined
+      ? "groundspeak:cache"
+      : "cache";
   const extension = object(root[cacheKey]);
-  const logsKey = extension["groundspeak:logs"] !== undefined || extension.logs === undefined ? "groundspeak:logs" : "logs";
+  const logsKey =
+    extension["groundspeak:logs"] !== undefined || extension.logs === undefined
+      ? "groundspeak:logs"
+      : "logs";
   const logKey = logsKey === "groundspeak:logs" ? "groundspeak:log" : "log";
   const currentContainer = object(extension[logsKey]);
   const currentValue = currentContainer[logKey];
-  const current = Array.isArray(currentValue) ? [...currentValue] : currentValue && typeof currentValue === "object" ? [currentValue] : [];
-  const ids = new Set(current.map(rawLogId).filter((value): value is string => Boolean(value)));
+  const current = Array.isArray(currentValue)
+    ? [...currentValue]
+    : currentValue && typeof currentValue === "object"
+      ? [currentValue]
+      : [];
+  const ids = new Set(
+    current.map(rawLogId).filter((value): value is string => Boolean(value)),
+  );
   const keys = new Set(current.map(rawLogKey));
   let added = 0;
   for (const log of incoming) {
@@ -301,14 +401,26 @@ function mergeReceivedLogs(raw: unknown, incoming: Record<string, any>[]) {
   }
   return {
     added,
-    count: current.filter((log) => String(log["groundspeak:type"] ?? log.type ?? "").toLowerCase() !== "publish listing").length,
-    raw: { ...root, [cacheKey]: { ...extension, [logsKey]: { ...currentContainer, [logKey]: current } } }
+    count: current.filter(
+      (log) =>
+        String(log["groundspeak:type"] ?? log.type ?? "").toLowerCase() !==
+        "publish listing",
+    ).length,
+    raw: {
+      ...root,
+      [cacheKey]: {
+        ...extension,
+        [logsKey]: { ...currentContainer, [logKey]: current },
+      },
+    },
   };
 }
 
 function detectsFtf(logText: string, terms: string[]) {
   const normalized = logText.toLowerCase();
-  return terms.some((term) => term.trim() && normalized.includes(term.trim().toLowerCase()));
+  return terms.some(
+    (term) => term.trim() && normalized.includes(term.trim().toLowerCase()),
+  );
 }
 
 function cacheMarkedFtf(raw: unknown) {
@@ -318,7 +430,124 @@ function cacheMarkedFtf(raw: unknown) {
 
 @Injectable()
 export class GsakImportService {
-  constructor(private readonly prisma: PrismaService, private readonly stats: StatsService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly stats: StatsService,
+  ) {}
+
+  private async missingCacheCodeList() {
+    const [trackableLogs, mysteryWorkspaces, challengeCheckers] =
+      await Promise.all([
+        this.prisma.trackableLog.findMany({
+          where: { cacheId: null, gcCode: { not: null } },
+          select: { gcCode: true },
+        }),
+        this.prisma.mysteryWorkspace.findMany({
+          where: { gcCode: { not: null } },
+          select: { gcCode: true },
+        }),
+        this.prisma.challengeChecker.findMany({
+          where: { gcCode: { not: null } },
+          select: { gcCode: true },
+        }),
+      ]);
+    const codes = [
+      ...new Set(
+        [...trackableLogs, ...mysteryWorkspaces, ...challengeCheckers]
+          .map((row) => normalizedGcCode(row.gcCode))
+          .filter((code): code is string => Boolean(code)),
+      ),
+    ].sort();
+    if (!codes.length) return [];
+
+    const existing = await this.prisma.cache.findMany({
+      where: { gcCode: { in: codes } },
+      select: { gcCode: true },
+    });
+    const existingCodes = new Set(
+      existing
+        .map((row) => normalizedGcCode(row.gcCode))
+        .filter((code): code is string => Boolean(code)),
+    );
+    return codes.filter((code) => !existingCodes.has(code));
+  }
+
+  /**
+   * Return the global cache references that still need metadata. The admin
+   * GSAK connector requests these codes in pages before loading them.
+   */
+  async adminMissingCacheCodes(skipInput: unknown, takeInput: unknown) {
+    const parsedSkip = Number(skipInput);
+    const parsedTake = Number(takeInput);
+    const skip =
+      Number.isSafeInteger(parsedSkip) && parsedSkip >= 0 ? parsedSkip : 0;
+    const take =
+      Number.isSafeInteger(parsedTake) && parsedTake > 0
+        ? Math.min(parsedTake, 500)
+        : 500;
+    const missing = await this.missingCacheCodeList();
+    const start = Math.min(skip, missing.length);
+    return {
+      total: missing.length,
+      codes: missing.slice(start, start + take).join(","),
+    };
+  }
+
+  /**
+   * Import only cache metadata returned by the admin GSAK connector. Personal
+   * GSAK data (finds, hides, notes, and logs) is deliberately not written.
+   */
+  async importAdminCacheBatch(csv: unknown) {
+    const requestedRows = gsakCsvRecords(csv).map(cacheRow);
+    const missingCodes = new Set(await this.missingCacheCodeList());
+    const rows = requestedRows.filter((row) => missingCodes.has(row.gcCode));
+    if (!rows.length) {
+      return {
+        caches: 0,
+        ignored: requestedRows.length,
+        linkedTrackableLogs: 0,
+      };
+    }
+
+    let linkedTrackableLogs = 0;
+    await this.prisma.$transaction(async (tx) => {
+      for (const row of rows) {
+        const cache = await tx.cache.upsert({
+          where: { gcCode: row.gcCode },
+          create: {
+            gcCode: row.gcCode,
+            name: row.name,
+            cacheType: row.cacheType,
+            difficulty: row.difficulty,
+            terrain: row.terrain,
+            size: row.size,
+            latitude: row.latitude,
+            longitude: row.longitude,
+            country: row.country,
+            region: row.region,
+            county: row.county,
+            hiddenDate: row.hiddenDate,
+            ownerName: row.ownerName,
+          },
+          update: {},
+        });
+        const linked = await tx.trackableLog.updateMany({
+          where: {
+            cacheId: null,
+            gcCode: { equals: row.gcCode, mode: "insensitive" },
+          },
+          data: { cacheId: cache.id },
+        });
+        linkedTrackableLogs += linked.count;
+      }
+    });
+
+    return {
+      caches: rows.length,
+      ignored: requestedRows.length - rows.length,
+      linkedTrackableLogs,
+    };
+  }
 
   /**
    * Return cache codes that were discovered in a trackable journey but are not
@@ -326,11 +555,19 @@ export class GsakImportService {
    * this list in pages, loads those codes through Geocaching.com, and then
    * includes the resulting cache records in its normal export.
    */
-  async trackableCacheCodes(userId: string, skipInput: unknown, takeInput: unknown) {
+  async trackableCacheCodes(
+    userId: string,
+    skipInput: unknown,
+    takeInput: unknown,
+  ) {
     const parsedSkip = Number(skipInput);
     const parsedTake = Number(takeInput);
-    const skip = Number.isSafeInteger(parsedSkip) && parsedSkip >= 0 ? parsedSkip : 0;
-    const take = Number.isSafeInteger(parsedTake) && parsedTake > 0 ? Math.min(parsedTake, 500) : 500;
+    const skip =
+      Number.isSafeInteger(parsedSkip) && parsedSkip >= 0 ? parsedSkip : 0;
+    const take =
+      Number.isSafeInteger(parsedTake) && parsedTake > 0
+        ? Math.min(parsedTake, 500)
+        : 500;
     const [countRows, codeRows] = await Promise.all([
       this.prisma.$queryRaw<Array<{ count: bigint | number }>>(Prisma.sql`
         SELECT COUNT(DISTINCT COALESCE(l.gc_code, c.gc_code)) AS count
@@ -351,18 +588,23 @@ export class GsakImportService {
         ORDER BY COALESCE(l.gc_code, c.gc_code)
         OFFSET ${skip}
         LIMIT ${take}
-      `)
+      `),
     ]);
     const total = Number(countRows[0]?.count ?? 0);
     return {
       total: Number.isFinite(total) && total >= 0 ? total : 0,
-      codes: codeRows.map((row) => row.gcCode).filter((code) => Boolean(code)).join(",")
+      codes: codeRows
+        .map((row) => row.gcCode)
+        .filter((code) => Boolean(code))
+        .join(","),
     };
   }
 
   async importBatch(userId: string, kind: unknown, csv: unknown) {
-    if (kind === "caches") return this.importCaches(userId, gsakCsvRecords(csv).map(cacheRow));
-    if (kind === "logs") return this.importLogs(userId, gsakCsvRecords(csv).map(logRow));
+    if (kind === "caches")
+      return this.importCaches(userId, gsakCsvRecords(csv).map(cacheRow));
+    if (kind === "logs")
+      return this.importLogs(userId, gsakCsvRecords(csv).map(logRow));
     if (kind === "complete") {
       const snapshot = await this.stats.buildSnapshotForUser(userId);
       await this.prisma.$transaction(async (tx) => {
@@ -374,26 +616,33 @@ export class GsakImportService {
             fileType: ImportFileType.JSON,
             source: ImportSource.GSAK,
             status: ImportStatus.COMPLETED,
-            objectKey: `gsak/${userId}/${Date.now()}.json`
-          }
+            objectKey: `gsak/${userId}/${Date.now()}.json`,
+          },
         });
       });
       return { completed: true };
     }
-    throw new BadRequestException("GSAK import kind must be caches, logs, or complete");
+    throw new BadRequestException(
+      "GSAK import kind must be caches, logs, or complete",
+    );
   }
 
   private async importCaches(userId: string, rows: CacheRow[]) {
     const existing = await this.prisma.cache.findMany({
       where: { gcCode: { in: rows.map((row) => row.gcCode) } },
-      include: { userData: { where: { userId }, take: 1 } }
+      include: { userData: { where: { userId }, take: 1 } },
     });
-    const existingByCode = new Map(existing.map((cache) => [cache.gcCode, cache]));
+    const existingByCode = new Map(
+      existing.map((cache) => [cache.gcCode, cache]),
+    );
     let hides = 0;
     let corrections = 0;
     await this.prisma.$transaction(async (tx) => {
       for (const row of rows) {
-        const raw = cacheRaw(existingByCode.get(row.gcCode)?.userData?.[0]?.raw, row) as Prisma.InputJsonValue;
+        const raw = cacheRaw(
+          existingByCode.get(row.gcCode)?.userData?.[0]?.raw,
+          row,
+        ) as Prisma.InputJsonValue;
         const existingCache = existingByCode.get(row.gcCode);
         const cache = await tx.cache.upsert({
           where: { gcCode: row.gcCode },
@@ -410,14 +659,14 @@ export class GsakImportService {
             region: row.region,
             county: row.county,
             hiddenDate: row.hiddenDate,
-            ownerName: row.ownerName
+            ownerName: row.ownerName,
           },
-          update: existingCache ? cacheMetadataUpdate(existingCache, row) : {}
+          update: existingCache ? cacheMetadataUpdate(existingCache, row) : {},
         });
         await tx.userCacheData.upsert({
           where: { userId_cacheId: { userId, cacheId: cache.id } },
           create: { userId, cacheId: cache.id, raw },
-          update: { raw }
+          update: { raw },
         });
         // Journey imports keep cache metadata on the user's movement log until
         // a trusted GSAK/cache import supplies the shared cache record. Link
@@ -425,22 +674,42 @@ export class GsakImportService {
         if (tx.trackableLog) {
           await tx.trackableLog.updateMany({
             where: { userId, gcCode: row.gcCode, cacheId: null },
-            data: { cacheId: cache.id }
+            data: { cacheId: cache.id },
           });
         }
         if (row.isOwner) {
           await tx.hide.upsert({
             where: { userId_cacheId: { userId, cacheId: cache.id } },
-            create: { userId, cacheId: cache.id, placedAt: row.hiddenDate, receivedLogCount: 0, receivedLogsRaw: raw },
-            update: { placedAt: row.hiddenDate }
+            create: {
+              userId,
+              cacheId: cache.id,
+              placedAt: row.hiddenDate,
+              receivedLogCount: 0,
+              receivedLogsRaw: raw,
+            },
+            update: { placedAt: row.hiddenDate },
           });
           hides += 1;
         }
-        if (row.hasCorrected && row.correctedLatitude != null && row.correctedLongitude != null) {
+        if (
+          row.hasCorrected &&
+          row.correctedLatitude != null &&
+          row.correctedLongitude != null
+        ) {
           await tx.correctedCoordinate.upsert({
             where: { userId_cacheId: { userId, cacheId: cache.id } },
-            create: { userId, cacheId: cache.id, latitude: row.correctedLatitude, longitude: row.correctedLongitude, note: row.userNote },
-            update: { latitude: row.correctedLatitude, longitude: row.correctedLongitude, note: row.userNote }
+            create: {
+              userId,
+              cacheId: cache.id,
+              latitude: row.correctedLatitude,
+              longitude: row.correctedLongitude,
+              note: row.userNote,
+            },
+            update: {
+              latitude: row.correctedLatitude,
+              longitude: row.correctedLongitude,
+              note: row.userNote,
+            },
           });
           corrections += 1;
         }
@@ -454,29 +723,50 @@ export class GsakImportService {
     const [caches, hides, profile] = await Promise.all([
       this.prisma.cache.findMany({
         where: { gcCode: { in: codes }, userData: { some: { userId } } },
-        include: { userData: { where: { userId }, take: 1 } }
+        include: { userData: { where: { userId }, take: 1 } },
       }),
-      this.prisma.hide.findMany({ where: { userId, cache: { gcCode: { in: codes } } }, include: { cache: true } }),
-      this.prisma.geocachingProfile.findUnique({ where: { userId }, select: { ftfDetectionTerms: true } })
+      this.prisma.hide.findMany({
+        where: { userId, cache: { gcCode: { in: codes } } },
+        include: { cache: true },
+      }),
+      this.prisma.geocachingProfile.findUnique({
+        where: { userId },
+        select: { ftfDetectionTerms: true },
+      }),
     ]);
     const cacheByCode = new Map(caches.map((cache) => [cache.gcCode, cache]));
     const missing = codes.filter((code) => !cacheByCode.has(code));
-    if (missing.length) throw new BadRequestException(`GSAK logs reference caches that were not imported: ${missing.join(", ")}`);
+    if (missing.length)
+      throw new BadRequestException(
+        `GSAK logs reference caches that were not imported: ${missing.join(", ")}`,
+      );
     const hideByCode = new Map(hides.map((hide) => [hide.cache.gcCode, hide]));
     const receivedByCode = new Map<string, Record<string, any>[]>();
     for (const row of rows.filter((row) => row.cacheIsOwned)) {
-      receivedByCode.set(row.gcCode, [...(receivedByCode.get(row.gcCode) ?? []), rawLog(row)]);
+      receivedByCode.set(row.gcCode, [
+        ...(receivedByCode.get(row.gcCode) ?? []),
+        rawLog(row),
+      ]);
     }
     let finds = 0;
     let receivedLogs = 0;
     await this.prisma.$transaction(async (tx) => {
-      for (const row of rows.filter((row) => row.isOwnLog && FOUND_LOG_TYPES.has(row.type.toLowerCase()))) {
+      for (const row of rows.filter(
+        (row) => row.isOwnLog && FOUND_LOG_TYPES.has(row.type.toLowerCase()),
+      )) {
         const cache = cacheByCode.get(row.gcCode)!;
-        const foundDate = new Date(`${row.date.toISOString().slice(0, 10)}T00:00:00.000Z`);
-        const isFtf = cacheMarkedFtf(cache.userData?.[0]?.raw) || detectsFtf(row.text, profile?.ftfDetectionTerms ?? ["FTF", "first to find"]);
+        const foundDate = new Date(
+          `${row.date.toISOString().slice(0, 10)}T00:00:00.000Z`,
+        );
+        const isFtf =
+          cacheMarkedFtf(cache.userData?.[0]?.raw) ||
+          detectsFtf(
+            row.text,
+            profile?.ftfDetectionTerms ?? ["FTF", "first to find"],
+          );
         const existing = await tx.find.findFirst({
           where: { userId, cacheId: cache.id, foundDate },
-          orderBy: [{ foundAt: "asc" }, { createdAt: "asc" }]
+          orderBy: [{ foundAt: "asc" }, { createdAt: "asc" }],
         });
         const adjacentExisting = existing
           ? null
@@ -487,13 +777,15 @@ export class GsakImportService {
                 importedFrom: { not: ImportSource.GSAK },
                 foundDate: {
                   gte: new Date(foundDate.getTime() - 86_400_000),
-                  lte: new Date(foundDate.getTime() + 86_400_000)
-                }
+                  lte: new Date(foundDate.getTime() + 86_400_000),
+                },
               },
               orderBy: [{ foundAt: "asc" }, { createdAt: "asc" }],
-              take: 2
+              take: 2,
             });
-        const matchingFind = existing ?? (adjacentExisting?.length === 1 ? adjacentExisting[0] : null);
+        const matchingFind =
+          existing ??
+          (adjacentExisting?.length === 1 ? adjacentExisting[0] : null);
         if (matchingFind) {
           await tx.find.update({
             where: { id: matchingFind.id },
@@ -502,31 +794,52 @@ export class GsakImportService {
               foundDate,
               logText: row.text,
               importedFrom: ImportSource.GSAK,
-              ...(!matchingFind.isFtfManual ? { isFtf } : {})
-            }
+              ...(!matchingFind.isFtfManual ? { isFtf } : {}),
+            },
           });
         } else {
           await tx.find.create({
-            data: { userId, cacheId: cache.id, foundAt: row.date, foundDate, logText: row.text, isFtf, importedFrom: ImportSource.GSAK }
+            data: {
+              userId,
+              cacheId: cache.id,
+              foundAt: row.date,
+              foundDate,
+              logText: row.text,
+              isFtf,
+              importedFrom: ImportSource.GSAK,
+            },
           });
         }
         finds += 1;
       }
-      const receivedEntries = [...receivedByCode.entries()].sort(([left], [right]) => left.localeCompare(right));
+      const receivedEntries = [...receivedByCode.entries()].sort(
+        ([left], [right]) => left.localeCompare(right),
+      );
       for (const [code, incoming] of receivedEntries) {
         const hide = hideByCode.get(code);
-        if (!hide) throw new BadRequestException(`GSAK marks ${code} as owned, but no hide record exists`);
-        const [current] = await tx.$queryRaw<Array<{ id: string; receivedLogsRaw: Prisma.JsonValue | null }>>(Prisma.sql`
+        if (!hide)
+          throw new BadRequestException(
+            `GSAK marks ${code} as owned, but no hide record exists`,
+          );
+        const [current] = await tx.$queryRaw<
+          Array<{ id: string; receivedLogsRaw: Prisma.JsonValue | null }>
+        >(Prisma.sql`
           SELECT "id", "received_logs_raw" AS "receivedLogsRaw"
           FROM "hides"
           WHERE "id" = ${hide.id} AND "user_id" = ${userId}
           FOR UPDATE
         `);
-        if (!current) throw new BadRequestException(`GSAK hide disappeared during import: ${code}`);
+        if (!current)
+          throw new BadRequestException(
+            `GSAK hide disappeared during import: ${code}`,
+          );
         const merged = mergeReceivedLogs(current.receivedLogsRaw, incoming);
         await tx.hide.update({
           where: { id: current.id },
-          data: { receivedLogCount: merged.count, receivedLogsRaw: merged.raw as Prisma.InputJsonValue }
+          data: {
+            receivedLogCount: merged.count,
+            receivedLogsRaw: merged.raw as Prisma.InputJsonValue,
+          },
         });
         receivedLogs += merged.added;
       }

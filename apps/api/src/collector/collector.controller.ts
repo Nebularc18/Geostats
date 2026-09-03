@@ -15,16 +15,23 @@ import {
   UnauthorizedException,
   UploadedFile,
   UseGuards,
-  UseInterceptors
+  UseInterceptors,
 } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
-import { randomBytes, createCipheriv, createDecipheriv, createHash } from "node:crypto";
+import {
+  randomBytes,
+  createCipheriv,
+  createDecipheriv,
+  createHash,
+} from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { AuthUser } from "@geostats/shared";
 import { Prisma } from "@geostats/db";
 import { AuthGuard } from "../auth/auth.guard";
 import { CurrentUser } from "../auth/current-user.decorator";
+import { AuthService } from "../auth/auth.service";
+import { AdminGuard } from "../admin/admin.guard";
 import { normalizeCountry } from "../common/geocaching.utils";
 import { PrismaService } from "../common/prisma.service";
 import { StatsService } from "../stats/stats.service";
@@ -52,11 +59,22 @@ type FinderCountryInput = {
 };
 
 const TOKEN_PREFIX = "gst";
-const COLLECTOR_SOURCE_PATH = resolve(process.cwd(), "apps/tools/src/collect-owner-logs.ts");
-const PROJECT_GC_SOURCE_PATH = resolve(process.cwd(), "apps/tools/src/collect-project-gc-finder-countries.ts");
+const COLLECTOR_SOURCE_PATH = resolve(
+  process.cwd(),
+  "apps/tools/src/collect-owner-logs.ts",
+);
+const PROJECT_GC_SOURCE_PATH = resolve(
+  process.cwd(),
+  "apps/tools/src/collect-project-gc-finder-countries.ts",
+);
 const COLLECTOR_CSV_MAX_BYTES = 10_485_760;
-const COLLECTOR_CSV_MIME_TYPES = new Set(["text/csv", "application/csv", "text/plain"]);
+const COLLECTOR_CSV_MIME_TYPES = new Set([
+  "text/csv",
+  "application/csv",
+  "text/plain",
+]);
 const GSAK_IMPORT_SCOPE = "GSAK_IMPORT";
+const GSAK_ADMIN_IMPORT_SCOPE = "GSAK_ADMIN_IMPORT";
 
 function tokenHash(token: string) {
   return createHash("sha256").update(token, "utf8").digest("hex");
@@ -69,7 +87,9 @@ function newToken() {
 function tokenCipherKey() {
   const secret = process.env.COLLECTOR_TOKEN_ENCRYPTION_KEY;
   if (!secret) {
-    throw new Error("COLLECTOR_TOKEN_ENCRYPTION_KEY is required to encrypt collector tokens");
+    throw new Error(
+      "COLLECTOR_TOKEN_ENCRYPTION_KEY is required to encrypt collector tokens",
+    );
   }
   return createHash("sha256").update(secret, "utf8").digest();
 }
@@ -77,9 +97,14 @@ function tokenCipherKey() {
 function encryptToken(token: string) {
   const iv = randomBytes(12);
   const cipher = createCipheriv("aes-256-gcm", tokenCipherKey(), iv);
-  const ciphertext = Buffer.concat([cipher.update(token, "utf8"), cipher.final()]);
+  const ciphertext = Buffer.concat([
+    cipher.update(token, "utf8"),
+    cipher.final(),
+  ]);
   const tag = cipher.getAuthTag();
-  return [iv, tag, ciphertext].map((part) => part.toString("base64url")).join(".");
+  return [iv, tag, ciphertext]
+    .map((part) => part.toString("base64url"))
+    .join(".");
 }
 
 function decryptToken(value: string | null) {
@@ -91,9 +116,16 @@ function decryptToken(value: string | null) {
     if (!ivText || !tagText || !ciphertextText) {
       return null;
     }
-    const decipher = createDecipheriv("aes-256-gcm", tokenCipherKey(), Buffer.from(ivText, "base64url"));
+    const decipher = createDecipheriv(
+      "aes-256-gcm",
+      tokenCipherKey(),
+      Buffer.from(ivText, "base64url"),
+    );
     decipher.setAuthTag(Buffer.from(tagText, "base64url"));
-    return Buffer.concat([decipher.update(Buffer.from(ciphertextText, "base64url")), decipher.final()]).toString("utf8");
+    return Buffer.concat([
+      decipher.update(Buffer.from(ciphertextText, "base64url")),
+      decipher.final(),
+    ]).toString("utf8");
   } catch {
     return null;
   }
@@ -115,8 +147,14 @@ export function trustedBaseUrl(request: any) {
   if (process.env.NODE_ENV === "production") {
     throw new Error("API_ORIGIN must be set in production");
   }
-  const proto = firstHeader(request.headers?.["x-forwarded-proto"]) ?? request.protocol ?? "http";
-  const host = firstHeader(request.headers?.["x-forwarded-host"]) ?? firstHeader(request.headers?.host) ?? `localhost:${process.env.API_PORT ?? "3001"}`;
+  const proto =
+    firstHeader(request.headers?.["x-forwarded-proto"]) ??
+    request.protocol ??
+    "http";
+  const host =
+    firstHeader(request.headers?.["x-forwarded-host"]) ??
+    firstHeader(request.headers?.host) ??
+    `localhost:${process.env.API_PORT ?? "3001"}`;
   return `${proto}://${host}`.replace(/\/$/, "");
 }
 
@@ -390,6 +428,142 @@ MsgOk Msg="GSAK data was sent to Geostats successfully."
 `;
 }
 
+export function gsakMissingCacheMacro(serverUrl: string, token: string) {
+  const server = gsakString(serverUrl);
+  const credential = gsakString(token);
+  return `# MacDescription = Import missing cache metadata from GSAK to Geostats
+# MacVersion = 1.8
+# NoVersionCheck
+
+$server = ${server}
+$token = ${credential}
+$endpoint = $server + "/collector/gsak/import"
+$cacheBatchSize = 50
+$missingSkip = 0
+$missingTake = 500
+$missingTotal = 1
+
+# Settings used when a missing cache is loaded by GC code.
+<data> VarName=$geostatsCodeSettings
+[GcGeocaches]
+cbxDifMax.Text=5.0
+cbxDifMin.Text=1.0
+cbxLoadSettings.Text=* Use GSAK defaults *
+cbxTerMax.Text=5.0
+cbxTerMin.Text=1.0
+chkArchived.Checked=True
+chkFoundByMe.Checked=True
+chkLarge.Checked=True
+chkMicro.Checked=True
+chkNotChosen.Checked=True
+chkOther.Checked=True
+chkPremium.Checked=True
+chkRegular.Checked=True
+chkSmall.Checked=True
+chkVirtual.Checked=True
+edtHiddenBy.Text=
+edtLogsPerCache.Text=30
+edtMax.Text=10000
+edtNotFoundBy.Text=
+rbtFull.Checked=True
+rbtLite.Checked=False
+cbxref.Text=
+edtDistance.Text=
+d1.Checked=True
+d2.Checked=False
+edtNotHiddenBy.Text=
+edtbbBottom.Text=
+rbtRectangle.Checked=False
+rbtCircle.Checked=False
+edtbbtop.Text=
+edtFavmin.Text=0
+edtFavMax.Text=99999
+rbtCode.Checked=True
+cbxPublishDate.Text=Not applicable
+edtDuringDays.Text=
+rbtCtyState.Checked=False
+rbtCountry.Checked=False
+rbtNone.Checked=True
+rbtState.Checked=False
+edtSaveCountry.Text=
+edtSaveState.Text=
+edtCountry.Text=
+edtState.Text=
+edtProvince.Text=
+rbtOther.Checked=False
+edtName.Text=
+cbxSort.Text=Cache id ascending
+edtSkip.Text=0
+cbxCountry.Text=
+cbxState.Text=0
+NotCacheTypes=
+cbxsort=0
+edtPublishFrom=1899-12-30
+edtPublishTo=1899-12-30
+edtCodes.Text=
+<enddata>
+MacroSet Dialog=GcGeocaches VarName=$geostatsCodeSettings Name=<macro>
+
+# Ask Geostats for the current unresolved codes. The endpoint is scoped to the
+# admin token and returns only codes referenced by mysteries, checkers, or
+# unlinked trackable journey logs.
+$result = Sqlite("sql","drop table if exists GeostatsMissingCodes")
+$result = Sqlite("sql","create temp table GeostatsMissingCodes (GeocacheCode text primary key)")
+ShowStatus msg="Finding missing cache records..."
+While $missingSkip < $missingTotal
+  $post = "'token'," + SqlQuote($token) + ",'kind','admin-missing-codes','skip'," + NumToStr($missingSkip) + ",'take'," + NumToStr($missingTake)
+  $result = PostUrl($endpoint,$post,"Finding missing cache records",120)
+  If Left($result,7) = "*Error*"
+    Pause Msg=$result
+    Cancel
+  EndIf
+  $missingTotal = Val(RegExSub($_Quote + "total" + $_Quote + ":[ ]*(\\d+)",$result,1,1))
+  $missingCodes = RegExSub($_Quote + "codes" + $_Quote + ":[ ]*" + $_Quote + "([^" + $_Quote + "]*)" + $_Quote,$result,1,1)
+  If not(IsEmpty($missingCodes))
+    $missingValues = "('" + Replace($missingCodes,",","'),('") + "')"
+    $result = Sqlite("sql","insert or ignore into GeostatsMissingCodes values " + $missingValues)
+    GcGetCaches Settings=<macro> GcCodes=$missingCodes Load=Y ShowSummary=No
+  EndIf
+  $missingSkip = $missingSkip + $missingTake
+EndWhile
+
+If $missingTotal = 0
+  ShowStatus msg=""
+  MsgOk Msg="No missing cache records need importing."
+  Cancel
+EndIf
+
+# Export only the codes Geostats requested. This connector never sends finds,
+# hides, notes, or logs; the admin endpoint stores shared cache metadata only.
+ShowStatus msg="Sending missing cache metadata to Geostats..."
+$cacheFilter = "Code in (select GeocacheCode from GeostatsMissingCodes)"
+$total = Val(Sqlite("sql","select count(*) from Caches where " + $cacheFilter))
+If $total = 0
+  Pause Msg="GSAK could not load any of the missing cache codes. Check the active Geocaching.com connection and run the connector again."
+  Cancel
+EndIf
+$offset = 0
+While $offset < $total
+  $sql = "select Code as gcCode, Name as name, g_CacheType(CacheType) as cacheType, Difficulty as difficulty, Terrain as terrain, Container as size, case when HasCorrected = 1 and LatOriginal not in ('','0.0') then LatOriginal else Latitude end as latitude, case when HasCorrected = 1 and LonOriginal not in ('','0.0') then LonOriginal else Longitude end as longitude, Country as country, State as region, County as county, PlacedDate as hiddenDate, OwnerName as ownerName, FoundByMeDate as foundDate, FTF as isFtf, IsOwner as isOwner, FavPoints as favoritePoints, Elevation as elevationMeters, Status as status, IsPremium as isPremium, Latitude as correctedLatitude, Longitude as correctedLongitude, HasCorrected as hasCorrected, ifnull((select UserNote from CacheMemo where CacheMemo.Code = Caches.Code),'') as userNote, ifnull((select group_concat(aId || ':' || aInc,'|') from Attributes where Attributes.aCode = Caches.Code),'') as attributes from Caches where " + $cacheFilter + " order by Code limit " + NumToStr($cacheBatchSize) + " offset " + NumToStr($offset)
+  $csv = Sqlite("sql",$sql,"Delim=*csv* Headings=Yes")
+  $post = "'token'," + SqlQuote($token) + ",'kind','admin-caches','csv'," + SqlQuote($csv)
+  $result = PostUrl($endpoint,$post,"Sending missing cache data",120)
+  If Left($result,7) = "*Error*"
+    Pause Msg=$result
+    Cancel
+  EndIf
+  If not(At($_Quote + "caches" + $_Quote + ":",$result) > 0)
+    Pause Msg="Geostats rejected the missing cache batch:" + $_NewLine + $result
+    Cancel
+  EndIf
+  $offset = $offset + $cacheBatchSize
+EndWhile
+
+ShowStatus msg=""
+MsgOk Msg="Missing cache data was imported from GSAK. Refresh the Geostats admin page to see what remains."
+`;
+}
+
 function hidesRunnerScript(serverUrl: string) {
   const server = powershellString(serverUrl);
   return `$ErrorActionPreference = "Stop"
@@ -616,7 +790,9 @@ try {
 }
 
 function rawObject(value: unknown): Record<string, any> {
-  return value && typeof value === "object" && !Array.isArray(value) ? { ...(value as Record<string, any>) } : {};
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? { ...(value as Record<string, any>) }
+    : {};
 }
 
 function rawArray<T>(value: T | T[] | undefined): T[] {
@@ -634,7 +810,12 @@ function rawText(...values: unknown[]): string | null {
     if (typeof value === "number") {
       return String(value);
     }
-    if (value && typeof value === "object" && "text" in value && typeof (value as { text?: unknown }).text === "string") {
+    if (
+      value &&
+      typeof value === "object" &&
+      "text" in value &&
+      typeof (value as { text?: unknown }).text === "string"
+    ) {
       return (value as { text: string }).text.trim();
     }
   }
@@ -644,7 +825,9 @@ function rawText(...values: unknown[]): string | null {
 export function cacheLogs(raw: unknown): Array<Record<string, any>> {
   const root = rawObject(raw);
   const extension = rawObject(root["groundspeak:cache"] ?? root.cache);
-  return rawArray<Record<string, any>>(extension["groundspeak:logs"]?.["groundspeak:log"] ?? extension.logs?.log);
+  return rawArray<Record<string, any>>(
+    extension["groundspeak:logs"]?.["groundspeak:log"] ?? extension.logs?.log,
+  );
 }
 
 function logId(log: Record<string, any>): string | null {
@@ -684,7 +867,7 @@ export function logKey(log: Record<string, any>): string {
     logDateKey(rawText(log["groundspeak:date"], log.date)),
     rawText(log["groundspeak:type"], log.type) ?? "",
     rawText(log["groundspeak:finder"], log.finder) ?? "",
-    logTextKey(rawText(log["groundspeak:text"], log.text))
+    logTextKey(rawText(log["groundspeak:text"], log.text)),
   ]
     .map((value) => value.trim().toLowerCase())
     .join("\u001f");
@@ -695,7 +878,9 @@ function normalizeDate(value: string | undefined) {
   if (!text) {
     throw new BadRequestException("date is required");
   }
-  const date = /^\d{4}-\d{2}-\d{2}$/.test(text) ? new Date(`${text}T00:00:00Z`) : new Date(text);
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(text)
+    ? new Date(`${text}T00:00:00Z`)
+    : new Date(text);
   if (Number.isNaN(date.getTime())) {
     throw new BadRequestException(`invalid date: ${text}`);
   }
@@ -715,7 +900,7 @@ export function rawFromInput(log: ReceivedLogInput) {
     "groundspeak:date": normalizeDate(log.date).toISOString(),
     "groundspeak:type": log.type?.trim() || "Found it",
     "groundspeak:finder": finder,
-    "groundspeak:text": log.text?.trim() ?? ""
+    "groundspeak:text": log.text?.trim() ?? "",
   };
   if (log.logId != null && String(log.logId).trim()) {
     raw["geostats:log_id"] = String(log.logId).trim();
@@ -731,15 +916,23 @@ function normalizedCacheInput(cache: ReceivedCacheInput) {
   if (!gcCode) {
     throw new BadRequestException("gcCode is required for cache metadata");
   }
-  if (!Number.isSafeInteger(cache.favoritePoints) || Number(cache.favoritePoints) < 0) {
-    throw new BadRequestException("favoritePoints must be a non-negative integer");
+  if (
+    !Number.isSafeInteger(cache.favoritePoints) ||
+    Number(cache.favoritePoints) < 0
+  ) {
+    throw new BadRequestException(
+      "favoritePoints must be a non-negative integer",
+    );
   }
   return { gcCode, favoritePoints: Number(cache.favoritePoints) };
 }
 
 export function rawWithFavoritePoints(raw: unknown, favoritePoints: number) {
   const root = rawObject(raw);
-  const cacheKey = root["groundspeak:cache"] !== undefined || root.cache === undefined ? "groundspeak:cache" : "cache";
+  const cacheKey =
+    root["groundspeak:cache"] !== undefined || root.cache === undefined
+      ? "groundspeak:cache"
+      : "cache";
   const extension = rawObject(root[cacheKey]);
   delete extension["groundspeak:favorite_points"];
   delete extension["groundspeak:favorites"];
@@ -750,13 +943,17 @@ export function rawWithFavoritePoints(raw: unknown, favoritePoints: number) {
     ...root,
     [cacheKey]: {
       ...extension,
-      "groundspeak:favorite_points": String(favoritePoints)
-    }
+      "groundspeak:favorite_points": String(favoritePoints),
+    },
   };
 }
 
 function countReceivedLogs(logs: Array<Record<string, any>>) {
-  return logs.filter((log) => rawText(log["groundspeak:type"], log.type)?.toLowerCase() !== "publish listing").length;
+  return logs.filter(
+    (log) =>
+      rawText(log["groundspeak:type"], log.type)?.toLowerCase() !==
+      "publish listing",
+  ).length;
 }
 
 function parseCsv(text: string): string[][] {
@@ -819,7 +1016,9 @@ function fieldIndex(headers: string[], ...names: string[]) {
 export function parseReceivedLogsCsv(content: string): ReceivedLogInput[] {
   const rows = parseCsv(content);
   if (rows.length < 2) {
-    throw new BadRequestException("CSV must contain a header row and at least one log row");
+    throw new BadRequestException(
+      "CSV must contain a header row and at least one log row",
+    );
   }
   const headers = rows[0];
   const indexes = {
@@ -828,16 +1027,23 @@ export function parseReceivedLogsCsv(content: string): ReceivedLogInput[] {
     date: fieldIndex(headers, "date", "visited"),
     type: fieldIndex(headers, "type", "logType"),
     finder: fieldIndex(headers, "finder", "userName"),
-    finderCountry: fieldIndex(headers, "finderCountry", "finder_country", "country"),
-    text: fieldIndex(headers, "text", "logText")
+    finderCountry: fieldIndex(
+      headers,
+      "finderCountry",
+      "finder_country",
+      "country",
+    ),
+    text: fieldIndex(headers, "text", "logText"),
   };
   const missing = [
     ["gcCode", indexes.gcCode],
     ["date", indexes.date],
-    ["finder", indexes.finder]
+    ["finder", indexes.finder],
   ].filter(([, index]) => index === -1);
   if (missing.length > 0) {
-    throw new BadRequestException(`CSV is missing required columns: ${missing.map(([name]) => name).join(", ")}`);
+    throw new BadRequestException(
+      `CSV is missing required columns: ${missing.map(([name]) => name).join(", ")}`,
+    );
   }
 
   return rows.slice(1).map((row) => ({
@@ -846,12 +1052,15 @@ export function parseReceivedLogsCsv(content: string): ReceivedLogInput[] {
     date: row[indexes.date],
     type: indexes.type === -1 ? "Found it" : row[indexes.type],
     finder: row[indexes.finder],
-    finderCountry: indexes.finderCountry === -1 ? null : row[indexes.finderCountry],
-    text: indexes.text === -1 ? "" : row[indexes.text]
+    finderCountry:
+      indexes.finderCountry === -1 ? null : row[indexes.finderCountry],
+    text: indexes.text === -1 ? "" : row[indexes.text],
   }));
 }
 
-export function normalizeFinderCountryRows(rows: FinderCountryInput[] | undefined): Array<{ country: string; count: number }> {
+export function normalizeFinderCountryRows(
+  rows: FinderCountryInput[] | undefined,
+): Array<{ country: string; count: number }> {
   if (!Array.isArray(rows)) {
     throw new BadRequestException("rows must be an array");
   }
@@ -860,7 +1069,9 @@ export function normalizeFinderCountryRows(rows: FinderCountryInput[] | undefine
     const country = normalizeCountry(row.country);
     const count = Number(row.count);
     if (!country || !Number.isInteger(count) || count < 1) {
-      throw new BadRequestException("rows must contain country and positive integer count");
+      throw new BadRequestException(
+        "rows must contain country and positive integer count",
+      );
     }
     byCountry.set(country, (byCountry.get(country) ?? 0) + count);
   }
@@ -871,13 +1082,21 @@ export function normalizeFinderCountryRows(rows: FinderCountryInput[] | undefine
 
 export function mergedRaw(raw: unknown, newLogs: Array<Record<string, any>>) {
   const root = rawObject(raw);
-  const cacheKey = root["groundspeak:cache"] !== undefined || root.cache === undefined ? "groundspeak:cache" : "cache";
+  const cacheKey =
+    root["groundspeak:cache"] !== undefined || root.cache === undefined
+      ? "groundspeak:cache"
+      : "cache";
   const extension = rawObject(root[cacheKey]);
-  const logsKey = extension["groundspeak:logs"] !== undefined || extension.logs === undefined ? "groundspeak:logs" : "logs";
+  const logsKey =
+    extension["groundspeak:logs"] !== undefined || extension.logs === undefined
+      ? "groundspeak:logs"
+      : "logs";
   const logKeyName = logsKey === "groundspeak:logs" ? "groundspeak:log" : "log";
   const existingLogs = cacheLogs(raw);
   const mergedLogs = [...existingLogs];
-  const seenIds = new Set(existingLogs.map(logId).filter((value): value is string => Boolean(value)));
+  const seenIds = new Set(
+    existingLogs.map(logId).filter((value): value is string => Boolean(value)),
+  );
   const seenKeys = new Set(existingLogs.map(logKey));
   let added = 0;
 
@@ -904,10 +1123,10 @@ export function mergedRaw(raw: unknown, newLogs: Array<Record<string, any>>) {
         ...extension,
         [logsKey]: {
           ...rawObject(extension[logsKey]),
-          [logKeyName]: mergedLogs
-        }
-      }
-    }
+          [logKeyName]: mergedLogs,
+        },
+      },
+    },
   };
 }
 
@@ -919,26 +1138,51 @@ export class CollectorController {
     private readonly prisma: PrismaService,
     private readonly stats: StatsService,
     private readonly collectorTokenAuth?: CollectorTokenAuthService,
-    private readonly gsakImporter?: GsakImportService
+    private readonly gsakImporter?: GsakImportService,
+    private readonly auth?: AuthService,
   ) {}
 
-  private async tokenUser(authorization: string | undefined, requiredScope = "FULL") {
-    if (this.collectorTokenAuth) return this.collectorTokenAuth.userId(authorization, requiredScope);
+  private async tokenUser(
+    authorization: string | undefined,
+    requiredScope = "FULL",
+  ) {
+    if (this.collectorTokenAuth)
+      return this.collectorTokenAuth.userId(authorization, requiredScope);
     const token = authorization?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
-    if (!token) throw new UnauthorizedException("Missing collector bearer token");
+    if (!token)
+      throw new UnauthorizedException("Missing collector bearer token");
     return this.tokenUserValue(token, requiredScope);
   }
 
   private async tokenUserValue(token: string, requiredScope = "FULL") {
-    if (this.collectorTokenAuth) return this.collectorTokenAuth.userIdForToken(token, requiredScope);
+    if (this.collectorTokenAuth)
+      return this.collectorTokenAuth.userIdForToken(token, requiredScope);
     const found = await this.prisma.collectorToken.findUnique({
       where: { tokenHash: tokenHash(token) },
-      select: { id: true, userId: true, scope: true }
+      select: { id: true, userId: true, scope: true },
     });
     if (!found) throw new UnauthorizedException("Invalid collector token");
-    if ((found.scope ?? "FULL") !== requiredScope) throw new UnauthorizedException("Collector token does not allow this operation");
-    await this.prisma.collectorToken.update({ where: { id: found.id }, data: { lastUsedAt: new Date() } });
+    if ((found.scope ?? "FULL") !== requiredScope)
+      throw new UnauthorizedException(
+        "Collector token does not allow this operation",
+      );
+    await this.prisma.collectorToken.update({
+      where: { id: found.id },
+      data: { lastUsedAt: new Date() },
+    });
     return found.userId;
+  }
+
+  private async assertAdminCollectorUser(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { email: true },
+    });
+    if (!user || !this.auth?.isAdmin(user)) {
+      throw new UnauthorizedException(
+        "Admin GSAK import token is no longer authorized",
+      );
+    }
   }
 
   @Post("gsak/setup")
@@ -946,7 +1190,9 @@ export class CollectorController {
   async setupGsak(@CurrentUser() user: AuthUser, @Req() request: any) {
     const token = newToken();
     await this.prisma.$transaction(async (tx) => {
-      await tx.collectorToken.deleteMany({ where: { userId: user.id, scope: GSAK_IMPORT_SCOPE } });
+      await tx.collectorToken.deleteMany({
+        where: { userId: user.id, scope: GSAK_IMPORT_SCOPE },
+      });
       await tx.collectorToken.create({
         data: {
           userId: user.id,
@@ -954,11 +1200,39 @@ export class CollectorController {
           scope: GSAK_IMPORT_SCOPE,
           tokenPrefix: token.slice(0, 12),
           tokenHash: tokenHash(token),
-          tokenCiphertext: encryptToken(token)
-        }
+          tokenCiphertext: encryptToken(token),
+        },
       });
     });
-    return { fileName: "GeostatsImport.gsk", macro: gsakImportMacro(gsakImportBaseUrl(request), token) };
+    return {
+      fileName: "GeostatsImport.gsk",
+      macro: gsakImportMacro(gsakImportBaseUrl(request), token),
+    };
+  }
+
+  @Post("gsak/admin-setup")
+  @UseGuards(AuthGuard, AdminGuard)
+  async setupAdminGsak(@CurrentUser() user: AuthUser, @Req() request: any) {
+    const token = newToken();
+    await this.prisma.$transaction(async (tx) => {
+      await tx.collectorToken.deleteMany({
+        where: { userId: user.id, scope: GSAK_ADMIN_IMPORT_SCOPE },
+      });
+      await tx.collectorToken.create({
+        data: {
+          userId: user.id,
+          name: "GSAK admin cache import",
+          scope: GSAK_ADMIN_IMPORT_SCOPE,
+          tokenPrefix: token.slice(0, 12),
+          tokenHash: tokenHash(token),
+          tokenCiphertext: encryptToken(token),
+        },
+      });
+    });
+    return {
+      fileName: "GeostatsMissingCaches.gsk",
+      macro: gsakMissingCacheMacro(gsakImportBaseUrl(request), token),
+    };
   }
 
   @Get("gsak/status")
@@ -967,25 +1241,61 @@ export class CollectorController {
     const token = await this.prisma.collectorToken.findFirst({
       where: { userId: user.id, scope: GSAK_IMPORT_SCOPE },
       orderBy: { createdAt: "desc" },
-      select: { createdAt: true }
+      select: { createdAt: true },
     });
     const latestImport = token
       ? await this.prisma.import.findFirst({
-        where: { userId: user.id, source: "GSAK", status: "COMPLETED", createdAt: { gte: token.createdAt } },
-        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-        select: { createdAt: true }
-      })
+          where: {
+            userId: user.id,
+            source: "GSAK",
+            status: "COMPLETED",
+            createdAt: { gte: token.createdAt },
+          },
+          orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+          select: { createdAt: true },
+        })
       : null;
-    return { connected: Boolean(token), createdAt: token?.createdAt ?? null, lastImportedAt: latestImport?.createdAt ?? null };
+    return {
+      connected: Boolean(token),
+      createdAt: token?.createdAt ?? null,
+      lastImportedAt: latestImport?.createdAt ?? null,
+    };
   }
 
   @Post("gsak/import")
-  async importGsak(@Body() body: { token?: unknown; kind?: unknown; csv?: unknown; skip?: unknown; take?: unknown }) {
+  async importGsak(
+    @Body()
+    body: {
+      token?: unknown;
+      kind?: unknown;
+      csv?: unknown;
+      skip?: unknown;
+      take?: unknown;
+    },
+  ) {
     const token = typeof body.token === "string" ? body.token.trim() : "";
     if (!token) throw new UnauthorizedException("Missing GSAK import token");
-    const userId = await this.tokenUserValue(token, GSAK_IMPORT_SCOPE);
-    if (!this.gsakImporter) throw new NotFoundException("GSAK importer is not available in this deployment");
-    if (body.kind === "trackable-codes") return this.gsakImporter.trackableCacheCodes(userId, body.skip, body.take);
+    const adminKind =
+      body.kind === "admin-missing-codes" || body.kind === "admin-caches";
+    const userId = await this.tokenUserValue(
+      token,
+      adminKind ? GSAK_ADMIN_IMPORT_SCOPE : GSAK_IMPORT_SCOPE,
+    );
+    if (adminKind) await this.assertAdminCollectorUser(userId);
+    if (!this.gsakImporter)
+      throw new NotFoundException(
+        "GSAK importer is not available in this deployment",
+      );
+    if (body.kind === "trackable-codes")
+      return this.gsakImporter.trackableCacheCodes(
+        userId,
+        body.skip,
+        body.take,
+      );
+    if (body.kind === "admin-missing-codes")
+      return this.gsakImporter.adminMissingCacheCodes(body.skip, body.take);
+    if (body.kind === "admin-caches")
+      return this.gsakImporter.importAdminCacheBatch(body.csv);
     return this.gsakImporter.importBatch(userId, body.kind, body.csv);
   }
 
@@ -1001,7 +1311,9 @@ export class CollectorController {
   @Header("Cache-Control", "no-store")
   hidesSource() {
     if (!existsSync(COLLECTOR_SOURCE_PATH)) {
-      throw new NotFoundException("Collector source is not available in this deployment.");
+      throw new NotFoundException(
+        "Collector source is not available in this deployment.",
+      );
     }
     return readFileSync(COLLECTOR_SOURCE_PATH, "utf8");
   }
@@ -1018,7 +1330,9 @@ export class CollectorController {
   @Header("Cache-Control", "no-store")
   projectGcSource() {
     if (!existsSync(PROJECT_GC_SOURCE_PATH)) {
-      throw new NotFoundException("Project-GC collector source is not available in this deployment.");
+      throw new NotFoundException(
+        "Project-GC collector source is not available in this deployment.",
+      );
     }
     return readFileSync(PROJECT_GC_SOURCE_PATH, "utf8");
   }
@@ -1029,7 +1343,7 @@ export class CollectorController {
     const hides = await this.prisma.hide.findMany({
       where: { userId },
       include: { cache: true },
-      orderBy: [{ placedAt: "asc" }, { createdAt: "asc" }]
+      orderBy: [{ placedAt: "asc" }, { createdAt: "asc" }],
     });
     return {
       caches: hides.map((hide) => {
@@ -1039,9 +1353,9 @@ export class CollectorController {
           name: hide.cache.name,
           receivedLogCount: hide.receivedLogCount,
           existingLogIds: logs.map(logId).filter(Boolean),
-          existingLogKeys: logs.map(logKey)
+          existingLogKeys: logs.map(logKey),
         };
-      })
+      }),
     };
   }
 
@@ -1050,10 +1364,12 @@ export class CollectorController {
     const userId = await this.tokenUser(authorization);
     const profile = await this.prisma.geocachingProfile.findUnique({
       where: { userId },
-      select: { gcUsername: true }
+      select: { gcUsername: true },
     });
     if (!profile?.gcUsername?.trim()) {
-      throw new BadRequestException("Set a Geocaching username in Profile first");
+      throw new BadRequestException(
+        "Set a Geocaching username in Profile first",
+      );
     }
     return { gcUsername: profile.gcUsername };
   }
@@ -1061,7 +1377,7 @@ export class CollectorController {
   @Post("received-logs")
   async receivedLogs(
     @Headers("authorization") authorization: string | undefined,
-    @Body() body: { logs?: ReceivedLogInput[]; caches?: ReceivedCacheInput[] }
+    @Body() body: { logs?: ReceivedLogInput[]; caches?: ReceivedCacheInput[] },
   ) {
     const userId = await this.tokenUser(authorization);
     return this.importReceivedLogsForUser(userId, body);
@@ -1070,7 +1386,7 @@ export class CollectorController {
   @Post("project-gc/finder-countries")
   async projectGcFinderCountries(
     @Headers("authorization") authorization: string | undefined,
-    @Body() body: { rows?: FinderCountryInput[] }
+    @Body() body: { rows?: FinderCountryInput[] },
   ) {
     const userId = await this.tokenUser(authorization);
     const rows = normalizeFinderCountryRows(body.rows);
@@ -1086,8 +1402,8 @@ export class CollectorController {
         data: rows.map((row) => ({
           userId,
           country: row.country,
-          count: row.count
-        }))
+          count: row.count,
+        })),
       });
       await tx.statSnapshot.deleteMany({ where: { userId } });
     });
@@ -1096,19 +1412,32 @@ export class CollectorController {
 
   @Post("received-logs/csv")
   @UseGuards(AuthGuard)
-  @UseInterceptors(FileInterceptor("file", { limits: { fileSize: COLLECTOR_CSV_MAX_BYTES } }))
-  async receivedLogsCsv(@CurrentUser() user: AuthUser, @UploadedFile() file?: Express.Multer.File) {
+  @UseInterceptors(
+    FileInterceptor("file", { limits: { fileSize: COLLECTOR_CSV_MAX_BYTES } }),
+  )
+  async receivedLogsCsv(
+    @CurrentUser() user: AuthUser,
+    @UploadedFile() file?: Express.Multer.File,
+  ) {
     if (!file) {
       throw new BadRequestException("Upload a CSV file using the file field");
     }
-    if (!file.originalname.toLowerCase().endsWith(".csv") || !COLLECTOR_CSV_MIME_TYPES.has(file.mimetype)) {
-      throw new BadRequestException("Only CSV files are supported for owner log imports");
+    if (
+      !file.originalname.toLowerCase().endsWith(".csv") ||
+      !COLLECTOR_CSV_MIME_TYPES.has(file.mimetype)
+    ) {
+      throw new BadRequestException(
+        "Only CSV files are supported for owner log imports",
+      );
     }
     const logs = parseReceivedLogsCsv(file.buffer.toString("utf8"));
     return this.importReceivedLogsForUser(user.id, { logs });
   }
 
-  private async importReceivedLogsForUser(userId: string, body: { logs?: ReceivedLogInput[]; caches?: ReceivedCacheInput[] }) {
+  private async importReceivedLogsForUser(
+    userId: string,
+    body: { logs?: ReceivedLogInput[]; caches?: ReceivedCacheInput[] },
+  ) {
     const logs = body.logs ?? [];
     if (!Array.isArray(logs)) {
       throw new BadRequestException("logs must be an array");
@@ -1116,22 +1445,35 @@ export class CollectorController {
     const byCode = new Map<string, Array<Record<string, any>>>();
     for (const log of logs) {
       const normalized = rawFromInput(log);
-      byCode.set(normalized.gcCode, [...(byCode.get(normalized.gcCode) ?? []), normalized.raw]);
+      byCode.set(normalized.gcCode, [
+        ...(byCode.get(normalized.gcCode) ?? []),
+        normalized.raw,
+      ]);
     }
     const caches = body.caches ?? [];
     if (!Array.isArray(caches)) {
       throw new BadRequestException("caches must be an array");
     }
-    const cacheTotals = new Map(caches.map(normalizedCacheInput).map((cache) => [cache.gcCode, cache.favoritePoints]));
-    const codes = Array.from(new Set([...byCode.keys(), ...cacheTotals.keys()]));
+    const cacheTotals = new Map(
+      caches
+        .map(normalizedCacheInput)
+        .map((cache) => [cache.gcCode, cache.favoritePoints]),
+    );
+    const codes = Array.from(
+      new Set([...byCode.keys(), ...cacheTotals.keys()]),
+    );
     const hides = await this.prisma.hide.findMany({
       where: { userId, cache: { gcCode: { in: codes } } },
-      include: { cache: { include: { userData: { where: { userId }, take: 1 } } } }
+      include: {
+        cache: { include: { userData: { where: { userId }, take: 1 } } },
+      },
     });
     const hidesByCode = new Map(hides.map((hide) => [hide.cache.gcCode, hide]));
     const missing = codes.filter((code) => !hidesByCode.has(code));
     if (missing.length > 0) {
-      throw new BadRequestException(`Unknown owned caches: ${missing.join(", ")}`);
+      throw new BadRequestException(
+        `Unknown owned caches: ${missing.join(", ")}`,
+      );
     }
 
     let added = 0;
@@ -1145,45 +1487,66 @@ export class CollectorController {
         }
         const current = await tx.hide.findFirst({
           where: { id: hide.id, userId },
-          include: { cache: { include: { userData: { where: { userId }, take: 1 } } } }
+          include: {
+            cache: { include: { userData: { where: { userId }, take: 1 } } },
+          },
         });
         if (!current) {
           throw new BadRequestException(`Unknown owned caches: ${gcCode}`);
         }
         const merged = mergedRaw(current.receivedLogsRaw, cacheLogsToAdd);
-        const logsChanged = merged.added > 0 || current.receivedLogCount !== merged.receivedLogCount;
+        const logsChanged =
+          merged.added > 0 ||
+          current.receivedLogCount !== merged.receivedLogCount;
         const favoriteTotal = cacheTotals.get(gcCode);
         const currentUserCacheData = current.cache.userData?.[0];
         const cacheRoot = rawObject(currentUserCacheData?.raw);
         const currentFavoriteText = rawText(
-          rawObject(cacheRoot["groundspeak:cache"] ?? cacheRoot.cache)["groundspeak:favorite_points"]
+          rawObject(cacheRoot["groundspeak:cache"] ?? cacheRoot.cache)[
+            "groundspeak:favorite_points"
+          ],
         );
-        const currentFavoriteTotal = currentFavoriteText === null ? null : Number(currentFavoriteText);
-        const favoriteChanged = favoriteTotal !== undefined && currentFavoriteTotal !== favoriteTotal;
+        const currentFavoriteTotal =
+          currentFavoriteText === null ? null : Number(currentFavoriteText);
+        const favoriteChanged =
+          favoriteTotal !== undefined && currentFavoriteTotal !== favoriteTotal;
         if (logsChanged) {
           const updated = await tx.hide.updateMany({
             where: { id: current.id, userId, updatedAt: current.updatedAt },
             data: {
               receivedLogCount: merged.receivedLogCount,
-              receivedLogsRaw: merged.raw as Prisma.InputJsonValue
-            }
+              receivedLogsRaw: merged.raw as Prisma.InputJsonValue,
+            },
           });
           if (updated.count !== 1) {
-            throw new ConflictException(`Hide changed while receiving logs: ${gcCode}`);
+            throw new ConflictException(
+              `Hide changed while receiving logs: ${gcCode}`,
+            );
           }
         }
         if (favoriteChanged) {
-          const raw = rawWithFavoritePoints(currentUserCacheData?.raw, favoriteTotal) as Prisma.InputJsonValue;
+          const raw = rawWithFavoritePoints(
+            currentUserCacheData?.raw,
+            favoriteTotal,
+          ) as Prisma.InputJsonValue;
           if (currentUserCacheData) {
             const updated = await tx.userCacheData.updateMany({
-              where: { id: currentUserCacheData.id, userId, updatedAt: currentUserCacheData.updatedAt },
-              data: { raw }
+              where: {
+                id: currentUserCacheData.id,
+                userId,
+                updatedAt: currentUserCacheData.updatedAt,
+              },
+              data: { raw },
             });
             if (updated.count !== 1) {
-              throw new ConflictException(`Cache data changed while receiving favorite points: ${gcCode}`);
+              throw new ConflictException(
+                `Cache data changed while receiving favorite points: ${gcCode}`,
+              );
             }
           } else {
-            await tx.userCacheData.create({ data: { userId, cacheId: current.cache.id, raw } });
+            await tx.userCacheData.create({
+              data: { userId, cacheId: current.cache.id, raw },
+            });
           }
         }
         added += merged.added;
@@ -1195,9 +1558,14 @@ export class CollectorController {
     if (changedCaches > 0) {
       try {
         const stats = await this.stats.buildSnapshotForUser(userId);
-        await this.prisma.$transaction((tx) => this.stats.replaceSnapshotForUser(userId, stats, tx));
+        await this.prisma.$transaction((tx) =>
+          this.stats.replaceSnapshotForUser(userId, stats, tx),
+        );
       } catch (error) {
-        this.logger.error(`Stats rebuild failed after received-log import for user ${userId}`, error);
+        this.logger.error(
+          `Stats rebuild failed after received-log import for user ${userId}`,
+          error,
+        );
       }
     }
     return { added, changedCaches };
@@ -1214,13 +1582,21 @@ export class CollectorTokenController {
     const tokens = await this.prisma.collectorToken.findMany({
       where: { userId: user.id, scope: "FULL" },
       orderBy: { createdAt: "desc" },
-      select: { id: true, name: true, scope: true, tokenPrefix: true, tokenCiphertext: true, createdAt: true, lastUsedAt: true }
+      select: {
+        id: true,
+        name: true,
+        scope: true,
+        tokenPrefix: true,
+        tokenCiphertext: true,
+        createdAt: true,
+        lastUsedAt: true,
+      },
     });
     return {
       tokens: tokens.map(({ tokenCiphertext, ...token }) => ({
         ...token,
-        token: decryptToken(tokenCiphertext)
-      }))
+        token: decryptToken(tokenCiphertext),
+      })),
     };
   }
 
@@ -1234,9 +1610,17 @@ export class CollectorTokenController {
         scope: "FULL",
         tokenPrefix: token.slice(0, 12),
         tokenHash: tokenHash(token),
-        tokenCiphertext: encryptToken(token)
+        tokenCiphertext: encryptToken(token),
       },
-      select: { id: true, name: true, scope: true, tokenPrefix: true, tokenCiphertext: true, createdAt: true, lastUsedAt: true }
+      select: {
+        id: true,
+        name: true,
+        scope: true,
+        tokenPrefix: true,
+        tokenCiphertext: true,
+        createdAt: true,
+        lastUsedAt: true,
+      },
     });
     const { tokenCiphertext, ...collectorToken } = created;
     return { token, collectorToken: { ...collectorToken, token } };
@@ -1244,7 +1628,9 @@ export class CollectorTokenController {
 
   @Delete(":id")
   async remove(@CurrentUser() user: AuthUser, @Param("id") id: string) {
-    const result = await this.prisma.collectorToken.deleteMany({ where: { id, userId: user.id } });
+    const result = await this.prisma.collectorToken.deleteMany({
+      where: { id, userId: user.id },
+    });
     if (result.count === 0) {
       throw new NotFoundException("Collector token not found");
     }

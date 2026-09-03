@@ -27,6 +27,53 @@ const MAX_MYSTERY_NAME_LENGTH = 300;
 const MAX_MYSTERY_SNAPSHOT_BYTES = 256 * 1024;
 const MAX_MYSTERY_WORKSPACES_PER_OWNER = 500;
 
+function cacheText(value: unknown, maximum: number): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim();
+  return normalized && normalized.length <= maximum ? normalized : null;
+}
+
+function cacheCoordinate(value: unknown, minimum: number, maximum: number): number | null {
+  if (typeof value === "string" && !value.trim()) return null;
+  const parsed = typeof value === "number" || typeof value === "string" ? Number(value) : Number.NaN;
+  return Number.isFinite(parsed) && parsed >= minimum && parsed <= maximum ? parsed : null;
+}
+
+function sharedCacheMetadata(data: Prisma.InputJsonValue, gcCode: string): Prisma.CacheUncheckedCreateInput | null {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+  const mystery = data as Record<string, unknown>;
+  const name = cacheText(mystery.name, MAX_MYSTERY_NAME_LENGTH);
+  const latitude = cacheCoordinate(mystery.publishedLatitude, -90, 90);
+  const longitude = cacheCoordinate(mystery.publishedLongitude, -180, 180);
+  if (!name || latitude === null || longitude === null) return null;
+
+  return {
+    gcCode,
+    name,
+    latitude,
+    longitude,
+    country: cacheText(mystery.country, 120),
+    region: cacheText(mystery.region, 160),
+    county: cacheText(mystery.county, 160)
+  };
+}
+
+async function ensureSharedCacheMetadata(tx: Prisma.TransactionClient, data: Prisma.InputJsonValue, gcCode: string) {
+  const metadata = sharedCacheMetadata(data, gcCode);
+  if (!metadata) return;
+
+  // Mystery solving data is personal. Only copy the published cache metadata
+  // into the shared cache catalog; clues, notes, attempts, and sharing data
+  // remain inside the owner's workspace.
+  await tx.cache.upsert({
+    where: { gcCode },
+    create: metadata,
+    // A trusted GSAK/API import may already have richer metadata. Never
+    // replace it with the smaller browser snapshot.
+    update: {}
+  });
+}
+
 function mysteryData(value: unknown, clientId: string): { data: Prisma.InputJsonValue; gcCode: string } {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new BadRequestException("Mystery data is required");
@@ -364,6 +411,7 @@ export class MysteriesController {
           throw new BadRequestException("Too many shared Mystery workspaces");
         }
       }
+      await ensureSharedCacheMetadata(tx, data, gcCode);
       const mystery = await tx.mysteryWorkspace.upsert({
         where: { ownerId_clientId: { ownerId: user.id, clientId } },
         create: { ownerId: user.id, clientId, gcCode, data, snapshotRevision: revision },
@@ -426,6 +474,7 @@ export class MysteriesController {
         }
       }
 
+      await ensureSharedCacheMetadata(tx, data, gcCode);
       const mystery = await tx.mysteryWorkspace.upsert({
         where: { ownerId_clientId: { ownerId: user.id, clientId } },
         create: { ownerId: user.id, clientId, gcCode, data, snapshotRevision: revision },

@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { BarChart3, BookOpen, Code2, Database, Flag, Footprints, Globe2, Home, Map, Navigation, Puzzle, Settings, ShieldCheck, Trophy, Upload, Users } from "lucide-react";
+import { BarChart3, BookOpen, Code2, Database, Flag, Footprints, Globe2, Home, Map, Navigation, Puzzle, Settings, Shield, ShieldCheck, Trophy, Upload, Users } from "lucide-react";
 import { API_URL, apiFetch } from "../lib/api";
 import { ClerkSignOutButton } from "./clerk-sign-out-button";
 
@@ -28,7 +28,8 @@ const nav = [
   { href: "/travel", label: "Travel", icon: Navigation },
   { href: "/field-kit", label: "Field kit", icon: BookOpen },
   { href: "/scratch", label: "Scratch Map", icon: Globe2 },
-  { href: "/settings/profile", label: "Profile", icon: Settings }
+  { href: "/settings/profile", label: "Profile", icon: Settings },
+  { href: "/admin", label: "Admin console", icon: Shield, adminOnly: true }
 ];
 
 let hasCompletedProfileCheck = false;
@@ -43,6 +44,30 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const [profileChecked, setProfileChecked] = useState(hasCompletedProfileCheck || DEV_OFFLINE);
+  const [adminAccess, setAdminAccess] = useState(DEV_OFFLINE);
+
+  useEffect(() => {
+    if (DEV_OFFLINE) {
+      return;
+    }
+
+    let active = true;
+    void apiFetch<{ isAdmin: boolean }>("/admin/access")
+      .then((data) => {
+        if (active) {
+          setAdminAccess(data.isAdmin);
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setAdminAccess(false);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (DEV_OFFLINE) {
@@ -62,6 +87,25 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           return;
         }
         if (!data.profile) {
+          if (pathname === "/admin" || pathname.startsWith("/admin/")) {
+            void apiFetch<{ isAdmin: boolean }>("/admin/access")
+              .then((access) => {
+                if (!active) {
+                  return;
+                }
+                if (!access.isAdmin) {
+                  router.replace("/onboarding");
+                  return;
+                }
+                setProfileChecked(true);
+              })
+              .catch(() => {
+                if (active) {
+                  router.replace("/login");
+                }
+              });
+            return;
+          }
           router.replace("/onboarding");
           return;
         }
@@ -107,7 +151,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return () => {
       active = false;
     };
-  }, [router]);
+  }, [pathname, router]);
 
   async function clearLocalSession() {
     if (DEV_OFFLINE) {
@@ -133,10 +177,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </span>
         </Link>
         <nav>
-          {nav.map((item) => {
+          {nav.filter((item) => !item.adminOnly || adminAccess).map((item) => {
             const Icon = item.icon;
+            const active = pathname === item.href || (item.adminOnly && pathname.startsWith(`${item.href}/`));
             return (
-              <Link key={item.href} className={pathname === item.href ? "active" : ""} href={item.href}>
+              <Link key={item.href} className={active ? "active" : ""} href={item.href}>
                 <Icon size={18} />
                 {item.label}
               </Link>
