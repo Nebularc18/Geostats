@@ -401,6 +401,58 @@ test("update creates an unshared server snapshot", async () => {
   });
 });
 
+test("update registers published mystery metadata in the shared cache catalog", async () => {
+  const importedMystery = {
+    ...mystery,
+    publishedLatitude: 56.1612,
+    publishedLongitude: 15.4923,
+    country: "Sweden",
+    region: "Blekinge",
+    county: "Karlskrona"
+  };
+  let cacheInput: unknown;
+  const transaction = {
+    $queryRaw: async (query: TemplateStringsArray) => {
+      if (query.join("?").includes("content_matches")) {
+        return [{ revision: 1, mystery: importedMystery, content_matches: true }];
+      }
+      return [];
+    },
+    mysteryWorkspaceDeletion: { findUnique: async () => null },
+    mysteryWorkspace: {
+      findUnique: async (input: any) => input.where.ownerId_gcCode ? null : null,
+      count: async () => 0,
+      upsert: async () => ({ id: "workspace-1", data: importedMystery })
+    },
+    cache: {
+      upsert: async (input: unknown) => {
+        cacheInput = input;
+        return { id: "cache-1" };
+      }
+    }
+  };
+  const prisma = {
+    $transaction: async (callback: (tx: typeof transaction) => unknown) => callback(transaction)
+  };
+  const controller = new MysteriesController(prisma as any);
+
+  await controller.update(owner, importedMystery.id, { mystery: importedMystery, revision: 1 });
+
+  assert.deepEqual(cacheInput, {
+    where: { gcCode: importedMystery.gcCode },
+    create: {
+      gcCode: importedMystery.gcCode,
+      name: importedMystery.name,
+      latitude: importedMystery.publishedLatitude,
+      longitude: importedMystery.publishedLongitude,
+      country: importedMystery.country,
+      region: importedMystery.region,
+      county: importedMystery.county
+    },
+    update: {}
+  });
+});
+
 test("update rejects a stale tab after the mystery was deleted", async () => {
   const transaction = {
     $queryRaw: async () => [],

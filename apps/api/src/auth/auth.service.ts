@@ -54,6 +54,20 @@ export class AuthService {
     return "password";
   }
 
+  isAdmin(user: Pick<AuthUser, "email">): boolean {
+    const email = user.email.trim().toLowerCase();
+    const configuredAdmins = (process.env.ADMIN_EMAILS ?? "")
+      .split(",")
+      .map((value) => value.trim().toLowerCase())
+      .filter(Boolean);
+
+    if (configuredAdmins.includes(email)) {
+      return true;
+    }
+
+    return this.authMode() === "dev" && email === envOrDefault("DEV_AUTH_EMAIL", "dev@local.geostats").trim().toLowerCase();
+  }
+
   async register(email: string, username: string, password: string): Promise<AuthUser> {
     this.assertPasswordAuthMode();
     const normalizedEmail = email.trim().toLowerCase();

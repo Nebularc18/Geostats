@@ -61,6 +61,7 @@ model User {
 
   profile                 GeocachingProfile?
   imports                 Import[]
+  adminActivityLogs       AdminActivityLog[]       @relation("AdminActivityActor")
   finds                   Find[]
   hides                   Hide[]
   corrections             CorrectedCoordinate[]
@@ -260,6 +261,22 @@ model Import {
 
   @@index([userId, createdAt])
   @@map("imports")
+}
+
+model AdminActivityLog {
+  id         String   @id @default(cuid())
+  adminId    String   @map("admin_id")
+  action     String
+  targetType String   @map("target_type")
+  targetId   String?  @map("target_id")
+  details    Json?
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  admin User @relation("AdminActivityActor", fields: [adminId], references: [id], onDelete: Cascade)
+
+  @@index([createdAt])
+  @@index([adminId, createdAt])
+  @@map("admin_activity_logs")
 }
 
 model Cache {

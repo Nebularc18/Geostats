@@ -15,6 +15,7 @@ import { StorageModule } from "./storage/storage.module";
 import { PortabilityModule } from "./portability/portability.module";
 import { ChallengeCheckersModule } from "./challenge-checkers/challenge-checkers.module";
 import { TrackablesModule } from "./trackables/trackables.module";
+import { AdminModule } from "./admin/admin.module";
 import { APP_THROTTLERS } from "./common/rate-limits";
 
 @Module({
@@ -32,6 +33,7 @@ import { APP_THROTTLERS } from "./common/rate-limits";
     PortabilityModule,
     ChallengeCheckersModule,
     TrackablesModule,
+    AdminModule,
   ],
   controllers: [HealthController],
   providers: [

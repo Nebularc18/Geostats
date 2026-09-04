@@ -160,6 +160,10 @@ DEV_AUTH_USERNAME=dev
 
 With those values, opening a protected web page redirects through `/auth/dev`, creates the development user if needed, sets the session cookie, and returns to the page. Keep `NEXT_PUBLIC_DEV_AUTO_LOGIN=false` outside development.
 
+### Admin console
+
+The web app includes a small admin console at `/admin`. It is protected by the API and is available only to email addresses listed in the comma-separated `ADMIN_EMAILS` environment variable. In development mode, the configured `DEV_AUTH_EMAIL` is also allowed so the local account can inspect the console. Admins can review platform totals, service health, recent imports, user activity, retry failed imports, rebuild an individual user's stats snapshot, and review cache references that still need shared metadata. The missing-cache panel can download a separate admin-only GSAK connector; running it loads only those unresolved codes from Geocaching.com through GSAK and imports their shared cache metadata without importing personal finds or logs.
+
 ## AI mystery solver journal
 
 An AI job on any computer can read and update the same Mystery workspace without sharing the user's password. Create a revocable token under **Settings → Profile → Computer access tokens**, then send it as `Authorization: Bearer <token>`.

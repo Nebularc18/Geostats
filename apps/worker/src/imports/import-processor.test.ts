@@ -7,9 +7,14 @@ import { ImportProcessor } from "./import-processor";
 function withUserCacheData<T extends Record<string, any>>(prisma: T): T {
   const models = prisma as T & {
     userCacheData?: { upsert: () => Promise<object> };
+    import?: { updateMany?: () => Promise<{ count: number }> };
     $transaction?: (callback: (tx: any) => Promise<unknown>) => Promise<unknown>;
   };
   models.userCacheData ??= { upsert: async () => ({}) };
+  const injectedImportClaim = Boolean(models.import && typeof models.import.updateMany !== "function");
+  if (injectedImportClaim) {
+    models.import = { ...models.import, updateMany: async () => ({ count: 1 }) };
+  }
   const transaction = models.$transaction;
   if (typeof transaction === "function") {
     let transactionCalls = 0;
@@ -147,6 +152,88 @@ test("stats recalculation holds a database user lock before loading inputs", asy
   await (processor as any).calculateAndStoreStats("user-1");
 
   assert.deepEqual(events, ["lock", "read", "delete", "create"]);
+});
+
+test("process skips a job when the import is no longer queued", async () => {
+  let objectRead = false;
+  const prisma = {
+    import: {
+      findFirst: async () => ({
+        id: "import-1",
+        userId: "user-1",
+        fileName: "my-finds.gpx",
+        fileType: ImportFileType.GPX,
+        source: ImportSource.MY_FINDS_GPX,
+        objectKey: "user-1/original.gpx",
+      }),
+      updateMany: async (input: any) => {
+        assert.deepEqual(input.where, {
+          id: "import-1",
+          userId: "user-1",
+          status: ImportStatus.QUEUED,
+        });
+        return { count: 0 };
+      },
+    },
+  };
+  const storage = {
+    getObject: async () => {
+      objectRead = true;
+      return Buffer.from(gpx);
+    },
+  };
+
+  const processor = new ImportProcessor(withUserCacheData(prisma) as any, storage as any);
+  await processor.process({
+    importId: "import-1",
+    userId: "user-1",
+    objectKey: "user-1/original.gpx",
+    source: ImportSource.MY_FINDS_GPX,
+  });
+
+  assert.equal(objectRead, false);
+});
+
+test("process leaves a failed attempt queued when BullMQ will retry it", async () => {
+  const statusUpdates: any[] = [];
+  const prisma = {
+    import: {
+      findFirst: async () => ({
+        id: "import-1",
+        userId: "user-1",
+        fileName: "my-finds.gpx",
+        fileType: ImportFileType.GPX,
+        source: ImportSource.MY_FINDS_GPX,
+        objectKey: "user-1/original.gpx",
+      }),
+      updateMany: async () => ({ count: 1 }),
+      update: async ({ data }: any) => {
+        statusUpdates.push(data);
+        return {};
+      },
+    },
+  };
+  const storage = {
+    getObject: async () => {
+      throw new Error("temporary storage failure");
+    },
+  };
+
+  const processor = new ImportProcessor(withUserCacheData(prisma) as any, storage as any);
+  await assert.rejects(
+    processor.process(
+      {
+        importId: "import-1",
+        userId: "user-1",
+        objectKey: "user-1/original.gpx",
+        source: ImportSource.MY_FINDS_GPX,
+      },
+      { attemptsMade: 0, maxAttempts: 3 },
+    ),
+    /temporary storage failure/,
+  );
+
+  assert.deepEqual(statusUpdates, [{ status: ImportStatus.QUEUED, errorMessage: null }]);
 });
 
 test("process uses the user's existing cache metadata without overwriting it", async () => {
@@ -557,6 +644,11 @@ test("process marks a committed import failed when stats recalculation fails", a
   const prisma = {
     import: {
       findFirst: async () => importRecord,
+      updateMany: async ({ data }: any) => {
+        importStatuses.push(data.status);
+        events.push(data.status);
+        return { count: 1 };
+      },
       update: async ({ data }: any) => {
         importStatuses.push(data.status);
         events.push(data.status);
