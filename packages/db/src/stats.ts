@@ -29,13 +29,11 @@ export function countableFindWhere(
   ];
   if (gcUsername) {
     filters.push({
-      NOT: {
-        cache: {
-          ownerName: {
-            equals: gcUsername,
-            mode: "insensitive",
-          },
-        },
+      cache: {
+        OR: [
+          { ownerName: null },
+          { ownerName: { not: gcUsername, mode: "insensitive" } },
+        ],
       },
     });
   }

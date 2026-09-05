@@ -36,8 +36,11 @@ test("shared snapshots include hosted events and use personal cache corrections 
           AND: [
             { cache: { hides: { none: { userId: "user-1" } } } },
             {
-              NOT: {
-                cache: { ownerName: { equals: "alice", mode: "insensitive" } },
+              cache: {
+                OR: [
+                  { ownerName: null },
+                  { ownerName: { not: "alice", mode: "insensitive" } },
+                ],
               },
             },
           ],
