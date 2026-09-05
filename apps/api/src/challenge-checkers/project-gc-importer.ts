@@ -4,6 +4,9 @@ import type { ProjectGcFindFilter, ProjectGcNumberRule } from "./challenge-check
 
 const MAX_SCRIPT_LENGTH = 250_000;
 const MAX_CONFIG_LENGTH = 25_000;
+const MAX_PARSE_NESTING = 100;
+const MAX_PARSE_CALLS = 1000;
+const MAX_PARSE_SCAN_WORK = 10_000_000;
 const FILTER_KEYS = new Set([
   "country", "region", "county", "minVisitDate", "maxVisitDate", "minHiddenDate", "maxHiddenDate",
   "excludeTypes", "types", "sizes", "difficulties", "terrains", "minlatitude", "maxlatitude",
@@ -136,6 +139,27 @@ function maskLua(source: string) {
     index += 1;
   }
   return chars.join("");
+}
+
+function validateParseBudgets(source: string) {
+  let nesting = 0;
+  let calls = 0;
+  let scanWork = source.length;
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index]!;
+    if (char === "(" || char === "[" || char === "{") {
+      nesting += 1;
+      if (nesting > MAX_PARSE_NESTING) throw new BadRequestException("Project-GC script nesting is too deep");
+      if (char === "(") {
+        calls += 1;
+        scanWork += source.length;
+        if (calls > MAX_PARSE_CALLS) throw new BadRequestException("Project-GC script contains too many calls");
+        if (scanWork > MAX_PARSE_SCAN_WORK) throw new BadRequestException("Project-GC script requires too much parsing work");
+      }
+    } else if (char === ")" || char === "]" || char === "}") {
+      nesting = Math.max(0, nesting - 1);
+    }
+  }
 }
 
 function blockBody(source: string, start: number): string | null {
@@ -728,6 +752,7 @@ export function importProjectGcNumberScript(scriptValue: unknown, configTextValu
   if (typeof scriptValue !== "string" || !scriptValue.trim()) throw new BadRequestException("Paste a Project-GC Lua script");
   if (scriptValue.length > MAX_SCRIPT_LENGTH) throw new BadRequestException("Lua script is too large");
   const script = maskLua(scriptValue);
+  validateParseBudgets(script);
   validateFindsConfig(script);
   validateCountCondition(script);
   if (typeof configTextValue !== "string" || !configTextValue.trim()) throw new BadRequestException("Paste the Project-GC tag config as JSON");

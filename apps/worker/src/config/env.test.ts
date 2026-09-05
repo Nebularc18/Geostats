@@ -85,3 +85,39 @@ test("requiredEnv applies length guard to S3 secret access keys", async () => {
     }
   );
 });
+
+test("requiredEnv rejects Dockhand production secret placeholders", async () => {
+  await withEnv(
+    {
+      NODE_ENV: "production",
+      S3_SECRET_ACCESS_KEY: "change-this-minio-password-min-32-chars"
+    },
+    () => {
+      assert.throws(() => requiredEnv("S3_SECRET_ACCESS_KEY"), /development value/);
+    }
+  );
+});
+
+test("requiredEnv accepts a non-placeholder production secret", async () => {
+  await withEnv(
+    {
+      NODE_ENV: "production",
+      S3_SECRET_ACCESS_KEY: "c960d85eaf664adb8243d1834d465645"
+    },
+    () => {
+      assert.equal(requiredEnv("S3_SECRET_ACCESS_KEY"), "c960d85eaf664adb8243d1834d465645");
+    }
+  );
+});
+
+test("envOrDefault rejects Dockhand placeholders embedded in connection URLs", async () => {
+  await withEnv(
+    {
+      NODE_ENV: "production",
+      S3_ENDPOINT: "redis://:change-this-redis-password-min-32-chars@redis:6379"
+    },
+    () => {
+      assert.throws(() => envOrDefault("S3_ENDPOINT", "https://fallback.example.test"), /development value/);
+    }
+  );
+});

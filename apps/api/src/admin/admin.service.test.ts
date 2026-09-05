@@ -93,8 +93,10 @@ test("addCache validates metadata, creates the cache, and links orphaned trackab
   let activityInput: any;
   const tx = {
     cache: {
-      create: async ({ data }: any) => {
+      upsert: async ({ create: data, update, where }: any) => {
         createInput = data;
+        assert.deepEqual(where, { gcCode: "GCNEW1" });
+        assert.deepEqual(update, data);
         return { id: "cache-new", ...data };
       },
     },

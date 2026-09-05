@@ -85,7 +85,9 @@ test("admin GSAK code pages merge missing references across global sources", asy
     },
     cache: {
       findMany: async (input: any) => {
+        if (input.where.metadataTrusted === false) return [];
         assert.deepEqual(input.where.gcCode.in, ["GC123", "GC456", "GC789"]);
+        assert.equal(input.where.metadataTrusted, true);
         return [{ gcCode: "GC456" }];
       },
     },
@@ -95,6 +97,51 @@ test("admin GSAK code pages merge missing references across global sources", asy
   assert.deepEqual(await service.adminMissingCacheCodes("0", "500"), {
     total: 2,
     codes: "GC123,GC789",
+  });
+});
+
+test("admin GSAK code pages include neutral placeholders for trusted enrichment", async () => {
+  const prisma = {
+    trackableLog: { findMany: async () => [] },
+    mysteryWorkspace: { findMany: async () => [{ gcCode: "GC123" }] },
+    challengeChecker: { findMany: async () => [] },
+    cache: {
+      findMany: async (input: any) => {
+        if (input.where.metadataTrusted === false) {
+          return [{ gcCode: "GC123" }];
+        }
+        assert.deepEqual(input.where, {
+          gcCode: { in: ["GC123"] },
+          metadataTrusted: true,
+        });
+        return [];
+      },
+    },
+  };
+  const service = new GsakImportService(prisma as any, {} as any);
+
+  assert.deepEqual(await service.adminMissingCacheCodes("0", "500"), {
+    total: 1,
+    codes: "GC123",
+  });
+});
+
+test("admin GSAK code pages include personal-import placeholders without other references", async () => {
+  const prisma = {
+    trackableLog: { findMany: async () => [] },
+    mysteryWorkspace: { findMany: async () => [] },
+    challengeChecker: { findMany: async () => [] },
+    cache: {
+      findMany: async (input: any) => input.where.metadataTrusted === false
+        ? [{ gcCode: "GCPRIVATE" }]
+        : [],
+    },
+  };
+  const service = new GsakImportService(prisma as any, {} as any);
+
+  assert.deepEqual(await service.adminMissingCacheCodes("0", "500"), {
+    total: 1,
+    codes: "GCPRIVATE",
   });
 });
 
@@ -138,6 +185,9 @@ test("admin GSAK cache batches create shared metadata without personal records",
   );
   assert.equal(actions[0][1].create.gcCode, "GC123");
   assert.equal(actions[0][1].create.name, "Shared cache");
+  assert.equal(actions[0][1].create.metadataTrusted, true);
+  assert.equal(actions[0][1].update.name, "Shared cache");
+  assert.equal(actions[0][1].update.metadataTrusted, true);
   assert.equal(actions[1][1].where.gcCode.mode, "insensitive");
 });
 
@@ -176,6 +226,11 @@ test("GSAK cache batches upsert owned caches and corrected coordinates", async (
     ["cache", "userData", "hide", "correction"],
   );
   assert.equal(actions[0][1].create.gcCode, "GC123");
+  assert.equal(actions[0][1].create.name, "GC123");
+  assert.equal(actions[0][1].create.latitude, 0);
+  assert.equal(actions[0][1].create.longitude, 0);
+  assert.equal(actions[0][1].create.metadataTrusted, false);
+  assert.deepEqual(actions[0][1].update, {});
   assert.deepEqual(actions[0][1].where, { gcCode: "GC123" });
   assert.equal("userId" in actions[0][1].create, false);
   assert.equal("raw" in actions[0][1].create, false);
@@ -192,7 +247,7 @@ test("GSAK cache batches upsert owned caches and corrected coordinates", async (
   );
 });
 
-test("GSAK cache batches enrich a cache placeholder created by a trackable import", async () => {
+test("personal GSAK cache batches cannot enrich shared cache metadata", async () => {
   const updates: any[] = [];
   const existingCache = {
     id: "cache-1",
@@ -223,7 +278,7 @@ test("GSAK cache batches enrich a cache placeholder created by a trackable impor
 
   await service.importBatch("user-1", "caches", csv);
 
-  assert.deepEqual(updates[0].update, { name: "Named cache" });
+  assert.deepEqual(updates[0].update, {});
 });
 
 test("GSAK log batches merge owned logs and preserve manual FTF choices", async () => {

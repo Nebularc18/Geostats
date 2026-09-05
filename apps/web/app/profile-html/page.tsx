@@ -269,6 +269,8 @@ export default function ProfileHtmlPage() {
   const [includeMilestones, setIncludeMilestones] = useState(true);
   const [copied, setCopied] = useState(false);
   const [copiedEmbed, setCopiedEmbed] = useState(false);
+  const [publicStatsBusy, setPublicStatsBusy] = useState(false);
+  const [publicStatsMessage, setPublicStatsMessage] = useState<string | null>(null);
 
   useEffect(() => {
     void apiFetch<{ stats: any }>("/stats/summary").then((data) => setStats(data.stats));
@@ -279,7 +281,7 @@ export default function ProfileHtmlPage() {
     () => buildProfileHtml(stats, profile, { includeFtf, includeHides, includeMilestones }),
     [includeFtf, includeHides, includeMilestones, profile, stats]
   );
-  const publicUsername = profile?.gcUsername ? encodeURIComponent(profile.gcUsername) : "";
+  const publicUsername = profile?.publicStatsEnabled && profile.gcUsername ? encodeURIComponent(profile.gcUsername) : "";
   const dynamicHtmlUrl = publicUsername ? `${API_URL}/public/profile-stats/${publicUsername}` : "";
   const dynamicImageUrl = publicUsername ? `${API_URL}/public/profile-stats-image/${publicUsername}` : "";
   const dynamicExtremesImageUrl = publicUsername ? `${API_URL}/public/profile-extremes-image/${publicUsername}` : "";
@@ -298,6 +300,26 @@ export default function ProfileHtmlPage() {
     await navigator.clipboard.writeText(embedHtml);
     setCopiedEmbed(true);
     window.setTimeout(() => setCopiedEmbed(false), 1800);
+  }
+
+  async function setPublicStatsEnabled(enabled: boolean) {
+    if (!profile) {
+      return;
+    }
+    setPublicStatsBusy(true);
+    setPublicStatsMessage(null);
+    try {
+      const data = await apiFetch<{ profile: any }>("/profile/public-stats", {
+        method: "PUT",
+        body: JSON.stringify({ publicStatsEnabled: enabled })
+      });
+      setProfile(data.profile);
+      setPublicStatsMessage(enabled ? "Public profile links are enabled." : "Public profile links are disabled.");
+    } catch (error) {
+      setPublicStatsMessage(error instanceof Error ? error.message : "Could not update public profile access.");
+    } finally {
+      setPublicStatsBusy(false);
+    }
   }
 
   function downloadHtml() {
@@ -357,7 +379,23 @@ export default function ProfileHtmlPage() {
             {copiedEmbed ? "Copied" : "Copy snippet"}
           </button>
         </div>
-        <textarea readOnly rows={5} value={embedHtml || "Set your geocaching username in Profile first."} aria-label="Dynamic geocaching profile image snippet" />
+        <label>
+          <input
+            type="checkbox"
+            checked={profile?.publicStatsEnabled === true}
+            disabled={!profile || publicStatsBusy}
+            onChange={(event) => void setPublicStatsEnabled(event.target.checked)}
+          />
+          Publish my statistics at the public links below
+        </label>
+        <p className="muted">Disabled by default. Turning this off makes every public profile and image URL return not found.</p>
+        {publicStatsMessage ? <p className="muted">{publicStatsMessage}</p> : null}
+        <textarea
+          readOnly
+          rows={5}
+          value={embedHtml || (profile?.publicStatsEnabled ? "Set your geocaching username in Profile first." : "Enable public statistics to create a dynamic snippet.")}
+          aria-label="Dynamic geocaching profile image snippet"
+        />
         {dynamicHtmlUrl ? (
           <p className="muted">
             Public page: <a href={dynamicHtmlUrl} target="_blank" rel="noreferrer">{dynamicHtmlUrl}</a>

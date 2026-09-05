@@ -40,6 +40,60 @@ test("falls back to imported location metadata when boundary geometry is unavail
   assert.equal(result.rules[0]!.evidence[0]!.date, "2025-05-03");
 });
 
+test("public checker evaluation rejects find histories above its bounded query", async () => {
+  const checker = {
+    id: "checker-1",
+    userId: "user-1",
+    name: "Public challenge",
+    gcCode: "GCTEST",
+    description: null,
+    rules: [{ type: "TOTAL_FINDS", minimum: 1 }],
+    publicSlug: "public-slug",
+    publishedAt: new Date("2026-01-01T00:00:00Z"),
+    updatedAt: new Date("2026-01-01T00:00:00Z")
+  };
+  let findQuery: Record<string, unknown> | undefined;
+  const prisma = {
+    challengeChecker: { findFirst: async () => checker },
+    geocachingProfile: { findUnique: async () => ({ gcUsername: "Geocacher" }) },
+    find: {
+      findMany: async (query: Record<string, unknown>) => {
+        findQuery = query;
+        return Array(10_001).fill({});
+      }
+    }
+  };
+  const service = new ChallengeCheckersService(prisma as never, {} as never);
+
+  await assert.rejects(service.runPublic("public-slug"), /cannot evaluate more than 10,000 finds/);
+  assert.equal(findQuery?.take, 10_001);
+});
+
+test("owned checker evaluation keeps complete find-history compatibility", async () => {
+  const checker = {
+    id: "checker-1",
+    userId: "user-1",
+    name: "Owned challenge",
+    gcCode: "GCTEST",
+    description: null,
+    rules: [{ type: "TOTAL_FINDS", minimum: 1 }],
+    publicSlug: null,
+    publishedAt: null,
+    updatedAt: new Date("2026-01-01T00:00:00Z")
+  };
+  let findQuery: Record<string, unknown> | undefined;
+  const prisma = {
+    challengeChecker: { findFirst: async () => checker },
+    geocachingProfile: { findUnique: async () => ({ gcUsername: "Geocacher" }) },
+    find: { findMany: async (query: Record<string, unknown>) => { findQuery = query; return []; } },
+    import: { findFirst: async () => null }
+  };
+  const service = new ChallengeCheckersService(prisma as never, {} as never);
+
+  await service.runOwned("user-1", "checker-1");
+  assert.equal(findQuery && "take" in findQuery, false);
+});
+
 test("uses imported location choices when catalog providers are unavailable", async () => {
   const prisma = {
     geocachingProfile: { findUnique: async () => ({ gcUsername: "Geocacher" }) },

@@ -25,7 +25,7 @@ import {
   X
 } from "lucide-react";
 import { AppShell } from "../../components/app-shell";
-import { apiFetch } from "../../lib/api";
+import { API_URL, apiFetch } from "../../lib/api";
 import {
   fieldMergeDecision,
   formatMysteryCoordinate as formatCoordinate,
@@ -39,6 +39,7 @@ import { MYSTERY_USERSCRIPT_VERSION } from "../../lib/mystery-userscript";
 import { bulkAttemptKey, parseBulkFailedAttempts, parseFailedCoordinateCsv } from "../../lib/mystery-bulk-attempts";
 import { automaticSyncRetryDelay } from "../../lib/mystery-sync-policy";
 import { normalizeMysteryImageUrl } from "../../lib/mystery-image";
+import { mysteryStorageKeys, safeRecipientMysteryImage, type MysteryStorageKeys } from "../../lib/mystery-storage";
 import {
   chooseGeocachingNoteConflict,
   reconcileGeocachingNoteReceipt,
@@ -180,11 +181,6 @@ type GeocachingNoteSyncPayload = {
   issuedAt: number;
 };
 
-const STORAGE_KEY = "geostats-mysteries-v1";
-const SYNC_METADATA_STORAGE_KEY = "geostats-mystery-sync-metadata-v1";
-const DEDUP_BACKUP_KEY = "geostats-mysteries-backup-before-dedup-v1";
-const DELETION_STORAGE_KEY = "geostats-mystery-deletions-v1";
-const DELETION_CHANNEL = "geostats-mystery-deletions";
 const MAX_REASONABLE_DISTANCE_KM = 3.2;
 
 function snapshotFingerprint(value: string) {
@@ -340,6 +336,7 @@ function verifiedStoredShares(caches: MysteryCache[], mergeOptions?: MysteryCach
           state: attempt.state === "correct" || attempt.state === "wrong" || attempt.state === "planned" ? attempt.state : "unchecked"
         })))
       : [],
+    image: cache.sharedBy ? safeRecipientMysteryImage(cache.image) : cache.image,
     sharedWith: Array.isArray(cache.sharedWith) ? cache.sharedWith.filter(isAppUser) : []
   }));
 
@@ -460,7 +457,10 @@ function applyGeocachingSyncReceipt(caches: MysteryCache[], value: GeocachingSyn
 }
 
 export default function MysteriesPage() {
-  const initialized = useRef(false);
+  const initializedNamespace = useRef("");
+  const activeStorageNamespace = useRef("");
+  const pendingInitialCaches = useRef<{ namespace: string; caches: MysteryCache[] } | null>(null);
+  const storageKeysRef = useRef<MysteryStorageKeys | null>(null);
   const persistedCaches = useRef<MysteryCache[]>([]);
   const latestCaches = useRef<MysteryCache[]>([]);
   const serverSnapshots = useRef(new Map<string, string>());
@@ -480,6 +480,7 @@ export default function MysteriesPage() {
   const [serverLoadAttempt, setServerLoadAttempt] = useState(0);
   const [selectedId, setSelectedId] = useState("");
   const [ready, setReady] = useState(false);
+  const [storageKeys, setStorageKeys] = useState<MysteryStorageKeys | null>(null);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<"all" | MysteryStatus>("all");
   const [attemptType, setAttemptType] = useState<AttemptKind>("coordinate");
@@ -518,9 +519,56 @@ export default function MysteriesPage() {
 
   latestCaches.current = caches;
 
+  useEffect(() => {
+    let active = true;
+    let identityRequest = 0;
+    const resolveIdentity = async () => {
+      const request = ++identityRequest;
+      setStorageKeys(null);
+      try {
+        const response = await fetch(`${API_URL}/auth/me`, { credentials: "include", cache: "no-store" });
+        if (!active || request !== identityRequest) return;
+        if (response.status === 401 || response.status === 403) {
+          if (active) setStorageKeys(null);
+          return;
+        }
+        if (!response.ok) throw new Error("Could not resolve the current account");
+        const { user } = await response.json() as { user?: { id?: unknown } };
+        if (!active || request !== identityRequest) return;
+        if (typeof user?.id !== "string" || !user.id.trim()) {
+          setStorageKeys(null);
+          return;
+        }
+        setStorageKeys(mysteryStorageKeys(API_URL, user.id));
+      } catch {
+        if (!active || request !== identityRequest) return;
+        setStorageKeys(null);
+      }
+    };
+    const resolveVisibleIdentity = () => {
+      if (document.visibilityState === "visible") void resolveIdentity();
+    };
+    void resolveIdentity();
+    window.addEventListener("focus", resolveVisibleIdentity);
+    window.addEventListener("online", resolveVisibleIdentity);
+    document.addEventListener("visibilitychange", resolveVisibleIdentity);
+    return () => {
+      active = false;
+      window.removeEventListener("focus", resolveVisibleIdentity);
+      window.removeEventListener("online", resolveVisibleIdentity);
+      document.removeEventListener("visibilitychange", resolveVisibleIdentity);
+    };
+  }, []);
+
+  useEffect(() => {
+    storageKeysRef.current = storageKeys;
+  }, [storageKeys]);
+
   function persistSyncMetadata() {
+    const keys = storageKeysRef.current;
+    if (!keys) return;
     try {
-      localStorage.setItem(SYNC_METADATA_STORAGE_KEY, JSON.stringify(Object.fromEntries(syncMetadata.current)));
+      localStorage.setItem(keys.syncMetadata, JSON.stringify(Object.fromEntries(syncMetadata.current)));
     } catch {
       // Mystery data remains the primary offline copy when metadata cannot be persisted.
     }
@@ -545,36 +593,66 @@ export default function MysteriesPage() {
   }
 
   useEffect(() => {
-    if (initialized.current) return;
-    initialized.current = true;
+    if (!storageKeys) {
+      if (!initializedNamespace.current) return;
+      initializedNamespace.current = "";
+      activeStorageNamespace.current = "";
+      pendingInitialCaches.current = null;
+      serverSnapshots.current.clear();
+      snapshotRevisions.current.clear();
+      syncMetadata.current.clear();
+      shareMutationRevisions.current.clear();
+      deletedCacheIds.current.clear();
+      persistedCaches.current = [];
+      setPersistedForSync(null);
+      setServerSyncReady(false);
+      setReady(false);
+      setCaches([]);
+      setSelectedId("");
+      return;
+    }
+    if (initializedNamespace.current === storageKeys.namespace) return;
+    initializedNamespace.current = storageKeys.namespace;
+    activeStorageNamespace.current = "";
+    serverSnapshots.current.clear();
+    snapshotRevisions.current.clear();
+    syncMetadata.current.clear();
+    shareMutationRevisions.current.clear();
+    deletedCacheIds.current.clear();
+    persistedCaches.current = [];
+    setPersistedForSync(null);
+    setServerSyncReady(false);
+    setReady(false);
+    setCaches([]);
+    setSelectedId("");
     try {
-      const storedMetadata = JSON.parse(localStorage.getItem(SYNC_METADATA_STORAGE_KEY) ?? "{}") as Record<string, MysterySyncMetadata>;
+      const storedMetadata = JSON.parse(localStorage.getItem(storageKeys.syncMetadata) ?? "{}") as Record<string, MysterySyncMetadata>;
       syncMetadata.current = new Map(Object.entries(storedMetadata).filter((entry): entry is [string, MysterySyncMetadata] => {
         const [cacheId, metadata] = entry;
         return Boolean(cacheId) && Number.isSafeInteger(metadata?.revision) && metadata.revision >= 0 && typeof metadata.fingerprint === "string";
       }));
     } catch {
-      localStorage.removeItem(SYNC_METADATA_STORAGE_KEY);
+      localStorage.removeItem(storageKeys.syncMetadata);
     }
     try {
-      const storedDeletionIds = JSON.parse(localStorage.getItem(DELETION_STORAGE_KEY) ?? "[]") as unknown;
+      const storedDeletionIds = JSON.parse(localStorage.getItem(storageKeys.deletions) ?? "[]") as unknown;
       if (Array.isArray(storedDeletionIds)) {
         deletedCacheIds.current = new Set(storedDeletionIds.filter((cacheId): cacheId is string => typeof cacheId === "string" && cacheId.length > 0));
       }
     } catch {
-      localStorage.removeItem(DELETION_STORAGE_KEY);
+      localStorage.removeItem(storageKeys.deletions);
     }
-    const saved = localStorage.getItem(STORAGE_KEY);
+    const saved = localStorage.getItem(storageKeys.caches);
     let initial: MysteryCache[] = [];
     if (saved) {
       try {
         const storedCaches = JSON.parse(saved) as MysteryCache[];
         initial = verifiedStoredShares(storedCaches);
-        if (initial.length < storedCaches.length && !localStorage.getItem(DEDUP_BACKUP_KEY)) {
-          localStorage.setItem(DEDUP_BACKUP_KEY, saved);
+        if (initial.length < storedCaches.length && !localStorage.getItem(storageKeys.dedupBackup)) {
+          localStorage.setItem(storageKeys.dedupBackup, saved);
         }
       } catch {
-        localStorage.removeItem(STORAGE_KEY);
+        localStorage.removeItem(storageKeys.caches);
       }
     }
     initial = initial.filter((cache) => !deletedCacheIds.current.has(cache.id));
@@ -630,18 +708,26 @@ export default function MysteriesPage() {
     if (encodedImport || encodedSyncReceipt) {
       window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
     }
+    pendingInitialCaches.current = { namespace: storageKeys.namespace, caches: initial };
     setCaches(initial);
     persistedCaches.current = lastStoredCaches;
     setSelectedId((current) => current || initial.find((cache) => cache.id === requestedCacheId)?.id || initial[0]?.id || "");
     setReady(true);
     if ("serviceWorker" in navigator) void navigator.serviceWorker.register("/mysteries-sw.js").catch(() => undefined);
-  }, []);
+  }, [storageKeys]);
 
   useEffect(() => {
-    if (!ready) return;
+    const pending = pendingInitialCaches.current;
+    if (!storageKeys || !pending || pending.namespace !== storageKeys.namespace || caches !== pending.caches) return;
+    activeStorageNamespace.current = storageKeys.namespace;
+    pendingInitialCaches.current = null;
+  }, [caches, storageKeys]);
+
+  useEffect(() => {
+    if (!ready || !storageKeys || activeStorageNamespace.current !== storageKeys.namespace) return;
     const serialized = JSON.stringify(caches);
     try {
-      localStorage.setItem(STORAGE_KEY, serialized);
+      localStorage.setItem(storageKeys.caches, serialized);
       persistedCaches.current = caches;
       setPersistedForSync(caches);
     } catch {
@@ -660,10 +746,10 @@ export default function MysteriesPage() {
       if (JSON.stringify(rollback) !== serialized) setCaches(rollback);
       setNotice("Browser storage is full. Your last change was not saved.");
     }
-  }, [caches, ready]);
+  }, [caches, ready, storageKeys]);
 
   useEffect(() => {
-    if (!ready || !serverSyncReady || !persistedForSync) return;
+    if (!ready || !storageKeys || activeStorageNamespace.current !== storageKeys.namespace || !serverSyncReady || !persistedForSync) return;
     const currentOwnedByGcCode = new Map(latestCaches.current
       .filter((cache) => !cache.sharedBy)
       .map((cache) => [cache.gcCode.trim().toUpperCase(), cache]));
@@ -733,10 +819,10 @@ export default function MysteriesPage() {
       window.clearTimeout(timeout);
       if (retryTimeout) window.clearTimeout(retryTimeout);
     };
-  }, [persistedForSync, ready, serverSyncReady]);
+  }, [persistedForSync, ready, serverSyncReady, storageKeys]);
 
   useEffect(() => {
-    if (!ready) return;
+    if (!ready || !storageKeys || activeStorageNamespace.current !== storageKeys.namespace) return;
     let active = true;
     let retryTimeout: number | undefined;
     serverLoadInFlight.current = true;
@@ -867,10 +953,10 @@ export default function MysteriesPage() {
       active = false;
       if (retryTimeout) window.clearTimeout(retryTimeout);
     };
-  }, [ready, serverLoadAttempt]);
+  }, [ready, serverLoadAttempt, storageKeys]);
 
   useEffect(() => {
-    if (!ready || serverSyncReady || !persistedForSync) return;
+    if (!ready || !storageKeys || activeStorageNamespace.current !== storageKeys.namespace || serverSyncReady || !persistedForSync) return;
     const localSnapshot = stableJsonStringify(
       persistedForSync.filter((cache) => !cache.sharedBy).map(shareableMystery)
     );
@@ -882,7 +968,7 @@ export default function MysteriesPage() {
       setServerLoadAttempt((attempt) => attempt + 1);
     }, 800);
     return () => window.clearTimeout(timeout);
-  }, [persistedForSync, ready, serverSyncReady]);
+  }, [persistedForSync, ready, serverSyncReady, storageKeys]);
 
   useEffect(() => {
     const retryServerLoad = () => {
@@ -904,7 +990,8 @@ export default function MysteriesPage() {
       setCaches((current) => current.filter((cache) => cache.id !== cacheId));
       setCacheToDelete((current) => current?.id === cacheId ? null : current);
     };
-    const channel = typeof BroadcastChannel === "undefined" ? null : new BroadcastChannel(DELETION_CHANNEL);
+    if (!storageKeys) return;
+    const channel = typeof BroadcastChannel === "undefined" ? null : new BroadcastChannel(storageKeys.deletionChannel);
     deletionChannel.current = channel;
     if (channel) {
       channel.onmessage = (event: MessageEvent<unknown>) => {
@@ -916,7 +1003,7 @@ export default function MysteriesPage() {
     }
 
     const receiveStorageUpdate = (event: StorageEvent) => {
-      if (event.key === DELETION_STORAGE_KEY && event.newValue) {
+      if (event.key === storageKeys.deletions && event.newValue) {
         try {
           const cacheIds = JSON.parse(event.newValue) as unknown;
           if (Array.isArray(cacheIds)) {
@@ -932,7 +1019,7 @@ export default function MysteriesPage() {
         }
         return;
       }
-      if (event.key !== STORAGE_KEY || !event.newValue) return;
+      if (event.key !== storageKeys.caches || !event.newValue) return;
       try {
         const updated = verifiedStoredShares(JSON.parse(event.newValue) as MysteryCache[])
           .filter((cache) => !deletedCacheIds.current.has(cache.id));
@@ -948,7 +1035,7 @@ export default function MysteriesPage() {
       channel?.close();
       deletionChannel.current = null;
     };
-  }, []);
+  }, [storageKeys]);
 
   useEffect(() => {
     const receiveSyncReceipt = () => {
@@ -1137,11 +1224,13 @@ export default function MysteriesPage() {
     });
     persistSyncMetadata();
     persistedCaches.current = persistedCaches.current.filter((cache) => !deletedCacheIds.current.has(cache.id));
+    const keys = storageKeysRef.current;
+    if (!keys) return;
     try {
-      localStorage.setItem(DELETION_STORAGE_KEY, JSON.stringify([...deletedCacheIds.current]));
+      localStorage.setItem(keys.deletions, JSON.stringify([...deletedCacheIds.current]));
     } catch {
       try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(persistedCaches.current));
+        localStorage.setItem(keys.caches, JSON.stringify(persistedCaches.current));
       } catch {
         // The in-memory tombstone still protects this page.
       }

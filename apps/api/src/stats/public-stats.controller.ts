@@ -3,7 +3,13 @@ import { Throttle } from "@nestjs/throttler";
 import type { Response } from "express";
 import { readFile } from "fs/promises";
 import { join } from "path";
-import { renderPublicExtremesSvg, renderPublicProfileHtml, renderPublicProfileSvg, renderPublicScratchMapSvg } from "./public-profile-renderer";
+import {
+  PUBLIC_PROFILE_CONTENT_SECURITY_POLICY,
+  renderPublicExtremesSvg,
+  renderPublicProfileHtml,
+  renderPublicProfileSvg,
+  renderPublicScratchMapSvg
+} from "./public-profile-renderer";
 import { StatsService } from "./stats.service";
 
 const worldMapTemplatePath = join(__dirname, "map-assets", "ProjectGC_World.svg");
@@ -26,7 +32,8 @@ export class PublicStatsController {
   @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @Get("profile-stats/:username")
   @Header("Content-Type", "text/html; charset=utf-8")
-  @Header("Cache-Control", "public, max-age=300")
+  @Header("Content-Security-Policy", PUBLIC_PROFILE_CONTENT_SECURITY_POLICY)
+  @Header("Cache-Control", "no-store")
   async profileStats(@Param("username") username: string) {
     const { profile, stats } = await this.stats.publicSnapshotForUsername(username);
     return renderPublicProfileHtml(profile, stats);
@@ -35,7 +42,7 @@ export class PublicStatsController {
   @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @Get("profile-stats-image/:username")
   @Header("Content-Type", "image/svg+xml; charset=utf-8")
-  @Header("Cache-Control", "public, max-age=300")
+  @Header("Cache-Control", "no-store")
   async profileStatsImage(@Param("username") username: string) {
     const { profile, stats } = await this.stats.publicSnapshotForUsername(username);
     return renderPublicProfileSvg(profile, stats);
@@ -44,7 +51,7 @@ export class PublicStatsController {
   @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @Get("profile-extremes-image/:username")
   @Header("Content-Type", "image/svg+xml; charset=utf-8")
-  @Header("Cache-Control", "public, max-age=300")
+  @Header("Cache-Control", "no-store")
   async profileExtremesImage(@Param("username") username: string) {
     const { profile, stats } = await this.stats.publicSnapshotForUsername(username);
     return renderPublicExtremesSvg(profile, stats.extremeCaches);
@@ -53,7 +60,7 @@ export class PublicStatsController {
   @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @Get("profile-scratch-map-image/:username")
   @Header("Content-Type", "image/svg+xml; charset=utf-8")
-  @Header("Cache-Control", "public, max-age=300")
+  @Header("Cache-Control", "no-store")
   async profileScratchMapImage(@Param("username") username: string) {
     const { profile, stats } = await this.stats.publicSnapshotForUsername(username);
     let worldMapTemplate: string;

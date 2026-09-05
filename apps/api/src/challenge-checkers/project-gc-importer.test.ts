@@ -351,3 +351,18 @@ test("rejects changing a verdict alias after reading c_number", () => {
 test("rejects unsupported config fields instead of changing checker meaning", () => {
   assert.throws(() => importProjectGcNumberScript(numberScript, '{"limit":1,"radius":10}'), /radius.*not supported/);
 });
+
+test("rejects scripts whose syntax nesting exceeds the parser budget", () => {
+  const script = `${"(".repeat(101)}${")".repeat(101)}`;
+  assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /nesting is too deep/);
+});
+
+test("rejects scripts whose call count exceeds the parser budget", () => {
+  const script = "f()\n".repeat(1001);
+  assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /contains too many calls/);
+});
+
+test("rejects scripts whose cumulative parser scan work exceeds the budget", () => {
+  const script = `${"f()\n".repeat(101)}${" ".repeat(100_000)}`;
+  assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /requires too much parsing work/);
+});

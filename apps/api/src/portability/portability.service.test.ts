@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { lastValueFrom, of, Subject } from "rxjs";
 import {
+  MAX_PORTABLE_ARCHIVE_RECORDS,
   parsePortableArchive,
   PortabilityService,
 } from "./portability.service";
@@ -67,6 +68,48 @@ test("portable parser accepts the current documented format", () => {
   assert.equal(parsed.format, "geostats-portable-data");
   assert.equal(parsed.version, 1);
   assert.deepEqual(parsed.data.finds, []);
+});
+
+test("portable parser accepts records spread across data arrays within the aggregate budget", () => {
+  const parsed = parsePortableArchive(archive({
+    data: {
+      profile: null,
+      caches: [{}],
+      finds: [{}],
+      hides: [],
+      correctedCoordinates: [{}],
+      ownerFinderCountryStats: [],
+      statSnapshots: [],
+      mysteryWorkspaces: [],
+      trackables: [{}],
+      trackableLogs: [{}],
+    },
+  }));
+
+  assert.equal(parsed.data.caches.length, 1);
+  assert.equal(parsed.data.finds.length, 1);
+  assert.equal(parsed.data.correctedCoordinates.length, 1);
+  assert.equal(parsed.data.trackables.length, 1);
+  assert.equal(parsed.data.trackableLogs.length, 1);
+});
+
+test("portable parser rejects the cumulative record count before mapping entries", () => {
+  const firstHalf = Math.floor(MAX_PORTABLE_ARCHIVE_RECORDS / 2);
+  assert.throws(
+    () => parsePortableArchive(archive({
+      data: {
+        profile: null,
+        caches: Array(firstHalf).fill(null),
+        finds: Array(MAX_PORTABLE_ARCHIVE_RECORDS - firstHalf + 1).fill(null),
+        hides: [],
+        correctedCoordinates: [],
+        ownerFinderCountryStats: [],
+        statSnapshots: [],
+        mysteryWorkspaces: [],
+      },
+    })),
+    new RegExp(`more than ${MAX_PORTABLE_ARCHIVE_RECORDS} records across data arrays`),
+  );
 });
 
 test("portable parser rejects files from an unknown format", () => {
@@ -194,6 +237,10 @@ test("import creates global cache metadata and keeps raw data inside the authent
   assert.equal(cacheWrites.length, 1);
   assert.equal(cacheWrites[0].data[0].userId, undefined);
   assert.equal(cacheWrites[0].data[0].gcCode, "GCPOISON");
+  assert.equal(cacheWrites[0].data[0].name, "GCPOISON");
+  assert.equal(cacheWrites[0].data[0].latitude, 0);
+  assert.equal(cacheWrites[0].data[0].longitude, 0);
+  assert.equal(cacheWrites[0].data[0].metadataTrusted, false);
   assert.equal(userCacheWrites.length, 1);
   assert.equal(userCacheWrites[0].create.userId, user.id);
   assert.equal(userCacheWrites[0].create.cacheId, "user-cache-1");

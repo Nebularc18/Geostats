@@ -86,6 +86,30 @@ test("requiredEnv accepts strong production secrets", async () => {
   );
 });
 
+test("requiredEnv rejects Dockhand production secret placeholders", async () => {
+  await withEnv(
+    {
+      NODE_ENV: "production",
+      JWT_SECRET: "change-this-jwt-secret-minimum-32-chars"
+    },
+    () => {
+      assert.throws(() => requiredEnv("JWT_SECRET"), /development value/);
+    }
+  );
+});
+
+test("envOrDefault rejects Dockhand placeholders embedded in connection URLs", async () => {
+  await withEnv(
+    {
+      NODE_ENV: "production",
+      DATABASE_URL: "postgresql://geostats:change-this-postgres-password-min-32-chars@postgres:5432/geostats"
+    },
+    () => {
+      assert.throws(() => envOrDefault("DATABASE_URL", "postgresql://fallback"), /development value/);
+    }
+  );
+});
+
 test("Clerk auth requires both Clerk credentials", async () => {
   await withEnv(
     {

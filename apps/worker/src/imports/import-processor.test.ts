@@ -370,7 +370,10 @@ test("process uses the user's existing cache metadata without overwriting it", a
   assert.equal(cacheUpserts.length, 1);
   assert.deepEqual(cacheUpserts[0].where, { gcCode: "GC12345" });
   assert.equal(cacheUpserts[0].create.userId, undefined);
-  assert.equal(cacheUpserts[0].create.name, "Attacker Cache Name");
+  assert.equal(cacheUpserts[0].create.name, "GC12345");
+  assert.equal(cacheUpserts[0].create.latitude, 0);
+  assert.equal(cacheUpserts[0].create.longitude, 0);
+  assert.equal(cacheUpserts[0].create.metadataTrusted, false);
   assert.deepEqual(cacheUpserts[0].update, {});
   assert.equal(userCacheUpserts.length, 1);
   assert.deepEqual(userCacheUpserts[0].where, {
@@ -549,9 +552,10 @@ test("process creates missing cache metadata before the import transaction", asy
     },
     cache: {
       upsert: async ({ create, update }: any) => {
-        assert.equal(create.name, "Attacker Cache Name");
-        assert.equal(create.latitude, 56.1612);
-        assert.equal(create.longitude, 15.5869);
+        assert.equal(create.name, "GC12345");
+        assert.equal(create.latitude, 0);
+        assert.equal(create.longitude, 0);
+        assert.equal(create.metadataTrusted, false);
         assert.deepEqual(update, {});
         cacheCreateCompleted = true;
         return createdCache;
