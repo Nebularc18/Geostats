@@ -26,7 +26,7 @@ import {
 } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { AuthUser } from "@geostats/shared";
+import { parseCsvRows, AuthUser } from "@geostats/shared";
 import { Prisma } from "@geostats/db";
 import { AuthGuard } from "../auth/auth.guard";
 import { CurrentUser } from "../auth/current-user.decorator";
@@ -957,47 +957,11 @@ function countReceivedLogs(logs: Array<Record<string, any>>) {
 }
 
 function parseCsv(text: string): string[][] {
-  const rows: string[][] = [];
-  let row: string[] = [];
-  let field = "";
-  let inQuotes = false;
-
-  for (let index = 0; index < text.length; index += 1) {
-    const char = text[index];
-    const next = text[index + 1];
-    if (inQuotes) {
-      if (char === '"' && next === '"') {
-        field += '"';
-        index += 1;
-      } else if (char === '"') {
-        inQuotes = false;
-      } else {
-        field += char;
-      }
-      continue;
-    }
-    if (char === '"') {
-      inQuotes = true;
-    } else if (char === ",") {
-      row.push(field);
-      field = "";
-    } else if (char === "\n") {
-      row.push(field);
-      rows.push(row);
-      row = [];
-      field = "";
-    } else if (char !== "\r") {
-      field += char;
-    }
-  }
-  if (inQuotes) {
+  try {
+    return parseCsvRows(text).filter((row) => row.some((value) => value.trim()));
+  } catch {
     throw new BadRequestException("CSV contains an unclosed quoted field");
   }
-  if (field || row.length > 0) {
-    row.push(field);
-    rows.push(row);
-  }
-  return rows.filter((csvRow) => csvRow.some((value) => value.trim()));
 }
 
 function normalizedHeader(value: string) {

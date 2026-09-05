@@ -1,7 +1,7 @@
 import { XMLParser } from "fast-xml-parser";
 import JSZip from "jszip";
 import { Readable } from "node:stream";
-import { ImportSource, parseCoordinate } from "@geostats/shared";
+import { parseCsvRows, ImportSource, parseCoordinate } from "@geostats/shared";
 
 export interface ParsedCache {
   gcCode: string;
@@ -420,43 +420,7 @@ function csvRows(content: string): string[][] {
   const firstLine = content.split(/\r?\n/, 1)[0] ?? "";
   const delimiters = [",", "\t", ";", "|"];
   const delimiter = delimiters.sort((left, right) => firstLine.split(right).length - firstLine.split(left).length)[0] ?? ",";
-  const rows: string[][] = [];
-  let row: string[] = [];
-  let field = "";
-  let inQuotes = false;
-  for (let index = 0; index < content.length; index += 1) {
-    const char = content[index];
-    if (inQuotes) {
-      if (char === '"' && content[index + 1] === '"') {
-        field += '"';
-        index += 1;
-      } else if (char === '"') {
-        inQuotes = false;
-      } else {
-        field += char;
-      }
-    } else if (char === '"') {
-      inQuotes = true;
-    } else if (char === delimiter) {
-      row.push(field);
-      field = "";
-    } else if (char === "\n") {
-      row.push(field);
-      rows.push(row);
-      row = [];
-      field = "";
-    } else if (char !== "\r") {
-      field += char;
-    }
-  }
-  if (inQuotes) {
-    throw new Error("CSV contains an unclosed quoted field");
-  }
-  if (field || row.length > 0) {
-    row.push(field);
-    rows.push(row);
-  }
-  return rows.filter((item) => item.some((value) => value.trim()));
+  return parseCsvRows(content, delimiter).filter((row) => row.some((value) => value.trim()));
 }
 
 function codeFromText(value: unknown, pattern: RegExp): string | null {
@@ -513,12 +477,6 @@ function trackableState(value: unknown): ParsedTrackableState | null {
   if (text.includes("retrieve") || text.includes("grab")) return "RETRIEVED";
   if (text.includes("drop") || text.includes("place")) return "DROPPED";
   if (text.includes("visit") || text.includes("dip")) return "VISITED";
-  return null;
-}
-
-function stateForTrackableLog(value: ParsedTrackableLogType): ParsedTrackableState | null {
-  if (value === "GRABBED" || value === "RETRIEVED") return "RETRIEVED";
-  if (value === "DISCOVERED" || value === "DROPPED" || value === "VISITED" || value === "MISSING") return value;
   return null;
 }
 

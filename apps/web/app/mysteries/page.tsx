@@ -1504,18 +1504,22 @@ export default function MysteriesPage() {
       setBulkImportError("Choose a CSV file smaller than 2 MB.");
       return;
     }
-    const parsed = parseFailedCoordinateCsv(await file.text());
-    if (!parsed.attempts.length) {
+    try {
+      const parsed = parseFailedCoordinateCsv(await file.text());
+      if (!parsed.attempts.length) {
+        setBulkCsvName(file.name);
+        setBulkImportError("No valid coordinates were found. Use Latitude and Longitude columns, or a Coordinates column.");
+        return;
+      }
+      const lines = parsed.attempts.flatMap((attempt) => attempt.kind === "coordinate"
+        ? [`${attempt.latitude.toFixed(6)}, ${attempt.longitude.toFixed(6)}`]
+        : []);
+      setBulkTries(lines.join("\n"));
       setBulkCsvName(file.name);
-      setBulkImportError("No valid coordinates were found. Use Latitude and Longitude columns, or a Coordinates column.");
-      return;
+      setBulkCsvSummary(`${lines.length} ${lines.length === 1 ? "coordinate" : "coordinates"} ready${parsed.ignoredRows ? `; ignored ${parsed.ignoredRows} rows without coordinates` : ""}.`);
+    } catch (error) {
+      setBulkImportError(error instanceof Error ? error.message : "Could not read the CSV file.");
     }
-    const lines = parsed.attempts.flatMap((attempt) => attempt.kind === "coordinate"
-      ? [`${attempt.latitude.toFixed(6)}, ${attempt.longitude.toFixed(6)}`]
-      : []);
-    setBulkTries(lines.join("\n"));
-    setBulkCsvName(file.name);
-    setBulkCsvSummary(`${lines.length} ${lines.length === 1 ? "coordinate" : "coordinates"} ready${parsed.ignoredRows ? `; ignored ${parsed.ignoredRows} rows without coordinates` : ""}.`);
   }
 
   function importBulkFailedTries(event: FormEvent<HTMLFormElement>) {

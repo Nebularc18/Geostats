@@ -121,11 +121,6 @@ function sectionHead(title: string, width = 740) {
   </div>`;
 }
 
-function bucketCount(buckets: CountBucket[] = [], key: string) {
-  const normalized = key.toLowerCase();
-  return buckets.find((bucket) => bucket.key.toLowerCase() === normalized)?.count ?? 0;
-}
-
 function mixColor(start: string, end: string, amount: number) {
   const normalized = Math.max(0, Math.min(1, amount));
   const startRgb = start.match(/\w\w/g)?.map((part) => Number.parseInt(part, 16)) ?? [0, 0, 0];
@@ -147,10 +142,6 @@ function scratchColor(count: number, max: number) {
 
 function countryNamesForBoundary(countryName: string) {
   return [countryName, ...(countryNameAliases[countryName] ?? [])];
-}
-
-function jsonForScript(value: unknown) {
-  return JSON.stringify(value).replace(/</g, "\\u003c").replace(/>/g, "\\u003e").replace(/&/g, "\\u0026");
 }
 
 function topLocationList(buckets: CountBucket[], max: number, total: number, limit = 14) {

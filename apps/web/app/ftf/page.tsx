@@ -147,17 +147,6 @@ function formatCoordinate(row: FtfRow | null) {
   return `${row.latitude.toFixed(5)}, ${row.longitude.toFixed(5)}`;
 }
 
-function cacheLink(row: Pick<FtfRow, "gcCode" | "name">) {
-  return (
-    <>
-      <a href={`https://coord.info/${row.gcCode}`} rel="noreferrer" target="_blank">
-        {row.gcCode}
-      </a>
-      <span>{row.name}</span>
-    </>
-  );
-}
-
 function summaryRows(stats: FtfStats | null) {
   const rows: [string, string][] = [];
   if (!stats) {

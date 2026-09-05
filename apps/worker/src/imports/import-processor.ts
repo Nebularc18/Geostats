@@ -1,23 +1,12 @@
-import { Cache, countableFindWhere, PrismaClient, Prisma } from "@geostats/db";
+import { Cache, calculateUserStats, PrismaClient, Prisma } from "@geostats/db";
 import { DEFAULT_FTF_DETECTION_TERMS, detectFtfLog, parseImportFile, termRegex as ftfTermRegex } from "@geostats/gpx-parser";
 import { ImportFileType, ImportJobPayload, ImportSource, ImportStatus } from "@geostats/shared";
-import { calculateHideStats, calculateStats, normalizedGcUsername } from "@geostats/stats";
 import { ObjectStorage } from "../storage/object-storage";
 
 type ParsedImportResult = Awaited<ReturnType<typeof parseImportFile>>;
 type ParsedFindWithDate = ParsedImportResult["finds"][number] & { foundAt: Date };
 type ImportAttempt = { attemptsMade: number; maxAttempts: number };
 const FTF_TIME_LOOKAHEAD_LINES = 3;
-
-function elevationFromRaw(raw: unknown): number | null {
-  if (!raw || typeof raw !== "object") {
-    return null;
-  }
-  const value = (raw as Record<string, unknown>).ele;
-  const text = value && typeof value === "object" && "text" in value ? (value as { text?: unknown }).text : value;
-  const elevation = Number(text);
-  return Number.isFinite(elevation) ? elevation : null;
-}
 
 function rawObject(value: unknown): Record<string, any> {
   return value && typeof value === "object" && !Array.isArray(value) ? { ...(value as Record<string, any>) } : {};
@@ -505,19 +494,11 @@ export class ImportProcessor {
 
   private async calculateAndStoreStats(userId: string) {
     await this.prisma.$transaction(async (tx) => {
-      // Serialise recalculations across worker processes before reading any
-      // stats inputs, then hold the lock until the snapshot is replaced.
-      const holdsDatabaseLock = typeof tx.$queryRaw === "function";
-      if (holdsDatabaseLock) {
-        await tx.$queryRaw`
-          SELECT pg_advisory_xact_lock(hashtext('stats-recalculation'), hashtext(${userId}))::text AS lock_result
-        `;
-      }
-
-      // Real Prisma transactions always expose $queryRaw. The fallback keeps
-      // lightweight unit-test transaction doubles working without weakening
-      // the locked production path.
-      const stats = await this.buildStats(userId, holdsDatabaseLock ? tx : this.prisma);
+      // Hold the user lock from the first stats read until the snapshot is replaced.
+      await tx.$queryRaw`
+        SELECT pg_advisory_xact_lock(hashtext('stats-recalculation'), hashtext(${userId}))::text AS lock_result
+      `;
+      const stats = await calculateUserStats(tx, userId);
       await tx.statSnapshot.deleteMany({ where: { userId } });
       await tx.statSnapshot.create({
         data: {
@@ -528,96 +509,4 @@ export class ImportProcessor {
     }, { maxWait: 10_000, timeout: 120_000 });
   }
 
-  private async buildStats(userId: string, prisma: Prisma.TransactionClient | PrismaClient = this.prisma) {
-    const profile = await prisma.geocachingProfile.findUnique({ where: { userId } });
-    const hides = await prisma.hide.findMany({
-      where: { userId },
-      include: {
-        cache: {
-          include: {
-            userData: { where: { userId }, take: 1 },
-            corrections: {
-              where: { userId }
-            }
-          }
-        }
-      },
-      orderBy: { placedAt: "asc" }
-    });
-    const ownerFinderCountryStats = await prisma.ownerFinderCountryStat.findMany({
-      where: { userId },
-      orderBy: [{ count: "desc" }, { country: "asc" }]
-    });
-    const gcUsername = normalizedGcUsername(profile);
-    const finds = await prisma.find.findMany({
-      where: countableFindWhere(userId, gcUsername),
-      include: {
-        cache: {
-          include: {
-            userData: { where: { userId }, take: 1 },
-            corrections: {
-              where: { userId }
-            }
-          }
-        }
-      },
-      orderBy: [{ foundAt: "asc" }, { createdAt: "asc" }]
-    });
-    const stats = calculateStats(
-      finds.map((find) => ({
-        foundAt: find.foundAt,
-        isFtf: find.isFtf,
-        logText: find.logText,
-        cache: {
-          latitude: Number(find.cache.corrections[0]?.latitude ?? find.cache.latitude),
-          longitude: Number(find.cache.corrections[0]?.longitude ?? find.cache.longitude),
-          gcCode: find.cache.gcCode,
-          name: find.cache.name,
-          cacheType: find.cache.cacheType,
-          difficulty: find.cache.difficulty ? Number(find.cache.difficulty) : null,
-          terrain: find.cache.terrain ? Number(find.cache.terrain) : null,
-          size: find.cache.size,
-          country: find.cache.country,
-          region: find.cache.region,
-          county: find.cache.county,
-          hiddenDate: find.cache.hiddenDate,
-          ownerName: find.cache.ownerName,
-          elevationMeters: elevationFromRaw(find.cache.userData[0]?.raw),
-          raw: find.cache.userData[0]?.raw
-        }
-      })),
-      {
-        homeLatitude: profile?.homeLatitude == null ? null : Number(profile.homeLatitude),
-        homeLongitude: profile?.homeLongitude == null ? null : Number(profile.homeLongitude)
-      }
-    );
-    stats.hideStats = calculateHideStats(
-      hides.map((hide) => ({
-        placedAt: hide.placedAt,
-        receivedLogCount: hide.receivedLogCount,
-        receivedLogsRaw: hide.receivedLogsRaw,
-        cache: {
-          latitude: Number(hide.cache.corrections[0]?.latitude ?? hide.cache.latitude),
-          longitude: Number(hide.cache.corrections[0]?.longitude ?? hide.cache.longitude),
-          gcCode: hide.cache.gcCode,
-          name: hide.cache.name,
-          cacheType: hide.cache.cacheType,
-          difficulty: hide.cache.difficulty ? Number(hide.cache.difficulty) : null,
-          terrain: hide.cache.terrain ? Number(hide.cache.terrain) : null,
-          size: hide.cache.size,
-          country: hide.cache.country,
-          region: hide.cache.region,
-          county: hide.cache.county,
-          hiddenDate: hide.cache.hiddenDate,
-          ownerName: hide.cache.ownerName,
-          elevationMeters: elevationFromRaw(hide.cache.userData[0]?.raw),
-          raw: hide.cache.userData[0]?.raw
-        }
-      })),
-      {
-        finderCountryBuckets: ownerFinderCountryStats.map((row) => ({ key: row.country, count: row.count }))
-      }
-    );
-    return stats;
-  }
 }

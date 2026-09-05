@@ -54,7 +54,7 @@ export interface CountBucket {
   count: number;
 }
 
-export const STATS_VERSION = 20;
+export const STATS_VERSION = 21;
 
 export function normalizedGcUsername(profile?: { gcUsername?: string | null } | string | null): string | null {
   const value = typeof profile === "string" ? profile : profile?.gcUsername;
@@ -1476,10 +1476,6 @@ export function calculateStats(finds: StatsFind[], options: StatsOptions = {}): 
     milestoneStats,
     streaks: calculateStreaks(sorted.map((find) => toDate(find.foundAt)))
   };
-}
-
-export function calculateMilestones(finds: StatsFind[]): Milestone[] {
-  return calculateMilestoneStats(finds).countMilestones;
 }
 
 function officialCacheMilestones(): Set<number> {

@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable } from "@nestjs/common";
 import { Prisma } from "@geostats/db";
-import { ImportFileType, ImportSource, ImportStatus } from "@geostats/shared";
+import { parseCsvRows, ImportFileType, ImportSource, ImportStatus } from "@geostats/shared";
 import { PrismaService } from "../common/prisma.service";
 import { StatsService } from "../stats/stats.service";
 
@@ -51,44 +51,11 @@ const MAX_BATCH_ROWS = 500;
 const FOUND_LOG_TYPES = new Set(["found it", "attended", "webcam photo taken"]);
 
 function parseCsv(text: string): string[][] {
-  const rows: string[][] = [];
-  let row: string[] = [];
-  let field = "";
-  let inQuotes = false;
-  for (let index = 0; index < text.length; index += 1) {
-    const character = text[index]!;
-    if (inQuotes) {
-      if (character === '"' && text[index + 1] === '"') {
-        field += '"';
-        index += 1;
-      } else if (character === '"') {
-        inQuotes = false;
-      } else {
-        field += character;
-      }
-    } else if (character === '"') {
-      inQuotes = true;
-    } else if (character === ",") {
-      row.push(field);
-      field = "";
-    } else if (character === "\n") {
-      row.push(field.replace(/\r$/, ""));
-      rows.push(row);
-      row = [];
-      field = "";
-    } else {
-      field += character;
-    }
+  try {
+    return parseCsvRows(text).filter((row) => row.some((value) => value !== ""));
+  } catch {
+    throw new BadRequestException("GSAK CSV contains an unterminated quoted field");
   }
-  if (inQuotes)
-    throw new BadRequestException(
-      "GSAK CSV contains an unterminated quoted field",
-    );
-  if (field || row.length) {
-    row.push(field.replace(/\r$/, ""));
-    rows.push(row);
-  }
-  return rows.filter((values) => values.some((value) => value !== ""));
 }
 
 export function gsakCsvRecords(text: unknown): CsvRecord[] {

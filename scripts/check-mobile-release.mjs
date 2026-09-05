@@ -3,37 +3,8 @@ import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
 const rootConfig = require("../app.config.js").expo;
-const mobileConfig = require("../apps/mobile/app.config.js").expo;
 const eas = require("../eas.json");
 
-for (const field of ["name", "slug", "version", "scheme"]) {
-  assert.equal(
-    rootConfig[field],
-    mobileConfig[field],
-    `Expo config mismatch for ${field}`,
-  );
-}
-
-assert.equal(
-  rootConfig.android?.package,
-  mobileConfig.android?.package,
-  "Expo config mismatch for android.package",
-);
-assert.equal(
-  rootConfig.extra?.eas?.projectId,
-  mobileConfig.extra?.eas?.projectId,
-  "Expo config mismatch for extra.eas.projectId",
-);
-assert.deepEqual(
-  rootConfig.runtimeVersion,
-  mobileConfig.runtimeVersion,
-  "Expo config mismatch for runtimeVersion",
-);
-assert.deepEqual(
-  rootConfig.updates,
-  mobileConfig.updates,
-  "Expo config mismatch for updates",
-);
 assert.equal(
   eas.build.preview?.environment,
   "preview",

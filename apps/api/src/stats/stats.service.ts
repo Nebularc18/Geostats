@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
-import { countableFindWhere, Prisma } from "@geostats/db";
-import { calculateHideStats, calculateStats, normalizedGcUsername, STATS_VERSION } from "@geostats/stats";
+import { calculateUserStats, countableFindWhere, Prisma } from "@geostats/db";
+import { normalizedGcUsername, STATS_VERSION } from "@geostats/stats";
 import { PrismaService } from "../common/prisma.service";
 import { countryExtremes, CountryExtremeEntry } from "./country-extremes";
 import { swedenRegionExtremes } from "./sweden-region-extremes";
@@ -118,16 +118,6 @@ function elevationExtremeSql(direction: "ASC" | "DESC", region: string | null): 
   ORDER BY v.elevation ${direction}
   LIMIT 1
 `;
-}
-
-function elevationFromRaw(raw: unknown): number | null {
-  if (!raw || typeof raw !== "object") {
-    return null;
-  }
-  const value = (raw as Record<string, unknown>).ele;
-  const text = value && typeof value === "object" && "text" in value ? (value as { text?: unknown }).text : value;
-  const elevation = Number(text);
-  return Number.isFinite(elevation) ? elevation : null;
 }
 
 @Injectable()
@@ -252,7 +242,7 @@ export class StatsService {
     const profile = await this.prisma.geocachingProfile.findUnique({
       where: { userId }
     });
-    return this.calculateSnapshot(userId, profile, this.prisma);
+    return calculateUserStats(this.prisma, userId, profile);
   }
 
   async replaceSnapshotForUser(userId: string, stats: unknown, prisma: PrismaClientLike = this.prisma) {
@@ -278,7 +268,7 @@ export class StatsService {
       return inFlight;
     }
 
-    const recalculation = this.calculateSnapshot(userId, profile, this.prisma)
+    const recalculation = calculateUserStats(this.prisma, userId, profile)
       .then(async (stats) => {
         await this.prisma.$transaction((tx) => this.replaceSnapshotForUser(userId, stats, tx));
         return stats;
@@ -288,111 +278,6 @@ export class StatsService {
       });
     this.recalculationsByUser.set(userId, recalculation);
     return recalculation;
-  }
-
-  private async calculateSnapshot(
-    userId: string,
-    profile?: {
-      gcUsername?: string | null;
-      homeLatitude: unknown;
-      homeLongitude: unknown;
-    } | null,
-    prisma: PrismaClientLike = this.prisma
-  ) {
-    const hides = await prisma.hide.findMany({
-      where: { userId },
-      include: {
-        cache: {
-          include: {
-            userData: { where: { userId }, take: 1 },
-            corrections: {
-              where: { userId }
-            }
-          }
-        }
-      },
-      orderBy: { placedAt: "asc" }
-    });
-    const ownerFinderCountryStats = await prisma.ownerFinderCountryStat.findMany({
-      where: { userId },
-      orderBy: [{ count: "desc" }, { country: "asc" }]
-    });
-    const gcUsername = normalizedGcUsername(profile);
-    const finds = await prisma.find.findMany({
-      where: countableFindWhere(userId, gcUsername),
-      include: {
-        cache: {
-          include: {
-            userData: { where: { userId }, take: 1 },
-            corrections: {
-              where: { userId }
-            }
-          }
-        }
-      },
-      orderBy: [{ foundAt: "asc" }, { createdAt: "asc" }]
-    });
-    const stats = calculateStats(
-      finds.map((find) => ({
-        foundAt: find.foundAt,
-        isFtf: find.isFtf,
-        logText: find.logText,
-        cache: {
-          latitude: Number(find.cache.corrections[0]?.latitude ?? find.cache.latitude),
-          longitude: Number(find.cache.corrections[0]?.longitude ?? find.cache.longitude),
-          gcCode: find.cache.gcCode,
-          name: find.cache.name,
-          cacheType: find.cache.cacheType,
-          difficulty: find.cache.difficulty ? Number(find.cache.difficulty) : null,
-          terrain: find.cache.terrain ? Number(find.cache.terrain) : null,
-          size: find.cache.size,
-          country: find.cache.country,
-          region: find.cache.region,
-          county: find.cache.county,
-          hiddenDate: find.cache.hiddenDate,
-          ownerName: find.cache.ownerName,
-          elevationMeters: elevationFromRaw(find.cache.userData[0]?.raw),
-          raw: find.cache.userData[0]?.raw
-        }
-      })),
-      {
-        homeLatitude: profile?.homeLatitude == null ? null : Number(profile.homeLatitude),
-        homeLongitude: profile?.homeLongitude == null ? null : Number(profile.homeLongitude)
-      }
-    );
-    stats.hideStats = calculateHideStats(
-      hides.map((hide) => ({
-        placedAt: hide.placedAt,
-        receivedLogCount: hide.receivedLogCount,
-        receivedLogsRaw: hide.receivedLogsRaw,
-        cache: {
-          latitude: Number(hide.cache.corrections[0]?.latitude ?? hide.cache.latitude),
-          longitude: Number(hide.cache.corrections[0]?.longitude ?? hide.cache.longitude),
-          gcCode: hide.cache.gcCode,
-          name: hide.cache.name,
-          cacheType: hide.cache.cacheType,
-          difficulty: hide.cache.difficulty ? Number(hide.cache.difficulty) : null,
-          terrain: hide.cache.terrain ? Number(hide.cache.terrain) : null,
-          size: hide.cache.size,
-          country: hide.cache.country,
-          region: hide.cache.region,
-          county: hide.cache.county,
-          hiddenDate: hide.cache.hiddenDate,
-          ownerName: hide.cache.ownerName,
-          elevationMeters: elevationFromRaw(hide.cache.userData[0]?.raw),
-          raw: hide.cache.userData[0]?.raw
-        }
-      })),
-      {
-        finderCountryBuckets: ownerFinderCountryStats.map((row) => ({
-          key: row.country,
-          count: row.count
-        }))
-      }
-    );
-    stats.achievementStats.hostedEventCaches = stats.hideStats.hostedEventCaches;
-
-    return stats;
   }
 
   private async foundCacheIdsFor(userId: string, cacheIds: string[]): Promise<Set<string>> {

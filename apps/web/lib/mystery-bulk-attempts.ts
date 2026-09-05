@@ -1,4 +1,4 @@
-import { parseCoordinate } from "@geostats/shared";
+import { parseCsvRows, parseCoordinate } from "@geostats/shared";
 import { coordinateIdentityKey } from "./mystery-cache-merge.ts";
 
 export type BulkFailedAttempt =
@@ -70,36 +70,9 @@ function csvDelimiter(text: string) {
 }
 
 function csvRows(text: string) {
-  const rows: string[][] = [];
-  const delimiter = csvDelimiter(text);
-  let row: string[] = [];
-  let field = "";
-  let quoted = false;
-  for (let index = 0; index < text.length; index += 1) {
-    const character = text[index];
-    if (character === '"') {
-      if (quoted && text[index + 1] === '"') {
-        field += '"';
-        index += 1;
-      } else {
-        quoted = !quoted;
-      }
-    } else if (!quoted && character === delimiter) {
-      row.push(field.trim());
-      field = "";
-    } else if (!quoted && (character === "\n" || character === "\r")) {
-      if (character === "\r" && text[index + 1] === "\n") index += 1;
-      row.push(field.trim());
-      if (row.some(Boolean)) rows.push(row);
-      row = [];
-      field = "";
-    } else {
-      field += character;
-    }
-  }
-  row.push(field.trim());
-  if (row.some(Boolean)) rows.push(row);
-  return rows;
+  return parseCsvRows(text, csvDelimiter(text))
+    .map((row) => row.map((field) => field.trim()))
+    .filter((row) => row.some(Boolean));
 }
 
 function decimalCoordinatePart(value: string) {

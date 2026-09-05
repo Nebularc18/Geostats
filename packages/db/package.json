@@ -9,14 +9,15 @@
     "dev": "tsc -p tsconfig.json --watch",
     "lint": "tsc -p tsconfig.json --noEmit",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --test dist/**/*.test.js",
+    "test": "tsc -p tsconfig.json && node --test dist/**/*.test.js",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:deploy": "prisma migrate deploy",
     "db:seed": "tsx prisma/seed.ts"
   },
   "dependencies": {
-    "@prisma/client": "^6.0.1"
+    "@prisma/client": "^6.0.1",
+    "@geostats/stats": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

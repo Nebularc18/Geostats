@@ -26,7 +26,7 @@ const nav = [
   { href: "/map", label: "Map", icon: Map },
   { href: "/mysteries", label: "Mysteries", icon: Puzzle },
   { href: "/travel", label: "Travel", icon: Navigation },
-  { href: "/field-kit", label: "Field kit", icon: BookOpen },
+  { href: "/field-kit", label: "Field kit preview", icon: BookOpen },
   { href: "/scratch", label: "Scratch Map", icon: Globe2 },
   { href: "/settings/profile", label: "Profile", icon: Settings },
   { href: "/admin", label: "Admin console", icon: Shield, adminOnly: true }

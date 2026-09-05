@@ -26,7 +26,3 @@ export function locationFromCachePageMetadata(title: string, description: string
     country: titleMatch?.[2] ? clean(titleMatch[2]) : ""
   };
 }
-
-export function areaFromCachePageMetadata(title: string, description: string) {
-  return locationFromCachePageMetadata(title, description).county;
-}
