@@ -17,14 +17,10 @@ function normalizedApiOrigin(apiUrl: string) {
   return new URL(apiUrl).origin.toLowerCase();
 }
 
-function encodeIdentity(value: string) {
-  return encodeURIComponent(value);
-}
-
 export function mysteryStorageKeys(apiUrl: string, userId: string): MysteryStorageKeys {
   const normalizedUserId = userId.trim();
   if (!normalizedUserId) throw new Error("A user ID is required for mystery storage");
-  const namespace = `${encodeIdentity(normalizedApiOrigin(apiUrl))}:${encodeIdentity(normalizedUserId)}`;
+  const namespace = `${encodeURIComponent(normalizedApiOrigin(apiUrl))}:${encodeURIComponent(normalizedUserId)}`;
   return {
     namespace,
     caches: `geostats-mysteries-v2:${namespace}`,

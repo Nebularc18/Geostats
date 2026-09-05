@@ -6,6 +6,7 @@ import {
   CircleDot, Download, Flag, Goal, ListChecks, MapPinned, Plus, Route,
   Sparkles, Trophy, Upload, Users, Vote, Wrench
 } from "lucide-react";
+import { parseCsvRows } from "@geostats/shared";
 import { AppShell } from "../../components/app-shell";
 import { apiFetch } from "../../lib/api";
 
@@ -121,45 +122,6 @@ function gpxRoutePoint(point: Coordinates & { code: string; name: string }) {
   return `    <rtept lat="${point.latitude}" lon="${point.longitude}"><name>${escapeXml(point.code)} ${escapeXml(point.name)}</name></rtept>`;
 }
 
-function parseCsvRecords(contents: string, delimiter: "," | ";" = ",") {
-  const records: string[][] = [];
-  let record: string[] = [];
-  let field = "";
-  let quoted = false;
-
-  for (let index = 0; index < contents.length; index += 1) {
-    const character = contents[index];
-    const nextCharacter = contents[index + 1];
-    if (quoted) {
-      if (character === '"' && nextCharacter === '"') {
-        field += '"';
-        index += 1;
-      } else if (character === '"') {
-        quoted = false;
-      } else {
-        field += character;
-      }
-    } else if (character === '"' && field.trim().length === 0) {
-      quoted = true;
-    } else if (character === delimiter) {
-      record.push(field);
-      field = "";
-    } else if (character === "\n") {
-      record.push(field.replace(/\r$/, ""));
-      if (record.some((value) => value.trim())) records.push(record);
-      record = [];
-      field = "";
-    } else {
-      field += character;
-    }
-  }
-
-  if (field || record.length) {
-    record.push(field.replace(/\r$/, ""));
-    if (record.some((value) => value.trim())) records.push(record);
-  }
-  return records;
-}
 
 function detectCsvDelimiter(contents: string) {
   let firstRecord = contents;
@@ -204,7 +166,7 @@ function importPreview(fileName: string, contents: string) {
     return { records: points, recordLabel: "cache point", logs };
   }
 
-  const records = parseCsvRecords(contents, detectCsvDelimiter(contents));
+  const records = parseCsvRows(contents, detectCsvDelimiter(contents)).filter((row) => row.some((value) => value.trim()));
   const header = records[0]?.map((field) => field.trim().toLowerCase()) ?? [];
   const hasHeader = header.some((field) => field === "code" || field === "gc code" || field === "latitude");
   return { records: Math.max(records.length - (hasHeader ? 1 : 0), 0), recordLabel: "CSV row", logs: 0 };
@@ -550,7 +512,7 @@ export default function FieldKitPage() {
       <AppShell>
         <section className="feature-section" aria-busy="true">
           <p className="eyebrow">Planning and progress</p>
-          <h1>Field kit</h1>
+          <h1>Field kit preview</h1>
           <p className="page-intro">Loading your account workspace…</p>
         </section>
       </AppShell>
@@ -562,10 +524,10 @@ export default function FieldKitPage() {
       <header className="page-header field-kit-header">
         <div>
           <p className="eyebrow">Planning and progress</p>
-          <h1>Field kit</h1>
-          <p className="page-intro">Keep the parts of caching that happen between the find and the stats.</p>
+          <h1>Field kit preview</h1>
+          <p className="page-intro">Prototype with sample logs, goals, trips, and rankings. Changes stay in this browser; sharing and leaderboard controls do not sync with other people.</p>
         </div>
-        <button type="button" className="primary-button header-action" onClick={() => fileRef.current?.click()}><Upload size={17} /> Import GPX or CSV</button>
+        <button type="button" className="primary-button header-action" onClick={() => fileRef.current?.click()}><Upload size={17} /> Preview GPX or CSV</button>
         <input ref={fileRef} className="visually-hidden" type="file" accept=".gpx,.csv" onChange={importFile} />
       </header>
 

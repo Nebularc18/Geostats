@@ -1,5 +1,5 @@
 import { Injectable } from "@nestjs/common";
-import { Prisma, TrackableLogType } from "@geostats/db";
+import { Prisma } from "@geostats/db";
 import { parseTrackableImportFile, type ParsedTrackable, type ParsedTrackableImport, type ParsedTrackableLog, type ParsedTrackableLogType } from "@geostats/gpx-parser";
 import { createHash, randomUUID } from "node:crypto";
 import { PrismaService } from "../common/prisma.service";
@@ -64,10 +64,6 @@ function stateFromLog(logType: ParsedTrackableLogType): string | null {
   if (logType === "GRABBED" || logType === "RETRIEVED") return "RETRIEVED";
   if (logType === "DISCOVERED" || logType === "DROPPED" || logType === "VISITED" || logType === "MISSING") return logType;
   return null;
-}
-
-function prismaLogType(logType: ParsedTrackableLogType): TrackableLogType {
-  return logType as TrackableLogType;
 }
 
 function jsonValue(value: unknown): Prisma.InputJsonValue | undefined {
@@ -329,7 +325,7 @@ export class TrackablesImportService {
               cacheId: log.cacheId,
               gcCode: gcCode(log.gcCode),
               cacheName: cleanText(log.cacheName),
-              logType: prismaLogType(log.logType),
+              logType: log.logType,
               loggedAt: log.loggedAt,
               locationName: cleanText(log.locationName),
               holderName: cleanText(log.holderName),

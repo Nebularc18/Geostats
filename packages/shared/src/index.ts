@@ -98,3 +98,5 @@ export function parseCoordinate(value: string): ParsedCoordinate | null {
   const longitude = (longitudeDegrees + longitudeMinutes / 60) * (dmm[4]!.toUpperCase() === "W" ? -1 : 1);
   return { latitude, longitude };
 }
+
+export { parseCsvRows } from "./csv";

@@ -33,7 +33,7 @@ Pocket Query, and owner-log imports.
 
 ## Stack
 
-- `pnpm` workspaces and Turborepo
+- `pnpm` workspaces
 - Next.js web app in `apps/web`
 - Expo/React Native mobile app in `apps/mobile`
 - NestJS API in `apps/api`

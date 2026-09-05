@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  distanceToRouteKm,
   haversineKm,
   mergeTravelCandidates,
   recommendNearbyCaches,
@@ -52,8 +51,9 @@ test("measures distance to the closest route segment", () => {
     { latitude: 59, longitude: 18 },
     { latitude: 60, longitude: 18 }
   ];
-  assert.ok(distanceToRouteKm({ latitude: 59.5, longitude: 18.01 }, route) < 0.6);
-  assert.ok(distanceToRouteKm({ latitude: 59.5, longitude: 19 }, route) > 50);
+  const results = recommendRouteCaches([candidate("near", 59.5, 18.01), candidate("far", 59.5, 19)], route, 3, false);
+  assert.deepEqual(results.map(({ id }) => id), ["near"]);
+  assert.equal(results[0]!.distanceKm, 0.6);
 });
 
 test("nearby recommendations exclude finds unless requested", () => {

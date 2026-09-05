@@ -5,7 +5,8 @@
   "scripts": {
     "collect-owner-logs": "tsx src/collect-owner-logs.ts",
     "collect-project-gc-finder-countries": "tsx src/collect-project-gc-finder-countries.ts",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsx --test src/*.test.ts"
   },
   "dependencies": {
     "playwright": "^1.51.1"

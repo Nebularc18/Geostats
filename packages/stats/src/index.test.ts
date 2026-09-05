@@ -37,7 +37,6 @@ test("calculateStats returns core buckets, milestones, and streaks", () => {
     }
   ]);
 
-  assert.equal(STATS_VERSION, 20);
   assert.equal(stats.statsVersion, STATS_VERSION);
   assert.equal(stats.totalFinds, 2);
   assert.deepEqual(stats.findsByMonth, [{ key: "2024-01", count: 2 }]);

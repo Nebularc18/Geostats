@@ -51,10 +51,6 @@ export function haversineKm(first: Coordinate, second: Coordinate) {
   return EARTH_RADIUS_KM * 2 * Math.atan2(Math.sqrt(value), Math.sqrt(1 - value));
 }
 
-export function distanceToRouteKm(point: Coordinate, route: Coordinate[]) {
-  return closestRoutePoint(point, route).distanceKm;
-}
-
 function closestRoutePoint(point: Coordinate, route: Coordinate[]) {
   if (route.length === 0) return { distanceKm: Number.POSITIVE_INFINITY, progress: 0 };
   if (route.length === 1) return { distanceKm: haversineKm(point, route[0]!), progress: 0 };
