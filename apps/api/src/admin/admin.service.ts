@@ -463,7 +463,12 @@ export class AdminService {
 
     try {
       const result = await this.prisma.$transaction(async (tx) => {
-        const cache = await tx.cache.create({ data });
+        const trustedData = { ...data, metadataTrusted: true };
+        const cache = await tx.cache.upsert({
+          where: { gcCode },
+          create: trustedData,
+          update: trustedData,
+        });
         const linked = await tx.trackableLog.updateMany({
           where: {
             cacheId: null,

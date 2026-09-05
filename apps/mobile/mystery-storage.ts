@@ -2,6 +2,33 @@ import type { File } from "expo-file-system";
 
 export const MAX_MYSTERY_SNAPSHOT_BYTES = 256 * 1024;
 
+export function safeRecipientMysteryImage(value: unknown) {
+  return typeof value === "string" && /^data:image\/(?:png|jpe?g|gif|webp);base64,[a-z0-9+/=\s]+$/i.test(value)
+    ? value
+    : undefined;
+}
+
+function identityFingerprint(value: string) {
+  const hashes = [2166136261, 0x9e3779b9, 0x85ebca6b, 0xc2b2ae35];
+  for (const character of value) {
+    const codePoint = character.codePointAt(0) ?? 0;
+    hashes[0] = Math.imul(hashes[0] ^ codePoint, 16777619);
+    hashes[1] = Math.imul(hashes[1] ^ codePoint, 2246822519);
+    hashes[2] = Math.imul(hashes[2] ^ codePoint, 3266489917);
+    hashes[3] = Math.imul(hashes[3] ^ codePoint, 668265263);
+  }
+  return hashes.map((hash) => (hash >>> 0).toString(16).padStart(8, "0")).join("");
+}
+
+export function mysteryStorageNamespace(apiBaseUrl: string, userId: string) {
+  const origin = new URL(apiBaseUrl).origin.toLowerCase();
+  const identity = userId.trim();
+  if (!identity) throw new Error("A user ID is required for mystery storage");
+  const host = new URL(origin).hostname.replace(/[^a-z0-9.-]/gi, "_").slice(0, 48) || "server";
+  const user = identity.replace(/[^a-z0-9_-]/gi, "_").slice(0, 32) || "user";
+  return `${host}-${user}-${identityFingerprint(`${origin}\0${identity}`)}`;
+}
+
 function utf8ByteLength(value: string) {
   let bytes = 0;
   for (const character of value) {

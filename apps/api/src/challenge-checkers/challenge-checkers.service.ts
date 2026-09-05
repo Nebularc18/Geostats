@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ConflictException, Injectable, NotFoundException, PayloadTooLargeException } from "@nestjs/common";
 import { countableFindWhere, Prisma } from "@geostats/db";
 import { randomBytes } from "node:crypto";
 import timezoneAt from "tz-lookup";
@@ -9,6 +9,8 @@ import { BoundaryGeometry, GeographicBoundariesService, pointInBoundary } from "
 import { importProjectGcNumberScript, projectGcFilterLabel } from "./project-gc-importer";
 
 type CheckerInput = { name?: unknown; gcCode?: unknown; description?: unknown; rules?: unknown };
+
+const MAX_PUBLIC_FIND_HISTORY = 10_000;
 
 export function resolveDisplayTimeZone(profile: { homeLatitude?: unknown; homeLongitude?: unknown; timeZone?: string | null } | null) {
   const fallback = profile?.timeZone ?? "Europe/Stockholm";
@@ -294,7 +296,7 @@ export class ChallengeCheckersService {
       where: { publicSlug: slug, publishedAt: { not: null } }
     });
     if (!checker) throw new NotFoundException("Published checker not found");
-    return this.run(checker);
+    return this.run(checker, MAX_PUBLIC_FIND_HISTORY);
   }
 
   async runPublicForCache(username: string, gcCodeValue: string) {
@@ -307,7 +309,7 @@ export class ChallengeCheckersService {
       }
     });
     if (!checker) throw new NotFoundException("Published checker not found");
-    return this.run(checker);
+    return this.run(checker, MAX_PUBLIC_FIND_HISTORY);
   }
 
   private async owned(userId: string, id: string) {
@@ -322,14 +324,18 @@ export class ChallengeCheckersService {
     }
   }
 
-  private async run(checker: { id: string; userId: string; name: string; gcCode: string | null; description: string | null; rules: Prisma.JsonValue; publicSlug: string | null; publishedAt: Date | null; updatedAt: Date }) {
+  private async run(checker: { id: string; userId: string; name: string; gcCode: string | null; description: string | null; rules: Prisma.JsonValue; publicSlug: string | null; publishedAt: Date | null; updatedAt: Date }, maximumFinds?: number) {
     const profile = await this.prisma.geocachingProfile.findUnique({ where: { userId: checker.userId } });
     const username = profile?.gcUsername ?? "Geocacher";
     const finds = await this.prisma.find.findMany({
       where: countableFindWhere(checker.userId, username.trim().toLowerCase()),
       include: { cache: { include: { userData: { where: { userId: checker.userId }, take: 1 } } } },
-      orderBy: { foundAt: "asc" }
+      orderBy: { foundAt: "asc" },
+      ...(maximumFinds === undefined ? {} : { take: maximumFinds + 1 })
     });
+    if (maximumFinds !== undefined && finds.length > maximumFinds) {
+      throw new PayloadTooLargeException(`This public checker cannot evaluate more than ${maximumFinds.toLocaleString()} finds. Sign in and run the owned checker instead.`);
+    }
     const rules = parseRules(checker.rules);
     const checkerFinds = finds.map((find) => ({ ...find, cache: { ...find.cache, raw: find.cache.userData?.[0]?.raw } }));
     const geometries = new Map<ChallengeRule, BoundaryGeometry>();

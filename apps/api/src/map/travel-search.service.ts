@@ -11,7 +11,13 @@ import {
 import { placeSuggestionsFromPhoton, type PlaceSuggestion } from "./place-suggestions";
 
 type Place = Coordinate & { label: string };
-type RouteResult = { coordinates: Coordinate[]; distanceMeters: number; durationSeconds: number };
+type RouteResult = {
+  coordinates: Coordinate[];
+  distanceMeters: number;
+  durationSeconds: number;
+  originalCoordinateCount: number;
+  coordinatesTruncated: boolean;
+};
 type GeographicBounds = {
   minimumLatitude: number;
   maximumLatitude: number;
@@ -21,6 +27,7 @@ type GeographicBounds = {
 
 const MAX_CACHE_POOL = 5000;
 const MAX_RECOMMENDATIONS = 100;
+const MAX_ROUTE_POINTS = 2000;
 const geocodeCache = new Map<string, Place>();
 const suggestionCache = new Map<string, PlaceSuggestion[]>();
 let geocodeQueue: Promise<void> = Promise.resolve();
@@ -55,6 +62,12 @@ export function travelSearchBounds(coordinates: Coordinate[], paddingKm: number)
     minimumLongitude: crossesDateLine ? undefined : rawMinimumLongitude,
     maximumLongitude: crossesDateLine ? undefined : rawMaximumLongitude
   };
+}
+
+export function sampleRouteCoordinates(coordinates: Coordinate[], maximum = MAX_ROUTE_POINTS): Coordinate[] {
+  if (coordinates.length <= maximum) return coordinates;
+  if (maximum < 2) throw new RangeError("A sampled route must retain both endpoints");
+  return Array.from({ length: maximum }, (_, index) => coordinates[Math.round(index * (coordinates.length - 1) / (maximum - 1))]!);
 }
 
 async function queuedGeocodeFetch(url: URL) {
@@ -151,10 +164,13 @@ async function roadRoute(origin: Place, destination: Place): Promise<RouteResult
   if (body.code !== "Ok" || routeCoordinates.length < 2) {
     throw new NotFoundException("No driving route was found between those places.");
   }
+  const coordinatesTruncated = routeCoordinates.length > MAX_ROUTE_POINTS;
   return {
-    coordinates: routeCoordinates,
+    coordinates: sampleRouteCoordinates(routeCoordinates),
     distanceMeters: Number(route?.distance ?? 0),
-    durationSeconds: Number(route?.duration ?? 0)
+    durationSeconds: Number(route?.duration ?? 0),
+    originalCoordinateCount: routeCoordinates.length,
+    coordinatesTruncated
   };
 }
 
@@ -176,7 +192,7 @@ export class TravelSearchService {
           }
         }
       },
-      orderBy: { updatedAt: "desc" },
+      orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
       take: MAX_CACHE_POOL + 1
     });
     const poolTruncated = records.length > MAX_CACHE_POOL;
@@ -294,9 +310,12 @@ export class TravelSearchService {
             corrections: { where: { userId }, select: { latitude: true, longitude: true }, take: 1 }
           }
         }
-      }
+      },
+      orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+      take: MAX_CACHE_POOL + 1
     });
-    const importedCandidates: TravelCandidate[] = records.map(({ cache }) => {
+    const poolTruncated = records.length > MAX_CACHE_POOL;
+    const importedCandidates: TravelCandidate[] = records.slice(0, MAX_CACHE_POOL).map(({ cache }) => {
       const correction = cache.corrections[0];
       return {
         id: cache.id,
@@ -336,12 +355,18 @@ export class TravelSearchService {
       mode: input.mode,
       origin,
       destination,
-      route: route ? { distanceMeters: route.distanceMeters, durationSeconds: route.durationSeconds } : undefined,
+      route: route ? {
+        distanceMeters: route.distanceMeters,
+        durationSeconds: route.durationSeconds,
+        geometryPointCount: route.coordinates.length,
+        originalGeometryPointCount: route.originalCoordinateCount,
+        geometryTruncated: route.coordinatesTruncated
+      } : undefined,
       recommendations,
       importedCacheCount: importedCandidates.length,
       mysteryCacheCount: mysteryCandidates.length,
       searchedCacheCount: candidates.length,
-      poolTruncated: false,
+      poolTruncated,
       resultLimit: MAX_RECOMMENDATIONS,
       attribution: {
         places: "© OpenStreetMap contributors",

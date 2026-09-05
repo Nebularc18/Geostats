@@ -4,9 +4,25 @@ import type { File } from "expo-file-system";
 import {
   MAX_MYSTERY_SNAPSHOT_BYTES,
   mysterySnapshotByteLength,
+  mysteryStorageNamespace,
   readJsonArrayWithRecovery,
   replaceJsonFile,
+  safeRecipientMysteryImage,
 } from "./mystery-storage";
+
+test("mobile mystery storage namespaces differ across servers and exact identities", () => {
+  const first = mysteryStorageNamespace("https://Example.com/api/", "user/a");
+  assert.equal(first, mysteryStorageNamespace("https://example.com/other", "user/a"));
+  assert.notEqual(first, mysteryStorageNamespace("https://example.com", "user:a"));
+  assert.notEqual(first, mysteryStorageNamespace("https://other.example.com", "user/a"));
+  assert.match(first, /^example\.com-user_a-[a-f0-9]{32}$/);
+});
+
+test("mobile recipients cannot load external mystery images", () => {
+  assert.equal(safeRecipientMysteryImage("data:image/jpeg;base64,aGVsbG8="), "data:image/jpeg;base64,aGVsbG8=");
+  assert.equal(safeRecipientMysteryImage("http://127.0.0.1/private"), undefined);
+  assert.equal(safeRecipientMysteryImage("data:image/svg+xml,<svg/>"), undefined);
+});
 
 class MemoryFile {
   content: string | null;

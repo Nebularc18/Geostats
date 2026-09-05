@@ -1,6 +1,6 @@
 import { BadRequestException, Body, Controller, Get, Post, Put, UseGuards } from "@nestjs/common";
 import { AuthUser } from "@geostats/shared";
-import { ArrayMaxSize, IsArray, IsNotEmpty, IsNumber, IsOptional, IsString, Max, MaxLength, Min } from "class-validator";
+import { ArrayMaxSize, IsArray, IsBoolean, IsNotEmpty, IsNumber, IsOptional, IsString, Max, MaxLength, Min } from "class-validator";
 import { AuthGuard } from "../auth/auth.guard";
 import { normalizeCountry } from "../common/geocaching.utils";
 import { CurrentUser } from "../auth/current-user.decorator";
@@ -34,6 +34,15 @@ class ProfileDto {
   @IsString({ each: true })
   @MaxLength(80, { each: true })
   ftfDetectionTerms?: string[];
+
+  @IsOptional()
+  @IsBoolean()
+  publicStatsEnabled?: boolean;
+}
+
+class PublicStatsDto {
+  @IsBoolean()
+  publicStatsEnabled!: boolean;
 }
 
 type FinderCountryRow = {
@@ -117,6 +126,7 @@ export class ProfileController {
     const profile = await this.prisma.$transaction(async (tx) => {
       const ftfDetectionTerms = cleanFtfDetectionTerms(body.ftfDetectionTerms);
       const ftfDetectionData = body.ftfDetectionTerms === undefined ? {} : { ftfDetectionTerms };
+      const publicStatsData = body.publicStatsEnabled === undefined ? {} : { publicStatsEnabled: body.publicStatsEnabled };
       const timeZone = cleanTimeZone(body.timeZone);
       const updated = await tx.geocachingProfile.upsert({
         where: { userId: user.id },
@@ -126,18 +136,33 @@ export class ProfileController {
           homeLatitude: body.homeLatitude ?? null,
           homeLongitude: body.homeLongitude ?? null,
           timeZone,
-          ...ftfDetectionData
+          ...ftfDetectionData,
+          ...publicStatsData
         },
         update: {
           gcUsername,
           homeLatitude: body.homeLatitude ?? null,
           homeLongitude: body.homeLongitude ?? null,
           timeZone,
-          ...ftfDetectionData
+          ...ftfDetectionData,
+          ...publicStatsData
         }
       });
       await tx.statSnapshot.deleteMany({ where: { userId: user.id } });
       return updated;
+    });
+    return { profile };
+  }
+
+  @Put("public-stats")
+  async updatePublicStats(@CurrentUser() user: AuthUser, @Body() body: PublicStatsDto) {
+    const existing = await this.prisma.geocachingProfile.findUnique({ where: { userId: user.id } });
+    if (!existing) {
+      throw new BadRequestException("Create a Geocaching profile before publishing statistics");
+    }
+    const profile = await this.prisma.geocachingProfile.update({
+      where: { userId: user.id },
+      data: { publicStatsEnabled: body.publicStatsEnabled }
     });
     return { profile };
   }

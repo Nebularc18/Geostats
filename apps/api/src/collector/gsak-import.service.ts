@@ -244,27 +244,6 @@ function cacheRow(row: CsvRecord): CacheRow {
   };
 }
 
-function cacheNameIsPlaceholder(name: unknown, gcCode: string): boolean {
-  const normalizedName = String(name ?? "")
-    .trim()
-    .toUpperCase();
-  return !normalizedName || normalizedName === gcCode.toUpperCase();
-}
-
-function cacheMetadataUpdate(
-  existing: Record<string, any>,
-  row: CacheRow,
-): Prisma.CacheUncheckedUpdateInput {
-  const update: Prisma.CacheUncheckedUpdateInput = {};
-  if (
-    row.name !== row.gcCode &&
-    cacheNameIsPlaceholder(existing.name, row.gcCode)
-  ) {
-    update.name = row.name;
-  }
-  return update;
-}
-
 function logRow(row: CsvRecord): LogRow {
   return {
     gcCode: gcCode(row.gccode),
@@ -436,7 +415,7 @@ export class GsakImportService {
   ) {}
 
   private async missingCacheCodeList() {
-    const [trackableLogs, mysteryWorkspaces, challengeCheckers] =
+    const [trackableLogs, mysteryWorkspaces, challengeCheckers, untrustedCaches] =
       await Promise.all([
         this.prisma.trackableLog.findMany({
           where: { cacheId: null, gcCode: { not: null } },
@@ -450,10 +429,14 @@ export class GsakImportService {
           where: { gcCode: { not: null } },
           select: { gcCode: true },
         }),
+        this.prisma.cache.findMany({
+          where: { metadataTrusted: false },
+          select: { gcCode: true },
+        }),
       ]);
     const codes = [
       ...new Set(
-        [...trackableLogs, ...mysteryWorkspaces, ...challengeCheckers]
+        [...trackableLogs, ...mysteryWorkspaces, ...challengeCheckers, ...untrustedCaches]
           .map((row) => normalizedGcCode(row.gcCode))
           .filter((code): code is string => Boolean(code)),
       ),
@@ -461,7 +444,7 @@ export class GsakImportService {
     if (!codes.length) return [];
 
     const existing = await this.prisma.cache.findMany({
-      where: { gcCode: { in: codes } },
+      where: { gcCode: { in: codes }, metadataTrusted: true },
       select: { gcCode: true },
     });
     const existingCodes = new Set(
@@ -528,8 +511,23 @@ export class GsakImportService {
             county: row.county,
             hiddenDate: row.hiddenDate,
             ownerName: row.ownerName,
+            metadataTrusted: true,
           },
-          update: {},
+          update: {
+            name: row.name,
+            cacheType: row.cacheType,
+            difficulty: row.difficulty,
+            terrain: row.terrain,
+            size: row.size,
+            latitude: row.latitude,
+            longitude: row.longitude,
+            country: row.country,
+            region: row.region,
+            county: row.county,
+            hiddenDate: row.hiddenDate,
+            ownerName: row.ownerName,
+            metadataTrusted: true,
+          },
         });
         const linked = await tx.trackableLog.updateMany({
           where: {
@@ -643,25 +641,16 @@ export class GsakImportService {
           existingByCode.get(row.gcCode)?.userData?.[0]?.raw,
           row,
         ) as Prisma.InputJsonValue;
-        const existingCache = existingByCode.get(row.gcCode);
         const cache = await tx.cache.upsert({
           where: { gcCode: row.gcCode },
           create: {
             gcCode: row.gcCode,
-            name: row.name,
-            cacheType: row.cacheType,
-            difficulty: row.difficulty,
-            terrain: row.terrain,
-            size: row.size,
-            latitude: row.latitude,
-            longitude: row.longitude,
-            country: row.country,
-            region: row.region,
-            county: row.county,
-            hiddenDate: row.hiddenDate,
-            ownerName: row.ownerName,
+            name: row.gcCode,
+            latitude: 0,
+            longitude: 0,
+            metadataTrusted: false,
           },
-          update: existingCache ? cacheMetadataUpdate(existingCache, row) : {},
+          update: {},
         });
         await tx.userCacheData.upsert({
           where: { userId_cacheId: { userId, cacheId: cache.id } },

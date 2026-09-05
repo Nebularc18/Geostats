@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { renderPublicExtremesSvg, renderPublicScratchMapSvg } from "./public-profile-renderer";
+import { renderPublicExtremesSvg, renderPublicProfileHtml, renderPublicScratchMapSvg } from "./public-profile-renderer";
 
 const worldMapTemplate = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 360">
 <rect width="720" height="360" fill="#6fc7ef"/>
@@ -53,6 +53,19 @@ ${worldMapTemplate}`;
 
   assert.doesNotMatch(svg, /<\?xml|generated map/);
   assert.match(svg, /<title>Sweden: 1<\/title>/);
+});
+
+test("renders public profile maps without executable third-party content", () => {
+  const html = renderPublicProfileHtml(
+    { gcUsername: "User / <unsafe>" },
+    { totalFinds: 1, countries: [{ key: "Sweden", count: 1 }] }
+  );
+
+  assert.doesNotMatch(html, /<script\b|onmousedown=|maplibre|unpkg\.com|raw\.githubusercontent\.com/i);
+  assert.match(html, /Content-Security-Policy[^>]+default-src 'none'/);
+  assert.match(html, /src="\/public\/profile-scratch-map-image\/User%20%2F%20%3Cunsafe%3E"/);
+  assert.match(html, /<details open><summary>Project-GC Maps<\/summary>/);
+  assert.match(html, /<details><summary>Stats<\/summary>/);
 });
 
 test("renders reusable extreme badges for the public profile image", () => {

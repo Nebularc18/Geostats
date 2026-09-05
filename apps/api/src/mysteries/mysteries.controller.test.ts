@@ -57,6 +57,12 @@ test("share persists both the owner snapshot and recipient grant", async () => {
         calls.push({ operation: "clear-exclusion", input });
         return { count: 0 };
       }
+    },
+    cache: {
+      upsert: async (input: unknown) => {
+        calls.push({ operation: "cache", input });
+        return { id: "cache-1" };
+      }
     }
   };
   const prisma = {
@@ -68,10 +74,10 @@ test("share persists both the owner snapshot and recipient grant", async () => {
   const result = await controller.share(owner, "local-1", { recipientId: recipient.id, mystery, revision: 1 });
 
   assert.deepEqual(result, { recipient, revision: 1 });
-  assert.deepEqual(calls.map(({ operation }) => operation), ["lock", "lock", "deletion", "duplicate", "existing", "count", "workspace", "snapshot", "grant", "clear-exclusion", "readback"]);
-  assert.deepEqual((calls[6].input as any).where, { ownerId_clientId: { ownerId: owner.id, clientId: "local-1" } });
-  assert.equal((calls[6].input as any).create.gcCode, mystery.gcCode);
-  assert.deepEqual((calls[8].input as any).create, { mysteryId: "workspace-1", recipientId: recipient.id });
+  assert.deepEqual(calls.map(({ operation }) => operation), ["lock", "lock", "deletion", "duplicate", "existing", "count", "cache", "workspace", "snapshot", "grant", "clear-exclusion", "readback"]);
+  assert.deepEqual((calls[7].input as any).where, { ownerId_clientId: { ownerId: owner.id, clientId: "local-1" } });
+  assert.equal((calls[7].input as any).create.gcCode, mystery.gcCode);
+  assert.deepEqual((calls[9].input as any).create, { mysteryId: "workspace-1", recipientId: recipient.id });
 });
 
 test("shared returns the granted snapshot through the recipient lookup", async () => {
@@ -99,6 +105,51 @@ test("shared returns the granted snapshot through the recipient lookup", async (
     owner: { id: owner.id, username: owner.username },
     sharedWith: [recipient]
   }]);
+});
+
+test("shared strips external mystery images from recipient snapshots", async () => {
+  const externalMystery = { ...mystery, image: "https://tracker.example/pixel.png?recipient=1" };
+  const prisma = {
+    mysteryShare: {
+      findMany: async () => [{
+        mystery: {
+          id: "workspace-1",
+          data: externalMystery,
+          owner: { id: owner.id, username: owner.username },
+          shares: [{ recipient }],
+          sharingExclusions: []
+        }
+      }]
+    },
+    mysterySharingPreference: { findMany: async () => [] }
+  };
+
+  const result = await new MysteriesController(prisma as any).shared({ ...recipient, email: "recipient@example.com" });
+
+  assert.deepEqual(result.mysteries[0]?.mystery, mystery);
+  assert.equal(externalMystery.image, "https://tracker.example/pixel.png?recipient=1");
+});
+
+test("shared preserves bounded embedded raster images for recipients", async () => {
+  const embeddedMystery = { ...mystery, image: "data:image/png;base64,aGVsbG8=" };
+  const prisma = {
+    mysteryShare: {
+      findMany: async () => [{
+        mystery: {
+          id: "workspace-1",
+          data: embeddedMystery,
+          owner: { id: owner.id, username: owner.username },
+          shares: [{ recipient }],
+          sharingExclusions: []
+        }
+      }]
+    },
+    mysterySharingPreference: { findMany: async () => [] }
+  };
+
+  const result = await new MysteriesController(prisma as any).shared({ ...recipient, email: "recipient@example.com" });
+
+  assert.equal((result.mysteries[0]?.mystery as any).image, embeddedMystery.image);
 });
 
 test("ownedShares returns the server-authoritative recipient list", async () => {
@@ -381,6 +432,12 @@ test("update creates an unshared server snapshot", async () => {
         upsertInput = input;
         return { id: "workspace-1", data: mystery };
       }
+    },
+    cache: {
+      upsert: async () => {
+        operations.push("cache");
+        return { id: "cache-1" };
+      }
     }
   };
   const prisma = {
@@ -391,7 +448,7 @@ test("update creates an unshared server snapshot", async () => {
   const result = await controller.update(owner, mystery.id, { mystery, revision: 1 });
 
   assert.deepEqual(result, { ok: true, revision: 1, mystery });
-  assert.deepEqual(operations, ["lock", "lock", "deletion", "duplicate", "existing", "count", "upsert", "comparison"]);
+  assert.deepEqual(operations, ["lock", "lock", "deletion", "duplicate", "existing", "count", "cache", "upsert", "comparison"]);
   assert.deepEqual((upsertInput as any).create, {
     ownerId: owner.id,
     clientId: mystery.id,
@@ -401,7 +458,7 @@ test("update creates an unshared server snapshot", async () => {
   });
 });
 
-test("update registers published mystery metadata in the shared cache catalog", async () => {
+test("update cannot register personal mystery metadata in the shared cache catalog", async () => {
   const importedMystery = {
     ...mystery,
     publishedLatitude: 56.1612,
@@ -442,12 +499,10 @@ test("update registers published mystery metadata in the shared cache catalog", 
     where: { gcCode: importedMystery.gcCode },
     create: {
       gcCode: importedMystery.gcCode,
-      name: importedMystery.name,
-      latitude: importedMystery.publishedLatitude,
-      longitude: importedMystery.publishedLongitude,
-      country: importedMystery.country,
-      region: importedMystery.region,
-      county: importedMystery.county
+      name: importedMystery.gcCode,
+      latitude: 0,
+      longitude: 0,
+      metadataTrusted: false
     },
     update: {}
   });
@@ -515,6 +570,9 @@ test("an older in-flight update cannot overwrite a newer snapshot", async () => 
       findUnique: async (input: any) => input.select?.clientId
         ? { clientId: mystery.id }
         : null
+    },
+    cache: {
+      upsert: async () => ({ id: "cache-1" })
     }
   };
   const prisma = {
@@ -554,6 +612,9 @@ test("a higher distinct update returns the updated CTE state", async () => {
         ? { clientId: mystery.id }
         : null,
       upsert: async () => ({ id: "workspace-1" })
+    },
+    cache: {
+      upsert: async () => ({ id: "cache-1" })
     }
   };
   const prisma = {
@@ -594,6 +655,9 @@ test("an identical update does not advance the server revision", async () => {
         ? { clientId: mystery.id }
         : null,
       upsert: async () => ({ id: "workspace-1" })
+    },
+    cache: {
+      upsert: async () => ({ id: "cache-1" })
     }
   };
   const prisma = {

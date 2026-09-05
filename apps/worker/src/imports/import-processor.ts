@@ -36,21 +36,6 @@ function rawText(...values: unknown[]): string {
   return "";
 }
 
-function cacheNameIsPlaceholder(name: unknown, gcCode: string): boolean {
-  const normalizedName = rawText(name).toUpperCase();
-  return !normalizedName || normalizedName === gcCode.toUpperCase();
-}
-
-export function cacheMetadataUpdate(existing: Cache, incoming: Prisma.CacheUncheckedCreateInput): Prisma.CacheUncheckedUpdateInput {
-  const update: Prisma.CacheUncheckedUpdateInput = {};
-  const code = String(existing.gcCode).trim().toUpperCase();
-  const incomingName = rawText(incoming.name);
-  if (incomingName && incomingName.toUpperCase() !== code && cacheNameIsPlaceholder(existing.name, code)) {
-    update.name = incomingName;
-  }
-  return update;
-}
-
 function receivedLogs(raw: unknown): Array<Record<string, any>> {
   const root = rawObject(raw);
   const cache = rawObject(root["groundspeak:cache"] ?? root.cache);
@@ -430,20 +415,13 @@ export class ImportProcessor {
   }
 
   private cacheCreateInput(cache: any): Prisma.CacheUncheckedCreateInput {
+    const gcCode = String(cache.gcCode).trim().toUpperCase();
     return {
-      gcCode: String(cache.gcCode).trim().toUpperCase(),
-      name: cache.name,
-      cacheType: cache.cacheType,
-      difficulty: cache.difficulty,
-      terrain: cache.terrain,
-      size: cache.size,
-      latitude: cache.latitude,
-      longitude: cache.longitude,
-      country: cache.country,
-      region: cache.region,
-      county: cache.county,
-      hiddenDate: cache.hiddenDate,
-      ownerName: cache.ownerName
+      gcCode,
+      name: gcCode,
+      latitude: 0,
+      longitude: 0,
+      metadataTrusted: false
     };
   }
 
@@ -478,10 +456,6 @@ export class ImportProcessor {
       } else {
         throw error;
       }
-    }
-    const metadataUpdate = cacheMetadataUpdate(resolved, create);
-    if (Object.keys(metadataUpdate).length > 0) {
-      resolved = await this.prisma.cache.update({ where: { id: resolved.id }, data: metadataUpdate });
     }
     await this.prisma.userCacheData.upsert({
       where: { userId_cacheId: { userId, cacheId: resolved.id } },

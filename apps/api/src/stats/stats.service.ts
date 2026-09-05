@@ -157,16 +157,18 @@ export class StatsService {
     return this.recalculateSnapshotForUser(userId, profile);
   }
 
-  private async snapshotForUsername(username: string) {
+  private async snapshotForUsername(username: string, publicOnly = false) {
     const normalizedUsername = normalizedGcUsername(username);
     if (!normalizedUsername) {
       throw new NotFoundException("Profile not found");
     }
 
+    const visibilityFilter = publicOnly ? Prisma.sql`AND "public_stats_enabled" = TRUE` : Prisma.empty;
     const profiles = await this.prisma.$queryRaw<Array<{ userId: string; gcUsername: string }>>(Prisma.sql`
       SELECT "user_id" AS "userId", "gc_username" AS "gcUsername"
       FROM "geocaching_profiles"
       WHERE LOWER(REGEXP_REPLACE("gc_username", ${USERNAME_TRIM_PATTERN}, '', 'g')) = ${normalizedUsername}
+      ${visibilityFilter}
       ORDER BY "updated_at" DESC
       LIMIT 2
     `);
@@ -199,7 +201,7 @@ export class StatsService {
   }
 
   async publicSnapshotForUsername(username: string) {
-    const snapshot = await this.snapshotForUsername(username);
+    const snapshot = await this.snapshotForUsername(username, true);
     const extremeCaches = await this.extremeCachesForUser(snapshot.profile.userId, null);
     return {
       ...snapshot,

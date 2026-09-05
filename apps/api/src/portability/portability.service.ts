@@ -20,7 +20,8 @@ import { StorageService } from "../storage/storage.service";
 
 const FORMAT = "geostats-portable-data";
 const VERSION = 1;
-const MAX_RECORDS = 1_000_000;
+// Version 1 portable archives may contain at most one million records in total.
+export const MAX_PORTABLE_ARCHIVE_RECORDS = 1_000_000;
 const IMPORT_SOURCES = new Set([
   "MY_FINDS_GPX",
   "MY_HIDES_GPX",
@@ -62,13 +63,14 @@ function object(value: unknown, label: string): Record<string, any> {
   return value as Record<string, any>;
 }
 
-function records(value: unknown, label: string): any[] {
+function recordArray(value: unknown, label: string): any[] {
   if (!Array.isArray(value)) {
     throw new BadRequestException(`${label} must be an array`);
   }
-  if (value.length > MAX_RECORDS) {
-    throw new BadRequestException(`${label} contains too many records`);
-  }
+  return value;
+}
+
+function records(value: any[], label: string): any[] {
   return value.map((entry, index) => object(entry, `${label}[${index}]`));
 }
 
@@ -175,29 +177,61 @@ export function parsePortableArchive(input: Buffer | string): PortableArchive {
       `Unsupported Geostats export version: ${String(archive.version)}`,
     );
   const data = object(archive.data, "data");
+  const recordArrays = {
+    caches: recordArray(data.caches, "data.caches"),
+    finds: recordArray(data.finds, "data.finds"),
+    hides: recordArray(data.hides, "data.hides"),
+    correctedCoordinates: recordArray(
+      data.correctedCoordinates,
+      "data.correctedCoordinates",
+    ),
+    ownerFinderCountryStats: recordArray(
+      data.ownerFinderCountryStats,
+      "data.ownerFinderCountryStats",
+    ),
+    statSnapshots: recordArray(data.statSnapshots, "data.statSnapshots"),
+    mysteryWorkspaces: recordArray(
+      data.mysteryWorkspaces,
+      "data.mysteryWorkspaces",
+    ),
+    trackables: recordArray(data.trackables ?? [], "data.trackables"),
+    trackableLogs: recordArray(data.trackableLogs ?? [], "data.trackableLogs"),
+  };
+  const totalRecords = Object.values(recordArrays).reduce(
+    (total, values) => total + values.length,
+    0,
+  );
+  if (totalRecords > MAX_PORTABLE_ARCHIVE_RECORDS) {
+    throw new BadRequestException(
+      `Archive contains more than ${MAX_PORTABLE_ARCHIVE_RECORDS} records across data arrays`,
+    );
+  }
   const parsed = {
     ...archive,
     data: {
       profile:
         data.profile === null ? null : object(data.profile, "data.profile"),
-      caches: records(data.caches, "data.caches"),
-      finds: records(data.finds, "data.finds"),
-      hides: records(data.hides, "data.hides"),
+      caches: records(recordArrays.caches, "data.caches"),
+      finds: records(recordArrays.finds, "data.finds"),
+      hides: records(recordArrays.hides, "data.hides"),
       correctedCoordinates: records(
-        data.correctedCoordinates,
+        recordArrays.correctedCoordinates,
         "data.correctedCoordinates",
       ),
       ownerFinderCountryStats: records(
-        data.ownerFinderCountryStats,
+        recordArrays.ownerFinderCountryStats,
         "data.ownerFinderCountryStats",
       ),
-      statSnapshots: records(data.statSnapshots, "data.statSnapshots"),
+      statSnapshots: records(
+        recordArrays.statSnapshots,
+        "data.statSnapshots",
+      ),
       mysteryWorkspaces: records(
-        data.mysteryWorkspaces,
+        recordArrays.mysteryWorkspaces,
         "data.mysteryWorkspaces",
       ),
-      trackables: records(data.trackables ?? [], "data.trackables"),
-      trackableLogs: records(data.trackableLogs ?? [], "data.trackableLogs"),
+      trackables: records(recordArrays.trackables, "data.trackables"),
+      trackableLogs: records(recordArrays.trackableLogs, "data.trackableLogs"),
     },
   } as PortableArchive;
   if (parsed.data.mysteryWorkspaces.length > MAX_MYSTERY_WORKSPACES) {
@@ -498,40 +532,10 @@ export class PortabilityService implements OnModuleInit, OnModuleDestroy {
             gcCodes.add(gcCode);
             return {
               gcCode,
-              name: text(cache.name, `${label}.name`, 1000),
-              cacheType: optionalText(
-                cache.cacheType,
-                `${label}.cacheType`,
-                100,
-              ),
-              difficulty:
-                cache.difficulty == null
-                  ? null
-                  : decimal(cache.difficulty, `${label}.difficulty`, 0, 10),
-              terrain:
-                cache.terrain == null
-                  ? null
-                  : decimal(cache.terrain, `${label}.terrain`, 0, 10),
-              size: optionalText(cache.size, `${label}.size`, 100),
-              latitude: decimal(cache.latitude, `${label}.latitude`, -90, 90),
-              longitude: decimal(
-                cache.longitude,
-                `${label}.longitude`,
-                -180,
-                180,
-              ),
-              country: optionalText(cache.country, `${label}.country`, 200),
-              region: optionalText(cache.region, `${label}.region`, 200),
-              county: optionalText(cache.county, `${label}.county`, 200),
-              hiddenDate:
-                cache.hiddenDate == null
-                  ? null
-                  : date(cache.hiddenDate, `${label}.hiddenDate`),
-              ownerName: optionalText(
-                cache.ownerName,
-                `${label}.ownerName`,
-                500,
-              ),
+              name: gcCode,
+              latitude: 0,
+              longitude: 0,
+              metadataTrusted: false,
             };
           });
           for (const batch of batches(cacheRows)) {

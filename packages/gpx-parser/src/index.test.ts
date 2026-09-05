@@ -229,6 +229,43 @@ test("parseImportFile rejects ZIP files with too many GPX entries", async () => 
   }
 });
 
+test("parseImportFile counts unsupported ZIP entries toward the entry limit", async () => {
+  const previous = process.env.IMPORT_MAX_ZIP_ENTRIES;
+  process.env.IMPORT_MAX_ZIP_ENTRIES = "2";
+  try {
+    const zip = new JSZip();
+    zip.file("pocket-query.gpx", gpx);
+    zip.file("notes.txt", "ignored");
+    zip.file("image.png", "ignored");
+    const content = await zip.generateAsync({ type: "nodebuffer" });
+
+    await assert.rejects(
+      () => parseImportFile("query.zip", content, ImportSource.POCKET_QUERY),
+      /more than 2 entries/,
+    );
+  } finally {
+    if (previous === undefined) {
+      delete process.env.IMPORT_MAX_ZIP_ENTRIES;
+    } else {
+      process.env.IMPORT_MAX_ZIP_ENTRIES = previous;
+    }
+  }
+});
+
+test("parseImportFile ignores unsupported ZIP entries within the entry limit", async () => {
+  const zip = new JSZip();
+  zip.file("pocket-query.gpx", gpx);
+  zip.file("notes.txt", "ignored");
+
+  const parsed = await parseImportFile(
+    "query.zip",
+    await zip.generateAsync({ type: "nodebuffer" }),
+    ImportSource.POCKET_QUERY,
+  );
+
+  assert.equal(parsed.caches.length, 1);
+});
+
 test("parseImportFile rejects oversized ZIP GPX entries", async () => {
   const previous = process.env.IMPORT_MAX_ZIP_ENTRY_BYTES;
   process.env.IMPORT_MAX_ZIP_ENTRY_BYTES = "20";
@@ -372,4 +409,27 @@ test("parseTrackableImportFile accepts a KMZ wrapper", async () => {
 
   assert.equal(parsed.trackables[0]?.trackingCode, "TB1234");
   assert.equal(parsed.logs.length, 1);
+});
+
+test("parseTrackableImportFile counts unsupported KMZ entries toward the entry limit", async () => {
+  const previous = process.env.IMPORT_MAX_ZIP_ENTRIES;
+  process.env.IMPORT_MAX_ZIP_ENTRIES = "2";
+  try {
+    const zip = new JSZip();
+    zip.file("doc.kml", `<kml xmlns="http://www.opengis.net/kml/2.2"><Document><name>TB1234</name><Placemark><name>GCAB12</name><Point><coordinates>15.5869,56.1612,0</coordinates></Point></Placemark></Document></kml>`);
+    zip.file("preview.png", "ignored");
+    zip.file("metadata.xml", "ignored");
+    const content = await zip.generateAsync({ type: "nodebuffer" });
+
+    await assert.rejects(
+      () => parseTrackableImportFile("trackable-journey.kmz", content),
+      /more than 2 entries/,
+    );
+  } finally {
+    if (previous === undefined) {
+      delete process.env.IMPORT_MAX_ZIP_ENTRIES;
+    } else {
+      process.env.IMPORT_MAX_ZIP_ENTRIES = previous;
+    }
+  }
 });

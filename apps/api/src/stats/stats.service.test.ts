@@ -1,4 +1,4 @@
-import { BadRequestException } from "@nestjs/common";
+import { BadRequestException, NotFoundException } from "@nestjs/common";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { STATS_VERSION } from "@geostats/stats";
@@ -35,8 +35,12 @@ test("rejects ambiguous case-insensitive geocaching usernames", async () => {
 });
 
 test("resolves a uniquely padded Geocaching username", async () => {
+  let usernameQuery: any;
   const prisma = {
-    $queryRaw: async () => [{ userId: "user-1", gcUsername: " Alice " }],
+    $queryRaw: async (query: any) => {
+      usernameQuery = query;
+      return [{ userId: "user-1", gcUsername: " Alice " }];
+    },
     geocachingProfile: {
       findUnique: async () => ({ userId: "user-1", gcUsername: " Alice ", homeLatitude: null, homeLongitude: null })
     },
@@ -53,4 +57,24 @@ test("resolves a uniquely padded Geocaching username", async () => {
 
   assert.equal(snapshot.profile.userId, "user-1");
   assert.equal(snapshot.profile.gcUsername, " Alice ");
+  assert.doesNotMatch(usernameQuery.sql, /public_stats_enabled/);
+});
+
+test("public snapshots only resolve profiles with explicit publication consent", async () => {
+  let usernameQuery: any;
+  const prisma = {
+    $queryRaw: async (query: any) => {
+      usernameQuery = query;
+      return [];
+    },
+    import: {
+      findFirst: async () => {
+        throw new Error("private profiles must be rejected before loading imports");
+      }
+    }
+  };
+  const service = new StatsService(prisma as any);
+
+  await assert.rejects(() => service.publicSnapshotForUsername("Alice"), NotFoundException);
+  assert.match(usernameQuery.sql, /public_stats_enabled/);
 });

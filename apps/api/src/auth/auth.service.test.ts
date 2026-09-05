@@ -281,7 +281,7 @@ test("Clerk token exchange verifies the session and links the local account", as
         id: "clerk-user-1",
         username: "geo-user",
         firstName: "Geo",
-        primaryEmailAddress: { emailAddress: "User@Example.com" }
+        primaryEmailAddress: { emailAddress: "User@Example.com", verification: { status: "verified" } }
       });
 
       const user = await service.loginWithClerkToken("clerk-session");
@@ -338,11 +338,78 @@ test("Clerk token exchange requires server credentials", async () => {
   });
 });
 
-test("Clerk mode keeps password registration as a staged-migration alternative", async () => {
+test("Clerk mode disables password registration and login", async () => {
   await withEnv({ AUTH_MODE: "clerk" }, async () => {
-    const { service } = authServiceWithUsers();
-    const user = await service.register("user@example.com", "user", "correct-password");
-    assert.equal(user.email, "user@example.com");
+    const { service, users } = authServiceWithUsers();
+    users.push({ id: "user-1", email: "user@example.com", username: "user", passwordHash: "unused" });
+    await assert.rejects(() => service.register("other@example.com", "other", "correct-password"), {
+      message: "Password auth is disabled"
+    });
+    await assert.rejects(() => service.login("user@example.com", "correct-password"), {
+      message: "Password auth is disabled"
+    });
+  });
+});
+
+test("Clerk token exchange refuses to link an unverified primary email", async () => {
+  await withEnv({ AUTH_MODE: "clerk", CLERK_SECRET_KEY: "sk_test_secret" }, async () => {
+    const { service, users, oauthAccounts } = authServiceWithUsers();
+    users.push({ id: "user-1", email: "admin@example.com", username: "admin", passwordHash: null });
+    (service as any).verifyClerkSessionToken = async () => ({ sub: "clerk-attacker" });
+    (service as any).getClerkUser = async () => ({
+      id: "clerk-attacker",
+      username: "attacker",
+      firstName: null,
+      primaryEmailAddress: { emailAddress: "admin@example.com", verification: { status: "unverified" } }
+    });
+
+    await assert.rejects(() => service.loginWithClerkToken("clerk-session"), {
+      message: "Clerk primary email address must be verified"
+    });
+    assert.deepEqual(oauthAccounts, []);
+  });
+});
+
+test("Clerk token exchange links a verified primary email to a migrated password account", async () => {
+  await withEnv({ AUTH_MODE: "clerk", CLERK_SECRET_KEY: "sk_test_secret" }, async () => {
+    const { service, users, oauthAccounts } = authServiceWithUsers();
+    users.push({ id: "user-1", email: "user@example.com", username: "user", passwordHash: "legacy-password-hash" });
+    (service as any).verifyClerkSessionToken = async () => ({ sub: "clerk-user-1" });
+    (service as any).getClerkUser = async () => ({
+      id: "clerk-user-1",
+      username: "clerk-user",
+      firstName: null,
+      primaryEmailAddress: { emailAddress: "User@Example.com", verification: { status: "verified" } }
+    });
+
+    assert.deepEqual(await service.loginWithClerkToken("clerk-session"), {
+      id: "user-1",
+      email: "user@example.com",
+      username: "user"
+    });
+    assert.equal(oauthAccounts[0]?.userId, "user-1");
+    assert.equal(oauthAccounts[0]?.providerAccountId, "clerk-user-1");
+  });
+});
+
+test("Clerk token exchange preserves an existing provider-id link without a verified email", async () => {
+  await withEnv({ AUTH_MODE: "clerk", CLERK_SECRET_KEY: "sk_test_secret" }, async () => {
+    const { service, users, oauthAccounts } = authServiceWithUsers();
+    users.push({ id: "user-1", email: "user@example.com", username: "user", passwordHash: null });
+    oauthAccounts.push({ id: "oauth-1", userId: "user-1", provider: "clerk", providerAccountId: "clerk-user-1", providerUsername: "user" });
+    (service as any).verifyClerkSessionToken = async () => ({ sub: "clerk-user-1" });
+    (service as any).getClerkUser = async () => ({
+      id: "clerk-user-1",
+      username: "user",
+      firstName: null,
+      primaryEmailAddress: null
+    });
+
+    assert.deepEqual(await service.loginWithClerkToken("clerk-session"), {
+      id: "user-1",
+      email: "user@example.com",
+      username: "user"
+    });
   });
 });
 
@@ -374,6 +441,7 @@ test("upsertOAuthUser recovers when concurrent account linking wins the race", a
     providerAccountId: "provider-user-1",
     providerUsername: "provider-user",
     email: user.email,
+    emailVerified: true,
     username: user.username
   });
 

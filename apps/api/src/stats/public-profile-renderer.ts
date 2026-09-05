@@ -1,9 +1,11 @@
 type CountBucket = { key: string; count: number };
 type PercentBucket = CountBucket & { percent?: number };
 
+export const PUBLIC_PROFILE_CONTENT_SECURITY_POLICY =
+  "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'";
+
 const monthLabels = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const ratingValues = ["1", "1.5", "2", "2.5", "3", "3.5", "4", "4.5", "5"];
-const countryBoundaryUrl = "https://raw.githubusercontent.com/datasets/geo-countries/master/data/countries.geojson";
 const countryNameAliases: Record<string, string[]> = {
   "United States": ["United States of America"],
   Russia: ["Russian Federation"],
@@ -277,25 +279,7 @@ function continentCountryTable(countries: CountBucket[]) {
   return `<b>Top Countries</b><table class="gsak-map-country-table">${rows.join("")}</table>`;
 }
 
-function gsakMapPanel(options: {
-  id: string;
-  title: string;
-  view: string;
-  countries: CountBucket[];
-  totalFinds: number;
-  totalCountries: number;
-}) {
-  return `<div class="gsak-map-panel">
-    ${sectionHead(options.title)}
-    <div class="gsak-map-shell">
-      <div id="${options.id}" class="gsak-dynamic-map" data-view="${escapeHtml(options.view)}"></div>
-    </div>
-    ${mapLegend()}
-    ${continentCountryTable(options.countries)}
-  </div>`;
-}
-
-function gsakMapsTab(stats: any) {
+function gsakMapsTab(username: string, stats: any) {
   const countries = (stats?.countries ?? []) as CountBucket[];
   const countriesByContinent = new Map<string, CountBucket[]>();
   for (const country of countries) {
@@ -309,41 +293,21 @@ function gsakMapsTab(stats: any) {
     .sort(([left], [right]) => (continentViews[left]?.order ?? 99) - (continentViews[right]?.order ?? 99))
     .map(([continent, continentCountries]) => {
       const totalFinds = continentCountries.reduce((sum, country) => sum + country.count, 0);
-      return gsakMapPanel({
-        id: `gsak_map_${continent.toLowerCase().replace(/[^a-z0-9]+/g, "_")}`,
-        title: `${continent} - ${formatNumber(totalFinds)} finds in ${formatNumber(continentCountries.length)} countries`,
-        view: continent,
-        countries: continentCountries,
-        totalFinds,
-        totalCountries: continentCountries.length
-      });
+      const max = Math.max(0, ...continentCountries.map((country) => country.count));
+      return `<div class="gsak-map-panel">
+        ${sectionHead(`${continent} - ${formatNumber(totalFinds)} finds in ${formatNumber(continentCountries.length)} countries`)}
+        ${topLocationList(continentCountries, max, totalFinds)}
+      </div>`;
     });
 
   return `<div class="gsak-maps">
-    ${gsakMapPanel({
-      id: "gsak_map_world",
-      title: `World - ${formatNumber(stats?.totalFinds)} finds in ${formatNumber(countries.length)} countries`,
-      view: "world",
-      countries,
-      totalFinds: Number(stats?.totalFinds) || 0,
-      totalCountries: countries.length
-    })}
+    <div class="gsak-map-panel">
+      ${sectionHead(`World - ${formatNumber(stats?.totalFinds)} finds in ${formatNumber(countries.length)} countries`)}
+      <img class="gsak-static-map" src="/public/profile-scratch-map-image/${escapeHtml(encodeURIComponent(username))}" alt="${escapeHtml(username)} scratch map">
+      ${mapLegend()}
+      ${continentCountryTable(countries)}
+    </div>
     ${continentPanels.join("")}
-    <script type="application/json" id="gsak-map-data">${jsonForScript({
-      countries: countries.map((country) => ({
-        name: country.key,
-        names: countryNamesForBoundary(country.key),
-        count: country.count,
-        continent: continentForCountry(country.key),
-        color: gsakMapColor(country.count)
-      })),
-      continentLookup: Object.fromEntries(countryContinentLookup),
-      views: {
-        world: { center: [11, 24], zoom: 1.12 },
-        ...continentViews
-      },
-      boundaryUrl: countryBoundaryUrl
-    })}</script>
   </div>`;
 }
 
@@ -666,7 +630,7 @@ function ownedCachesTable(username: string, hides: any) {
 
 export function renderPublicProfileHtml(profile: { gcUsername: string }, stats: any) {
   const username = profile.gcUsername;
-  const mapsTab = gsakMapsTab(stats);
+  const mapsTab = gsakMapsTab(username, stats);
   const statsTab = `
     ${overviewTable(stats)}
     ${cumulativeChart(stats)}
@@ -683,8 +647,8 @@ export function renderPublicProfileHtml(profile: { gcUsername: string }, stats: 
 <html>
 <head>
   <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="${PUBLIC_PROFILE_CONTENT_SECURITY_POLICY}">
   <title>${escapeHtml(username)} Geostats Profile Stats</title>
-  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css">
   <style type="text/css">
     table { border-collapse: separate; border-spacing: 1px; }
     .gsak-maps {
@@ -697,19 +661,27 @@ export function renderPublicProfileHtml(profile: { gcUsername: string }, stats: 
       margin: 0 auto 24px;
       text-align: left;
     }
-    .gsak-map-shell {
-      width: 620px;
+    .gsak-static-map {
+      display: block;
+      width: 750px;
       max-width: 100%;
-      height: 430px;
       margin: 0 auto;
-      padding: 8px;
-      background: #d8edf5;
       border: 1px solid #000000;
     }
-    .gsak-dynamic-map {
-      width: 100%;
-      height: 100%;
-      background: #d8edf5;
+    .public-scratch-empty {
+      margin: 8px auto 20px;
+      color: #555555;
+    }
+    .public-scratch-tile {
+      display: flex;
+      justify-content: space-between;
+      width: 620px;
+      max-width: calc(100% - 16px);
+      box-sizing: border-box;
+      margin: 2px auto;
+      padding: 5px 8px;
+      background: var(--scratch-color);
+      border: 1px solid #777777;
     }
     .gsak-map-legend {
       width: 620px;
@@ -743,13 +715,11 @@ export function renderPublicProfileHtml(profile: { gcUsername: string }, stats: 
       width: 33%;
       white-space: nowrap;
     }
-    .gsak-map-panel .maplibregl-control-container {
-      display: none;
-    }
-    @media (max-width: 720px) {
-      .gsak-map-shell {
-        height: 340px;
-      }
+    summary {
+      cursor: pointer;
+      font-size: 120%;
+      font-weight: bold;
+      margin: 8px;
     }
   </style>
 </head>
@@ -762,147 +732,12 @@ export function renderPublicProfileHtml(profile: { gcUsername: string }, stats: 
     <br>
     <i>Statistics generated on ${generatedDateForStats(stats)}</i>
     <div align="center"><br><br>
-      <div style="line-height:150%; width:95%;">
-        <span id="tab1" style="cursor:pointer; background:#ffffff; border:2px outset; font-weight:bold; font-size:120%; white-space:nowrap; display:inline-block; margin:4px;" onmousedown="document.getElementById('tab1_details').style.display='block';document.getElementById('tab1').style.background='#ffffff';document.getElementById('tab2_details').style.display='none';document.getElementById('tab2').style.background='#BABADD';">&nbsp; Project-GC Maps &nbsp;</span>
-        <span id="tab2" style="cursor:pointer; background:#BABADD; border:2px outset; font-weight:bold; font-size:120%; white-space:nowrap; display:inline-block; margin:4px;" onmousedown="document.getElementById('tab2_details').style.display='block';document.getElementById('tab2').style.background='#ffffff';document.getElementById('tab1_details').style.display='none';document.getElementById('tab1').style.background='#BABADD';">&nbsp; Stats &nbsp;</span>
-      </div>
-      <div id="tab1_details"><br><br>${mapsTab}</div>
-      <div id="tab2_details" style="display:none;"><br><br>${statsTab}</div>
+      <details open><summary>Project-GC Maps</summary><div><br>${mapsTab}</div></details>
+      <details><summary>Stats</summary><div><br>${statsTab}</div></details>
     </div>
     <br><br>
     <span style="font-size:11px;">Stats generated dynamically by Geostats in a GSAK-style layout</span>
   </div>
-  <script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"></script>
-  <script>
-    (function () {
-      var dataElement = document.getElementById("gsak-map-data");
-      var containers = Array.prototype.slice.call(document.querySelectorAll(".gsak-dynamic-map"));
-      if (!dataElement || containers.length === 0 || !window.maplibregl) {
-        return;
-      }
-      var data = JSON.parse(dataElement.textContent || "{}");
-      var countries = Array.isArray(data.countries) ? data.countries : [];
-      var views = data.views || {};
-      window.__gsakProfileMaps = [];
-      var countriesByBoundaryName = new Map();
-      countries.forEach(function (country) {
-        country.names.forEach(function (name) {
-          countriesByBoundaryName.set(String(name).toLowerCase(), country);
-        });
-      });
-      function fillExpression() {
-        var pairs = [];
-        countries.forEach(function (country) {
-          country.names.forEach(function (name) {
-            pairs.push(name, country.color);
-          });
-        });
-        if (!pairs.length) {
-          return "rgba(237, 244, 232, 0.06)";
-        }
-        return ["match", ["get", "name"]].concat(pairs, ["rgba(237, 244, 232, 0.06)"]);
-      }
-      function boundsForFeatures(features) {
-        var bounds = new maplibregl.LngLatBounds();
-        features.forEach(function (feature) {
-          var geometry = feature.geometry || {};
-          var polygons = geometry.type === "Polygon" ? [geometry.coordinates] : geometry.type === "MultiPolygon" ? geometry.coordinates : [];
-          polygons.forEach(function (polygon) {
-            (polygon[0] || []).forEach(function (coordinate) {
-              if (Array.isArray(coordinate) && coordinate.length >= 2) {
-                bounds.extend([Number(coordinate[0]), Number(coordinate[1])]);
-              }
-            });
-          });
-        });
-        return bounds;
-      }
-      function featuresForView(boundaryGeoJson, viewName) {
-        if (viewName === "world") {
-          return boundaryGeoJson.features.filter(function (feature) {
-            var geometry = feature.geometry || {};
-            var name = String((feature.properties || {}).name || "").toLowerCase();
-            return (geometry.type === "Polygon" || geometry.type === "MultiPolygon") && name !== "antarctica";
-          });
-        }
-        return boundaryGeoJson.features.filter(function (feature) {
-          var name = String((feature.properties || {}).name || "").toLowerCase();
-          return data.continentLookup && data.continentLookup[name] === viewName;
-        });
-      }
-      var continentBounds = {
-        Africa: [[-20, -36], [55, 38]],
-        Antarctica: [[-180, -86], [180, -60]],
-        Asia: [[25, -12], [180, 82]],
-        Europe: [[-25, 34], [45, 72]],
-        "North America": [[-170, 5], [-50, 84]],
-        Oceania: [[110, -50], [180, 0]],
-        "South America": [[-82, -56], [-34, 13]]
-      };
-      fetch(data.boundaryUrl).then(function (response) {
-        return response.json();
-      }).then(function (boundaryGeoJson) {
-        containers.forEach(function (container) {
-        var viewName = container.getAttribute("data-view") || "world";
-        var view = views[viewName] || views.world || { center: [11, 24], zoom: 1.12 };
-        var map = new maplibregl.Map({
-          container: container,
-          interactive: false,
-          attributionControl: false,
-          style: {
-            version: 8,
-            sources: {},
-            layers: [
-              {
-                id: "gsak-water",
-                type: "background",
-                paint: { "background-color": "#d8edf5" }
-              }
-            ]
-          },
-          center: view.center,
-          zoom: view.zoom
-        });
-        window.__gsakProfileMaps.push(map);
-        map.on("load", function () {
-          map.addSource("gsak-countries", { type: "geojson", data: boundaryGeoJson });
-          map.addLayer({
-            id: "gsak-country-fills",
-            type: "fill",
-            source: "gsak-countries",
-            paint: {
-              "fill-color": fillExpression(),
-              "fill-opacity": 0.95
-            }
-          });
-          map.addLayer({
-            id: "gsak-country-lines",
-            type: "line",
-            source: "gsak-countries",
-            paint: {
-              "line-color": "#374151",
-              "line-width": 0.45
-            }
-          });
-          if (viewName === "world") {
-            map.fitBounds([[-178, -56], [178, 83]], { padding: 2, duration: 0, maxZoom: 0.9 });
-          } else if (continentBounds[viewName]) {
-            map.fitBounds(continentBounds[viewName], { padding: 8, duration: 0, maxZoom: 4.5 });
-          } else {
-            var visibleFeatures = featuresForView(boundaryGeoJson, viewName);
-            var bounds = boundsForFeatures(visibleFeatures);
-            if (!bounds.isEmpty()) {
-              map.fitBounds(bounds, { padding: 10, duration: 0, maxZoom: 4.5 });
-            } else {
-              map.setCenter(view.center);
-              map.setZoom(view.zoom);
-            }
-          }
-        });
-      });
-      }).catch(function () {});
-    })();
-  </script>
 </body>
 </html>`;
 }

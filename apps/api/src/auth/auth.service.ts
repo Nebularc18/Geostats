@@ -145,17 +145,16 @@ export class AuthService {
 
     const clerkUser = await this.getClerkUser(secretKey, verifiedToken.sub);
 
-    const email = clerkUser.primaryEmailAddress?.emailAddress.trim().toLowerCase();
-    if (!email) {
-      throw new BadRequestException("Clerk account must have a primary email address");
-    }
+    const primaryEmail = clerkUser.primaryEmailAddress;
+    const email = primaryEmail?.emailAddress.trim().toLowerCase() || null;
 
     const user = await this.upsertOAuthUser({
       provider: "clerk",
       providerAccountId: clerkUser.id,
       providerUsername: clerkUser.username ?? clerkUser.firstName ?? null,
       email,
-      username: clerkUser.username || clerkUser.firstName || email.split("@")[0]
+      emailVerified: primaryEmail?.verification?.status === "verified",
+      username: clerkUser.username || clerkUser.firstName || email?.split("@")[0] || `clerk-${clerkUser.id}`
     });
     return this.toAuthUser(user);
   }
@@ -171,6 +170,7 @@ export class AuthService {
       providerAccountId: email,
       providerUsername: username,
       email,
+      emailVerified: true,
       username
     });
     await this.ensureDevProfile(user.id, username);
@@ -203,7 +203,7 @@ export class AuthService {
   }
 
   private assertPasswordAuthMode() {
-    if (this.authMode() === "dev") {
+    if (this.authMode() !== "password") {
       throw new ServiceUnavailableException("Password auth is disabled");
     }
   }
@@ -245,7 +245,8 @@ export class AuthService {
     provider: string;
     providerAccountId: string;
     providerUsername: string | null;
-    email: string;
+    email: string | null;
+    emailVerified?: boolean;
     username: string;
   }) {
     const existingAccount = await this.findOAuthAccount(input.provider, input.providerAccountId);
@@ -257,6 +258,13 @@ export class AuthService {
         });
       }
       return existingAccount.user;
+    }
+
+    if (!input.email) {
+      throw new BadRequestException("Clerk account must have a primary email address");
+    }
+    if (input.provider === "clerk" && input.emailVerified !== true) {
+      throw new BadRequestException("Clerk primary email address must be verified");
     }
 
     const existingUser = await this.prisma.user.findUnique({ where: { email: input.email } });

@@ -21,8 +21,10 @@ import { schedulePostImportStatsRefresh } from "./import-refresh";
 import {
   MAX_MYSTERY_SNAPSHOT_BYTES,
   mysterySnapshotByteLength,
+  mysteryStorageNamespace,
   readJsonArrayWithRecovery,
   replaceJsonFile,
+  safeRecipientMysteryImage,
 } from "./mystery-storage";
 
 type CountBucket = { key: string; count: number };
@@ -379,16 +381,16 @@ function newId(prefix = "item") {
   return globalThis.crypto?.randomUUID?.() ?? `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
-function mysteryFile(userId: string) {
-  return new File(Paths.document, `geostats-mysteries-${userId.replace(/[^a-z0-9_-]/gi, "_")}.json`);
+function mysteryFile(apiBaseUrl: string, userId: string) {
+  return new File(Paths.document, `geostats-mysteries-${mysteryStorageNamespace(apiBaseUrl, userId)}.json`);
 }
 
-function mysteryBackupFile(userId: string) {
-  return new File(Paths.document, `geostats-mysteries-${userId.replace(/[^a-z0-9_-]/gi, "_")}.backup.json`);
+function mysteryBackupFile(apiBaseUrl: string, userId: string) {
+  return new File(Paths.document, `geostats-mysteries-${mysteryStorageNamespace(apiBaseUrl, userId)}.backup.json`);
 }
 
-function mysterySyncFile(userId: string) {
-  return new File(Paths.document, `geostats-mystery-sync-${userId.replace(/[^a-z0-9_-]/gi, "_")}.json`);
+function mysterySyncFile(apiBaseUrl: string, userId: string) {
+  return new File(Paths.document, `geostats-mystery-sync-${mysteryStorageNamespace(apiBaseUrl, userId)}.json`);
 }
 
 function snapshotFingerprint(value: string) {
@@ -408,15 +410,16 @@ function isStoredMystery(value: unknown): value is MysteryCache {
   return typeof cache.id === "string" && typeof cache.gcCode === "string" && typeof cache.name === "string";
 }
 
-async function readMysteries(userId: string) {
-  const file = mysteryFile(userId);
-  const backup = mysteryBackupFile(userId);
+async function readMysteries(apiBaseUrl: string, userId: string) {
+  const namespace = mysteryStorageNamespace(apiBaseUrl, userId);
+  const file = mysteryFile(apiBaseUrl, userId);
+  const backup = mysteryBackupFile(apiBaseUrl, userId);
   if (!file.exists && !backup.exists) return [];
   try {
     const value = await readJsonArrayWithRecovery<MysteryCache>(
       file,
       backup,
-      () => new File(Paths.document, `geostats-mysteries-${userId.replace(/[^a-z0-9_-]/gi, "_")}-corrupt-${Date.now()}.json`),
+      () => new File(Paths.document, `geostats-mysteries-${namespace}-corrupt-${Date.now()}.json`),
       isStoredMystery,
       (message, error) => console.warn(`${message} for ${userId}:`, error),
     );
@@ -426,6 +429,7 @@ async function readMysteries(userId: string) {
       country: cache.country ?? "",
       clues: Array.isArray(cache.clues) ? cache.clues : [],
       attempts: Array.isArray(cache.attempts) ? cache.attempts : [],
+      image: cache.sharedBy ? safeRecipientMysteryImage(cache.image) : cache.image,
       sharedWith: Array.isArray(cache.sharedWith) ? cache.sharedWith : []
     })) as MysteryCache[];
   } catch (error) {
@@ -434,13 +438,13 @@ async function readMysteries(userId: string) {
   }
 }
 
-function writeMysteries(userId: string, caches: MysteryCache[]) {
+function writeMysteries(apiBaseUrl: string, userId: string, caches: MysteryCache[]) {
   const json = JSON.stringify(caches);
-  const file = mysteryFile(userId);
-  const safeUserId = userId.replace(/[^a-z0-9_-]/gi, "_");
-  const tmp = new File(Paths.document, `geostats-mysteries-${safeUserId}-${Date.now()}-${Math.random().toString(36).slice(2)}.tmp`);
+  const namespace = mysteryStorageNamespace(apiBaseUrl, userId);
+  const file = mysteryFile(apiBaseUrl, userId);
+  const tmp = new File(Paths.document, `geostats-mysteries-${namespace}-${Date.now()}-${Math.random().toString(36).slice(2)}.tmp`);
   try {
-    replaceJsonFile(file, tmp, mysteryBackupFile(userId), json, isStoredMystery);
+    replaceJsonFile(file, tmp, mysteryBackupFile(apiBaseUrl, userId), json, isStoredMystery);
     return true;
   } catch (error) {
     console.warn(`Failed to write mysteries for ${userId}:`, error);
@@ -448,8 +452,8 @@ function writeMysteries(userId: string, caches: MysteryCache[]) {
   }
 }
 
-async function readMysterySyncMetadata(userId: string) {
-  const file = mysterySyncFile(userId);
+async function readMysterySyncMetadata(apiBaseUrl: string, userId: string) {
+  const file = mysterySyncFile(apiBaseUrl, userId);
   if (!file.exists) return new Map<string, MysterySyncMetadata>();
   try {
     const value = JSON.parse(await file.text()) as Record<string, MysterySyncMetadata>;
@@ -463,9 +467,9 @@ async function readMysterySyncMetadata(userId: string) {
   }
 }
 
-async function writeMysterySyncMetadata(userId: string, metadata: Map<string, MysterySyncMetadata>) {
+async function writeMysterySyncMetadata(apiBaseUrl: string, userId: string, metadata: Map<string, MysterySyncMetadata>) {
   try {
-    mysterySyncFile(userId).write(JSON.stringify(Object.fromEntries(metadata)));
+    mysterySyncFile(apiBaseUrl, userId).write(JSON.stringify(Object.fromEntries(metadata)));
   } catch (error) {
     console.warn(`Failed to write mystery sync metadata for ${userId}:`, error);
   }
@@ -1912,6 +1916,8 @@ function MysteriesScreen({ apiBaseUrl, token, userId, onRequestScrollTop }: { ap
   const snapshotRevisions = useRef(new Map<string, number>());
   const syncMetadata = useRef(new Map<string, MysterySyncMetadata>());
   const persistedMysteriesFingerprint = useRef<string | null>(null);
+  const activeMysteryNamespace = useRef("");
+  const loadedMysteryNamespace = useRef("");
   const [accountLoaded, setAccountLoaded] = useState(false);
   const [ownedLoadAttempt, setOwnedLoadAttempt] = useState(0);
   const [syncAttempt, setSyncAttempt] = useState(0);
@@ -1949,24 +1955,41 @@ function MysteriesScreen({ apiBaseUrl, token, userId, onRequestScrollTop }: { ap
     rememberSnapshotRevision(cacheId, revision);
     serverSnapshots.current.set(cacheId, serialized);
     syncMetadata.current.set(cacheId, { revision, fingerprint: snapshotFingerprint(serialized) });
-    void writeMysterySyncMetadata(userId, syncMetadata.current);
+    void writeMysterySyncMetadata(apiBaseUrl, userId, syncMetadata.current);
   }
 
   useEffect(() => {
     let active = true;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    const namespace = mysteryStorageNamespace(apiBaseUrl, userId);
+    const identityChanged = activeMysteryNamespace.current !== namespace;
+    if (identityChanged) {
+      activeMysteryNamespace.current = namespace;
+      loadedMysteryNamespace.current = "";
+      latestMysteries.current = { caches: [], ready: false };
+      serverSnapshots.current.clear();
+      snapshotRevisions.current.clear();
+      syncMetadata.current.clear();
+      persistedMysteriesFingerprint.current = null;
+      setCaches([]);
+      setSelectedId("");
+      setDetailOpen(false);
+      setAccountLoaded(false);
+      setReady(false);
+    }
     void (async () => {
       const [local, storedMetadata] = await Promise.all([
-        readMysteries(userId),
-        readMysterySyncMetadata(userId)
+        readMysteries(apiBaseUrl, userId),
+        readMysterySyncMetadata(apiBaseUrl, userId)
       ]);
-      if (!active) return;
+      if (!active || activeMysteryNamespace.current !== namespace) return;
       persistedMysteriesFingerprint.current = snapshotFingerprint(JSON.stringify(local.filter((cache) => !cache.sharedBy)));
-      if (!syncMetadata.current.size) {
+      loadedMysteryNamespace.current = namespace;
+      if (identityChanged || !syncMetadata.current.size) {
         syncMetadata.current = storedMetadata;
         storedMetadata.forEach(({ revision }, cacheId) => rememberSnapshotRevision(cacheId, revision));
       }
-      if (!latestMysteries.current.ready) {
+      if (identityChanged || !latestMysteries.current.ready) {
         setCaches(local);
         setSelectedId(local[0]?.id ?? "");
         setReady(true);
@@ -1983,7 +2006,7 @@ function MysteriesScreen({ apiBaseUrl, token, userId, onRequestScrollTop }: { ap
           apiFetch<{ mysteries: OwnedMysterySnapshot[]; deletedClientIds: string[] }>(apiBaseUrl, "/mysteries/owned", token),
           apiFetch<{ mysteries: SharedMysteryGrant[] }>(apiBaseUrl, "/mysteries/shared", token).catch(() => null)
         ]);
-        if (!active) return;
+        if (!active || activeMysteryNamespace.current !== namespace) return;
         const deletedIds = new Set(owned.deletedClientIds);
         const ownedEntries = owned.mysteries
           .filter(({ clientId, mystery }) => mystery?.id === clientId && !deletedIds.has(clientId))
@@ -2030,6 +2053,7 @@ function MysteriesScreen({ apiBaseUrl, token, userId, onRequestScrollTop }: { ap
         const sharedCaches = shared
           ? shared.mysteries.map((grant) => ({
               ...grant.mystery,
+              image: safeRecipientMysteryImage(grant.mystery.image),
               sharedBy: grant.owner,
               sharedWith: grant.sharedWith,
               sharedWorkspaceId: grant.workspaceId
@@ -2044,7 +2068,7 @@ function MysteriesScreen({ apiBaseUrl, token, userId, onRequestScrollTop }: { ap
         setAccountLoaded(true);
         setReady(true);
       } catch {
-        if (!active) return;
+        if (!active || activeMysteryNamespace.current !== namespace) return;
         setAccountLoaded(false);
         setNotice("Could not load account mysteries. Showing device data and retrying…");
         retryTimer = setTimeout(() => setOwnedLoadAttempt((attempt) => attempt + 1), 3000);
@@ -2057,23 +2081,25 @@ function MysteriesScreen({ apiBaseUrl, token, userId, onRequestScrollTop }: { ap
   }, [apiBaseUrl, ownedLoadAttempt, token, userId]);
 
   useEffect(() => {
-    if (!ready) return;
+    const namespace = mysteryStorageNamespace(apiBaseUrl, userId);
+    if (!ready || loadedMysteryNamespace.current !== namespace) return;
     const owned = caches.filter((cache) => !cache.sharedBy);
     const fingerprint = snapshotFingerprint(JSON.stringify(owned));
     if (persistedMysteriesFingerprint.current === fingerprint) return;
     const timer = setTimeout(() => {
       if (persistedMysteriesFingerprint.current === fingerprint) return;
-      if (writeMysteries(userId, owned)) {
+      if (writeMysteries(apiBaseUrl, userId, owned)) {
         persistedMysteriesFingerprint.current = fingerprint;
       } else {
         setNotice("Could not save mysteries on this device.");
       }
     }, 150);
     return () => clearTimeout(timer);
-  }, [caches, ready, userId]);
+  }, [apiBaseUrl, caches, ready, userId]);
 
   useEffect(() => {
-    if (!ready || !accountLoaded) return;
+    const namespace = mysteryStorageNamespace(apiBaseUrl, userId);
+    if (!ready || !accountLoaded || loadedMysteryNamespace.current !== namespace) return;
     const pending = caches.flatMap((cache) => {
       if (cache.sharedBy) return [];
       const serialized = JSON.stringify(shareableMystery(cache));
@@ -2115,7 +2141,7 @@ function MysteriesScreen({ apiBaseUrl, token, userId, onRequestScrollTop }: { ap
       clearTimeout(timer);
       if (retryTimer) clearTimeout(retryTimer);
     };
-  }, [accountLoaded, apiBaseUrl, caches, ready, syncAttempt, token]);
+  }, [accountLoaded, apiBaseUrl, caches, ready, syncAttempt, token, userId]);
 
   useEffect(() => {
     function flushLatestMysteries() {
@@ -2125,7 +2151,7 @@ function MysteriesScreen({ apiBaseUrl, token, userId, onRequestScrollTop }: { ap
       const owned = latest.caches.filter((cache) => !cache.sharedBy);
       const fingerprint = snapshotFingerprint(JSON.stringify(owned));
       if (persistedMysteriesFingerprint.current === fingerprint) return;
-      if (writeMysteries(userId, owned)) {
+      if (writeMysteries(apiBaseUrl, userId, owned)) {
         persistedMysteriesFingerprint.current = fingerprint;
       }
     }
@@ -2137,7 +2163,7 @@ function MysteriesScreen({ apiBaseUrl, token, userId, onRequestScrollTop }: { ap
       subscription.remove();
       flushLatestMysteries();
     };
-  }, [userId]);
+  }, [apiBaseUrl, userId]);
 
   useEffect(() => {
     if (shareQuery.trim().length < 2) {
@@ -2305,7 +2331,7 @@ function MysteriesScreen({ apiBaseUrl, token, userId, onRequestScrollTop }: { ap
             serverSnapshots.current.delete(selected.id);
             snapshotRevisions.current.delete(selected.id);
             syncMetadata.current.delete(selected.id);
-            void writeMysterySyncMetadata(userId, syncMetadata.current);
+            void writeMysterySyncMetadata(apiBaseUrl, userId, syncMetadata.current);
             const remaining = latestMysteries.current.caches.filter((cache) => cache.id !== selected.id);
             setCaches(remaining);
             setSelectedId(remaining[0]?.id ?? "");
@@ -2415,7 +2441,14 @@ function TravelScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; token
   const [searchResult, setSearchResult] = useState<TravelSearchResult | null>(null);
   const [selectedRecommendations, setSelectedRecommendations] = useState<Set<string>>(new Set());
   const pool = useApi<TravelPoolSummary>(apiBaseUrl, token, "/map/travel-pool", { total: 0, found: 0, unfound: 0, poolTruncated: false, types: [] });
-  useEffect(() => { void readMysteries(userId).then(setCaches); }, [userId]);
+  useEffect(() => {
+    let active = true;
+    setCaches([]);
+    void readMysteries(apiBaseUrl, userId).then((stored) => {
+      if (active) setCaches(stored);
+    });
+    return () => { active = false; };
+  }, [apiBaseUrl, userId]);
   const visible = caches.filter((cache) => {
     const isReady = Boolean(finalCoordinate(cache));
     const matchesFilter = filter === "all" || (filter === "ready" ? isReady : !isReady);

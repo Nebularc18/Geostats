@@ -235,6 +235,7 @@ model GeocachingProfile {
   homeLongitude     Decimal? @map("home_longitude") @db.Decimal(9, 6)
   timeZone          String   @default("Europe/Stockholm") @map("time_zone")
   ftfDetectionTerms String[] @default(["FTF", "first to find"]) @map("ftf_detection_terms")
+  publicStatsEnabled Boolean @default(false) @map("public_stats_enabled")
   createdAt         DateTime @default(now()) @map("created_at")
   updatedAt         DateTime @updatedAt @map("updated_at")
 
@@ -294,6 +295,7 @@ model Cache {
   county     String?
   hiddenDate DateTime? @map("hidden_date") @db.Date
   ownerName  String?   @map("owner_name")
+  metadataTrusted Boolean @default(false) @map("metadata_trusted")
   createdAt  DateTime  @default(now()) @map("created_at")
   updatedAt  DateTime  @updatedAt @map("updated_at")
 
