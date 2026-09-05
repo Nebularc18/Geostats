@@ -524,7 +524,6 @@ export default function MysteriesPage() {
     let identityRequest = 0;
     const resolveIdentity = async () => {
       const request = ++identityRequest;
-      setStorageKeys(null);
       try {
         const response = await fetch(`${API_URL}/auth/me`, { credentials: "include", cache: "no-store" });
         if (!active || request !== identityRequest) return;
@@ -539,10 +538,11 @@ export default function MysteriesPage() {
           setStorageKeys(null);
           return;
         }
-        setStorageKeys(mysteryStorageKeys(API_URL, user.id));
+        const nextStorageKeys = mysteryStorageKeys(API_URL, user.id);
+        setStorageKeys((current) => current?.namespace === nextStorageKeys.namespace ? current : nextStorageKeys);
       } catch {
         if (!active || request !== identityRequest) return;
-        setStorageKeys(null);
+        // Keep the current account data during a transient revalidation failure.
       }
     };
     const resolveVisibleIdentity = () => {
@@ -1134,6 +1134,13 @@ export default function MysteriesPage() {
   useEffect(() => {
     setAttemptSearch("");
   }, [selectedCacheId]);
+  useEffect(() => {
+    if (!ready || !selectedCacheId) return;
+    const url = new URL(window.location.href);
+    if (url.searchParams.get("cache") === selectedCacheId) return;
+    url.searchParams.set("cache", selectedCacheId);
+    window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+  }, [ready, selectedCacheId]);
   const normalizedAttemptSearch = attemptSearch.trim().toLocaleLowerCase();
   const matchingAttempts = selected?.attempts.filter((attempt) =>
     !normalizedAttemptSearch || attemptInputLabel(attempt).toLocaleLowerCase().includes(normalizedAttemptSearch)
