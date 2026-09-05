@@ -334,7 +334,7 @@ export class ChallengeCheckersService {
       ...(maximumFinds === undefined ? {} : { take: maximumFinds + 1 })
     });
     if (maximumFinds !== undefined && finds.length > maximumFinds) {
-      throw new PayloadTooLargeException(`This public checker cannot evaluate more than ${maximumFinds.toLocaleString()} finds. Sign in and run the owned checker instead.`);
+      throw new PayloadTooLargeException(`This public checker cannot evaluate more than ${maximumFinds.toLocaleString("en-US")} finds. Sign in and run the owned checker instead.`);
     }
     const rules = parseRules(checker.rules);
     const checkerFinds = finds.map((find) => ({ ...find, cache: { ...find.cache, raw: find.cache.userData?.[0]?.raw } }));
