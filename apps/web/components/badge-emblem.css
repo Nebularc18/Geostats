@@ -1,0 +1,78 @@
+.badge-picture.enamel {
+  --badge-tier: #c38a5c;
+  --enamel-top: #f1c86b;
+  --enamel-bottom: #b7742e;
+  --enamel-ink: #503218;
+  position: relative;
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 80px;
+  height: 88px;
+  isolation: isolate;
+}
+
+.enamel-rim {
+  position: absolute;
+  top: 0;
+  width: 80px;
+  height: 80px;
+  padding: 7px;
+  border: 1px solid color-mix(in srgb, var(--badge-tier) 72%, white);
+  border-radius: 50%;
+  background: conic-gradient(from 30deg, var(--badge-tier), color-mix(in srgb, var(--badge-tier) 42%, #fff9e4), var(--badge-tier), color-mix(in srgb, var(--badge-tier) 60%, #36291f), var(--badge-tier), color-mix(in srgb, var(--badge-tier) 42%, #fff9e4), var(--badge-tier));
+  box-shadow: 0 4px 0 #101b16, 0 7px 12px #0004, inset 0 0 0 2px #ffffff28, inset 0 0 0 4px #382d2226;
+}
+
+.enamel-face {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  border: 2px solid var(--enamel-ink);
+  border-radius: 50%;
+  color: var(--enamel-ink);
+  background: linear-gradient(155deg, var(--enamel-top) 25%, var(--enamel-bottom));
+  box-shadow: inset 0 2px 1px #fff7, inset 0 -3px 5px #0002;
+}
+
+.enamel-contours { position: absolute; inset: 0; width: 100%; height: 100%; stroke: currentColor; stroke-width: 1.4; opacity: .16; }
+.enamel-icon { position: relative; z-index: 1; fill: color-mix(in srgb, var(--enamel-top) 45%, #fff7da); filter: drop-shadow(0 1px 0 #ffffff70); }
+.enamel-level {
+  position: absolute;
+  bottom: 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 30px;
+  height: 19px;
+  padding: 0 7px;
+  border: 1px solid color-mix(in srgb, var(--badge-tier) 60%, white);
+  border-radius: 6px;
+  background: linear-gradient(#f8ead0, var(--badge-tier));
+  color: #302a20;
+  box-shadow: 0 2px 3px #0004;
+  font: 800 10px/1 Arial, sans-serif;
+}
+
+.enamel.enamel-ocean { --enamel-top: #9bddd8; --enamel-bottom: #448eac; --enamel-ink: #153f52; }
+.enamel.enamel-forest { --enamel-top: #bbd68a; --enamel-bottom: #599867; --enamel-ink: #244b35; }
+.enamel.enamel-violet { --enamel-top: #c9b9eb; --enamel-bottom: #8971b5; --enamel-ink: #43335f; }
+.enamel.enamel-clay { --enamel-top: #f3b183; --enamel-bottom: #cd6f4f; --enamel-ink: #68362a; }
+.enamel.enamel-rose { --enamel-top: #eeb4c1; --enamel-bottom: #be728b; --enamel-ink: #642f4a; }
+.badge-picture.enamel.bronze { --badge-tier: #c38a5c; }
+.badge-picture.enamel.silver { --badge-tier: #b5c7ce; }
+.badge-picture.enamel.gold { --badge-tier: #e3b94e; }
+.badge-picture.enamel.platinum { --badge-tier: #9bd9d4; }
+.badge-picture.enamel.ruby { --badge-tier: #d7627a; }
+.badge-picture.enamel.sapphire { --badge-tier: #689bdc; }
+.badge-picture.enamel.emerald { --badge-tier: #57b88b; }
+.badge-picture.enamel.diamond { --badge-tier: #d0ecff; }
+.badge-picture.enamel.locked { --badge-tier: #63766d; --enamel-top: #51675b; --enamel-bottom: #33483d; --enamel-ink: #b3c2b8; }
+.enamel.locked .enamel-rim { background: #506158; border-color: #74847a; box-shadow: 0 3px 0 #15231b, inset 0 0 0 3px #ffffff0a; }
+.enamel.locked .enamel-icon { fill: none; filter: none; }
+.enamel.locked .enamel-face { border-color: #2b3b31; box-shadow: none; }
+.enamel.locked .enamel-level { background: #41554a; color: #c2cec6; border-color: #718278; }
