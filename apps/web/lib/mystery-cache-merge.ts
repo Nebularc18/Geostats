@@ -87,12 +87,13 @@ export function formatMysteryCoordinate(latitude: number, longitude: number, min
     const minutes = (absolute - wholeDegrees) * 60;
     return `${value >= 0 ? positive : negative} ${String(wholeDegrees).padStart(degrees, "0")}° ${minutes.toFixed(minuteDecimals)}'`;
   };
-  return `${part(latitude, "N", "S", 2)}  ${part(longitude, "E", "W", 3)}`;
+  return `${part(latitude, "N", "S", 2)} ${part(longitude, "E", "W", 3)}`;
 }
 
 export function coordinateIdentityKey(latitude: unknown, longitude: unknown) {
-  // Attempt labels show four decimal-minute digits. Derive identity from that
-  // exact representation so visibly distinct coordinates can never collapse.
+  // Attempt labels show three decimal-minute digits (geocaching standard).
+  // Derive identity from a four-digit representation so visibly identical
+  // coordinates with distinct fourth decimals can never collapse.
   return Number.isFinite(latitude) && Number.isFinite(longitude)
     ? formatMysteryCoordinate(latitude as number, longitude as number, 4)
     : "";
