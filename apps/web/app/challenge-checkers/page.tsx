@@ -256,7 +256,16 @@ export default function ChallengeCheckersPage() {
           <label>Challenge GC code<input required maxLength={20} value={gcCode} onChange={(event) => setGcCode(event.target.value.toUpperCase())} placeholder="GC12345" /></label>
         </div>
         <label>Description <small>Optional note shown on the public result</small><textarea maxLength={1000} value={description} onChange={(event) => setDescription(event.target.value)} placeholder="The challenge requirements…" /></label>
-        <div className="challenge-rules">
+        {showProjectGcImport
+          ? <div className="challenge-rules">
+            {rules.some((rule) => rule.type === "PROJECT_GC_NUMBER")
+              ? rules.map((rule, index) => rule.type !== "PROJECT_GC_NUMBER" ? null : <div className="challenge-rule" key={index}>
+                <div className="challenge-imported-filter"><span>Imported Project-GC count</span><strong>{rule.filterLabel}</strong><small>Re-import the script to change these filters.</small></div>
+                <label>Required<input type="number" min={1} max={1000000} required value={rule.minimum} onChange={(event) => replaceRule(index, { ...rule, minimum: Number(event.target.value) })} /></label>
+              </div>)
+              : <p className="muted">Paste the Lua script and tag config above, then choose “Use imported rules”. The manual rule builder stays hidden while importing.</p>}
+          </div>
+          : <div className="challenge-rules">
           {rules.map((rule, index) => <div className="challenge-rule" key={index}>
             <label>Rule type<select value={rule.type} onChange={(event) => replaceRule(index, defaultRule(event.target.value as Rule["type"]))}>
               {rule.type === "PROJECT_GC_NUMBER" && <option value="PROJECT_GC_NUMBER">Imported Project-GC count</option>}
@@ -287,8 +296,8 @@ export default function ChallengeCheckersPage() {
             <label>Required<input type="number" min={1} max={rule.type === "CALENDAR_DAYS" ? 366 : rule.type === "DIFFICULTY_TERRAIN" ? 81 : rule.type === "FIND_STREAK" ? 365 : 1000000} required value={rule.minimum} onChange={(event) => replaceRule(index, { ...rule, minimum: Number(event.target.value) })} /></label>
             {rules.length > 1 && <button className="challenge-icon-button" type="button" aria-label="Remove rule" onClick={() => setRules((current) => current.filter((_, itemIndex) => itemIndex !== index))}><X size={18} /></button>}
           </div>)}
-        </div>
-        <div className="challenge-actions"><button className="ghost-button challenge-small-button" type="button" disabled={rules.length >= 10} onClick={() => setRules((current) => [...current, defaultRule("TOTAL_FINDS")])}><Plus size={17} />Add AND rule</button>{editingId && <button className="ghost-button challenge-small-button" type="button" onClick={resetForm}><X size={17} />Cancel editing</button>}<button className="primary-button" disabled={busy !== null}>{busy === "save" ? "Saving…" : editingId ? "Update checker" : "Save checker"}</button></div>
+        </div>}
+        <div className="challenge-actions">{!showProjectGcImport && <button className="ghost-button challenge-small-button" type="button" disabled={rules.length >= 10} onClick={() => setRules((current) => [...current, defaultRule("TOTAL_FINDS")])}><Plus size={17} />Add AND rule</button>}{editingId && <button className="ghost-button challenge-small-button" type="button" onClick={resetForm}><X size={17} />Cancel editing</button>}<button className="primary-button" disabled={busy !== null}>{busy === "save" ? "Saving…" : editingId ? "Update checker" : "Save checker"}</button></div>
       </form>
     </section>
 
