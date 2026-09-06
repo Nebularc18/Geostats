@@ -76,6 +76,30 @@ function sameText(left: string | null, right: string) {
   return left?.trim().localeCompare(right.trim(), undefined, { sensitivity: "accent" }) === 0;
 }
 
+function normalizeLocationName(value: string) {
+  // Groundspeak/GPX data uses "Blekinge" while boundary datasets use
+  // "Blekinge län" (and "Karlskrona" vs "Karlskrona kommun"). Normalize
+  // administrative suffixes so the same place matches either naming.
+  let name = value.trim().toLocaleLowerCase();
+  if (name.endsWith("s län")) name = name.slice(0, -"s län".length);
+  else if (name.endsWith(" län")) name = name.slice(0, -" län".length);
+  for (const suffix of [" kommun", " municipality", " county", " kommune", " kunta"]) {
+    if (name.endsWith(suffix)) {
+      name = name.slice(0, -suffix.length);
+      break;
+    }
+  }
+  return name.trim();
+}
+
+export function sameLocationText(left: string | null | undefined, right: string) {
+  if (left == null) return false;
+  const leftTrimmed = left.trim();
+  const rightTrimmed = right.trim();
+  if (leftTrimmed.localeCompare(rightTrimmed, undefined, { sensitivity: "accent" }) === 0) return true;
+  return normalizeLocationName(leftTrimmed).localeCompare(normalizeLocationName(rightTrimmed), undefined, { sensitivity: "accent" }) === 0;
+}
+
 function loggedCalendarKey(find: CheckerFind) {
   return `${String(find.foundDate.getUTCMonth() + 1).padStart(2, "0")}-${String(find.foundDate.getUTCDate()).padStart(2, "0")}`;
 }
@@ -114,14 +138,15 @@ function favoritePoints(find: CheckerFind) {
 
 function projectGcFilterMatches(filter: ProjectGcFindFilter, find: CheckerFind) {
   const inTextList = (value: string | null | undefined, choices: string[] | undefined) => !choices || choices.some((choice) => sameText(value ?? null, choice));
+  const inLocationList = (value: string | null | undefined, choices: string[] | undefined) => !choices || (value != null && choices.some((choice) => sameLocationText(value, choice)));
   const cacheTypeId = find.cache.cacheType ? cacheTypeIdentity(find.cache.cacheType).id : null;
   const visitDate = loggedEvidenceDate(find);
   const hiddenDate = find.cache.hiddenDate?.toISOString().slice(0, 10);
   const latitude = Number(find.cache.latitude);
   const longitude = Number(find.cache.longitude);
-  return inTextList(find.cache.country, filter.countries) &&
-    inTextList(find.cache.region, filter.regions) &&
-    inTextList(find.cache.county, filter.counties) &&
+  return inLocationList(find.cache.country, filter.countries) &&
+    inLocationList(find.cache.region, filter.regions) &&
+    inLocationList(find.cache.county, filter.counties) &&
     (!filter.cacheTypeIds || cacheTypeId !== null && filter.cacheTypeIds.includes(cacheTypeId)) &&
     (!filter.excludedCacheTypeIds || cacheTypeId === null || !filter.excludedCacheTypeIds.includes(cacheTypeId)) &&
     inTextList(find.cache.size, filter.sizes) &&
@@ -186,9 +211,9 @@ export function evaluateChallenge(rules: ChallengeRule[], finds: CheckerFind[], 
     } else if (rule.type === "LOCATION") {
       matchingFinds = finds.filter((find) => options.locationMatch
         ? options.locationMatch(rule, find)
-        : sameText(find.cache[rule.field], rule.value) &&
-          (!rule.country || sameText(find.cache.country, rule.country)) &&
-          (!rule.region || sameText(find.cache.region, rule.region)));
+        : sameLocationText(find.cache[rule.field], rule.value) &&
+          (!rule.country || sameLocationText(find.cache.country, rule.country)) &&
+          (!rule.region || sameLocationText(find.cache.region, rule.region)));
       current = matchingFinds.length;
       label = `Finds in ${[rule.value, rule.field === "county" ? rule.region : null, rule.field !== "country" ? rule.country : null]
         .filter(Boolean)

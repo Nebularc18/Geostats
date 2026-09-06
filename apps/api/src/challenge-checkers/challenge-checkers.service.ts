@@ -3,7 +3,7 @@ import { countableFindWhere, Prisma } from "@geostats/db";
 import { randomBytes } from "node:crypto";
 import timezoneAt from "tz-lookup";
 import { PrismaService } from "../common/prisma.service";
-import { attributesFromRaw, ChallengeRule, evaluateChallenge, ProjectGcFindFilter, proofText } from "./challenge-checker.evaluator";
+import { attributesFromRaw, ChallengeRule, evaluateChallenge, ProjectGcFindFilter, proofText, sameLocationText } from "./challenge-checker.evaluator";
 import { cacheTypeIdentity, cacheTypeOptions } from "./cache-type-catalog";
 import { BoundaryGeometry, GeographicBoundariesService, pointInBoundary } from "./geographic-boundaries";
 import { importProjectGcNumberScript, projectGcFilterLabel } from "./project-gc-importer";
@@ -357,8 +357,8 @@ export class ChallengeCheckersService {
         if (geometry && Number.isFinite(latitude) && Number.isFinite(longitude)) {
           return pointInBoundary([longitude, latitude], geometry);
         }
-        const same = (left: unknown, right: string) => String(left ?? "").trim().localeCompare(right, undefined, { sensitivity: "base" }) === 0;
-        return same(find.cache[rule.field], rule.value) &&
+        const same = (left: unknown, right: string) => sameLocationText(typeof left === "string" ? left : left == null ? null : String(left), right);
+        return sameLocationText(typeof find.cache[rule.field] === "string" ? find.cache[rule.field] as string : find.cache[rule.field] == null ? null : String(find.cache[rule.field]), rule.value) &&
           (!rule.country || same(find.cache.country, rule.country)) &&
           (!rule.region || same(find.cache.region, rule.region));
       }

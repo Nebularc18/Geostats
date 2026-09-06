@@ -366,3 +366,62 @@ test("rejects scripts whose cumulative parser scan work exceeds the budget", () 
   const script = `${"f()\n".repeat(101)}${" ".repeat(100_000)}`;
   assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /requires too much parsing work/);
 });
+
+test("accepts the display and legacy-branch idioms of the official generic checker", () => {
+  const script = `
+local args={...}
+local conf = args[1].config
+function expandFilter(filter)
+  local res = {}
+  for k,v in pairs(filter) do
+    if k=="types" then
+      res['types'] = {}
+      for i,t in ipairs(v) do
+        if t=="Physical" then
+          table.insert(res.types, "Traditional Cache")
+        else
+          table.insert(res.types, t)
+        end
+      end
+    elseif k==excludeTypes then
+      filter.excludeTypes = {}
+    else
+      res[k] = TableCopy(v)
+    end
+  end
+  return res
+end
+function GetCombinedFinds(profileId, config)
+  local l_config = TableCopy(config)
+  l_config.filter.filters = nil
+  local l_filter = TableCopy(l_config)
+  l_config.filter = l_filter
+  l_config.fields = { 'gccode' }
+  l_config.filter = expandFilter(c)
+  return PGC.GetFinds(profileId, l_config)
+end
+function shown(rows) return tostring(#rows) end
+function ok_html(a)
+  if a == true then return 'yes' else return 'no' end
+end
+function c_number(conf)
+  local options = { 'limit' }
+  if extraInConfig(conf, options) == true then return { ok = nil } end
+  local finds = GetCombinedFinds(args[1].profileId, { filter = conf })
+  local brief = shown(finds)
+  local ok = false
+  if #finds >= conf.limit then ok = true end
+  local text = 'has ' .. #finds .. ' finds'
+  if conf.brief == true then text = '' end
+  return { ok = ok }
+end
+res = c_number(conf)
+local log = res.slog
+local html = ok_html(res.ok)
+return { ok = res.ok, log = log, html = html }
+`;
+  const imported = importProjectGcNumberScript(script, JSON.stringify({ limit: 250, country: "Sweden", region: "Blekinge", county: "Karlskrona" }));
+  assert.equal(imported.rules[0]!.minimum, 250);
+  assert.deepEqual(imported.rules[0]!.filters[0]!.counties, ["Karlskrona"]);
+  assert.deepEqual(imported.rules[0]!.filters[0]!.regions, ["Blekinge"]);
+});
