@@ -305,6 +305,64 @@ Replace `OWNER/REPO` with the lowercase GitHub repository path. If the package v
 docker login ghcr.io
 ```
 
+## Raspberry Pi
+
+The app runs on a 64-bit Raspberry Pi (Pi 4 or Pi 5 with 64-bit Raspberry Pi
+OS, 4 GB RAM or more recommended). 32-bit OS releases are not supported:
+several images only publish 64-bit (`arm64`) variants.
+
+Do not build on the Pi unless you have to — the Next.js and NestJS builds are
+slow and memory-hungry there. The prebuilt multi-arch (`linux/amd64`,
+`linux/arm64`) images from GitHub Container Registry are the faster path:
+
+1. Install Docker Engine with the Compose plugin on the Pi, then copy
+   `docker-compose.yml` and your `.env` file onto it. Start from `.env.example`
+   and replace every `replace-with-*` secret.
+2. Point the stack at the prebuilt images, either in `.env` or exported in the
+   shell:
+
+   ```env
+   GEOSTATS_IMAGE_PREFIX=ghcr.io/nebularc18/geostats
+   GEOSTATS_IMAGE_TAG=latest
+   ```
+
+   Every successful **Docker Images** workflow run from `main` publishes a new
+   shared timestamp tag for `api`, `worker`, and `web` (plus `latest`).
+   `latest` tracks the newest green run; use a timestamp tag to pin the Pi to
+   a specific build.
+3. On memory-constrained boards, lower the import concurrency:
+
+   ```env
+   IMPORT_WORKER_CONCURRENCY=1
+   ```
+
+4. If the container packages are private, log in first with
+   `docker login ghcr.io`.
+5. Pull and start. Pull first so Compose uses the prebuilt images instead of
+   building locally:
+
+   ```bash
+   docker compose pull
+   docker compose up -d
+   ```
+
+   The one-shot `migrate` service runs Prisma migrations before `api` and
+   `worker` start.
+
+Two Pi-specific caveats:
+
+- The prebuilt `web` image bakes in `NEXT_PUBLIC_API_URL` at build time
+  (default `http://localhost:3001`). If you open the web UI from another
+  machine on your LAN, the browser will try to reach the API on its own
+  localhost and fail. Either browse from the Pi itself (or over an SSH tunnel
+  to it), or dispatch a **Docker Images** run with the `NEXT_PUBLIC_API_URL`
+  repository variable set to the Pi's LAN address (for example
+  `http://192.168.1.50:3001`) and deploy that tag.
+- The web and API ports bind to `127.0.0.1` by default. To reach the Pi over
+  the LAN, set `WEB_BIND_ADDRESS=0.0.0.0` and `API_BIND_ADDRESS=0.0.0.0` and
+  restrict ports 3000 and 3001 with the host firewall (see
+  [Docker Compose](#docker-compose)).
+
 ## Import Workflow
 
 1. Sign in with the configured provider or register a local password account.
