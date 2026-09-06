@@ -38,6 +38,18 @@ test("requiredEnv rejects documented production placeholders", async () => {
   );
 });
 
+test("requiredEnv rejects the Dockhand JWT placeholder", async () => {
+  await withEnv(
+    {
+      NODE_ENV: "production",
+      JWT_SECRET: "change-this-jwt-secret-minimum-32-chars"
+    },
+    () => {
+      assert.throws(() => requiredEnv("JWT_SECRET"), /development value/);
+    }
+  );
+});
+
 test("requiredEnv rejects short production secrets", async () => {
   await withEnv(
     {

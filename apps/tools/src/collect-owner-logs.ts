@@ -1,6 +1,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { chromium, type BrowserContext, type Page } from "playwright";
+import { csvRow } from "./csv";
 
 type Args = {
   server: string;
@@ -145,15 +146,6 @@ Options:
   --headless              Run without a visible browser after login is already stored.
   --no-upload             Write CSV only; do not upload to Geostats.
 `);
-}
-
-function csvEscape(value: string | null | undefined): string {
-  const text = value ?? "";
-  return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
-}
-
-function csvRow(values: string[]): string {
-  return values.map(csvEscape).join(",");
 }
 
 function ensureOutput(path: string) {

@@ -229,6 +229,38 @@ test("parseImportFile rejects ZIP files with too many GPX entries", async () => 
   }
 });
 
+test("parseImportFile counts unsupported ZIP entries toward the entry limit", async () => {
+  const previous = process.env.IMPORT_MAX_ZIP_ENTRIES;
+  process.env.IMPORT_MAX_ZIP_ENTRIES = "1";
+  try {
+    const zip = new JSZip();
+    zip.file("one.gpx", gpx);
+    zip.file("notes.txt", "ignored");
+    const content = await zip.generateAsync({ type: "nodebuffer" });
+
+    await assert.rejects(() => parseImportFile("query.zip", content, ImportSource.POCKET_QUERY), /more than 1 entries/);
+  } finally {
+    if (previous === undefined) delete process.env.IMPORT_MAX_ZIP_ENTRIES;
+    else process.env.IMPORT_MAX_ZIP_ENTRIES = previous;
+  }
+});
+
+test("parseTrackableImportFile counts unsupported ZIP entries toward the entry limit", async () => {
+  const previous = process.env.IMPORT_MAX_ZIP_ENTRIES;
+  process.env.IMPORT_MAX_ZIP_ENTRIES = "1";
+  try {
+    const zip = new JSZip();
+    zip.file("journey.json", JSON.stringify({ trackingCode: "TB1234", logs: [] }));
+    zip.file("notes.txt", "ignored");
+    const content = await zip.generateAsync({ type: "nodebuffer" });
+
+    await assert.rejects(() => parseTrackableImportFile("journey.zip", content), /more than 1 entries/);
+  } finally {
+    if (previous === undefined) delete process.env.IMPORT_MAX_ZIP_ENTRIES;
+    else process.env.IMPORT_MAX_ZIP_ENTRIES = previous;
+  }
+});
+
 test("parseImportFile rejects oversized ZIP GPX entries", async () => {
   const previous = process.env.IMPORT_MAX_ZIP_ENTRY_BYTES;
   process.env.IMPORT_MAX_ZIP_ENTRY_BYTES = "20";

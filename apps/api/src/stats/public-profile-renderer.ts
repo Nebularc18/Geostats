@@ -4,6 +4,8 @@ type PercentBucket = CountBucket & { percent?: number };
 const monthLabels = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const ratingValues = ["1", "1.5", "2", "2.5", "3", "3.5", "4", "4.5", "5"];
 const countryBoundaryUrl = "https://raw.githubusercontent.com/datasets/geo-countries/master/data/countries.geojson";
+const MAPLIBRE_CSS_INTEGRITY = "sha384-uTttxo/aOKbdE5RlD/SPzSDoDmNvGlUYPjONi2MN/b7c9HPSvW07OIuyP7uL6jxK";
+const MAPLIBRE_JS_INTEGRITY = "sha384-5+cfbwT0iiub6VsQAdn6yz16nr6sDiQoHx6tm4O8OVYXHYOxcffFmCJBL0dgdvGp";
 const countryNameAliases: Record<string, string[]> = {
   "United States": ["United States of America"],
   Russia: ["Russian Federation"],
@@ -664,7 +666,7 @@ function ownedCachesTable(username: string, hides: any) {
     ${bucketRows(`Finders of My Caches (${escapeHtml(username)})`, hides.finderBuckets ?? [], 12)}`;
 }
 
-export function renderPublicProfileHtml(profile: { gcUsername: string }, stats: any) {
+export function renderPublicProfileHtml(profile: { gcUsername: string }, stats: any, scriptNonce: string) {
   const username = profile.gcUsername;
   const mapsTab = gsakMapsTab(stats);
   const statsTab = `
@@ -684,7 +686,7 @@ export function renderPublicProfileHtml(profile: { gcUsername: string }, stats: 
 <head>
   <meta charset="utf-8">
   <title>${escapeHtml(username)} Geostats Profile Stats</title>
-  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css">
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css" integrity="${MAPLIBRE_CSS_INTEGRITY}" crossorigin="anonymous">
   <style type="text/css">
     table { border-collapse: separate; border-spacing: 1px; }
     .gsak-maps {
@@ -763,8 +765,8 @@ export function renderPublicProfileHtml(profile: { gcUsername: string }, stats: 
     <i>Statistics generated on ${generatedDateForStats(stats)}</i>
     <div align="center"><br><br>
       <div style="line-height:150%; width:95%;">
-        <span id="tab1" style="cursor:pointer; background:#ffffff; border:2px outset; font-weight:bold; font-size:120%; white-space:nowrap; display:inline-block; margin:4px;" onmousedown="document.getElementById('tab1_details').style.display='block';document.getElementById('tab1').style.background='#ffffff';document.getElementById('tab2_details').style.display='none';document.getElementById('tab2').style.background='#BABADD';">&nbsp; Project-GC Maps &nbsp;</span>
-        <span id="tab2" style="cursor:pointer; background:#BABADD; border:2px outset; font-weight:bold; font-size:120%; white-space:nowrap; display:inline-block; margin:4px;" onmousedown="document.getElementById('tab2_details').style.display='block';document.getElementById('tab2').style.background='#ffffff';document.getElementById('tab1_details').style.display='none';document.getElementById('tab1').style.background='#BABADD';">&nbsp; Stats &nbsp;</span>
+        <span id="tab1" style="cursor:pointer; background:#ffffff; border:2px outset; font-weight:bold; font-size:120%; white-space:nowrap; display:inline-block; margin:4px;">&nbsp; Project-GC Maps &nbsp;</span>
+        <span id="tab2" style="cursor:pointer; background:#BABADD; border:2px outset; font-weight:bold; font-size:120%; white-space:nowrap; display:inline-block; margin:4px;">&nbsp; Stats &nbsp;</span>
       </div>
       <div id="tab1_details"><br><br>${mapsTab}</div>
       <div id="tab2_details" style="display:none;"><br><br>${statsTab}</div>
@@ -772,9 +774,21 @@ export function renderPublicProfileHtml(profile: { gcUsername: string }, stats: 
     <br><br>
     <span style="font-size:11px;">Stats generated dynamically by Geostats in a GSAK-style layout</span>
   </div>
-  <script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"></script>
-  <script>
+  <script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js" integrity="${MAPLIBRE_JS_INTEGRITY}" crossorigin="anonymous"></script>
+  <script nonce="${escapeHtml(scriptNonce)}">
     (function () {
+      var tabs = [document.getElementById("tab1"), document.getElementById("tab2")];
+      tabs.forEach(function (tab, index) {
+        if (!tab) return;
+        tab.addEventListener("mousedown", function () {
+          tabs.forEach(function (candidate, candidateIndex) {
+            if (!candidate) return;
+            var details = document.getElementById("tab" + (candidateIndex + 1) + "_details");
+            if (details) details.style.display = candidateIndex === index ? "block" : "none";
+            candidate.style.background = candidateIndex === index ? "#ffffff" : "#BABADD";
+          });
+        });
+      });
       var dataElement = document.getElementById("gsak-map-data");
       var containers = Array.prototype.slice.call(document.querySelectorAll(".gsak-dynamic-map"));
       if (!dataElement || containers.length === 0 || !window.maplibregl) {

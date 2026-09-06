@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ChallengeCheckersService, resolveDisplayTimeZone } from "./challenge-checkers.service";
+import { ChallengeCheckersService, MAX_PUBLIC_CHALLENGE_FINDS, resolveDisplayTimeZone } from "./challenge-checkers.service";
 
 test("resolves the cacher display timezone from home coordinates with profile fallback", () => {
   assert.equal(resolveDisplayTimeZone({ homeLatitude: 59.3293, homeLongitude: 18.0686, timeZone: "America/New_York" }), "Europe/Stockholm");
@@ -56,4 +56,45 @@ test("uses imported location choices when catalog providers are unavailable", as
 
   assert.deepEqual(await service.locationCatalogForUser("user-1", "Norway", undefined), { regions: ["Vestland"], counties: [] });
   assert.deepEqual(await service.locationCatalogForUser("user-1", "Norway", "Vestland"), { regions: [], counties: ["Bergen", "Voss"] });
+});
+
+test("public challenge checks reject histories over the bound before evaluation", async () => {
+  let findQuery: Record<string, unknown> | undefined;
+  const checker = {
+    id: "checker-1", userId: "user-1", name: "Large challenge", gcCode: "GCTEST",
+    description: null, rules: [{ type: "TOTAL_FINDS", minimum: 1 }], publicSlug: "public",
+    publishedAt: new Date(), updatedAt: new Date()
+  };
+  const prisma = {
+    challengeChecker: { findFirst: async () => checker },
+    geocachingProfile: { findUnique: async () => ({ gcUsername: "Geocacher" }) },
+    find: { findMany: async (query: Record<string, unknown>) => {
+      findQuery = query;
+      return new Array(MAX_PUBLIC_CHALLENGE_FINDS + 1);
+    } },
+    import: { findFirst: async () => null }
+  };
+  const service = new ChallengeCheckersService(prisma as never, {} as never);
+
+  await assert.rejects(() => service.runPublic("public"), /support at most 50000 finds/);
+  assert.equal(findQuery?.take, MAX_PUBLIC_CHALLENGE_FINDS + 1);
+});
+
+test("owned challenge checks retain full-history behavior", async () => {
+  let findQuery: Record<string, unknown> | undefined;
+  const checker = {
+    id: "checker-1", userId: "user-1", name: "Owned challenge", gcCode: "GCTEST",
+    description: null, rules: [{ type: "TOTAL_FINDS", minimum: 1 }], publicSlug: null,
+    publishedAt: null, updatedAt: new Date()
+  };
+  const prisma = {
+    challengeChecker: { findFirst: async () => checker },
+    geocachingProfile: { findUnique: async () => ({ gcUsername: "Geocacher" }) },
+    find: { findMany: async (query: Record<string, unknown>) => { findQuery = query; return []; } },
+    import: { findFirst: async () => null }
+  };
+  const service = new ChallengeCheckersService(prisma as never, {} as never);
+
+  await service.runOwned("user-1", "checker-1");
+  assert.equal("take" in findQuery!, false);
 });

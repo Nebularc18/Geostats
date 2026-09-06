@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { lastValueFrom, of, Subject } from "rxjs";
 import {
+  assertPortableRecordBudget,
   parsePortableArchive,
   PortabilityService,
 } from "./portability.service";
@@ -88,6 +89,22 @@ test("portable parser rejects malformed JSON", () => {
     () => parsePortableArchive(Buffer.from("not json")),
     /not valid JSON/,
   );
+});
+
+test("portable parser applies one cumulative record budget before mapping records", () => {
+  const data = {
+    caches: new Array(500_001),
+    finds: new Array(500_000),
+    hides: [],
+    correctedCoordinates: [],
+    ownerFinderCountryStats: [],
+    statSnapshots: [],
+    mysteryWorkspaces: [],
+    trackables: [],
+    trackableLogs: [],
+  };
+
+  assert.throws(() => assertPortableRecordBudget(data), /more than 1000000 total records/);
 });
 
 function archiveWithCache(gcCode = "GCPOISON") {

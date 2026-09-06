@@ -72,6 +72,30 @@ function records(value: unknown, label: string): any[] {
   return value.map((entry, index) => object(entry, `${label}[${index}]`));
 }
 
+export function assertPortableRecordBudget(data: Record<string, any>): void {
+  const fields = [
+    "caches",
+    "finds",
+    "hides",
+    "correctedCoordinates",
+    "ownerFinderCountryStats",
+    "statSnapshots",
+    "mysteryWorkspaces",
+    "trackables",
+    "trackableLogs",
+  ];
+  let total = 0;
+  for (const field of fields) {
+    const value = data[field];
+    if (value === undefined && (field === "trackables" || field === "trackableLogs")) continue;
+    if (!Array.isArray(value)) continue;
+    total += value.length;
+    if (total > MAX_RECORDS) {
+      throw new BadRequestException(`Portable archive contains more than ${MAX_RECORDS} total records`);
+    }
+  }
+}
+
 function text(value: unknown, label: string, max = 10_000): string {
   if (typeof value !== "string" || value.length === 0 || value.length > max) {
     throw new BadRequestException(`${label} is invalid`);
@@ -175,6 +199,7 @@ export function parsePortableArchive(input: Buffer | string): PortableArchive {
       `Unsupported Geostats export version: ${String(archive.version)}`,
     );
   const data = object(archive.data, "data");
+  assertPortableRecordBudget(data);
   const parsed = {
     ...archive,
     data: {

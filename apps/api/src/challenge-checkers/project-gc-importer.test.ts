@@ -351,3 +351,19 @@ test("rejects changing a verdict alias after reading c_number", () => {
 test("rejects unsupported config fields instead of changing checker meaning", () => {
   assert.throws(() => importProjectGcNumberScript(numberScript, '{"limit":1,"radius":10}'), /radius.*not supported/);
 });
+
+test("rejects Project-GC scripts with excessive parser nesting", () => {
+  const nested = "wrapper(".repeat(129) + "conf" + ")".repeat(129);
+  assert.throws(() => importProjectGcNumberScript(nested, '{"limit":1}'), /too deeply nested/);
+});
+
+test("rejects Project-GC scripts with excessive call-parser work", () => {
+  const padding = "x".repeat(20_000);
+  const nested = "wrapper(".repeat(101) + padding + ")".repeat(101);
+  assert.throws(() => importProjectGcNumberScript(nested, '{"limit":1}'), /too complex/);
+});
+
+test("rejects Project-GC scripts with excessive call counts", () => {
+  const calls = "helper()\n".repeat(5_001);
+  assert.throws(() => importProjectGcNumberScript(calls, '{"limit":1}'), /too complex/);
+});

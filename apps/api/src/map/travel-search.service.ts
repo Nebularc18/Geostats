@@ -21,6 +21,7 @@ type GeographicBounds = {
 
 const MAX_CACHE_POOL = 5000;
 const MAX_RECOMMENDATIONS = 100;
+export const MAX_ROUTE_POINTS = 2_000;
 const geocodeCache = new Map<string, Place>();
 const suggestionCache = new Map<string, PlaceSuggestion[]>();
 let geocodeQueue: Promise<void> = Promise.resolve();
@@ -55,6 +56,18 @@ export function travelSearchBounds(coordinates: Coordinate[], paddingKm: number)
     minimumLongitude: crossesDateLine ? undefined : rawMinimumLongitude,
     maximumLongitude: crossesDateLine ? undefined : rawMaximumLongitude
   };
+}
+
+function sampleRouteCoordinates<T>(coordinates: T[]): T[] {
+  if (coordinates.length <= MAX_ROUTE_POINTS) return coordinates;
+  return Array.from({ length: MAX_ROUTE_POINTS }, (_, index) => {
+    const sourceIndex = Math.round(index * (coordinates.length - 1) / (MAX_ROUTE_POINTS - 1));
+    return coordinates[sourceIndex]!;
+  });
+}
+
+export function limitRouteCoordinates(coordinates: Coordinate[]): Coordinate[] {
+  return sampleRouteCoordinates(coordinates);
 }
 
 async function queuedGeocodeFetch(url: URL) {
@@ -141,7 +154,7 @@ async function roadRoute(origin: Place, destination: Place): Promise<RouteResult
     }>;
   };
   const route = body.routes?.[0];
-  const routeCoordinates = (route?.geometry?.coordinates ?? []).flatMap(([longitude, latitude]) => {
+  const routeCoordinates = sampleRouteCoordinates(route?.geometry?.coordinates ?? []).flatMap(([longitude, latitude]) => {
     const parsedLatitude = Number(latitude);
     const parsedLongitude = Number(longitude);
     return Number.isFinite(parsedLatitude) && Number.isFinite(parsedLongitude)
@@ -294,9 +307,12 @@ export class TravelSearchService {
             corrections: { where: { userId }, select: { latitude: true, longitude: true }, take: 1 }
           }
         }
-      }
+      },
+      orderBy: { updatedAt: "desc" },
+      take: MAX_CACHE_POOL + 1
     });
-    const importedCandidates: TravelCandidate[] = records.map(({ cache }) => {
+    const poolTruncated = records.length > MAX_CACHE_POOL;
+    const importedCandidates: TravelCandidate[] = records.slice(0, MAX_CACHE_POOL).map(({ cache }) => {
       const correction = cache.corrections[0];
       return {
         id: cache.id,
@@ -341,7 +357,7 @@ export class TravelSearchService {
       importedCacheCount: importedCandidates.length,
       mysteryCacheCount: mysteryCandidates.length,
       searchedCacheCount: candidates.length,
-      poolTruncated: false,
+      poolTruncated,
       resultLimit: MAX_RECOMMENDATIONS,
       attribution: {
         places: "© OpenStreetMap contributors",

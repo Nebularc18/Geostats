@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { renderPublicExtremesSvg, renderPublicScratchMapSvg } from "./public-profile-renderer";
+import { renderPublicExtremesSvg, renderPublicProfileHtml, renderPublicScratchMapSvg } from "./public-profile-renderer";
 
 const worldMapTemplate = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 360">
 <rect width="720" height="360" fill="#6fc7ef"/>
@@ -89,4 +89,13 @@ test("renders reusable extreme badges for the public profile image", () => {
   assert.match(svg, /aria-label="Found"/);
   assert.match(svg, /Old &amp; &lt;unsafe&gt;/);
   assert.doesNotMatch(svg, /Old & <unsafe>/);
+});
+
+test("public profile HTML pins CDN assets and nonces its script", () => {
+  const html = renderPublicProfileHtml({ gcUsername: "Nebularc_" }, {}, "test-nonce");
+
+  assert.match(html, /maplibre-gl@5\.24\.0\/dist\/maplibre-gl\.css" integrity="sha384-[^"]+" crossorigin="anonymous"/);
+  assert.match(html, /maplibre-gl@5\.24\.0\/dist\/maplibre-gl\.js" integrity="sha384-[^"]+" crossorigin="anonymous"/);
+  assert.match(html, /<script nonce="test-nonce">/);
+  assert.doesNotMatch(html, /onmousedown=/);
 });

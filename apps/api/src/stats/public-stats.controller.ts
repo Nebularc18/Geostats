@@ -1,6 +1,7 @@
 import { Controller, Get, Header, NotFoundException, Param, Res } from "@nestjs/common";
 import { Throttle } from "@nestjs/throttler";
 import type { Response } from "express";
+import { randomBytes } from "node:crypto";
 import { readFile } from "fs/promises";
 import { join } from "path";
 import { renderPublicExtremesSvg, renderPublicProfileHtml, renderPublicProfileSvg, renderPublicScratchMapSvg } from "./public-profile-renderer";
@@ -19,6 +20,23 @@ function loadWorldMapTemplate() {
   return worldMapTemplatePromise;
 }
 
+export function publicProfileContentSecurityPolicy(nonce: string): string {
+  return [
+    "default-src 'none'",
+    `script-src 'nonce-${nonce}' https://unpkg.com`,
+    "style-src 'unsafe-inline' https://unpkg.com",
+    "connect-src https://raw.githubusercontent.com",
+    "img-src data: blob:",
+    "font-src data:",
+    "worker-src blob:",
+    "child-src blob:",
+    "object-src 'none'",
+    "base-uri 'none'",
+    "form-action 'none'",
+    "frame-ancestors 'none'",
+  ].join("; ");
+}
+
 @Controller("public")
 export class PublicStatsController {
   constructor(private readonly stats: StatsService) {}
@@ -27,9 +45,11 @@ export class PublicStatsController {
   @Get("profile-stats/:username")
   @Header("Content-Type", "text/html; charset=utf-8")
   @Header("Cache-Control", "public, max-age=300")
-  async profileStats(@Param("username") username: string) {
+  async profileStats(@Param("username") username: string, @Res({ passthrough: true }) response: Response) {
     const { profile, stats } = await this.stats.publicSnapshotForUsername(username);
-    return renderPublicProfileHtml(profile, stats);
+    const nonce = randomBytes(18).toString("base64url");
+    response.setHeader("Content-Security-Policy", publicProfileContentSecurityPolicy(nonce));
+    return renderPublicProfileHtml(profile, stats, nonce);
   }
 
   @Throttle({ default: { limit: 30, ttl: 60_000 } })

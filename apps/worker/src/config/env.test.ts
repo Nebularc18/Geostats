@@ -38,6 +38,18 @@ test("envOrDefault rejects query-string placeholders in production URLs", async 
   );
 });
 
+test("requiredEnv rejects documented change-this placeholders", async () => {
+  await withEnv(
+    {
+      NODE_ENV: "production",
+      S3_SECRET_ACCESS_KEY: "change-this-s3-secret-key-minimum-32-chars"
+    },
+    () => {
+      assert.throws(() => requiredEnv("S3_SECRET_ACCESS_KEY"), /development value/);
+    }
+  );
+});
+
 test("envOrDefault rejects placeholders used as query parameter keys", async () => {
   await withEnv(
     {

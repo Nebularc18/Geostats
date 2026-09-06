@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { TravelSearchService, travelSearchBounds } from "./travel-search.service";
+import { limitRouteCoordinates, MAX_ROUTE_POINTS, TravelSearchService, travelSearchBounds } from "./travel-search.service";
 
 test("travel pool summary includes every imported cache type and found state", async () => {
   const prisma = {
@@ -58,8 +58,8 @@ test("nearby search filters geographically before loading every matching cache",
     originPlace: { label: "Karlskrona", latitude: 56.1612, longitude: 15.5869 }
   });
 
-  assert.equal("take" in query!, false);
-  assert.equal("orderBy" in query!, false);
+  assert.equal(query!.take, 5001);
+  assert.deepEqual(query!.orderBy, { updatedAt: "desc" });
   const bounds = travelSearchBounds([{ latitude: 56.1612, longitude: 15.5869 }], 10);
   assert.deepEqual((query!.where as any).cache.OR[0], {
     latitude: { gte: bounds.minimumLatitude, lte: bounds.maximumLatitude },
@@ -67,4 +67,31 @@ test("nearby search filters geographically before loading every matching cache",
   });
   assert.equal(result.importedCacheCount, 0);
   assert.equal(result.poolTruncated, false);
+});
+
+test("travel search reports when its imported candidate pool is truncated", async () => {
+  const cache = {
+    id: "cache-1", gcCode: "GC1", name: "Cache", cacheType: "Traditional Cache",
+    difficulty: 1, terrain: 1, size: "Small", latitude: 56.1612, longitude: 15.5869,
+    country: "Sweden", region: null, county: null, finds: [], corrections: []
+  };
+  const prisma = { userCacheData: { findMany: async () => new Array(5001).fill({ cache }) } };
+  const service = new TravelSearchService(prisma as never);
+
+  const result = await service.search("user-1", {
+    mode: "nearby", origin: "Karlskrona", radiusKm: 10, includeFound: false,
+    mysteryCaches: [], originPlace: { label: "Karlskrona", latitude: 56.1612, longitude: 15.5869 }
+  });
+
+  assert.equal(result.importedCacheCount, 5000);
+  assert.equal(result.poolTruncated, true);
+});
+
+test("route coordinate limiting preserves endpoints and caps parser work", () => {
+  const route = Array.from({ length: MAX_ROUTE_POINTS + 500 }, (_, index) => ({ latitude: index, longitude: -index }));
+  const limited = limitRouteCoordinates(route);
+
+  assert.equal(limited.length, MAX_ROUTE_POINTS);
+  assert.deepEqual(limited[0], route[0]);
+  assert.deepEqual(limited.at(-1), route.at(-1));
 });

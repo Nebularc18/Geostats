@@ -4,6 +4,9 @@ import type { ProjectGcFindFilter, ProjectGcNumberRule } from "./challenge-check
 
 const MAX_SCRIPT_LENGTH = 250_000;
 const MAX_CONFIG_LENGTH = 25_000;
+const MAX_PARSE_NESTING = 128;
+const MAX_PARSE_CALLS = 5_000;
+const MAX_PARSE_WORK = 2_000_000;
 const FILTER_KEYS = new Set([
   "country", "region", "county", "minVisitDate", "maxVisitDate", "minHiddenDate", "maxHiddenDate",
   "excludeTypes", "types", "sizes", "difficulties", "terrains", "minlatitude", "maxlatitude",
@@ -136,6 +139,37 @@ function maskLua(source: string) {
     index += 1;
   }
   return chars.join("");
+}
+
+function validateScriptComplexity(source: string): void {
+  const stack: Array<{ character: string; index: number; call: boolean }> = [];
+  let callCount = 0;
+  let work = source.length;
+  const closes: Record<string, string> = { ")": "(", "]": "[", "}": "{" };
+
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index]!;
+    if (character === "(" || character === "[" || character === "{") {
+      let cursor = index - 1;
+      while (cursor >= 0 && /\s/.test(source[cursor]!)) cursor -= 1;
+      const prefix = source.slice(Math.max(0, cursor - 255), cursor + 1).match(/([A-Za-z_]\w*(?:\s*[.:]\s*[A-Za-z_]\w*)?)$/)?.[1];
+      const call = character === "(" && Boolean(prefix) && !CONTROL_CALLS.has(prefix!.replace(/\s/g, ""));
+      if (call) {
+        callCount += 1;
+        if (callCount > MAX_PARSE_CALLS) throw new BadRequestException("Project-GC Lua script is too complex");
+      }
+      stack.push({ character, index, call });
+      if (stack.length > MAX_PARSE_NESTING) throw new BadRequestException("Project-GC Lua script is too deeply nested");
+      continue;
+    }
+    const opening = closes[character];
+    if (!opening || stack.at(-1)?.character !== opening) continue;
+    const entry = stack.pop()!;
+    if (entry.call) {
+      work += index - entry.index;
+      if (work > MAX_PARSE_WORK) throw new BadRequestException("Project-GC Lua script is too complex");
+    }
+  }
 }
 
 function blockBody(source: string, start: number): string | null {
@@ -728,6 +762,7 @@ export function importProjectGcNumberScript(scriptValue: unknown, configTextValu
   if (typeof scriptValue !== "string" || !scriptValue.trim()) throw new BadRequestException("Paste a Project-GC Lua script");
   if (scriptValue.length > MAX_SCRIPT_LENGTH) throw new BadRequestException("Lua script is too large");
   const script = maskLua(scriptValue);
+  validateScriptComplexity(script);
   validateFindsConfig(script);
   validateCountCondition(script);
   if (typeof configTextValue !== "string" || !configTextValue.trim()) throw new BadRequestException("Paste the Project-GC tag config as JSON");

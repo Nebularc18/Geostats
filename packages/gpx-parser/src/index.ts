@@ -362,13 +362,14 @@ export async function parseImportFile(
 ): Promise<ParsedImport> {
   if (fileName.toLowerCase().endsWith(".zip")) {
     const zip = await JSZip.loadAsync(content);
-    const gpxFiles = Object.values(zip.files).filter((file) => !file.dir && file.name.toLowerCase().endsWith(".gpx"));
+    const maxEntries = positiveLimit("IMPORT_MAX_ZIP_ENTRIES", DEFAULT_MAX_ZIP_ENTRIES);
+    const entries = Object.values(zip.files);
+    if (entries.length > maxEntries) {
+      throw new Error(`ZIP file contains more than ${maxEntries} entries`);
+    }
+    const gpxFiles = entries.filter((file) => !file.dir && file.name.toLowerCase().endsWith(".gpx"));
     if (gpxFiles.length === 0) {
       throw new Error("ZIP file did not contain any GPX files");
-    }
-    const maxEntries = positiveLimit("IMPORT_MAX_ZIP_ENTRIES", DEFAULT_MAX_ZIP_ENTRIES);
-    if (gpxFiles.length > maxEntries) {
-      throw new Error(`ZIP file contains more than ${maxEntries} GPX files`);
     }
 
     const maxEntryBytes = positiveLimit("IMPORT_MAX_ZIP_ENTRY_BYTES", DEFAULT_MAX_ZIP_ENTRY_BYTES);
@@ -1054,10 +1055,11 @@ export async function parseTrackableImportFile(fileName: string, content: Buffer
   const lower = fileName.toLowerCase();
   if (lower.endsWith(".zip") || lower.endsWith(".kmz")) {
     const zip = await JSZip.loadAsync(content);
-    const files = Object.values(zip.files).filter((file) => !file.dir && /\.(gpx|csv|kml|json)$/i.test(file.name));
-    if (files.length === 0) throw new Error("ZIP/KMZ file did not contain a GPX, CSV, KML, or JSON trackable export");
     const maxEntries = positiveLimit("IMPORT_MAX_ZIP_ENTRIES", DEFAULT_MAX_ZIP_ENTRIES);
-    if (files.length > maxEntries) throw new Error(`ZIP file contains more than ${maxEntries} supported entries`);
+    const entries = Object.values(zip.files);
+    if (entries.length > maxEntries) throw new Error(`ZIP file contains more than ${maxEntries} entries`);
+    const files = entries.filter((file) => !file.dir && /\.(gpx|csv|kml|json)$/i.test(file.name));
+    if (files.length === 0) throw new Error("ZIP/KMZ file did not contain a GPX, CSV, KML, or JSON trackable export");
     const maxEntryBytes = positiveLimit("IMPORT_MAX_ZIP_ENTRY_BYTES", DEFAULT_MAX_ZIP_ENTRY_BYTES);
     const maxTotalBytes = positiveLimit("IMPORT_MAX_ZIP_TOTAL_BYTES", DEFAULT_MAX_ZIP_TOTAL_BYTES);
     let totalBytes = 0;
