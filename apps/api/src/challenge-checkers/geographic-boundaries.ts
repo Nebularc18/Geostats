@@ -27,8 +27,23 @@ const COUNTRY_ALIASES: Record<string, string[]> = {
 };
 const CODE_OVERRIDES: Record<string, string> = { france: "FRA", kosovo: "XKX", norway: "NOR", taiwan: "TWN" };
 
+function normalizeLocationName(value: string) {
+  let name = value.trim().toLocaleLowerCase();
+  if (name.endsWith("s län")) name = name.slice(0, -"s län".length);
+  else if (name.endsWith(" län")) name = name.slice(0, -" län".length);
+  for (const suffix of [" kommun", " municipality", " county", " kommune", " kunta"]) {
+    if (name.endsWith(suffix)) {
+      name = name.slice(0, -suffix.length);
+      break;
+    }
+  }
+  return name.trim();
+}
+
 function sameName(left: unknown, right: string) {
-  return String(left ?? "").trim().localeCompare(right.trim(), undefined, { sensitivity: "base" }) === 0;
+  const leftText = String(left ?? "").trim();
+  if (leftText.localeCompare(right.trim(), undefined, { sensitivity: "base" }) === 0) return true;
+  return normalizeLocationName(leftText).localeCompare(normalizeLocationName(right), undefined, { sensitivity: "base" }) === 0;
 }
 
 function pointInRing([x, y]: Position, ring: Position[]) {

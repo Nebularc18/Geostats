@@ -115,6 +115,27 @@ test("evaluates the expanded imported-data rules", () => {
   assert.deepEqual(result.rules.map((rule) => rule.current), [2, 2, 2, 3, 1, 2, 2, 1, 1]);
 });
 
+test("matches Swedish län/kommun names across Groundspeak and boundary spellings", () => {
+  const karlskronaFind = { foundAt: new Date("2025-01-01T00:00:00Z"), foundDate: new Date("2025-01-01T00:00:00Z"), cache: { gcCode: "GCKNA", name: "Kna find", cacheType: "Traditional Cache", difficulty: 1, terrain: 1, country: "Sweden", region: "Blekinge", county: "Karlskrona" } };
+  const locationResult = evaluateChallenge([
+    { type: "LOCATION", field: "county", value: "Karlskrona", country: "Sweden", region: "Blekinge län", minimum: 1 }
+  ], [karlskronaFind]);
+  assert.equal(locationResult.rules[0]!.current, 1);
+
+  const kommunResult = evaluateChallenge([
+    { type: "LOCATION", field: "county", value: "Karlskrona kommun", country: "Sweden", region: "Blekinge", minimum: 1 }
+  ], [karlskronaFind]);
+  assert.equal(kommunResult.rules[0]!.current, 1);
+
+  const importedResult = evaluateChallenge([{
+    type: "PROJECT_GC_NUMBER",
+    minimum: 1,
+    filterLabel: "Karlskrona",
+    filters: [{ countries: ["Sweden"], regions: ["Blekinge län"], counties: ["Karlskrona"] }]
+  }], [karlskronaFind]);
+  assert.equal(importedResult.rules[0]!.current, 1);
+});
+
 test("evaluates imported Project-GC count filters as alternatives without double counting", () => {
   const result = evaluateChallenge([{
     type: "PROJECT_GC_NUMBER",
