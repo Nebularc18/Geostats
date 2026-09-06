@@ -98,6 +98,16 @@ function compactFilter(filter: ProjectGcFindFilter): ProjectGcFindFilter {
 function maskLua(source: string) {
   // Keep line breaks and source positions while removing strings and comments.
   // Validation must inspect Lua syntax, not text that happens to look like syntax.
+  // Bracket access with a plain identifier key (t['field']) is rewritten to
+  // dot form (t.field): identical semantics in Lua, and it keeps the field
+  // name visible to the structural checks below (a blanked key would read as
+  // an unknown field). Keywords are never rewritten so block parsing stays
+  // exact, and only same-line brackets qualify.
+  const LUA_KEYWORDS = new Set([
+    "and", "break", "do", "else", "elseif", "end", "false", "for", "function",
+    "goto", "if", "in", "local", "nil", "not", "or", "repeat", "return",
+    "then", "true", "until", "while"
+  ]);
   const chars = source.split("");
   let index = 0;
   const blank = (from: number, to: number) => {
@@ -130,6 +140,20 @@ function maskLua(source: string) {
         if (chars[end] === quote) { end += 1; break; }
         end += 1;
       }
+      const content = source.slice(index + 1, end - 1);
+      let open = index - 1;
+      while (open >= 0 && (chars[open] === " " || chars[open] === "\t")) open -= 1;
+      let close = end;
+      while (close < chars.length && (chars[close] === " " || chars[close] === "\t")) close += 1;
+      if (/^[A-Za-z_]\w*$/.test(content) && !LUA_KEYWORDS.has(content) && chars[open] === "[" && chars[close] === "]") {
+        // t['field'] means exactly t.field: rewrite it so structural checks
+        // see the field name (a blanked key would read as an unknown field).
+        blank(open, close + 1);
+        const replacement = `.${content}`;
+        for (let cursor = 0; cursor < replacement.length; cursor += 1) chars[open + cursor] = replacement[cursor]!;
+        index = close + 1;
+        continue;
+      }
       blank(index, end); index = end; continue;
     }
     const longStringEnd = longBracketEnd(index);
@@ -137,6 +161,108 @@ function maskLua(source: string) {
       blank(index, longStringEnd); index = longStringEnd; continue;
     }
     index += 1;
+  }
+  return chars.join("");
+}
+
+const LUA_DEFINED_GLOBALS = new Set([
+  "PGC", "table", "string", "math", "pairs", "ipairs", "next", "type", "tostring", "tonumber",
+  "select", "unpack", "print", "pcall", "error", "assert", "rawget", "rawset", "rawequal",
+  "setmetatable", "getmetatable", "require", "os", "io", "coroutine", "package", "debug", "utf8", "_G", "_VERSION"
+]);
+
+function definedLuaNames(source: string) {
+  const defined = new Set(LUA_DEFINED_GLOBALS);
+  for (const match of source.matchAll(/\bfunction\s+([A-Za-z_]\w*)\s*\(/g)) defined.add(match[1]!);
+  for (const match of source.matchAll(/\bfunction\s+[A-Za-z_]\w*\s*\(([^)]*)\)/g)) {
+    for (const parameter of (match[1] ?? "").split(",")) {
+      const name = parameter.trim();
+      if (/^[A-Za-z_]\w*$/.test(name)) defined.add(name);
+    }
+  }
+  for (const match of source.matchAll(/(?:^|[;\n])\s*(?:\blocal\s+)?([A-Za-z_]\w*)\s*=(?!=)/g)) defined.add(match[1]!);
+  for (const match of source.matchAll(/\blocal\s+([A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*)/g)) {
+    for (const name of match[1]!.split(",")) defined.add(name.trim());
+  }
+  for (const match of source.matchAll(/\bfor\s+([A-Za-z_][\w\s,]*?)\s+in\s+[^\n]+\s+do\b/g)) {
+    for (const name of match[1]!.split(",")) {
+      const trimmed = name.trim();
+      if (/^[A-Za-z_]\w*$/.test(trimmed)) defined.add(trimmed);
+    }
+  }
+  for (const match of source.matchAll(/\bfor\s+([A-Za-z_]\w*)\s*=[^,\n]+,[^\n]+\s+do\b/g)) defined.add(match[1]!);
+  return defined;
+}
+
+function stripDeadNilBranches(source: string) {
+  // The official generic checker guards its legacy excludeTypes handling with
+  // `k == excludeTypes`, where excludeTypes is a never-assigned global (nil).
+  // Loop variables are never nil, so such a branch can never execute. Blank
+  // its body (keeping newlines and offsets) so later checks only see live
+  // code. Anything not provably dead is left untouched and fails closed.
+  const defined = definedLuaNames(source);
+  const lines = source.split("\n");
+  const offsets: number[] = [];
+  let cursor = 0;
+  for (const line of lines) {
+    offsets.push(cursor);
+    cursor += line.length + 1;
+  }
+  const loopVariables = new Set<string>();
+  for (const match of source.matchAll(/\bfor\s+([A-Za-z_][\w\s,]*?)\s+in\s+[^\n]+\s+do\b/g)) {
+    for (const name of match[1]!.split(",")) {
+      const trimmed = name.trim();
+      if (/^[A-Za-z_]\w*$/.test(trimmed)) loopVariables.add(trimmed);
+    }
+  }
+  for (const match of source.matchAll(/\bfor\s+([A-Za-z_]\w*)\s*=[^,\n]+,[^\n]+\s+do\b/g)) loopVariables.add(match[1]!);
+  const nonNilOperand = (value: string) => {
+    const trimmed = value.trim();
+    if (/^[A-Za-z_]\w*$/.test(trimmed)) return loopVariables.has(trimmed) || ["PGC", "table", "string", "math"].includes(trimmed);
+    return /^(['"]).*\1$/.test(trimmed) || /^-?\d/.test(trimmed) || trimmed === "true" || trimmed === "false" || /^\{/.test(trimmed);
+  };
+  const blank = (from: number, to: number, chars: string[]) => {
+    for (let index = from; index < to; index += 1) if (chars[index] !== "\n") chars[index] = " ";
+  };
+  const chars = source.split("");
+  for (let index = 0; index < lines.length; index += 1) {
+    const trimmed = lines[index]!.trim();
+    let dead = false;
+    if (/^(?:if|elseif)\s/.test(trimmed)) {
+      const equality = trimmed.match(/^(?:if|elseif)\s+\(?\s*([A-Za-z_]\w*)\s*==\s*([A-Za-z_]\w*)\s*\)?\s*then\b/);
+      if (equality) {
+        const [left, right] = [equality[1]!, equality[2]!];
+        dead = !defined.has(left) && nonNilOperand(right) || !defined.has(right) && nonNilOperand(left);
+      } else {
+        const bare = trimmed.match(/^(?:if|elseif)\s+([A-Za-z_]\w*)\s*then\b\s*$/);
+        if (bare && !defined.has(bare[1]!)) dead = true;
+      }
+    }
+    if (!dead) continue;
+    let depth = 1;
+    let lineIndex = index + 1;
+    while (lineIndex < lines.length) {
+      const bodyLine = lines[lineIndex]!;
+      const bodyTrimmed = bodyLine.trim();
+      if (depth === 1 && /^(?:elseif|else)\b/.test(bodyTrimmed)) break;
+      const withoutForDo = bodyLine.replace(/\b(?:for|while)\b[^\n]*\bdo\b/g, "");
+      depth += (bodyLine.match(/\bfunction\b/g) ?? []).length;
+      depth += (bodyLine.match(/\bif\b[^\n]*\bthen\b/g) ?? []).length;
+      depth += (bodyLine.match(/\b(?:for|while)\b[^\n]*\bdo\b/g) ?? []).length;
+      depth += (withoutForDo.match(/\bdo\b/g) ?? []).length;
+      depth += (bodyLine.match(/\brepeat\b/g) ?? []).length;
+      depth -= (bodyLine.match(/\bend\b/g) ?? []).length;
+      depth -= (bodyLine.match(/\buntil\b/g) ?? []).length;
+      if (depth <= 0) {
+        const closing = [...bodyLine.matchAll(/\bend\b|\buntil\b/g)].at(-1);
+        blank(offsets[index]! + lines[index]!.length + 1, closing ? offsets[lineIndex]! + closing.index! : offsets[lineIndex]!, chars);
+        break;
+      }
+      lineIndex += 1;
+    }
+    if (lineIndex < lines.length && depth > 0) {
+      blank(offsets[index]! + lines[index]!.length + 1, offsets[lineIndex]!, chars);
+    }
   }
   return chars.join("");
 }
@@ -245,16 +371,59 @@ function referencesAny(value: string, names: Set<string>) {
   return [...names].some((name) => new RegExp("\\b" + name + "\\b").test(value));
 }
 
+function findsReferenceEscapes(value: string, aliases: Set<string>, source: string) {
+  // Every mention of a finds alias inside an assigned value must be inert:
+  // a length read (#finds), a field read (finds[i]), or an argument to a
+  // call that provably only reads it (display helpers such as
+  // PrintFindsText, or any script-defined function shown not to mutate the
+  // parameter it receives). Anything else — a bare reference, a container
+  // literal, an unknown callee — fails closed.
+  const names = [...aliases].join("|");
+  if (!names) return false;
+  const enclosingCall = (position: number) => {
+    let depth = 0;
+    for (let cursor = position - 1; cursor >= 0; cursor -= 1) {
+      const char = value[cursor]!;
+      if (char === ")") depth += 1;
+      else if (char === "(") {
+        if (depth === 0) {
+          const head = value.slice(0, cursor).match(/([A-Za-z_]\w*(?:\s*\.\s*[A-Za-z_]\w*)?)\s*$/)?.[1]?.replace(/\s/g, "");
+          const rest = balancedCallArguments(value, cursor);
+          return head !== undefined && rest !== null ? { head, argumentsText: rest } : null;
+        }
+        depth -= 1;
+      }
+    }
+    return null;
+  };
+  for (const match of value.matchAll(new RegExp("\\b(?:" + names + ")\\b", "g"))) {
+    const before = value.slice(0, match.index).replace(/\s+$/, "");
+    const after = value.slice(match.index! + match[0].length).replace(/^\s+/, "");
+    if (before.endsWith("#")) continue;
+    if (after.startsWith(".") || after.startsWith("[")) continue;
+    const call = enclosingCall(match.index!);
+    if (!call) return true;
+    if (MUTATING_TABLE_CALLS.has(call.head)) return true;
+    if (READ_ONLY_CALLS.has(call.head) && !functionDefinition(source, call.head)) continue;
+    const definition = functionDefinition(source, call.head);
+    if (!definition) return true;
+    const argumentsList = topLevelArguments(call.argumentsText);
+    const nested = definition.parameters[argumentsList.findIndex((argument) => new RegExp("\\b" + match[0] + "\\b").test(argument))];
+    if (!nested || functionMutatesParameter(source, call.head, nested)) return true;
+  }
+  return false;
+}
+
 function assignmentSites(source: string) {
   const assignments: Array<{ name: string; value: string; local: boolean }> = [];
-  const assignment = /(?:^|[;\n])\s*(\blocal\s+)?([A-Za-z_]\w*)\s*=\s*([^;\n]*)/g;
+  const assignment = /(?:^|[;\n])\s*(\blocal\s+)?([A-Za-z_]\w*)\s*=(?!=)\s*([^;\n]*)/g;
   for (const match of source.matchAll(assignment)) assignments.push({ name: match[2]!, value: match[3]!.trim(), local: Boolean(match[1]) });
   return assignments;
 }
 
 function memberAssignmentSites(source: string) {
   const assignments: Array<{ name: string; member: string; value: string; index: number }> = [];
-  const assignment = /\b([A-Za-z_]\w*)\s*(\.\s*[A-Za-z_]\w*|\[[^\]]*\])\s*=\s*([^\n;]*)/g;
+  const assignment = /\b([A-Za-z_]\w*)\s*(\.\s*[A-Za-z_]\w*|\[[^\]]*\])\s*=(?!=)\s*([^\n;]*)/g;
   for (const match of source.matchAll(assignment)) assignments.push({ name: match[1]!, member: match[2]!.replace(/\s/g, ""), value: match[3]!.trim(), index: match.index ?? 0 });
   return assignments;
 }
@@ -275,7 +444,7 @@ function accumulatorIsPopulated(body: string, assignment: { name: string; member
     if (argumentsList.length < 2 || !sameTableReference(argumentsList[0]!, target)) continue;
     if (referencesAny(argumentsList[1]!, derived) || (argumentsList[2] !== undefined && referencesAny(argumentsList[2]!, derived))) return true;
   }
-  const nestedAssignment = new RegExp("\\b" + assignment.name + "\\s*" + assignment.member.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&") + "(?:\\s*(?:\\.\\s*[A-Za-z_]\\w*|\\[[^\\]]*\\]))\\s*=\\s*([^\\n;]*)", "g");
+  const nestedAssignment = new RegExp("\\b" + assignment.name + "\\s*" + assignment.member.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&") + "(?:\\s*(?:\\.\\s*[A-Za-z_]\\w*|\\[[^\\]]*\\]))\\s*=(?!=)\\s*([^\\n;]*)", "g");
   return [...suffix.matchAll(nestedAssignment)].some((match) => referencesAny(match[1]!.trim(), derived));
 }
 
@@ -374,7 +543,7 @@ function validateExpandedFilter(source: string) {
     const copiedValue = copiesDerivedValue(assignment.value, assignment.member, derived);
     const emptyAccumulator = assignment.value === "{}" && (assignment.member === ".types" || assignment.member === ".excludeTypes" || assignment.member.startsWith("[")) && accumulatorIsPopulated(definition.body, assignment, derived);
     if (!simpleValue && !copiedValue && !emptyAccumulator) {
-      throw new BadRequestException("Project-GC expandFilter must preserve the input filter semantics");
+      throw new BadRequestException(`Project-GC expandFilter must preserve the input filter semantics (unsupported write to ${assignment.name}${assignment.member})`);
     }
   }
   const returns = [...definition.body.matchAll(/\breturn\b([^\n;]*)/g)].map((match) => match[1]!.replace(/\bend\s*$/, "").trim());
@@ -459,7 +628,7 @@ function topLevelArguments(value: string) {
 
 function configAliases(source: string) {
   const aliases = new Set(["conf", "config"]);
-  const assignment = /(?:\blocal\s+)?([A-Za-z_]\w*)\s*=\s*(?:(?:TableCopy\s*\(\s*)?(?:config|conf)\s*\)?)/g;
+  const assignment = /(?:\blocal\s+)?([A-Za-z_]\w*)\s*=\s*(?:(?:TableCopy\s*\(\s*)?(?:config|conf)\s*\)?(?![\w.\[]))/g;
   for (const match of source.matchAll(assignment)) {
     const previous = source.slice(0, match.index ?? 0).trimEnd().at(-1);
     if (previous === "{" || previous === ",") continue;
@@ -490,7 +659,7 @@ function validateFindsConfig(source: string) {
   }
   for (const alias of aliases) {
     if (alias === "conf" || alias === "config") continue;
-    const assignment = new RegExp("(?:\\blocal\\s+)?" + alias + "\\s*=\\s*([^\\n;]+)", "g");
+    const assignment = new RegExp("(?:\\blocal\\s+)?" + alias + "\\s*=(?!=)\\s*([^\\n;]+)", "g");
     for (const match of source.matchAll(assignment)) {
       const rhs = match[1]!.trim();
       if (!/^(?:TableCopy\s*\(\s*(?:config|conf)\s*\)|config|conf)\s*$/i.test(rhs)) {
@@ -507,7 +676,7 @@ function validateFindsConfig(source: string) {
     if (new RegExp("\\b" + alias + "\\s*\\.\\s*filter\\s*\\.\\s*(?!filters\\b)").test(source)) {
       throw new BadRequestException("Project-GC filter config uses an unsupported nested filter");
     }
-    const mutation = new RegExp("\\b" + alias + "\\s*\\.\\s*([A-Za-z_]\\w*(?:\\s*\\.\\s*[A-Za-z_]\\w*)*)\\s*=\\s*([^\\n;]+)", "g");
+    const mutation = new RegExp("\\b" + alias + "\\s*\\.\\s*([A-Za-z_]\\w*(?:\\s*\\.\\s*[A-Za-z_]\\w*)*)\\s*=(?!=)\\s*([^\\n;]+)", "g");
     for (const match of source.matchAll(mutation)) {
       const property = match[1]!.replaceAll(" ", "");
       const rhs = match[2]!.trim();
@@ -535,8 +704,12 @@ function validateCountCondition(source: string) {
   if ((source.match(/\bfunction\s+c_number\s*\(/g) ?? []).length !== 1 || (source.match(/\bc_number\s*\(\s*conf\s*\)/g) ?? []).length !== 2) {
     throw new BadRequestException("The importer requires one c_number(conf) checker invocation");
   }
-  if ((source.match(/#\s*finds/g) ?? []).length !== 1 || (body.match(/#\s*finds/g) ?? []).length !== 1) throw new BadRequestException("c_number must compare the complete find count exactly once");
-  const findsAssignmentCount = body.match(/\bfinds\s*=\s*/g) ?? [];
+  // The single-comparison requirement is enforced structurally below
+  // (exactly one `#finds >= conf.limit` check, gated ok-assignments and a
+  // gated verdict return). Other `#finds` uses — index math such as
+  // `#finds+1` or display text such as `".." .. #finds .. ".."` — cannot
+  // reach the verdict, so they are not counted here.
+  const findsAssignmentCount = body.match(/\bfinds\s*=(?!=)\s*/g) ?? [];
   if (findsAssignmentCount.length !== 1) throw new BadRequestException("The c_number finds result must not be reassigned");
   if (!/\bfinds\s*=\s*(?:(?:[A-Za-z_]\w*\s*\.\s*)?[A-Za-z_]\w*)\s*\(/.test(body)) {
     throw new BadRequestException("The c_number finds result must come from a function call");
@@ -572,7 +745,7 @@ function validateCountCondition(source: string) {
         const valueRead = [...findsAliases].some((alias) => new RegExp("^" + alias + "\\s*(?:\\.\\s*[A-Za-z_]\\w*|\\[[^\\]]*\\]|$)").test(assignment.value));
         const valueLength = new RegExp("^#\\s*(?:" + [...findsAliases].join("|") + ")$").test(assignment.value);
         const valueCopy = /^TableCopy\s*\(/.test(assignment.value);
-        if (!valueRead && !valueLength && !valueCopy) {
+        if (!valueRead && !valueLength && !valueCopy && findsReferenceEscapes(assignment.value, findsAliases, source)) {
           throw new BadRequestException("The c_number finds result must not escape its local scope");
         }
       }
@@ -682,7 +855,7 @@ function validateCountCondition(source: string) {
     const afterInvocation = source.slice(invocationEnd);
     const aliases = new Set([resultName]);
     const verdictAliases = new Set<string>();
-    const assignments = /(?:^|[;\n])\s*(?:\blocal\s+)?([A-Za-z_]\w*)\s*=\s*([^;\n]*)/g;
+    const assignments = /(?:^|[;\n])\s*(?:\blocal\s+)?([A-Za-z_]\w*)\s*=(?!=)\s*([^;\n]*)/g;
     for (const assignment of afterInvocation.matchAll(assignments)) {
       const name = assignment[1]!;
       const value = assignment[2]!.trim();
@@ -699,20 +872,41 @@ function validateCountCondition(source: string) {
       } else if (valueName && aliases.has(valueName)) {
         aliases.add(name);
       } else if (!isResultRead && [...aliases].some((alias) => new RegExp("\\b" + alias + "\\b").test(value))) {
-        throw new BadRequestException("The c_number result must not be reassigned or have its verdict overridden");
+        // Reads of display fields (slog/shtml/log/html) into fresh locals
+        // cannot fabricate a pass: the returned verdict must still be res.ok
+        // or a boolean read of it (checked with returnVerdict below), and
+        // verdict aliases cannot be reassigned from these locals.
+        const fieldReadPattern = new RegExp("\\b(?:" + [...aliases].map((alias) => alias).join("|") + ")\\s*\\.\\s*[A-Za-z_]\\w*", "g");
+        if ([...aliases].some((alias) => new RegExp("\\b" + alias + "\\b").test(value.replace(fieldReadPattern, "")))) {
+          throw new BadRequestException("The c_number result must not be reassigned or have its verdict overridden");
+        }
       }
     }
     const aliasPattern = [...aliases].map((alias) => "\\b" + alias + "\\b").join("|");
-    const resultAssignment = new RegExp("(?:" + aliasPattern + ")\\s*(?:\\.\\s*ok\\s*=|\\[[^\\]]*\\]\\s*=)");
+    const resultAssignment = new RegExp("(?:" + aliasPattern + ")\\s*(?:\\.\\s*ok\\s*=(?!=)|\\[[^\\]]*\\]\\s*=(?!=))");
     const methodCall = new RegExp("(?:" + aliasPattern + ")\\s*:\\s*[A-Za-z_]\\w*\\s*\\(");
-    const containerAssignment = /\b[A-Za-z_]\w*\s*(?:\.\s*[A-Za-z_]\w*|\[[^\]]*\])\s*=\s*([^\n;]*)/g;
+    const containerAssignment = /\b[A-Za-z_]\w*\s*(?:\.\s*[A-Za-z_]\w*|\[[^\]]*\])\s*=(?!=)\s*([^\n;]*)/g;
     const resultRead = (value: string) => [...aliases].some((alias) => new RegExp("^" + alias + "\\s*\\.\\s*ok$").test(value.trim()));
     const aliasReference = new RegExp("(?:" + aliasPattern + ")");
     if ([...afterInvocation.matchAll(/\breturn\s*\{([^}]*)\}/g)].some((statement) => (statement[1]!.match(/\bok\s*=/g) ?? []).length > 1)) {
       throw new BadRequestException("The c_number result must not contain duplicate verdict fields");
     }
     const containerReference = [...afterInvocation.matchAll(containerAssignment)].some((assignment) => !resultRead(assignment[1]!) && aliasReference.test(assignment[1]!));
-    const callReference = callSites(afterInvocation).some((call) => aliasReference.test(call.argumentsText));
+    // Calls that only read the result (e.g. ok_html(res.ok) for display) are
+    // fine when the callee is defined in the script and provably does not
+    // mutate the argument it receives. Unknown callees still fail closed.
+    const callReference = callSites(afterInvocation).some((call) => {
+      if (!aliasReference.test(call.argumentsText)) return false;
+      if (MUTATING_TABLE_CALLS.has(call.name) || READ_ONLY_CALLS.has(call.name)) return MUTATING_TABLE_CALLS.has(call.name);
+      const definition = functionDefinition(source, call.name);
+      if (!definition) return true;
+      const argumentsList = topLevelArguments(call.argumentsText);
+      return argumentsList.some((argument, index) => {
+        if (!aliasReference.test(argument)) return false;
+        const parameter = definition.parameters[index];
+        return !parameter || functionMutatesParameter(source, call.name, parameter);
+      });
+    });
     const returnVerdict = [...afterInvocation.matchAll(/\breturn\s*\{([^}]*)\}/g)].some((statement) => {
       const value = statement[1]!.match(/\bok\s*=\s*([^,}\n]+)/)?.[1]?.trim();
       if (value === undefined) return false;
@@ -751,7 +945,7 @@ export function projectGcFilterLabel(filters: ProjectGcFindFilter[]): string {
 export function importProjectGcNumberScript(scriptValue: unknown, configTextValue: unknown): { rules: ProjectGcNumberRule[]; summary: string } {
   if (typeof scriptValue !== "string" || !scriptValue.trim()) throw new BadRequestException("Paste a Project-GC Lua script");
   if (scriptValue.length > MAX_SCRIPT_LENGTH) throw new BadRequestException("Lua script is too large");
-  const script = maskLua(scriptValue);
+  const script = stripDeadNilBranches(maskLua(scriptValue));
   validateParseBudgets(script);
   validateFindsConfig(script);
   validateCountCondition(script);
