@@ -151,10 +151,10 @@ test("gsakImportBaseUrl falls back to the normal API origin", () => {
   );
 });
 
-test("GSAK macro refreshes found and owned caches before uploading bounded batches", () => {
+test("GSAK macro status-checks found and owned caches before uploading bounded batches", () => {
   const macro = gsakImportMacro("https://api.geostats.example", "gst_secret");
 
-  assert.match(macro, /# MacVersion = 1\.8/);
+  assert.match(macro, /# MacVersion = 1\.9/);
   assert.match(macro, /\$cacheBatchSize = 50/);
   assert.match(macro, /\$logBatchSize = 25/);
   assert.match(macro, /\$journeyTake = 500/);
@@ -197,12 +197,12 @@ test("GSAK macro refreshes found and owned caches before uploading bounded batch
   assert.doesNotMatch(macro, /limit " \+ \$(?:cacheBatchSize|logBatchSize)/);
   assert.match(macro, /GcStatusCheck Scope=Filter ShowSummary=N/);
   assert.match(macro, /GcGetLogs Scope=Filter Type=Newer ShowSummary=N/);
-  assert.match(
+  assert.doesNotMatch(
     macro,
     /GcRefresh Scope=Filter LogsPerCache=30 Format=Full ShowSummary=No/,
   );
   assert.ok(
-    macro.indexOf("GcRefresh Scope=Filter") <
+    macro.indexOf("GcStatusCheck Scope=Filter") <
       macro.indexOf('ShowStatus msg="Sending caches to Geostats..."'),
   );
   assert.match(macro, /update Caches set Found=1/);

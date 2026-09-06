@@ -181,7 +181,7 @@ export function gsakImportMacro(serverUrl: string, token: string) {
   const server = gsakString(serverUrl);
   const credential = gsakString(token);
   return `# MacDescription = Send found, owned, and trackable journey caches from GSAK to Geostats
-# MacVersion = 1.8
+# MacVersion = 1.9
 # NoVersionCheck
 
 $server = ${server}
@@ -323,23 +323,16 @@ ShowStatus msg="Finding caches you have placed..."
 GcGetCaches Settings=<macro> Load=Y ShowSummary=No
 
 # Correct GSAK's own found flags and dates from the authoritative account logs.
-$result = Sqlite("sql","update Caches set Found=1, FoundByMeDate=(select substr(max(g.LoggedDate),1,10) from GeostatsUserLogs g where g.GeocacheCode=Caches.Code) where Code in (select GeocacheCode from GeostatsUserLogs)")
-ReSync
-
-# Refresh the latest cache data before exporting it. GcRefresh uses the current
-# filter, so this includes every found or owned cache that will be imported.
-MFilter Expression=$d_Found OR IsOwner()
-If $_FilterCount > 0
-  ShowStatus msg="Refreshing cache data in GSAK..."
-  GcRefresh Scope=Filter LogsPerCache=30 Format=Full ShowSummary=No
-EndIf
-
-# The refresh is a GPX load and can update GSAK's found fields. Reapply the
-# account log values so old finds and their dates remain authoritative.
+# New caches were just loaded above with full details (GcGetCaches), so only
+# those need a full refresh. Refreshing every found cache each run takes hours
+# on large databases and exhausts the daily Full quota, so existing caches keep
+# their stored details; statuses are updated lightly below.
 $result = Sqlite("sql","update Caches set Found=1, FoundByMeDate=(select substr(max(g.LoggedDate),1,10) from GeostatsUserLogs g where g.GeocacheCode=Caches.Code) where Code in (select GeocacheCode from GeostatsUserLogs)")
 ReSync
 
 # Update statuses for all relevant caches and collect new logs on owned caches.
+# GcStatusCheck is lightweight compared to a full GcRefresh, so it still runs
+# over the whole found/owned filter to keep archived/disabled flags fresh.
 MFilter Expression=$d_Found OR IsOwner()
 If $_FilterCount > 0
   ShowStatus msg="Updating cache statuses in GSAK..."
