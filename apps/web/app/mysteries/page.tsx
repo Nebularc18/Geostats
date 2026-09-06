@@ -265,7 +265,7 @@ function attemptInputLabel(attempt: CoordinateAttempt) {
   return attemptKind(attempt) !== "coordinate"
     ? attempt.answer || attemptKindLabel(attempt)
     : coordinate
-      ? formatCoordinate(coordinate.latitude, coordinate.longitude, 4)
+      ? formatCoordinate(coordinate.latitude, coordinate.longitude)
       : "Coordinate";
 }
 
