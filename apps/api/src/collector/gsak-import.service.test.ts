@@ -226,10 +226,10 @@ test("GSAK cache batches upsert owned caches and corrected coordinates", async (
     ["cache", "userData", "hide", "correction"],
   );
   assert.equal(actions[0][1].create.gcCode, "GC123");
-  assert.equal(actions[0][1].create.name, "GC123");
-  assert.equal(actions[0][1].create.latitude, 0);
-  assert.equal(actions[0][1].create.longitude, 0);
-  assert.equal(actions[0][1].create.metadataTrusted, false);
+  assert.equal(actions[0][1].create.name, "Owned, cache");
+  assert.equal(actions[0][1].create.latitude, 56.1);
+  assert.equal(actions[0][1].create.longitude, 15.6);
+  assert.equal(actions[0][1].create.metadataTrusted, true);
   assert.deepEqual(actions[0][1].update, {});
   assert.deepEqual(actions[0][1].where, { gcCode: "GC123" });
   assert.equal("userId" in actions[0][1].create, false);
@@ -247,7 +247,7 @@ test("GSAK cache batches upsert owned caches and corrected coordinates", async (
   );
 });
 
-test("personal GSAK cache batches cannot enrich shared cache metadata", async () => {
+test("personal GSAK cache batches repair placeholders", async () => {
   const updates: any[] = [];
   const existingCache = {
     id: "cache-1",
@@ -259,8 +259,9 @@ test("personal GSAK cache batches cannot enrich shared cache metadata", async ()
     cache: {
       upsert: async (input: any) => {
         updates.push(input);
-        return { id: existingCache.id };
+        return { id: existingCache.id, metadataTrusted: false };
       },
+      updateMany: async (input: any) => { updates.push(input); return { count: 1 }; },
     },
     userCacheData: { upsert: async () => ({}) },
     hide: { upsert: async () => ({}) },
@@ -279,6 +280,11 @@ test("personal GSAK cache batches cannot enrich shared cache metadata", async ()
   await service.importBatch("user-1", "caches", csv);
 
   assert.deepEqual(updates[0].update, {});
+  assert.deepEqual(updates[1].where, { id: "cache-1", metadataTrusted: false });
+  assert.equal(updates[1].data.name, "Named cache");
+  assert.equal(updates[1].data.latitude, 56.1);
+  assert.equal(updates[1].data.difficulty, 2);
+  assert.equal(updates[1].data.metadataTrusted, true);
 });
 
 test("GSAK log batches merge owned logs and preserve manual FTF choices", async () => {
@@ -496,4 +502,24 @@ test("GSAK log batches do not guess when multiple adjacent imported finds exist"
     false,
   );
   assert.equal(actions.filter(([name]) => name === "create").length, 1);
+});
+
+test("normal GSAK imports preserve established shared metadata", async () => {
+  const tx = {
+    cache: {
+      upsert: async ({ create, update }: any) => {
+        assert.equal(create.country, "Sweden");
+        assert.deepEqual(update, {});
+        return { id: "cache-1", metadataTrusted: true };
+      },
+      updateMany: async () => assert.fail("Established metadata must not be overwritten")
+    },
+    userCacheData: { upsert: async () => ({}) }
+  };
+  const service = new GsakImportService({
+    cache: { findMany: async () => [] },
+    $transaction: async (run: any) => run(tx)
+  } as any, {} as any);
+  await service.importBatch("user-1", "caches",
+    "gcCode,name,latitude,longitude,country\nGC123,Imported name,56.1,15.6,Sweden");
 });

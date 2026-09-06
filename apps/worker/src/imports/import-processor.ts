@@ -407,10 +407,19 @@ export class ImportProcessor {
     const gcCode = String(cache.gcCode).trim().toUpperCase();
     return {
       gcCode,
-      name: gcCode,
-      latitude: 0,
-      longitude: 0,
-      metadataTrusted: false
+      name: cache.name,
+      cacheType: cache.cacheType,
+      difficulty: cache.difficulty,
+      terrain: cache.terrain,
+      size: cache.size,
+      latitude: cache.latitude,
+      longitude: cache.longitude,
+      country: cache.country,
+      region: cache.region,
+      county: cache.county,
+      hiddenDate: cache.hiddenDate,
+      ownerName: cache.ownerName,
+      metadataTrusted: true
     };
   }
 
@@ -445,6 +454,14 @@ export class ImportProcessor {
       } else {
         throw error;
       }
+    }
+    if (resolved.metadataTrusted === false) {
+      // A normal import can repair placeholders, but cannot replace established metadata.
+      await this.prisma.cache.updateMany({
+        where: { id: resolved.id, metadataTrusted: false },
+        data: create
+      });
+      resolved = await this.findExistingCache(cache.gcCode);
     }
     await this.prisma.userCacheData.upsert({
       where: { userId_cacheId: { userId, cacheId: resolved.id } },

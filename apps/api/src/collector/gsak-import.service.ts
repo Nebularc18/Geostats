@@ -608,17 +608,33 @@ export class GsakImportService {
           existingByCode.get(row.gcCode)?.userData?.[0]?.raw,
           row,
         ) as Prisma.InputJsonValue;
+        const metadata = {
+          gcCode: row.gcCode,
+          name: row.name,
+          cacheType: row.cacheType,
+          difficulty: row.difficulty,
+          terrain: row.terrain,
+          size: row.size,
+          latitude: row.latitude,
+          longitude: row.longitude,
+          country: row.country,
+          region: row.region,
+          county: row.county,
+          hiddenDate: row.hiddenDate,
+          ownerName: row.ownerName,
+          metadataTrusted: true,
+        };
         const cache = await tx.cache.upsert({
           where: { gcCode: row.gcCode },
-          create: {
-            gcCode: row.gcCode,
-            name: row.gcCode,
-            latitude: 0,
-            longitude: 0,
-            metadataTrusted: false,
-          },
+          create: metadata,
           update: {},
         });
+        if (cache.metadataTrusted === false) {
+          await tx.cache.updateMany({
+            where: { id: cache.id, metadataTrusted: false },
+            data: metadata,
+          });
+        }
         await tx.userCacheData.upsert({
           where: { userId_cacheId: { userId, cacheId: cache.id } },
           create: { userId, cacheId: cache.id, raw },
