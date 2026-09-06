@@ -47,6 +47,7 @@ import {
   type LucideIcon
 } from "lucide-react";
 import type { CacheMapPoint } from "./cache-map";
+import { BadgeEmblem } from "./badge-emblem";
 import { apiFetch } from "../lib/api";
 import { boundaryNames, deriveBucketsFromBoundaries } from "../lib/scratch-boundaries";
 import {
@@ -114,58 +115,11 @@ type ScratchCountryBucket = ScratchLocationBucket & {
 type ScratchMapData = {
   countries: ScratchCountryBucket[];
 };
-type BadgeArt = {
-  mark: string;
-  tone: string;
-};
-
 const isDevelopment = process.env.NODE_ENV === "development";
 const tiers = ["Bronze", "Silver", "Gold", "Platinum", "Ruby", "Sapphire", "Emerald", "Diamond"];
 const tierClasses = ["bronze", "silver", "gold", "platinum", "ruby", "sapphire", "emerald", "diamond"];
 const countryRegionPercentThresholds = [1, 15, 20, 30, 40, 50, 75, 100];
 const countryRegionCountThresholds = [1, 5, 10, 25, 50, 100, 200, 500];
-const badgeArtById: Record<string, BadgeArt> = {
-  "long-distance": { mark: "🌍", tone: "aqua" },
-  attribute: { mark: "🎒", tone: "green" },
-  large: { mark: "🧰", tone: "green" },
-  matrix: { mark: "▦", tone: "paper" },
-  jasmer: { mark: "🗓️", tone: "paper" },
-  diverse: { mark: "🧩", tone: "coral" },
-  brainiac: { mark: "💡", tone: "gold" },
-  adventurous: { mark: "△", tone: "rose" },
-  "all-around": { mark: "✦", tone: "silver" },
-  traveling: { mark: "🛂", tone: "blue" },
-  veteran: { mark: "🎂", tone: "pink" },
-  traditional: { mark: "📍", tone: "green" },
-  multi: { mark: "⌁", tone: "aqua" },
-  mystery: { mark: "?", tone: "purple" },
-  letterboxer: { mark: "✉", tone: "gold" },
-  earth: { mark: "🌐", tone: "aqua" },
-  wherigo: { mark: "◉", tone: "blue" },
-  virtual: { mark: "👻", tone: "coral" },
-  photogenic: { mark: "📷", tone: "paper" },
-  social: { mark: "☻", tone: "coral" },
-  environmental: { mark: "♻", tone: "green" },
-  "mega-social": { mark: "🎉", tone: "coral" },
-  "giga-social": { mark: "★", tone: "gold" },
-  "gps-maze": { mark: "◈", tone: "blue" },
-  "odd-sized": { mark: "◇", tone: "purple" },
-  micro: { mark: "•", tone: "paper" },
-  small: { mark: "▪", tone: "green" },
-  regular: { mark: "■", tone: "gold" },
-  rugged: { mark: "⛰", tone: "rose" },
-  ftf: { mark: "1st", tone: "gold" },
-  geocacher: { mark: "🏆", tone: "gold" },
-  calendar: { mark: "📅", tone: "paper" },
-  daily: { mark: "✓", tone: "green" },
-  busy: { mark: "⚡", tone: "gold" },
-  achiever: { mark: "🏅", tone: "gold" },
-  trackable: { mark: "🔎", tone: "blue" },
-  author: { mark: "✒", tone: "paper" },
-  owner: { mark: "👑", tone: "gold" },
-  "favorited-owner": { mark: "★", tone: "rose" },
-  "event-host": { mark: "🎤", tone: "coral" }
-};
 function demoCountry(
   name: string,
   continent: string,
@@ -686,15 +640,6 @@ function tierSummary(items: { current: number | null; thresholds: number[]; lowe
     .map((tier) => ({ tier, count: counts.get(tier) ?? 0 }));
 }
 
-function BadgePicture({ badgeId, tierClass }: { badgeId: string; tierClass: string }) {
-  const art = badgeArtById[badgeId] ?? { mark: "★", tone: "gold" };
-  return (
-    <span className={`badge-picture ${tierClass} badge-picture-${art.tone}`}>
-      <span className="badge-picture-mark">{art.mark}</span>
-    </span>
-  );
-}
-
 export function AchievementBadges({
   id,
   stats: providedStats = null,
@@ -1019,8 +964,7 @@ export function AchievementBadges({
             <article key={badge.id} className="badge-row" style={{ "--badge-progress": Math.max(0, index + 1) / tiers.length } as CSSProperties}>
               <div className="badge-row-main">
                 <span className="badge-portrait" aria-hidden="true">
-                  <BadgePicture badgeId={badge.id} tierClass={tierClass} />
-                  <span className="badge-ribbon">{badge.name.replace(/^The /, "")}</span>
+                  <BadgeEmblem badgeId={badge.id} icon={badge.icon} tierClass={tierClass} level={index} />
                 </span>
                 <span>
                   <strong>{badge.name}</strong>
