@@ -6,7 +6,7 @@ import { PrismaService } from "../common/prisma.service";
 import { attributesFromRaw, ChallengeRule, evaluateChallenge, ProjectGcFindFilter, proofText, sameLocationText } from "./challenge-checker.evaluator";
 import { cacheTypeIdentity, cacheTypeOptions } from "./cache-type-catalog";
 import { BoundaryGeometry, GeographicBoundariesService, pointInBoundary } from "./geographic-boundaries";
-import { importProjectGcNumberScript, projectGcFilterLabel } from "./project-gc-importer";
+import { importProjectGcCalendarScript, importProjectGcNumberScript, isProjectGcCalendarScript, projectGcFilterLabel } from "./project-gc-importer";
 
 type CheckerInput = { name?: unknown; gcCode?: unknown; description?: unknown; rules?: unknown };
 
@@ -112,6 +112,18 @@ function parseRules(value: unknown): ChallengeRule[] {
       const filters = rule.filters.map((filter) => validateStoredProjectGcFilter(filter));
       return { type: rule.type, minimum, filters, filterLabel: projectGcFilterLabel(filters) };
     }
+    if (rule.type === "CALENDAR_FILL") {
+      if (minimum > 366) throw new BadRequestException("Calendar-day minimum cannot exceed 366");
+      const perDay = Number(rule.perDay);
+      if (!Number.isInteger(perDay) || perDay < 1 || perDay > 1_000_000) {
+        throw new BadRequestException("Calendar rule per-day minimum must be a positive integer");
+      }
+      if (typeof rule.allowLeapDaySkip !== "boolean") throw new BadRequestException("Calendar rule allowLeapDaySkip must be a boolean");
+      if (!Array.isArray(rule.filters) || rule.filters.length !== 1) throw new BadRequestException("Imported calendar rule must contain exactly one filter");
+      const filters = rule.filters.map((filter) => validateStoredProjectGcFilter(filter));
+      const filterLabel = cleanOptionalText(rule.filterLabel, "filterLabel", 200) ?? projectGcFilterLabel(filters);
+      return { type: rule.type, minimum, perDay, allowLeapDaySkip: rule.allowLeapDaySkip, filters, filterLabel };
+    }
     throw new BadRequestException("Unsupported challenge rule type");
   });
 }
@@ -203,6 +215,9 @@ export class ChallengeCheckersService {
   }
 
   importProjectGc(input: Record<string, unknown>) {
+    if (typeof input.script === "string" && isProjectGcCalendarScript(input.script)) {
+      return importProjectGcCalendarScript(input.script, input.config);
+    }
     return importProjectGcNumberScript(input.script, input.config);
   }
 

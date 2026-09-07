@@ -22,6 +22,15 @@ export type ProjectGcFindFilter = {
 
 export type ProjectGcNumberRule = { type: "PROJECT_GC_NUMBER"; minimum: number; filters: ProjectGcFindFilter[]; filterLabel: string };
 
+export type CalendarFillRule = {
+  type: "CALENDAR_FILL";
+  minimum: number;
+  perDay: number;
+  allowLeapDaySkip: boolean;
+  filters: ProjectGcFindFilter[];
+  filterLabel: string;
+};
+
 export type ChallengeRule =
   | { type: "TOTAL_FINDS"; minimum: number }
   | { type: "CACHE_TYPE"; cacheTypeId: string; cacheTypeLabel: string; minimum: number }
@@ -37,7 +46,8 @@ export type ChallengeRule =
   | { type: "TERRAIN_RATING"; rating: number; minimum: number }
   | { type: "FAVORITE_POINTS"; minimumFavoritePoints: number; minimum: number }
   | { type: "ATTRIBUTE"; attributeId: string; attributeLabel: string; minimum: number }
-  | ProjectGcNumberRule;
+  | ProjectGcNumberRule
+  | CalendarFillRule;
 
 export type CheckerFind = {
   foundAt: Date;
@@ -270,10 +280,41 @@ export function evaluateChallenge(rules: ChallengeRule[], finds: CheckerFind[], 
       matchingFinds = finds.filter((find) => attributesFromRaw(find.cache.raw).some((attribute) => attribute.id === rule.attributeId));
       current = matchingFinds.length;
       label = `${rule.attributeLabel} attribute finds`;
-    } else {
+    } else if (rule.type === "PROJECT_GC_NUMBER") {
       matchingFinds = finds.filter((find) => rule.filters.some((filter) => projectGcFilterMatches(filter, find)));
       current = matchingFinds.length;
       label = `Project-GC count: ${rule.filterLabel}`;
+    } else {
+      const byDate = new Map<string, CheckerFind[]>();
+      for (const find of finds.filter((find) => rule.filters.some((filter) => projectGcFilterMatches(filter, find)))) {
+        const key = loggedCalendarKey(find);
+        const group = byDate.get(key);
+        if (group) group.push(find);
+        else byDate.set(key, [find]);
+      }
+      const complete = [...byDate.entries()].filter(([, group]) => group.length >= rule.perDay);
+      const leapComplete = (byDate.get("02-29")?.length ?? 0) >= rule.perDay;
+      current = complete.length;
+      matchingFinds = complete.map(([, group]) => group[0]!);
+      label = `Distinct calendar dates (${rule.filterLabel})`;
+      const passed = current >= rule.minimum ||
+        (rule.allowLeapDaySkip && rule.minimum === 366 && current === 365 && !leapComplete);
+      return {
+        rule,
+        passed,
+        current,
+        required: rule.minimum,
+        label,
+        detail: passed
+          ? `${current.toLocaleString()} achieved; ${rule.minimum.toLocaleString()} required.`
+          : `${current.toLocaleString()} achieved; ${Math.max(rule.minimum - current, 0).toLocaleString()} more needed.`,
+        evidence: matchingFinds.slice(0, MAX_EVIDENCE_ROWS).map((find) => ({
+          date: loggedEvidenceDate(find),
+          gcCode: find.cache.gcCode,
+          name: find.cache.name
+        })),
+        evidenceLimited: matchingFinds.length > MAX_EVIDENCE_ROWS
+      };
     }
 
     const passed = current >= rule.minimum;

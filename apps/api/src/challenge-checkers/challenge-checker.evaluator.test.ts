@@ -154,3 +154,46 @@ test("evaluates imported Project-GC count filters as alternatives without double
   assert.equal(result.rules[0]!.current, 2);
   assert.match(result.rules[0]!.label, /Project-GC count/);
 });
+
+test("counts distinct calendar dates with a per-day minimum and leap-day skip", () => {
+  const small = (gcCode: string, date: string) => ({
+    foundAt: new Date(`${date}T00:00:00Z`),
+    foundDate: new Date(`${date}T00:00:00Z`),
+    cache: { gcCode, name: gcCode, cacheType: "Traditional Cache", difficulty: 1, terrain: 1, country: "Sweden", region: null, county: null, size: "Small" }
+  });
+  const micro = (gcCode: string, date: string) => ({
+    ...small(gcCode, date),
+    cache: { ...small(gcCode, date).cache, size: "Micro" }
+  });
+  const rule = {
+    type: "CALENDAR_FILL" as const,
+    minimum: 3,
+    perDay: 2,
+    allowLeapDaySkip: false,
+    filters: [{ sizes: ["Small"] }],
+    filterLabel: "size Small"
+  };
+  const result = evaluateChallenge([rule], [
+    small("GC1", "2025-01-01"),
+    small("GC2", "2025-01-01"),
+    small("GC3", "2025-01-02"),
+    micro("GC4", "2025-01-02"),
+    micro("GC5", "2025-01-02"),
+    small("GC6", "2025-01-03"),
+    small("GC7", "2025-01-03")
+  ]);
+  assert.equal(result.rules[0]!.current, 2);
+  assert.equal(result.rules[0]!.passed, false);
+  assert.match(result.rules[0]!.label, /Distinct calendar dates/);
+
+  const leapRule = { ...rule, minimum: 366, perDay: 1, allowLeapDaySkip: true };
+  const fullYear = Array.from({ length: 365 }, (_, index) => {
+    const date = new Date(Date.UTC(2025, 0, 1) + index * 86_400_000);
+    return small(`GCY${index}`, date.toISOString().slice(0, 10));
+  });
+  const leapResult = evaluateChallenge([leapRule], fullYear);
+  assert.equal(leapResult.rules[0]!.current, 365);
+  assert.equal(leapResult.rules[0]!.passed, true);
+  const strictResult = evaluateChallenge([{ ...leapRule, allowLeapDaySkip: false }], fullYear);
+  assert.equal(strictResult.rules[0]!.passed, false);
+});
