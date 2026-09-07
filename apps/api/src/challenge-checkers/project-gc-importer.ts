@@ -194,6 +194,85 @@ function definedLuaNames(source: string) {
   return defined;
 }
 
+function luaBranchEnd(lines: string[], offsets: number[], index: number): number {
+  const opener = lines[index]!;
+  const openerThen = opener.search(/\bthen\b/);
+  const openerRemainder = openerThen >= 0 ? opener.slice(openerThen + 4) : "";
+  const openerWithoutForDo = openerRemainder.replace(/\b(?:for|while)\b[^\n]*\bdo\b/g, "");
+  let depth = 1
+    + (openerRemainder.match(/\bfunction\b/g) ?? []).length
+    + (openerRemainder.match(/\bif\b/g) ?? []).length
+    + (openerRemainder.match(/\b(?:for|while)\b[^\n]*\bdo\b/g) ?? []).length
+    + (openerWithoutForDo.match(/\bdo\b/g) ?? []).length
+    + (openerRemainder.match(/\brepeat\b/g) ?? []).length
+    - (openerRemainder.match(/\bend\b/g) ?? []).length
+    - (openerRemainder.match(/\buntil\b/g) ?? []).length;
+  if (depth <= 0) {
+    const closing = [...openerRemainder.matchAll(/\bend\b|\buntil\b/g)].at(-1);
+    return closing && closing.index !== undefined ? offsets[index]! + openerThen + 4 + closing.index : offsets[index]!;
+  }
+  let lineIndex = index + 1;
+  while (lineIndex < lines.length) {
+    const bodyLine = lines[lineIndex]!;
+    const bodyTrimmed = bodyLine.trim();
+    if (depth === 1 && /^(?:elseif|else)\b/.test(bodyTrimmed)) return offsets[lineIndex]!;
+    const withoutForDo = bodyLine.replace(/\b(?:for|while)\b[^\n]*\bdo\b/g, "");
+    depth += (bodyLine.match(/\bfunction\b/g) ?? []).length;
+    // See blockBody: count `if` alone so conditions split across lines stay
+    // balanced.
+    depth += (bodyLine.match(/\bif\b/g) ?? []).length;
+    depth += (bodyLine.match(/\b(?:for|while)\b[^\n]*\bdo\b/g) ?? []).length;
+    depth += (withoutForDo.match(/\bdo\b/g) ?? []).length;
+    depth += (bodyLine.match(/\brepeat\b/g) ?? []).length;
+    depth -= (bodyLine.match(/\bend\b/g) ?? []).length;
+    depth -= (bodyLine.match(/\buntil\b/g) ?? []).length;
+    if (depth <= 0) {
+      const closing = [...bodyLine.matchAll(/\bend\b|\buntil\b/g)].at(-1);
+      return closing ? offsets[lineIndex]! + closing.index! : offsets[lineIndex]!;
+    }
+    lineIndex += 1;
+  }
+  return -1;
+}
+
+function soleWriteInCondition(source: string, writePattern: RegExp, conditionPattern: RegExp) {
+  // The pass verdict must be produced by its gating condition, not planted
+  // elsewhere: exactly one matching write in the whole script, sitting
+  // between a matching condition line's `then` and that branch's end.
+  const lines = source.split("\n");
+  const offsets: number[] = [];
+  let cursor = 0;
+  for (const line of lines) {
+    offsets.push(cursor);
+    cursor += line.length + 1;
+  }
+  const flags = writePattern.flags.includes("g") ? writePattern.flags : `${writePattern.flags}g`;
+  const writes: number[] = [];
+  for (const match of source.matchAll(new RegExp(writePattern.source, flags))) writes.push(match.index ?? 0);
+  if (writes.length !== 1) return false;
+  for (let index = 0; index < lines.length; index += 1) {
+    if (!conditionPattern.test(lines[index]!)) continue;
+    let thenAt = lines[index]!.search(/\bthen\b/);
+    let thenBase = index;
+    if (thenAt < 0) {
+      for (let scan = index + 1; scan < lines.length; scan += 1) {
+        if (/^\s*(if|for|while|repeat|function)\b/.test(lines[scan]!)) break;
+        const at = lines[scan]!.search(/\bthen\b/);
+        if (at >= 0) {
+          thenAt = at;
+          thenBase = scan;
+          break;
+        }
+      }
+    }
+    if (thenAt < 0) continue;
+    const keepAt = luaBranchEnd(lines, offsets, index);
+    if (keepAt < 0) continue;
+    if (writes[0]! >= offsets[thenBase]! + thenAt + 4 && writes[0]! < keepAt) return true;
+  }
+  return false;
+}
+
 function stripDeadNilBranches(source: string, configKeys: Set<string> = new Set()) {
   // The official generic checker guards its legacy excludeTypes handling with
   // `k == excludeTypes`, where excludeTypes is a never-assigned global (nil).
@@ -240,31 +319,6 @@ function stripDeadNilBranches(source: string, configKeys: Set<string> = new Set(
     return count;
   };
   const chars = source.split("");
-  const branchKeepAt = (index: number): number => {
-    let depth = 1;
-    let lineIndex = index + 1;
-    while (lineIndex < lines.length) {
-      const bodyLine = lines[lineIndex]!;
-      const bodyTrimmed = bodyLine.trim();
-      if (depth === 1 && /^(?:elseif|else)\b/.test(bodyTrimmed)) return offsets[lineIndex]!;
-      const withoutForDo = bodyLine.replace(/\b(?:for|while)\b[^\n]*\bdo\b/g, "");
-      depth += (bodyLine.match(/\bfunction\b/g) ?? []).length;
-      // See blockBody: count `if` alone so conditions split across lines stay
-      // balanced.
-      depth += (bodyLine.match(/\bif\b/g) ?? []).length;
-      depth += (bodyLine.match(/\b(?:for|while)\b[^\n]*\bdo\b/g) ?? []).length;
-      depth += (withoutForDo.match(/\bdo\b/g) ?? []).length;
-      depth += (bodyLine.match(/\brepeat\b/g) ?? []).length;
-      depth -= (bodyLine.match(/\bend\b/g) ?? []).length;
-      depth -= (bodyLine.match(/\buntil\b/g) ?? []).length;
-      if (depth <= 0) {
-        const closing = [...bodyLine.matchAll(/\bend\b|\buntil\b/g)].at(-1);
-        return closing ? offsets[lineIndex]! + closing.index! : offsets[lineIndex]!;
-      }
-      lineIndex += 1;
-    }
-    return -1;
-  };
   for (let index = 0; index < lines.length; index += 1) {
     const trimmed = lines[index]!.trim();
     let dead = false;
@@ -284,7 +338,7 @@ function stripDeadNilBranches(source: string, configKeys: Set<string> = new Set(
           const confGuard = trimmed.match(/^(?:if|elseif)\s+conf\s*\.\s*([A-Za-z_]\w*)\s*~=\s*nil\s*then\b/) ??
             trimmed.match(/^(?:if|elseif)\s+config\s*\.\s*([A-Za-z_]\w*)\s*~=\s*nil\s*then\b/);
           if (confGuard && !configKeys.has(confGuard[1]!) && !hasOpaqueRebind) {
-            const keepAt = branchKeepAt(index);
+            const keepAt = luaBranchEnd(lines, offsets, index);
             if (keepAt >= 0) {
               const bodyStart = offsets[index]! + lines[index]!.length + 1;
               dead = confWrites(confGuard[1]!, 0, bodyStart) + confWrites(confGuard[1]!, keepAt, source.length) === confWrites(confGuard[1]!, 0, source.length);
@@ -294,7 +348,7 @@ function stripDeadNilBranches(source: string, configKeys: Set<string> = new Set(
       }
     }
     if (!dead) continue;
-    const keepAt = branchKeepAt(index);
+    const keepAt = luaBranchEnd(lines, offsets, index);
     if (keepAt >= 0) blank(offsets[index]! + lines[index]!.length + 1, keepAt, chars);
   }
   return chars.join("");
@@ -943,6 +997,9 @@ function validateCountCondition(source: string) {
   const exactIf = body.match(/\bif\s*\(?\s*#\s*finds\s*>=\s*conf\s*\.\s*limit\s*\)?\s*then\b/g) ?? [];
   const exactReturn = body.match(/\bok\s*=\s*#\s*finds\s*>=\s*conf\s*\.\s*limit\b\s*(?=[,}])/g) ?? [];
   if (exactIf.length + exactReturn.length !== 1) throw new BadRequestException("c_number must return exactly the conf.limit count condition");
+  if (exactIf.length === 1 && !soleWriteInCondition(source, /\bok\s*=(?!=)\s*true\b/, /#finds\s*>=\s*conf\s*\.\s*limit/)) {
+    throw new BadRequestException("c_number has an additional pass/fail condition");
+  }
   const returnStatements = [...body.matchAll(/\breturn\s*\{([^}]*)\}/g)].map((match) => match[1] ?? "");
   if (returnStatements.some((value) => (value.match(/\bok\s*=/g) ?? []).length > 1)) {
     throw new BadRequestException("The c_number result must not contain duplicate verdict fields");
@@ -1224,6 +1281,9 @@ function validateCalendarCondition(source: string, allowLeapDaySkip: boolean) {
   }
   if (allowLeapDaySkip && !/makekey\s*\(\s*2\s*,\s*29\s*\)/.test(body)) {
     throw new BadRequestException("Project-GC c_calendar must spell out its leap-day exception");
+  }
+  if (!soleWriteInCondition(source, /\bok\s*=(?!=)\s*true\b/, /numdone\s*>=\s*conf\s*\.\s*needed/)) {
+    throw new BadRequestException("Project-GC c_calendar must pass on its completed-day count");
   }
   validateCheckerInvocation(source, "c_calendar", []);
 }

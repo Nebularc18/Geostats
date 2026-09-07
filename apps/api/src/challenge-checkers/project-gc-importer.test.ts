@@ -55,6 +55,36 @@ return { ok = ok }
   assert.equal(importProjectGcNumberScript(script, '{"limit":1}').rules[0]!.minimum, 1);
 });
 
+test("rejects a pass verdict planted outside its gating condition", () => {
+  const script = `
+local args={...}
+local conf = args[1].config
+function expandFilter(filter) return filter end
+function GetCombinedFinds(profileId, config)
+  local l_config = TableCopy(config)
+  l_config.filter.filters = nil
+  local l_filter = TableCopy(l_config)
+  l_config.filter = l_filter
+  l_config.fields = { 'gccode' }
+  l_config.filter = expandFilter(c)
+  return PGC.GetFinds(profileId, l_config)
+end
+function c_number(conf)
+  local options = { 'limit' }
+  if extraInConfig(conf, options) == true then return { ok = nil } end
+  local finds = GetCombinedFinds(args[1].profileId, { filter = conf })
+  local ok = false
+  if #finds >= conf.limit then end
+  ok = true
+  return { ok = ok }
+end
+res = c_number(conf)
+local ok = res.ok
+return { ok = ok }
+`;
+  assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /additional pass\/fail condition/);
+});
+
 test("rejects an expanded filter that ignores its input", () => {
   const script = `
 local args={...}
@@ -472,6 +502,7 @@ test("rejects calendar scripts that diverge from the tag config", () => {
   assert.throws(() => importProjectGcCalendarScript(calendarScript.replace("for month = 1, 12 do", "for month = 1, 6 do"), config), /distinct calendar dates/);
   assert.throws(() => importProjectGcCalendarScript("res = c_calendar(conf)\nreturn { ok = res.ok }", config), /single PGC.GetFinds call/);
   assert.throws(() => importProjectGcCalendarScript(calendarScript.replace("function c_calendar(conf)", "function c_calendar_other(conf)"), config), /c_calendar must be a function/);
+  assert.throws(() => importProjectGcCalendarScript(calendarScript.replace("    ) then\n    ok = true\n  end", "    ) then\n  end\n  ok = true"), config), /pass on its completed-day count/);
 });
 
 test("accepts the display and legacy-branch idioms of the official generic checker", () => {
