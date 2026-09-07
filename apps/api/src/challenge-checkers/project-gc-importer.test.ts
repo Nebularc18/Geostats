@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { importProjectGcNumberScript } from "./project-gc-importer";
+import { importProjectGcCalendarScript, importProjectGcNumberScript } from "./project-gc-importer";
 
 const numberScript = `
 local args={...}
@@ -365,6 +365,113 @@ test("rejects scripts whose call count exceeds the parser budget", () => {
 test("rejects scripts whose cumulative parser scan work exceeds the budget", () => {
   const script = `${"f()\n".repeat(101)}${" ".repeat(100_000)}`;
   assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /requires too much parsing work/);
+});
+
+const calendarScript = `
+local args={...}
+profileName = args[1]['profileName']
+profileId = args[1]['profileId']
+conf = args[1].config
+local daysinmonth = { 31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 }
+function CleanupConfig(conf)
+  if conf.limit == nil then
+    conf.limit = 1
+  else
+    conf.limit = tonumber(conf.limit)
+  end
+  if conf.needed == nil then
+    conf.needed = 366
+  else
+    conf.needed = tonumber(conf.needed)
+  end
+  if conf.leapday == "allow" then
+    conf.leapday = "false"
+  else
+    conf.leapday = "true"
+  end
+  return conf
+end
+function FilterFromConfig(conf)
+  local filter = conf['filter'] or { }
+  filter['country'] = filter['country'] or conf.country
+  filter['sizes'] = filter['sizes'] or conf.sizes
+  return filter
+end
+function makekey(month, day)
+  return string.format("%02d-%02d", month, day)
+end
+function c_calendar(conf)
+  local status = { }
+  conf = CleanupConfig(conf)
+  local filter = FilterFromConfig(conf)
+  myFinds = PGC.GetFinds(profileId,
+                         { includeLabCaches = conf.labs,
+                           fields = { 'gccode', 'visitdate' },
+                           order = 'OLDESTFIRST',
+                           filter = filter } )
+  for i, f in ipairs(myFinds) do
+    day = string.sub(f['visitdate'], 6)
+    if status[day] == nil then
+      status[day] = 1
+    else
+      status[day] = status[day] + 1
+    end
+  end
+  local numdone = 0
+  for month = 1, 12 do
+    for day = 1, daysinmonth[month] do
+      local key = makekey(month, day)
+      if status[key] ~= nil and status[key] >= conf.limit then
+        numdone = numdone + 1
+      end
+    end
+  end
+  local ok = false
+  if numdone >= conf.needed
+    or (numdone == 365 and conf.needed == 366
+    and conf.leapday == "false"
+    and (status[makekey(2,29)] == nil
+      or (status[makekey(2,29)] ~= nil and status[makekey(2,29)] < conf.limit))
+    ) then
+    ok = true
+  end
+  return { ok = ok }
+end
+res = c_calendar(conf)
+local ok = res.ok
+return { ok = ok }
+`;
+
+test("imports an official-style calendar checker", () => {
+  const imported = importProjectGcCalendarScript(calendarScript, JSON.stringify({ leapday: "allow", limit: 1, filter: { sizes: ["Small"] } }));
+  assert.equal(imported.rules[0]!.type, "CALENDAR_FILL");
+  assert.equal(imported.rules[0]!.minimum, 366);
+  assert.equal(imported.rules[0]!.perDay, 1);
+  assert.equal(imported.rules[0]!.allowLeapDaySkip, true);
+  assert.deepEqual(imported.rules[0]!.filters[0]!.sizes, ["Small"]);
+  assert.match(imported.summary, /366 calendar dates/);
+});
+
+test("rejects calendar configs with unsupported modes", () => {
+  const base = { leapday: "allow", limit: 1, filter: { sizes: ["Small"] } };
+  assert.throws(() => importProjectGcCalendarScript(calendarScript, JSON.stringify({ ...base, filters: [{ sizes: ["Small"] }] })), /single 'filter' object/);
+  assert.throws(() => importProjectGcCalendarScript(calendarScript, JSON.stringify({ ...base, years: 2 })), /single-year/);
+  assert.throws(() => importProjectGcCalendarScript(calendarScript, JSON.stringify({ ...base, placed: "birthday" })), /placed/);
+  assert.throws(() => importProjectGcCalendarScript(calendarScript, JSON.stringify({ ...base, nooftypes: 3 })), /cache types per day/);
+  assert.throws(() => importProjectGcCalendarScript(calendarScript, JSON.stringify({ ...base, ExcludedTypes: ["Event Cache"] })), /Excluded/);
+  assert.throws(() => importProjectGcCalendarScript(calendarScript, JSON.stringify({ ...base, filter: { sizes: ["Small"], types: ["Lab Cache"] } })), /Lab caches/);
+  assert.throws(() => importProjectGcCalendarScript(calendarScript, JSON.stringify({ limit: 1 })), /at least one find filter/);
+  assert.throws(() => importProjectGcCalendarScript(calendarScript, JSON.stringify({ ...base, radius: 10 })), /not supported/);
+});
+
+test("rejects calendar scripts that diverge from the tag config", () => {
+  const config = JSON.stringify({ leapday: "allow", limit: 1, filter: { sizes: ["Small"] } });
+  assert.throws(() => importProjectGcCalendarScript(calendarScript.replace("filter = filter }", "filter = other }"), config), /tag config as its filter/);
+  assert.throws(() => importProjectGcCalendarScript(calendarScript.replace("if numdone >= conf.needed", "if numdone > conf.needed"), config), /distinct calendar dates/);
+  assert.throws(() => importProjectGcCalendarScript(calendarScript.replace("status[key] ~= nil and status[key] >= conf.limit", "status[key] ~= nil"), config), /distinct calendar dates/);
+  assert.throws(() => importProjectGcCalendarScript(calendarScript.replace("for month = 1, 12 do", "for month = 1, 6 do"), config), /distinct calendar dates/);
+  assert.throws(() => importProjectGcCalendarScript("res = c_calendar(conf)\nreturn { ok = res.ok }", config), /single PGC.GetFinds call/);
+  assert.throws(() => importProjectGcCalendarScript(calendarScript.replace("function c_calendar(conf)", "function c_calendar_other(conf)"), config), /c_calendar must be a function/);
 });
 
 test("accepts the display and legacy-branch idioms of the official generic checker", () => {
