@@ -31,6 +31,25 @@ export type CalendarFillRule = {
   filterLabel: string;
 };
 
+export type DistinctTypesRule = {
+  type: "DISTINCT_TYPES";
+  minimum: number;
+  filters: ProjectGcFindFilter[];
+  filterLabel: string;
+};
+
+export type MonthlyAttributeRule = {
+  type: "MONTHLY_ATTRIBUTE";
+  months: Array<{ month: number; minimum: number }>;
+  overallMinimum: number;
+  attributeId: string;
+  attributeLabel: string;
+  filters: ProjectGcFindFilter[];
+  filterLabel: string;
+  excludedGcCodes: string[];
+  excludeSelf: boolean;
+};
+
 export type ChallengeRule =
   | { type: "TOTAL_FINDS"; minimum: number }
   | { type: "CACHE_TYPE"; cacheTypeId: string; cacheTypeLabel: string; minimum: number }
@@ -47,7 +66,9 @@ export type ChallengeRule =
   | { type: "FAVORITE_POINTS"; minimumFavoritePoints: number; minimum: number }
   | { type: "ATTRIBUTE"; attributeId: string; attributeLabel: string; minimum: number }
   | ProjectGcNumberRule
-  | CalendarFillRule;
+  | CalendarFillRule
+  | DistinctTypesRule
+  | MonthlyAttributeRule;
 
 export type CheckerFind = {
   foundAt: Date;
@@ -285,6 +306,49 @@ export function evaluateChallenge(rules: ChallengeRule[], finds: CheckerFind[], 
       matchingFinds = finds.filter((find) => rule.filters.some((filter) => projectGcFilterMatches(filter, find)));
       current = matchingFinds.length;
       label = `Project-GC count: ${rule.filterLabel}`;
+    } else if (rule.type === "DISTINCT_TYPES") {
+      // Canonical cache-type ids: alias spellings ("Unknown" vs "Mystery")
+      // merge instead of splitting, so this count never exceeds a
+      // per-string count.
+      const seen = new Map<string, CheckerFind>();
+      for (const find of finds.filter((find) => rule.filters.some((filter) => projectGcFilterMatches(filter, find)))) {
+        if (!find.cache.cacheType) continue;
+        const id = cacheTypeIdentity(find.cache.cacheType).id;
+        if (!seen.has(id)) seen.set(id, find);
+      }
+      current = seen.size;
+      matchingFinds = [...seen.values()];
+      label = `Distinct cache types (${rule.filterLabel})`;
+    } else if (rule.type === "MONTHLY_ATTRIBUTE") {
+      const excluded = new Set(rule.excludedGcCodes.map((code) => code.trim().toUpperCase()));
+      const eligible = finds.filter((find) => !excluded.has(find.cache.gcCode.trim().toUpperCase()) &&
+        rule.filters.some((filter) => projectGcFilterMatches(filter, find)) &&
+        attributesFromRaw(find.cache.raw).some((attribute) => attribute.id === rule.attributeId));
+      const monthly = rule.months.map(({ month, minimum }) => {
+        const group = eligible.filter((find) => find.foundDate.getUTCMonth() + 1 === month);
+        return { month, minimum, count: group.length, met: group.length >= minimum, sample: group.slice(0, minimum) };
+      });
+      current = monthly.filter((entry) => entry.met).length;
+      matchingFinds = monthly.flatMap((entry) => entry.sample);
+      const missing = monthly.filter((entry) => !entry.met).map((entry) => String(entry.month).padStart(2, "0"));
+      label = `${rule.attributeLabel} × ${rule.months.length} months (${rule.filterLabel})`;
+      const passed = current >= rule.overallMinimum;
+      return {
+        rule,
+        passed,
+        current,
+        required: rule.overallMinimum,
+        label,
+        detail: passed
+          ? `${current.toLocaleString()} achieved; ${rule.overallMinimum.toLocaleString()} required.`
+          : `${current.toLocaleString()} achieved; ${Math.max(rule.overallMinimum - current, 0).toLocaleString()} more needed.${missing.length ? ` Missing: ${missing.join(", ")}.` : ""}`,
+        evidence: matchingFinds.slice(0, MAX_EVIDENCE_ROWS).map((find) => ({
+          date: loggedEvidenceDate(find),
+          gcCode: find.cache.gcCode,
+          name: find.cache.name
+        })),
+        evidenceLimited: matchingFinds.length > MAX_EVIDENCE_ROWS
+      };
     } else {
       const byDate = new Map<string, CheckerFind[]>();
       for (const find of finds.filter((find) => rule.filters.some((filter) => projectGcFilterMatches(filter, find)))) {

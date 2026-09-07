@@ -198,3 +198,58 @@ test("counts distinct calendar dates with a per-day minimum and leap-day skip", 
   const strictResult = evaluateChallenge([{ ...leapRule, allowLeapDaySkip: false }], fullYear);
   assert.equal(strictResult.rules[0]!.passed, false);
 });
+
+test("counts distinct cache types by canonical id", () => {
+  const result = evaluateChallenge([{
+    type: "DISTINCT_TYPES",
+    minimum: 2,
+    filters: [{}],
+    filterLabel: "all finds"
+  }], [
+    finds[0]!,
+    { ...finds[0]!, cache: { ...finds[0]!.cache, gcCode: "GCX", cacheType: "Traditional Cache" } },
+    { ...finds[1]!, cache: { ...finds[1]!.cache, cacheType: "Unknown Cache" } },
+    { ...finds[1]!, cache: { ...finds[1]!.cache, gcCode: "GCY", cacheType: "Mystery Cache" } }
+  ]);
+  assert.equal(result.rules[0]!.current, 2);
+  assert.equal(result.rules[0]!.passed, true);
+  assert.match(result.rules[0]!.label, /Distinct cache types/);
+});
+
+test("counts attribute finds per calendar month with exclusions", () => {
+  const attributed = (gcCode: string, date: string) => ({
+    foundAt: new Date(`${date}T00:00:00Z`),
+    foundDate: new Date(`${date}T00:00:00Z`),
+    cache: {
+      gcCode, name: gcCode, cacheType: "Mystery Cache", difficulty: 1, terrain: 1,
+      country: null, region: null, county: null,
+      raw: { "groundspeak:cache": { "groundspeak:attributes": { "groundspeak:attribute": { id: "71", inc: "1" } } } }
+    }
+  });
+  const plain = (gcCode: string, date: string) => ({
+    ...attributed(gcCode, date),
+    cache: { ...attributed(gcCode, date).cache, raw: {} }
+  });
+  const rule = {
+    type: "MONTHLY_ATTRIBUTE" as const,
+    months: [{ month: 1, minimum: 2 }, { month: 2, minimum: 2 }],
+    overallMinimum: 2,
+    attributeId: "71",
+    attributeLabel: "Challenge cache",
+    filters: [{}],
+    filterLabel: "all finds",
+    excludedGcCodes: ["GCEX"],
+    excludeSelf: false
+  };
+  const result = evaluateChallenge([rule], [
+    attributed("GC1", "2025-01-05"),
+    attributed("GC2", "2025-01-06"),
+    attributed("GC3", "2025-02-05"),
+    plain("GC4", "2025-02-06"),
+    attributed("GCEX", "2025-02-07")
+  ]);
+  assert.equal(result.rules[0]!.current, 1);
+  assert.equal(result.rules[0]!.passed, false);
+  assert.match(result.rules[0]!.detail, /Missing: 02/);
+  assert.equal(result.rules[0]!.evidence.length, 3);
+});
