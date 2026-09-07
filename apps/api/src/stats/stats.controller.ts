@@ -1,7 +1,13 @@
-import { BadRequestException, Body, Controller, Get, Param, Patch, Query, UseGuards } from "@nestjs/common";
+import { BadRequestException, Body, Controller, Get, Header, Param, Patch, Query, UseGuards } from "@nestjs/common";
 import { AuthUser } from "@geostats/shared";
 import { AuthGuard } from "../auth/auth.guard";
 import { CurrentUser } from "../auth/current-user.decorator";
+import {
+  PUBLIC_PROFILE_CONTENT_SECURITY_POLICY,
+  renderPublicProfileHtml,
+  renderPublicScratchMapSvg
+} from "./public-profile-renderer";
+import { loadWorldMapTemplate } from "./map-assets";
 import { StatsService } from "./stats.service";
 
 @Controller("stats")
@@ -13,6 +19,24 @@ export class StatsController {
   async summary(@CurrentUser() user: AuthUser) {
     const stats = await this.stats.snapshotForUser(user.id);
     return { stats };
+  }
+
+  @Get("html")
+  @Header("Content-Type", "text/html; charset=utf-8")
+  @Header("Content-Security-Policy", PUBLIC_PROFILE_CONTENT_SECURITY_POLICY)
+  @Header("Cache-Control", "no-store")
+  async html(@CurrentUser() user: AuthUser) {
+    const { profile, stats } = await this.stats.profileSnapshotForUser(user.id);
+    return renderPublicProfileHtml(profile, stats, { mapImageUrl: "/stats/scratch-map-image" });
+  }
+
+  @Get("scratch-map-image")
+  @Header("Content-Type", "image/svg+xml; charset=utf-8")
+  @Header("Cache-Control", "no-store")
+  async scratchMapImage(@CurrentUser() user: AuthUser) {
+    const { profile, stats } = await this.stats.profileSnapshotForUser(user.id);
+    const worldMapTemplate = await loadWorldMapTemplate();
+    return renderPublicScratchMapSvg(profile, stats, worldMapTemplate);
   }
 
   @Get("compare/:username")

@@ -147,6 +147,21 @@ export class StatsService {
     return this.recalculateSnapshotForUser(userId, profile);
   }
 
+  async profileSnapshotForUser(userId: string) {
+    const [profile, stats] = await Promise.all([
+      this.prisma.geocachingProfile.findUnique({
+        where: { userId },
+        select: { gcUsername: true }
+      }),
+      this.snapshotForUser(userId)
+    ]);
+
+    return {
+      profile: { gcUsername: profile?.gcUsername?.trim() || "Geocacher" },
+      stats
+    };
+  }
+
   private async snapshotForUsername(username: string, publicOnly = false) {
     const normalizedUsername = normalizedGcUsername(username);
     if (!normalizedUsername) {

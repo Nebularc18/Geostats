@@ -11,19 +11,7 @@ import {
   renderPublicScratchMapSvg
 } from "./public-profile-renderer";
 import { StatsService } from "./stats.service";
-
-const worldMapTemplatePath = join(__dirname, "map-assets", "ProjectGC_World.svg");
-let worldMapTemplatePromise: Promise<string> | null = null;
-
-function loadWorldMapTemplate() {
-  if (!worldMapTemplatePromise) {
-    worldMapTemplatePromise = readFile(worldMapTemplatePath, "utf8").catch((error) => {
-      worldMapTemplatePromise = null;
-      throw error;
-    });
-  }
-  return worldMapTemplatePromise;
-}
+import { loadWorldMapTemplate } from "./map-assets";
 
 @Controller("public")
 export class PublicStatsController {
