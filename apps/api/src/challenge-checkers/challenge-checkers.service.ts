@@ -351,16 +351,26 @@ export class ChallengeCheckersService {
     }));
     const result = evaluateChallenge(rules, checkerFinds, {
       locationMatch: (rule, find) => {
+        const same = (left: unknown, right: string) => sameLocationText(typeof left === "string" ? left : left == null ? null : String(left), right);
+        const fieldValue = find.cache[rule.field];
+        // Imported Groundspeak metadata is authoritative and matches what
+        // Project-GC filters on: when the find carries the rule's location
+        // field, it decides. Boundary geometry only fills gaps for finds
+        // missing that field — coarse (archipelago) polygons must never
+        // exclude a find whose metadata already places it.
+        if (same(fieldValue, rule.value) &&
+          (!rule.country || same(find.cache.country, rule.country)) &&
+          (!rule.region || same(find.cache.region, rule.region))) {
+          return true;
+        }
+        if (typeof fieldValue === "string" ? fieldValue.trim() : fieldValue != null) return false;
         const geometry = geometries.get(rule);
         const latitude = Number(find.cache.latitude);
         const longitude = Number(find.cache.longitude);
         if (geometry && Number.isFinite(latitude) && Number.isFinite(longitude)) {
           return pointInBoundary([longitude, latitude], geometry);
         }
-        const same = (left: unknown, right: string) => sameLocationText(typeof left === "string" ? left : left == null ? null : String(left), right);
-        return sameLocationText(typeof find.cache[rule.field] === "string" ? find.cache[rule.field] as string : find.cache[rule.field] == null ? null : String(find.cache[rule.field]), rule.value) &&
-          (!rule.country || same(find.cache.country, rule.country)) &&
-          (!rule.region || same(find.cache.region, rule.region));
+        return false;
       }
     });
     const latestImport = await this.prisma.import.findFirst({
