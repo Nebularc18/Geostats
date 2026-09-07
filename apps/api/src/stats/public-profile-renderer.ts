@@ -270,7 +270,7 @@ function continentCountryTable(countries: CountBucket[]) {
   return `<b>Top Countries</b><table class="gsak-map-country-table">${rows.join("")}</table>`;
 }
 
-function gsakMapsTab(username: string, stats: any) {
+function gsakMapsTab(username: string, stats: any, mapImageUrl = "/public/profile-scratch-map-image/" + escapeHtml(encodeURIComponent(username))) {
   const countries = (stats?.countries ?? []) as CountBucket[];
   const countriesByContinent = new Map<string, CountBucket[]>();
   for (const country of countries) {
@@ -294,7 +294,7 @@ function gsakMapsTab(username: string, stats: any) {
   return `<div class="gsak-maps">
     <div class="gsak-map-panel">
       ${sectionHead(`World - ${formatNumber(stats?.totalFinds)} finds in ${formatNumber(countries.length)} countries`)}
-      <img class="gsak-static-map" src="/public/profile-scratch-map-image/${escapeHtml(encodeURIComponent(username))}" alt="${escapeHtml(username)} scratch map">
+      <img class="gsak-static-map" src="${escapeHtml(mapImageUrl)}" alt="${escapeHtml(username)} scratch map">
       ${mapLegend()}
       ${continentCountryTable(countries)}
     </div>
@@ -619,9 +619,13 @@ function ownedCachesTable(username: string, hides: any) {
     ${bucketRows(`Finders of My Caches (${escapeHtml(username)})`, hides.finderBuckets ?? [], 12)}`;
 }
 
-export function renderPublicProfileHtml(profile: { gcUsername: string }, stats: any) {
+export function renderPublicProfileHtml(
+  profile: { gcUsername: string },
+  stats: any,
+  options: { mapImageUrl?: string } = {}
+) {
   const username = profile.gcUsername;
-  const mapsTab = gsakMapsTab(username, stats);
+  const mapsTab = gsakMapsTab(username, stats, options.mapImageUrl);
   const statsTab = `
     ${overviewTable(stats)}
     ${cumulativeChart(stats)}

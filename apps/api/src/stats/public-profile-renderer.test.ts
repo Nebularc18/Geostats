@@ -68,6 +68,16 @@ test("renders public profile maps without executable third-party content", () =>
   assert.match(html, /<details><summary>Stats<\/summary>/);
 });
 
+test("allows authenticated pages to provide their own map image path", () => {
+  const html = renderPublicProfileHtml(
+    { gcUsername: "Nebularc_" },
+    { totalFinds: 1, countries: [{ key: "Sweden", count: 1 }] },
+    { mapImageUrl: "/stats/scratch-map-image" }
+  );
+
+  assert.match(html, /src="\/stats\/scratch-map-image"/);
+});
+
 test("renders reusable extreme badges for the public profile image", () => {
   const svg = renderPublicExtremesSvg(
     { gcUsername: "Nebularc_" },
