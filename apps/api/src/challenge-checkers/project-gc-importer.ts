@@ -194,7 +194,7 @@ function definedLuaNames(source: string) {
   return defined;
 }
 
-function stripDeadNilBranches(source: string) {
+function stripDeadNilBranches(source: string, configKeys: Set<string> = new Set()) {
   // The official generic checker guards its legacy excludeTypes handling with
   // `k == excludeTypes`, where excludeTypes is a never-assigned global (nil).
   // Loop variables are never nil, so such a branch can never execute. Blank
@@ -224,27 +224,29 @@ function stripDeadNilBranches(source: string) {
   const blank = (from: number, to: number, chars: string[]) => {
     for (let index = from; index < to; index += 1) if (chars[index] !== "\n") chars[index] = " ";
   };
-  const chars = source.split("");
-  for (let index = 0; index < lines.length; index += 1) {
-    const trimmed = lines[index]!.trim();
-    let dead = false;
-    if (/^(?:if|elseif)\s/.test(trimmed)) {
-      const equality = trimmed.match(/^(?:if|elseif)\s+\(?\s*([A-Za-z_]\w*)\s*==\s*([A-Za-z_]\w*)\s*\)?\s*then\b/);
-      if (equality) {
-        const [left, right] = [equality[1]!, equality[2]!];
-        dead = !defined.has(left) && nonNilOperand(right) || !defined.has(right) && nonNilOperand(left);
-      } else {
-        const bare = trimmed.match(/^(?:if|elseif)\s+([A-Za-z_]\w*)\s*then\b\s*$/);
-        if (bare && !defined.has(bare[1]!)) dead = true;
-      }
+  // Plain rebindings of the tag config hide every key they touch, except the
+  // two transparent forms (the initial args binding and the normalizer call
+  // whose own writes are validated separately).
+  let hasOpaqueRebind = false;
+  for (const match of source.matchAll(/(?:^|[;\n])\s*(?:local\s+)?(?:conf|config)\s*=(?!=)\s*([^\n;]*)/g)) {
+    if (!/^(?:args\[1\]\.config|CleanupConfig\s*\([^()\n]*\))$/.test(match[1]!.trim())) hasOpaqueRebind = true;
+  }
+  const confWrites = (key: string, from: number, to: number) => {
+    let count = 0;
+    for (const match of source.matchAll(new RegExp(`\\bconf\\s*\\.\\s*${key}\\s*=(?!=)|\\bconfig\\s*\\.\\s*${key}\\s*=(?!=)`, "g"))) {
+      const position = match.index ?? 0;
+      if (position >= from && position < to) count += 1;
     }
-    if (!dead) continue;
+    return count;
+  };
+  const chars = source.split("");
+  const branchKeepAt = (index: number): number => {
     let depth = 1;
     let lineIndex = index + 1;
     while (lineIndex < lines.length) {
       const bodyLine = lines[lineIndex]!;
       const bodyTrimmed = bodyLine.trim();
-      if (depth === 1 && /^(?:elseif|else)\b/.test(bodyTrimmed)) break;
+      if (depth === 1 && /^(?:elseif|else)\b/.test(bodyTrimmed)) return offsets[lineIndex]!;
       const withoutForDo = bodyLine.replace(/\b(?:for|while)\b[^\n]*\bdo\b/g, "");
       depth += (bodyLine.match(/\bfunction\b/g) ?? []).length;
       depth += (bodyLine.match(/\bif\b[^\n]*\bthen\b/g) ?? []).length;
@@ -255,14 +257,43 @@ function stripDeadNilBranches(source: string) {
       depth -= (bodyLine.match(/\buntil\b/g) ?? []).length;
       if (depth <= 0) {
         const closing = [...bodyLine.matchAll(/\bend\b|\buntil\b/g)].at(-1);
-        blank(offsets[index]! + lines[index]!.length + 1, closing ? offsets[lineIndex]! + closing.index! : offsets[lineIndex]!, chars);
-        break;
+        return closing ? offsets[lineIndex]! + closing.index! : offsets[lineIndex]!;
       }
       lineIndex += 1;
     }
-    if (lineIndex < lines.length && depth > 0) {
-      blank(offsets[index]! + lines[index]!.length + 1, offsets[lineIndex]!, chars);
+    return -1;
+  };
+  for (let index = 0; index < lines.length; index += 1) {
+    const trimmed = lines[index]!.trim();
+    let dead = false;
+    if (/^(?:if|elseif)\s/.test(trimmed)) {
+      const equality = trimmed.match(/^(?:if|elseif)\s+\(?\s*([A-Za-z_]\w*)\s*==\s*([A-Za-z_]\w*)\s*\)?\s*then\b/);
+      if (equality) {
+        const [left, right] = [equality[1]!, equality[2]!];
+        dead = !defined.has(left) && nonNilOperand(right) || !defined.has(right) && nonNilOperand(left);
+      } else {
+        const bare = trimmed.match(/^(?:if|elseif)\s+([A-Za-z_]\w*)\s*then\b\s*$/);
+        if (bare && !defined.has(bare[1]!)) {
+          dead = true;
+        } else {
+          // `if conf.KEY ~= nil` with KEY absent from the tag config (and
+          // never assigned outside its own guarded body, so the write cannot
+          // make it non-nil) never executes either.
+          const confGuard = trimmed.match(/^(?:if|elseif)\s+conf\s*\.\s*([A-Za-z_]\w*)\s*~=\s*nil\s*then\b/) ??
+            trimmed.match(/^(?:if|elseif)\s+config\s*\.\s*([A-Za-z_]\w*)\s*~=\s*nil\s*then\b/);
+          if (confGuard && !configKeys.has(confGuard[1]!) && !hasOpaqueRebind) {
+            const keepAt = branchKeepAt(index);
+            if (keepAt >= 0) {
+              const bodyStart = offsets[index]! + lines[index]!.length + 1;
+              dead = confWrites(confGuard[1]!, 0, bodyStart) + confWrites(confGuard[1]!, keepAt, source.length) === confWrites(confGuard[1]!, 0, source.length);
+            }
+          }
+        }
+      }
     }
+    if (!dead) continue;
+    const keepAt = branchKeepAt(index);
+    if (keepAt >= 0) blank(offsets[index]! + lines[index]!.length + 1, keepAt, chars);
   }
   return chars.join("");
 }
