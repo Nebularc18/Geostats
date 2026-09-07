@@ -303,6 +303,14 @@ function stripDeadNilBranches(source: string, configKeys: Set<string> = new Set(
   const blank = (from: number, to: number, chars: string[]) => {
     for (let index = from; index < to; index += 1) if (chars[index] !== "\n") chars[index] = " ";
   };
+  const falsyOperand = (value: string): boolean => {
+    const trimmed = value.trim();
+    if (trimmed === "false" || trimmed === "nil") return true;
+    if (!/^[A-Za-z_]\w*$/.test(trimmed) && !/^(?:conf|config)\s*\.\s*[A-Za-z_]\w*$/.test(trimmed)) return false;
+    if (/^[A-Za-z_]\w*$/.test(trimmed)) return !defined.has(trimmed);
+    const key = trimmed.replace(/^(?:conf|config)\s*\.\s*/, "");
+    return !configKeys.has(key) && confWrites(key, 0, source.length) === 0 && !hasOpaqueRebind;
+  };
   // Plain rebindings of the tag config hide every key they touch, except the
   // two transparent forms (the initial args binding and the normalizer call
   // whose own writes are validated separately).
@@ -332,16 +340,38 @@ function stripDeadNilBranches(source: string, configKeys: Set<string> = new Set(
         if (bare && !defined.has(bare[1]!)) {
           dead = true;
         } else {
-          // `if conf.KEY ~= nil` with KEY absent from the tag config (and
-          // never assigned outside its own guarded body, so the write cannot
-          // make it non-nil) never executes either.
-          const confGuard = trimmed.match(/^(?:if|elseif)\s+conf\s*\.\s*([A-Za-z_]\w*)\s*~=\s*nil\s*then\b/) ??
-            trimmed.match(/^(?:if|elseif)\s+config\s*\.\s*([A-Za-z_]\w*)\s*~=\s*nil\s*then\b/);
-          if (confGuard && !configKeys.has(confGuard[1]!) && !hasOpaqueRebind) {
-            const keepAt = luaBranchEnd(lines, offsets, index);
-            if (keepAt >= 0) {
-              const bodyStart = offsets[index]! + lines[index]!.length + 1;
-              dead = confWrites(confGuard[1]!, 0, bodyStart) + confWrites(confGuard[1]!, keepAt, source.length) === confWrites(confGuard[1]!, 0, source.length);
+          // Chains of provably-falsy tests never execute either: `A or B`
+          // needs every operand falsy, `A and B` needs just one. This covers
+          // feature flags (`conf.owned or conf.favorites`) as well as plain
+          // never-assigned globals. Anything compound beyond that is left
+          // alone and fails closed.
+          const chain = trimmed.match(/^(?:if|elseif)\s+(.+?)\s*then\b\s*$/);
+          const chainDead = (condition: string): boolean => {
+            if (/[()]/.test(condition)) return false;
+            if (condition.includes(" or ") && condition.includes(" and ")) return false;
+            const parts = condition.includes(" or ")
+              ? { operands: condition.split(/\s+or\s+/), mode: "or" as const }
+              : condition.includes(" and ")
+                ? { operands: condition.split(/\s+and\s+/), mode: "and" as const }
+                : { operands: [condition], mode: "single" as const };
+            if (parts.mode === "or") return parts.operands.every((part) => falsyOperand(part));
+            if (parts.mode === "and") return parts.operands.some((part) => falsyOperand(part));
+            return falsyOperand(parts.operands[0]!);
+          };
+          if (chain && chainDead(chain[1]!)) {
+            dead = true;
+          } else {
+            // `if conf.KEY ~= nil` with KEY absent from the tag config (and
+            // never assigned outside its own guarded body, so the write cannot
+            // make it non-nil) never executes either.
+            const confGuard = trimmed.match(/^(?:if|elseif)\s+conf\s*\.\s*([A-Za-z_]\w*)\s*~=\s*nil\s*then\b/) ??
+              trimmed.match(/^(?:if|elseif)\s+config\s*\.\s*([A-Za-z_]\w*)\s*~=\s*nil\s*then\b/);
+            if (confGuard && !configKeys.has(confGuard[1]!) && !hasOpaqueRebind) {
+              const keepAt = luaBranchEnd(lines, offsets, index);
+              if (keepAt >= 0) {
+                const bodyStart = offsets[index]! + lines[index]!.length + 1;
+                dead = confWrites(confGuard[1]!, 0, bodyStart) + confWrites(confGuard[1]!, keepAt, source.length) === confWrites(confGuard[1]!, 0, source.length);
+              }
             }
           }
         }
