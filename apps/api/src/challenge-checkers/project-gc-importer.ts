@@ -729,6 +729,98 @@ function validateFindsConfig(source: string) {
   }
 }
 
+function validateCheckerInvocation(source: string, callee: string, extraOkPatterns: RegExp[]) {
+  const calls = [...source.matchAll(new RegExp(`\\b${callee}\\s*\\(\\s*conf\\s*\\)`, "g"))].filter((match) => !/\bfunction\s*$/.test(source.slice(0, match.index ?? 0)));
+  if (calls.length !== 1) throw new BadRequestException(`The importer requires one direct ${callee}(conf) checker invocation`);
+  const invocation = calls[0]!;
+  const invocationIndex = invocation.index ?? 0;
+  const statementStart = Math.max(source.lastIndexOf("\n", invocationIndex), source.lastIndexOf(";", invocationIndex)) + 1;
+  const invocationEnd = invocationIndex + invocation[0]!.length;
+  const nextNewline = source.indexOf("\n", invocationEnd);
+  const nextSemicolon = source.indexOf(";", invocationEnd);
+  const statementEnd = [nextNewline, nextSemicolon].filter((index) => index >= 0).sort((left, right) => left - right)[0] ?? source.length;
+  const beforeInvocation = source.slice(statementStart, invocationIndex);
+  const afterInvocationStatement = source.slice(invocationEnd, statementEnd);
+  const assignmentMatch = /^\s*$/.test(afterInvocationStatement) ? beforeInvocation.match(/^\s*(?:local\s+)?([A-Za-z_]\w*)\s*=\s*$/) : null;
+  const directReturn = /^\s*return\s*$/.test(beforeInvocation) && /^\s*$/.test(afterInvocationStatement);
+  if (!assignmentMatch && !directReturn) {
+    throw new BadRequestException(`The ${callee} result must be returned or assigned directly`);
+  }
+  if (directReturn) {
+    if (source.slice(statementEnd).trim()) throw new BadRequestException(`The ${callee} result must be returned or assigned directly`);
+  } else {
+    const resultName = assignmentMatch?.[1];
+    if (!resultName) throw new BadRequestException(`The ${callee} result must be returned or assigned directly`);
+    const afterInvocation = source.slice(invocationEnd);
+    const aliases = new Set([resultName]);
+    const verdictAliases = new Set<string>();
+    const assignments = /(?:^|[;\n])\s*(?:\blocal\s+)?([A-Za-z_]\w*)\s*=(?!=)\s*([^;\n]*)/g;
+    for (const assignment of afterInvocation.matchAll(assignments)) {
+      const name = assignment[1]!;
+      const value = assignment[2]!.trim();
+      const valueName = value.match(/^([A-Za-z_]\w*)$/)?.[1];
+      const isResultRead = [...aliases].some((alias) => new RegExp("^" + alias + "\\s*\\.\\s*ok$").test(value));
+      if (isResultRead) verdictAliases.add(name);
+      if (verdictAliases.has(name) && !isResultRead && value !== name) {
+        throw new BadRequestException(`The ${callee} result must not be reassigned or have its verdict overridden`);
+      }
+      if (aliases.has(name)) {
+        if (!valueName || !aliases.has(valueName)) {
+          throw new BadRequestException(`The ${callee} result must not be reassigned or have its verdict overridden`);
+        }
+      } else if (valueName && aliases.has(valueName)) {
+        aliases.add(name);
+      } else if (!isResultRead && [...aliases].some((alias) => new RegExp("\\b" + alias + "\\b").test(value))) {
+        // Reads of display fields (slog/shtml/log/html) into fresh locals
+        // cannot fabricate a pass: the returned verdict must still be res.ok
+        // or a boolean read of it (checked with returnVerdict below), and
+        // verdict aliases cannot be reassigned from these locals.
+        const fieldReadPattern = new RegExp("\\b(?:" + [...aliases].map((alias) => alias).join("|") + ")\\s*\\.\\s*[A-Za-z_]\\w*", "g");
+        if ([...aliases].some((alias) => new RegExp("\\b" + alias + "\\b").test(value.replace(fieldReadPattern, "")))) {
+          throw new BadRequestException(`The ${callee} result must not be reassigned or have its verdict overridden`);
+        }
+      }
+    }
+    const aliasPattern = [...aliases].map((alias) => "\\b" + alias + "\\b").join("|");
+    const resultAssignment = new RegExp("(?:" + aliasPattern + ")\\s*(?:\\.\\s*ok\\s*=(?!=)|\\[[^\\]]*\\]\\s*=(?!=))");
+    const methodCall = new RegExp("(?:" + aliasPattern + ")\\s*:\\s*[A-Za-z_]\\w*\\s*\\(");
+    const containerAssignment = /\b[A-Za-z_]\w*\s*(?:\.\s*[A-Za-z_]\w*|\[[^\]]*\])\s*=(?!=)\s*([^\n;]*)/g;
+    const resultRead = (value: string) => [...aliases].some((alias) => new RegExp("^" + alias + "\\s*\\.\\s*ok$").test(value.trim()));
+    const aliasReference = new RegExp("(?:" + aliasPattern + ")");
+    if ([...afterInvocation.matchAll(/\breturn\s*\{([^}]*)\}/g)].some((statement) => (statement[1]!.match(/\bok\s*=/g) ?? []).length > 1)) {
+      throw new BadRequestException(`The ${callee} result must not contain duplicate verdict fields`);
+    }
+    const containerReference = [...afterInvocation.matchAll(containerAssignment)].some((assignment) => !resultRead(assignment[1]!) && aliasReference.test(assignment[1]!));
+    // Calls that only read the result (e.g. ok_html(res.ok) for display) are
+    // fine when the callee is defined in the script and provably does not
+    // mutate the argument it receives. Unknown callees still fail closed.
+    const callReference = callSites(afterInvocation).some((call) => {
+      if (!aliasReference.test(call.argumentsText)) return false;
+      if (MUTATING_TABLE_CALLS.has(call.name) || READ_ONLY_CALLS.has(call.name)) return MUTATING_TABLE_CALLS.has(call.name);
+      const definition = functionDefinition(source, call.name);
+      if (!definition) return true;
+      const argumentsList = topLevelArguments(call.argumentsText);
+      return argumentsList.some((argument, index) => {
+        if (!aliasReference.test(argument)) return false;
+        const parameter = definition.parameters[index];
+        return !parameter || functionMutatesParameter(source, call.name, parameter);
+      });
+    });
+    const returnVerdict = [...afterInvocation.matchAll(/\breturn\s*\{([^}]*)\}/g)].some((statement) => {
+      const value = statement[1]!.match(/\bok\s*=\s*([^,}\n]+)/)?.[1]?.trim();
+      if (value === undefined) return false;
+      return !resultRead(value) && ![...verdictAliases].some((alias) => new RegExp("^" + alias + "$").test(value));
+    });
+    if (resultAssignment.test(afterInvocation) || methodCall.test(afterInvocation) || containerReference || callReference || returnVerdict) {
+      throw new BadRequestException(`The ${callee} result must not be reassigned or have its verdict overridden`);
+    }
+  }
+  const allOkAssignments = [...source.matchAll(/\bok\s*=\s*([^\n;}]*)/g)].map((match) => match[1]!.trim().replace(/[,}].*$/, "").replace(/\bend\s*$/, "").trim());
+  if (allOkAssignments.some((value) => value !== "true" && value !== "false" && value !== "ok" && value !== "nil" && value !== "res.ok" && !extraOkPatterns.some((pattern) => pattern.test(value)))) {
+    throw new BadRequestException("The checker contains an additional pass/fail condition");
+  }
+}
+
 function validateCountCondition(source: string) {
   const body = functionBody(source, "c_number");
   if (!body) throw new BadRequestException("Project-GC c_number must be a function taking conf");
@@ -862,96 +954,7 @@ function validateCountCondition(source: string) {
       throw new BadRequestException("c_number has an additional pass/fail condition");
     }
   }
-  const cNumberCalls = [...source.matchAll(/\bc_number\s*\(\s*conf\s*\)/g)].filter((match) => !/\bfunction\s*$/.test(source.slice(0, match.index ?? 0)));
-  if (cNumberCalls.length !== 1) throw new BadRequestException("The importer requires one direct c_number(conf) checker invocation");
-  const invocation = cNumberCalls[0]!;
-  const invocationIndex = invocation.index ?? 0;
-  const statementStart = Math.max(source.lastIndexOf("\n", invocationIndex), source.lastIndexOf(";", invocationIndex)) + 1;
-  const invocationEnd = invocationIndex + invocation[0]!.length;
-  const nextNewline = source.indexOf("\n", invocationEnd);
-  const nextSemicolon = source.indexOf(";", invocationEnd);
-  const statementEnd = [nextNewline, nextSemicolon].filter((index) => index >= 0).sort((left, right) => left - right)[0] ?? source.length;
-  const beforeInvocation = source.slice(statementStart, invocationIndex);
-  const afterInvocationStatement = source.slice(invocationEnd, statementEnd);
-  const assignmentMatch = /^\s*$/.test(afterInvocationStatement) ? beforeInvocation.match(/^\s*(?:local\s+)?([A-Za-z_]\w*)\s*=\s*$/) : null;
-  const directReturn = /^\s*return\s*$/.test(beforeInvocation) && /^\s*$/.test(afterInvocationStatement);
-  if (!assignmentMatch && !directReturn) {
-    throw new BadRequestException("The c_number result must be returned or assigned directly");
-  }
-  if (directReturn) {
-    if (source.slice(statementEnd).trim()) throw new BadRequestException("The c_number result must be returned or assigned directly");
-  } else {
-    const resultName = assignmentMatch?.[1];
-    if (!resultName) throw new BadRequestException("The c_number result must be returned or assigned directly");
-    const afterInvocation = source.slice(invocationEnd);
-    const aliases = new Set([resultName]);
-    const verdictAliases = new Set<string>();
-    const assignments = /(?:^|[;\n])\s*(?:\blocal\s+)?([A-Za-z_]\w*)\s*=(?!=)\s*([^;\n]*)/g;
-    for (const assignment of afterInvocation.matchAll(assignments)) {
-      const name = assignment[1]!;
-      const value = assignment[2]!.trim();
-      const valueName = value.match(/^([A-Za-z_]\w*)$/)?.[1];
-      const isResultRead = [...aliases].some((alias) => new RegExp("^" + alias + "\\s*\\.\\s*ok$").test(value));
-      if (isResultRead) verdictAliases.add(name);
-      if (verdictAliases.has(name) && !isResultRead && value !== name) {
-        throw new BadRequestException("The c_number result must not be reassigned or have its verdict overridden");
-      }
-      if (aliases.has(name)) {
-        if (!valueName || !aliases.has(valueName)) {
-          throw new BadRequestException("The c_number result must not be reassigned or have its verdict overridden");
-        }
-      } else if (valueName && aliases.has(valueName)) {
-        aliases.add(name);
-      } else if (!isResultRead && [...aliases].some((alias) => new RegExp("\\b" + alias + "\\b").test(value))) {
-        // Reads of display fields (slog/shtml/log/html) into fresh locals
-        // cannot fabricate a pass: the returned verdict must still be res.ok
-        // or a boolean read of it (checked with returnVerdict below), and
-        // verdict aliases cannot be reassigned from these locals.
-        const fieldReadPattern = new RegExp("\\b(?:" + [...aliases].map((alias) => alias).join("|") + ")\\s*\\.\\s*[A-Za-z_]\\w*", "g");
-        if ([...aliases].some((alias) => new RegExp("\\b" + alias + "\\b").test(value.replace(fieldReadPattern, "")))) {
-          throw new BadRequestException("The c_number result must not be reassigned or have its verdict overridden");
-        }
-      }
-    }
-    const aliasPattern = [...aliases].map((alias) => "\\b" + alias + "\\b").join("|");
-    const resultAssignment = new RegExp("(?:" + aliasPattern + ")\\s*(?:\\.\\s*ok\\s*=(?!=)|\\[[^\\]]*\\]\\s*=(?!=))");
-    const methodCall = new RegExp("(?:" + aliasPattern + ")\\s*:\\s*[A-Za-z_]\\w*\\s*\\(");
-    const containerAssignment = /\b[A-Za-z_]\w*\s*(?:\.\s*[A-Za-z_]\w*|\[[^\]]*\])\s*=(?!=)\s*([^\n;]*)/g;
-    const resultRead = (value: string) => [...aliases].some((alias) => new RegExp("^" + alias + "\\s*\\.\\s*ok$").test(value.trim()));
-    const aliasReference = new RegExp("(?:" + aliasPattern + ")");
-    if ([...afterInvocation.matchAll(/\breturn\s*\{([^}]*)\}/g)].some((statement) => (statement[1]!.match(/\bok\s*=/g) ?? []).length > 1)) {
-      throw new BadRequestException("The c_number result must not contain duplicate verdict fields");
-    }
-    const containerReference = [...afterInvocation.matchAll(containerAssignment)].some((assignment) => !resultRead(assignment[1]!) && aliasReference.test(assignment[1]!));
-    // Calls that only read the result (e.g. ok_html(res.ok) for display) are
-    // fine when the callee is defined in the script and provably does not
-    // mutate the argument it receives. Unknown callees still fail closed.
-    const callReference = callSites(afterInvocation).some((call) => {
-      if (!aliasReference.test(call.argumentsText)) return false;
-      if (MUTATING_TABLE_CALLS.has(call.name) || READ_ONLY_CALLS.has(call.name)) return MUTATING_TABLE_CALLS.has(call.name);
-      const definition = functionDefinition(source, call.name);
-      if (!definition) return true;
-      const argumentsList = topLevelArguments(call.argumentsText);
-      return argumentsList.some((argument, index) => {
-        if (!aliasReference.test(argument)) return false;
-        const parameter = definition.parameters[index];
-        return !parameter || functionMutatesParameter(source, call.name, parameter);
-      });
-    });
-    const returnVerdict = [...afterInvocation.matchAll(/\breturn\s*\{([^}]*)\}/g)].some((statement) => {
-      const value = statement[1]!.match(/\bok\s*=\s*([^,}\n]+)/)?.[1]?.trim();
-      if (value === undefined) return false;
-      return !resultRead(value) && ![...verdictAliases].some((alias) => new RegExp("^" + alias + "$").test(value));
-    });
-    if (resultAssignment.test(afterInvocation) || methodCall.test(afterInvocation) || containerReference || callReference || returnVerdict) {
-      throw new BadRequestException("The c_number result must not be reassigned or have its verdict overridden");
-    }
-  }
-  const allOkAssignments = [...source.matchAll(/\bok\s*=\s*([^\n;}]*)/g)].map((match) => match[1]!.trim().replace(/[,}].*$/, "").replace(/\bend\s*$/, "").trim());
-  const allowedCountExpression = /^#\s*finds\s*>=\s*conf\s*\.\s*limit$/;
-  if (allOkAssignments.some((value) => value !== "true" && value !== "false" && value !== "ok" && value !== "nil" && value !== "res.ok" && !allowedCountExpression.test(value))) {
-    throw new BadRequestException("The checker contains an additional pass/fail condition");
-  }
+  validateCheckerInvocation(source, "c_number", [/^#\s*finds\s*>=\s*conf\s*\.\s*limit$/]);
 }
 
 export function projectGcFilterLabel(filters: ProjectGcFindFilter[]): string {
