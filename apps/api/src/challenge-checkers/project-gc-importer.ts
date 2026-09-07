@@ -306,10 +306,10 @@ function stripDeadNilBranches(source: string, configKeys: Set<string> = new Set(
   const falsyOperand = (value: string): boolean => {
     const trimmed = value.trim();
     if (trimmed === "false" || trimmed === "nil") return true;
-    if (!/^[A-Za-z_]\w*$/.test(trimmed) && !/^(?:conf|config)\s*\.\s*[A-Za-z_]\w*$/.test(trimmed)) return false;
     if (/^[A-Za-z_]\w*$/.test(trimmed)) return !defined.has(trimmed);
-    const key = trimmed.replace(/^(?:conf|config)\s*\.\s*/, "");
-    return !configKeys.has(key) && confWrites(key, 0, source.length) === 0 && !hasOpaqueRebind;
+    const confKey = trimmed.match(/^(?:conf|config)\s*\.\s*([A-Za-z_]\w*)$/)?.[1];
+    if (confKey !== undefined) return !configKeys.has(confKey) && confWrites(confKey, 0, source.length) === 0 && !hasOpaqueRebind;
+    return false;
   };
   // Plain rebindings of the tag config hide every key they touch, except the
   // two transparent forms (the initial args binding and the normalizer call
