@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { importProjectGcCalendarScript, importProjectGcNumberScript } from "./project-gc-importer";
+import { importProjectGcCalendarScript, importProjectGcMatrixScript, importProjectGcNumberScript } from "./project-gc-importer";
 
 const numberScript = `
 local args={...}
@@ -562,4 +562,87 @@ return { ok = res.ok, log = log, html = html }
   assert.equal(imported.rules[0]!.minimum, 250);
   assert.deepEqual(imported.rules[0]!.filters[0]!.counties, ["Karlskrona"]);
   assert.deepEqual(imported.rules[0]!.filters[0]!.regions, ["Blekinge"]);
+});
+
+const matrixScript = `
+local args = {...}
+local conf = args[1].config
+local profileId = args[1].profileId
+local known_dimensions = {
+  ["same"] = {["name"]=""}
+, ["type"] = {["name"]="type" }
+}
+local x = conf.SameX
+if x == nil then x='same' end
+local y = conf.DifferentY
+local xy = {x,y}
+local filter = {}
+filter.country = conf.country
+filter.types = conf.types
+local needed = 1
+if (conf.Groups ~= nil) and (tonumber(conf.Groups)>0) then
+    needed = tonumber(conf.Groups)
+end
+local mintuplesize = 2
+if (conf.Minimum ~= nil) and (tonumber(conf.Minimum)>0) then
+    mintuplesize = tonumber(conf.Minimum)
+end
+local finds = PGC.GetFinds(profileId, { fields = fields, filter = filter, includeLabCaches = conf.labcaches })
+for n,f in ipairs (finds) do
+\tfor _,d in ipairs (xy) do
+\t\tif known_dimensions[d].read ~= nil then
+\t\t\tf[d] = known_dimensions[d].read(f)
+\t\tend
+\tend
+end
+local tuples = {}
+local tuplesize = {}
+local qualified_tuples = {}
+for n,f in ipairs (finds) do
+\tif f[x] ~= nil and f[y] ~= nil then
+\t\tif tuples[f[x]] == nil then
+\t\t\ttuples[f[x]] = {}
+\t\t\ttuplesize[f[x]] = 0
+\t\tend
+\t\tif tuples[f[x]][f[y]] == nil then
+\t\t\ttuplesize[f[x]] = tuplesize[f[x]] + 1
+\t\t\tif tuplesize[f[x]] == mintuplesize then
+\t\t\t\ttable.insert (qualified_tuples, f[x])
+\t\t\tend
+\t\tend
+\tend
+end
+local ok = false
+local log = ""
+local html = ""
+if #qualified_tuples >= needed then
+\tok = true
+end
+return { ok = ok, log = log, html = html }
+`;
+
+test("imports an official-style type matrix checker", () => {
+  const imported = importProjectGcMatrixScript(matrixScript, JSON.stringify({ DifferentY: "type", Minimum: 10 }));
+  assert.equal(imported.rules[0]!.type, "DISTINCT_TYPES");
+  assert.equal(imported.rules[0]!.minimum, 10);
+  assert.match(imported.summary, /10 distinct cache types/);
+});
+
+test("rejects matrix configs with unsupported modes", () => {
+  const base = { DifferentY: "type", Minimum: 10 };
+  assert.throws(() => importProjectGcMatrixScript(matrixScript, JSON.stringify({ Minimum: 10 })), /DifferentY 'type'/);
+  assert.throws(() => importProjectGcMatrixScript(matrixScript, JSON.stringify({ ...base, SameX: "county" })), /SameX 'same'/);
+  assert.throws(() => importProjectGcMatrixScript(matrixScript, JSON.stringify({ ...base, Groups: 5 })), /single-group/);
+  assert.throws(() => importProjectGcMatrixScript(matrixScript, JSON.stringify({ ...base, Require: [["type", "=", "Traditional"]] })), /Require/);
+  assert.throws(() => importProjectGcMatrixScript(matrixScript, JSON.stringify({ ...base, owned: true })), /Owned-cache/);
+  assert.throws(() => importProjectGcMatrixScript(matrixScript, JSON.stringify({ ...base, filter: { country: "Sweden" } })), /top-level options/);
+  assert.throws(() => importProjectGcMatrixScript(matrixScript, JSON.stringify({ ...base, types: ["Physical"] })), /list the types instead/);
+});
+
+test("rejects matrix scripts that diverge from the tag config", () => {
+  const config = JSON.stringify({ DifferentY: "type", Minimum: 10 });
+  assert.throws(() => importProjectGcMatrixScript(matrixScript.replace("filter = filter,", "filter = other,"), config), /tag config as its filter/);
+  assert.throws(() => importProjectGcMatrixScript(matrixScript.replace("if #qualified_tuples >= needed then", "if #qualified_tuples > needed then"), config), /qualifying group count/);
+  assert.throws(() => importProjectGcMatrixScript(matrixScript.replace("local y = conf.DifferentY", "local y = 'size'"), config), /tag config dimensions/);
+  assert.throws(() => importProjectGcMatrixScript(matrixScript.replace("table.insert (qualified_tuples, f[x])", "table.insert (qualified_tuples, f[y])"), config), /tag config dimensions/);
 });

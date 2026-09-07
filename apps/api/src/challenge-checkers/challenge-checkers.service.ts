@@ -6,7 +6,7 @@ import { PrismaService } from "../common/prisma.service";
 import { attributesFromRaw, ChallengeRule, evaluateChallenge, ProjectGcFindFilter, proofText, sameLocationText } from "./challenge-checker.evaluator";
 import { cacheTypeIdentity, cacheTypeOptions } from "./cache-type-catalog";
 import { BoundaryGeometry, GeographicBoundariesService, pointInBoundary } from "./geographic-boundaries";
-import { importProjectGcCalendarScript, importProjectGcNumberScript, isProjectGcCalendarScript, projectGcFilterLabel } from "./project-gc-importer";
+import { importProjectGcCalendarScript, importProjectGcMatrixScript, importProjectGcNumberScript, isProjectGcCalendarScript, isProjectGcMatrixScript, projectGcFilterLabel } from "./project-gc-importer";
 
 type CheckerInput = { name?: unknown; gcCode?: unknown; description?: unknown; rules?: unknown };
 
@@ -124,6 +124,45 @@ function parseRules(value: unknown): ChallengeRule[] {
       const filterLabel = cleanOptionalText(rule.filterLabel, "filterLabel", 200) ?? projectGcFilterLabel(filters);
       return { type: rule.type, minimum, perDay, allowLeapDaySkip: rule.allowLeapDaySkip, filters, filterLabel };
     }
+    if (rule.type === "DISTINCT_TYPES") {
+      if (minimum < 1 || minimum > 100) throw new BadRequestException("Distinct-types minimum must be between 1 and 100");
+      if (!Array.isArray(rule.filters) || rule.filters.length !== 1) throw new BadRequestException("Imported distinct-types rule must contain exactly one filter");
+      const filters = rule.filters.map((filter) => validateStoredProjectGcFilter(filter));
+      const filterLabel = cleanOptionalText(rule.filterLabel, "filterLabel", 200) ?? projectGcFilterLabel(filters);
+      return { type: rule.type, minimum, filters, filterLabel };
+    }
+    if (rule.type === "MONTHLY_ATTRIBUTE") {
+      if (!Array.isArray(rule.months) || rule.months.length < 1 || rule.months.length > 12) {
+        throw new BadRequestException("Monthly rule must list between 1 and 12 months");
+      }
+      const seenMonths = new Set<number>();
+      const months = rule.months.map((entry) => {
+        if (!entry || typeof entry !== "object") throw new BadRequestException("Each monthly entry must be an object");
+        const month = Number((entry as Record<string, unknown>).month);
+        const entryMinimum = Number((entry as Record<string, unknown>).minimum);
+        if (!Number.isInteger(month) || month < 1 || month > 12) throw new BadRequestException("Monthly rule months must be between 1 and 12");
+        if (!Number.isInteger(entryMinimum) || entryMinimum < 1 || entryMinimum > 1_000_000) throw new BadRequestException("Monthly entry minimum must be a positive integer");
+        if (seenMonths.has(month)) throw new BadRequestException("Monthly rule months must be unique");
+        seenMonths.add(month);
+        return { month, minimum: entryMinimum };
+      });
+      const overallMinimum = Number(rule.overallMinimum);
+      if (!Number.isInteger(overallMinimum) || overallMinimum < 1 || overallMinimum > 12) {
+        throw new BadRequestException("Monthly overall minimum must be between 1 and 12");
+      }
+      const attributeId = cleanOptionalText(rule.attributeId, "attributeId", 40);
+      const attributeLabel = cleanOptionalText(rule.attributeLabel, "attributeLabel", 120);
+      if (!attributeId || !attributeLabel) throw new BadRequestException("attributeId and attributeLabel are required");
+      if (!Array.isArray(rule.filters) || rule.filters.length !== 1) throw new BadRequestException("Imported monthly rule must contain exactly one filter");
+      const filters = rule.filters.map((filter) => validateStoredProjectGcFilter(filter));
+      const filterLabel = cleanOptionalText(rule.filterLabel, "filterLabel", 200) ?? projectGcFilterLabel(filters);
+      const excludedGcCodes = Array.isArray(rule.excludedGcCodes) ? rule.excludedGcCodes : [];
+      for (const code of excludedGcCodes) {
+        if (typeof code !== "string" || !/^GC[A-Z0-9]+$/i.test(code.trim())) throw new BadRequestException("Excluded GC codes must be valid");
+      }
+      if (typeof rule.excludeSelf !== "boolean") throw new BadRequestException("Monthly rule excludeSelf must be a boolean");
+      return { type: rule.type, months, overallMinimum, attributeId, attributeLabel, filters, filterLabel, excludedGcCodes, excludeSelf: rule.excludeSelf };
+    }
     throw new BadRequestException("Unsupported challenge rule type");
   });
 }
@@ -217,6 +256,9 @@ export class ChallengeCheckersService {
   importProjectGc(input: Record<string, unknown>) {
     if (typeof input.script === "string" && isProjectGcCalendarScript(input.script)) {
       return importProjectGcCalendarScript(input.script, input.config);
+    }
+    if (typeof input.script === "string" && isProjectGcMatrixScript(input.script)) {
+      return importProjectGcMatrixScript(input.script, input.config);
     }
     return importProjectGcNumberScript(input.script, input.config);
   }
@@ -353,8 +395,13 @@ export class ChallengeCheckersService {
     }
     const rules = parseRules(checker.rules);
     const checkerFinds = finds.map((find) => ({ ...find, cache: { ...find.cache, raw: find.cache.userData?.[0]?.raw } }));
+    // Monthly challenge checkers exclude the challenge cache itself (and any
+    // configured codes), mirroring the engine's default exclusion.
+    const effectiveRules = rules.map((rule) => rule.type === "MONTHLY_ATTRIBUTE" && rule.excludeSelf && checker.gcCode
+      ? { ...rule, excludedGcCodes: [...rule.excludedGcCodes, checker.gcCode.toUpperCase()] }
+      : rule);
     const geometries = new Map<ChallengeRule, BoundaryGeometry>();
-    await Promise.all(rules.map(async (rule) => {
+    await Promise.all(effectiveRules.map(async (rule) => {
       if (rule.type === "LOCATION" && rule.field !== "country" && rule.country) {
         try {
           const geometry = await this.boundaries.geometry(rule.country, rule.field, rule.value, rule.region);
@@ -364,7 +411,7 @@ export class ChallengeCheckersService {
         }
       }
     }));
-    const result = evaluateChallenge(rules, checkerFinds, {
+    const result = evaluateChallenge(effectiveRules, checkerFinds, {
       locationMatch: (rule, find) => {
         const same = (left: unknown, right: string) => sameLocationText(typeof left === "string" ? left : left == null ? null : String(left), right);
         const fieldValue = find.cache[rule.field];

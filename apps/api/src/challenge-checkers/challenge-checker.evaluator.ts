@@ -140,6 +140,18 @@ function loggedEvidenceDate(find: CheckerFind) {
   return find.foundDate.toISOString().slice(0, 10);
 }
 
+function dedupedByCache(finds: CheckerFind[]) {
+  // The checkers this mirrors skip repeat logs of the same cache; finds
+  // arrive oldest-first so keeping the first row matches that.
+  const seen = new Set<string>();
+  return finds.filter((find) => {
+    const code = find.cache.gcCode.trim().toUpperCase();
+    if (seen.has(code)) return false;
+    seen.add(code);
+    return true;
+  });
+}
+
 function rating(value: unknown) {
   const number = Number(value);
   return Number.isFinite(number) && number >= 1 && number <= 5 && number * 2 === Math.round(number * 2)
@@ -311,7 +323,7 @@ export function evaluateChallenge(rules: ChallengeRule[], finds: CheckerFind[], 
       // merge instead of splitting, so this count never exceeds a
       // per-string count.
       const seen = new Map<string, CheckerFind>();
-      for (const find of finds.filter((find) => rule.filters.some((filter) => projectGcFilterMatches(filter, find)))) {
+      for (const find of dedupedByCache(finds.filter((find) => rule.filters.some((filter) => projectGcFilterMatches(filter, find))))) {
         if (!find.cache.cacheType) continue;
         const id = cacheTypeIdentity(find.cache.cacheType).id;
         if (!seen.has(id)) seen.set(id, find);
@@ -321,9 +333,9 @@ export function evaluateChallenge(rules: ChallengeRule[], finds: CheckerFind[], 
       label = `Distinct cache types (${rule.filterLabel})`;
     } else if (rule.type === "MONTHLY_ATTRIBUTE") {
       const excluded = new Set(rule.excludedGcCodes.map((code) => code.trim().toUpperCase()));
-      const eligible = finds.filter((find) => !excluded.has(find.cache.gcCode.trim().toUpperCase()) &&
+      const eligible = dedupedByCache(finds.filter((find) => !excluded.has(find.cache.gcCode.trim().toUpperCase()) &&
         rule.filters.some((filter) => projectGcFilterMatches(filter, find)) &&
-        attributesFromRaw(find.cache.raw).some((attribute) => attribute.id === rule.attributeId));
+        attributesFromRaw(find.cache.raw).some((attribute) => attribute.id === rule.attributeId)));
       const monthly = rule.months.map(({ month, minimum }) => {
         const group = eligible.filter((find) => find.foundDate.getUTCMonth() + 1 === month);
         return { month, minimum, count: group.length, met: group.length >= minimum, sample: group.slice(0, minimum) };
