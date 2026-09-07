@@ -10,6 +10,10 @@ const BOUNDARY_BASE = "https://media.githubusercontent.com/media/wmgeolab/geoBou
 const NORWAY_API = "https://api.kartverket.no/kommuneinfo/v1";
 type NorwayRegion = { fylkesnavn: string; fylkesnummer: string };
 type NorwayCounty = { kommunenavn: string; kommunenummer: string };
+type SwedenRegionFeature = { properties?: { name?: unknown; l_id?: unknown } | null; geometry: BoundaryGeometry };
+type SwedenCountyFeature = { properties?: { kom_namn?: unknown; lan_code?: unknown } | null; geometry: BoundaryGeometry };
+const SWEDEN_REGION_URL = "https://raw.githubusercontent.com/okfse/sweden-geojson/master/swedish_regions.geojson";
+const SWEDEN_COUNTY_URL = "https://raw.githubusercontent.com/okfse/sweden-geojson/master/swedish_municipalities.geojson";
 const COUNTRY_ALIASES: Record<string, string[]> = {
   "united states": ["United States of America"],
   russia: ["Russian Federation"],
@@ -88,10 +92,18 @@ export class GeographicBoundariesService {
   private countryData?: Promise<FeatureCollection>;
   private norwayRegionData?: Promise<NorwayRegion[]>;
   private norwayCountyData?: Promise<NorwayCounty[]>;
+  private swedenRegionData?: Promise<{ features: SwedenRegionFeature[] }>;
+  private swedenCountyData?: Promise<{ features: SwedenCountyFeature[] }>;
 
   async regions(country: string) {
     if (sameName(country, "Norway")) {
       return (await this.norwayRegions()).map((region) => region.fylkesnavn).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+    }
+    if (sameName(country, "Sweden")) {
+      return (await this.swedenRegions()).features
+        .map((feature) => String(feature.properties?.name ?? "").trim())
+        .filter(Boolean)
+        .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
     }
     const features = await this.features(country, "ADM1");
     return features.map((feature) => this.name(feature)).filter(Boolean).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
@@ -105,6 +117,9 @@ export class GeographicBoundariesService {
         .filter((county) => county.kommunenummer.startsWith(parent.fylkesnummer))
         .map((county) => county.kommunenavn)
         .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+    }
+    if (sameName(country, "Sweden")) {
+      return this.swedenCounties(region);
     }
     const [regions, counties] = await Promise.all([this.features(country, "ADM1"), this.features(country, "ADM2")]);
     const parent = regions.find((feature) => sameName(this.name(feature), region));
@@ -121,6 +136,7 @@ export class GeographicBoundariesService {
 
   async geometry(country: string, level: "region" | "county", name: string, parentRegion?: string) {
     if (sameName(country, "Norway")) return this.norwayGeometry(level, name, parentRegion);
+    if (sameName(country, "Sweden")) return this.swedenGeometry(level, name, parentRegion);
     const features = await this.features(country, level === "region" ? "ADM1" : "ADM2");
     const matches = features.filter((feature) => sameName(this.name(feature), name));
     if (level === "county" && parentRegion && matches.length > 1) {
@@ -152,6 +168,42 @@ export class GeographicBoundariesService {
 
   private norwayCounties() {
     return this.norwayCountyData ??= this.fetchJson<NorwayCounty[]>(`${NORWAY_API}/kommuner`);
+  }
+
+  private swedenRegions() {
+    return this.swedenRegionData ??= this.fetchJson<{ features: SwedenRegionFeature[] }>(SWEDEN_REGION_URL);
+  }
+
+  private swedenCountiesData() {
+    return this.swedenCountyData ??= this.fetchJson<{ features: SwedenCountyFeature[] }>(SWEDEN_COUNTY_URL);
+  }
+
+  private async swedenRegionCode(region: string) {
+    const match = (await this.swedenRegions()).features
+      .find((feature) => sameName(feature.properties?.name, region));
+    const code = match?.properties?.l_id;
+    return code === undefined || code === null ? null : String(code);
+  }
+
+  private async swedenCounties(region: string) {
+    const code = await this.swedenRegionCode(region);
+    if (!code) return [];
+    return (await this.swedenCountiesData()).features
+      .filter((feature) => String(feature.properties?.lan_code ?? "") === code)
+      .map((feature) => String(feature.properties?.kom_namn ?? "").trim())
+      .filter(Boolean)
+      .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+  }
+
+  private async swedenGeometry(level: "region" | "county", name: string, parentRegion?: string) {
+    if (level === "region") {
+      return (await this.swedenRegions()).features
+        .find((feature) => sameName(feature.properties?.name, name))?.geometry ?? null;
+    }
+    const parentCode = parentRegion ? await this.swedenRegionCode(parentRegion) : undefined;
+    return (await this.swedenCountiesData()).features
+      .find((feature) => sameName(feature.properties?.kom_namn, name) &&
+        (parentCode === undefined || parentCode === null || String(feature.properties?.lan_code ?? "") === parentCode))?.geometry ?? null;
   }
 
   private async norwayGeometry(level: "region" | "county", name: string, parentRegion?: string) {
