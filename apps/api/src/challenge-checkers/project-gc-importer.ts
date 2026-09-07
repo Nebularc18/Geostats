@@ -1,6 +1,6 @@
 import { BadRequestException } from "@nestjs/common";
 import { cacheTypeIdentity, cacheTypeLabel } from "./cache-type-catalog";
-import type { ProjectGcFindFilter, ProjectGcNumberRule } from "./challenge-checker.evaluator";
+import type { CalendarFillRule, ProjectGcFindFilter, ProjectGcNumberRule } from "./challenge-checker.evaluator";
 
 const MAX_SCRIPT_LENGTH = 250_000;
 const MAX_CONFIG_LENGTH = 25_000;
@@ -249,7 +249,9 @@ function stripDeadNilBranches(source: string, configKeys: Set<string> = new Set(
       if (depth === 1 && /^(?:elseif|else)\b/.test(bodyTrimmed)) return offsets[lineIndex]!;
       const withoutForDo = bodyLine.replace(/\b(?:for|while)\b[^\n]*\bdo\b/g, "");
       depth += (bodyLine.match(/\bfunction\b/g) ?? []).length;
-      depth += (bodyLine.match(/\bif\b[^\n]*\bthen\b/g) ?? []).length;
+      // See blockBody: count `if` alone so conditions split across lines stay
+      // balanced.
+      depth += (bodyLine.match(/\bif\b/g) ?? []).length;
       depth += (bodyLine.match(/\b(?:for|while)\b[^\n]*\bdo\b/g) ?? []).length;
       depth += (withoutForDo.match(/\bdo\b/g) ?? []).length;
       depth += (bodyLine.match(/\brepeat\b/g) ?? []).length;
@@ -328,7 +330,9 @@ function blockBody(source: string, start: number): string | null {
     const line = source.slice(cursor, end);
     const withoutForDo = line.replace(/\b(?:for|while)\b[^\n]*\bdo\b/g, "");
     depth += (line.match(/\bfunction\b/g) ?? []).length;
-    depth += (line.match(/\bif\b[^\n]*\bthen\b/g) ?? []).length;
+    // `then` always pairs with an `if`, so counting `if` alone also covers
+    // conditions split across lines (which never have `then` on the `if` line).
+    depth += (line.match(/\bif\b/g) ?? []).length;
     depth += (line.match(/\b(?:for|while)\b[^\n]*\bdo\b/g) ?? []).length;
     depth += (withoutForDo.match(/\bdo\b/g) ?? []).length;
     depth += (line.match(/\brepeat\b/g) ?? []).length;
@@ -815,7 +819,7 @@ function validateCheckerInvocation(source: string, callee: string, extraOkPatter
       throw new BadRequestException(`The ${callee} result must not be reassigned or have its verdict overridden`);
     }
   }
-  const allOkAssignments = [...source.matchAll(/\bok\s*=\s*([^\n;}]*)/g)].map((match) => match[1]!.trim().replace(/[,}].*$/, "").replace(/\bend\s*$/, "").trim());
+  const allOkAssignments = [...source.matchAll(/\bok\s*=(?!=)\s*([^\n;}]*)/g)].map((match) => match[1]!.trim().replace(/[,}].*$/, "").replace(/\bend\s*$/, "").trim());
   if (allOkAssignments.some((value) => value !== "true" && value !== "false" && value !== "ok" && value !== "nil" && value !== "res.ok" && !extraOkPatterns.some((pattern) => pattern.test(value)))) {
     throw new BadRequestException("The checker contains an additional pass/fail condition");
   }
@@ -1003,4 +1007,244 @@ export function importProjectGcNumberScript(scriptValue: unknown, configTextValu
   const filters = alternatives.map((value, index) => compactFilter(parseFilter({ ...base, ...objectValue(value, `filters[${index}]`) })));
   const summary = projectGcFilterLabel(filters);
   return { rules: [{ type: "PROJECT_GC_NUMBER", minimum, filters, filterLabel: summary }], summary: `${minimum.toLocaleString()} finds, ${summary}` };
+}
+
+export function isProjectGcCalendarScript(scriptValue: unknown) {
+  if (typeof scriptValue !== "string" || !scriptValue.trim() || scriptValue.length > MAX_SCRIPT_LENGTH) return false;
+  return /\bfunction\s+c_calendar\s*\(/.test(maskLua(scriptValue));
+}
+
+const CALENDAR_FILTER_KEYS = new Set([...FILTER_KEYS].filter((key) =>
+  !["minlatitude", "maxlatitude", "minlongitude", "maxlongitude"].includes(key)));
+const CALENDAR_META_KEYS = new Set(["limit", "needed", "leapday", "filter", "debug", "brief"]);
+const CALENDAR_UNSUPPORTED_KEYS: Record<string, string> = {
+  filters: "Calendar checkers use a single 'filter' object, not a 'filters' list",
+  type: "Use 'types' instead of 'type' for calendar checkers",
+  years: "Only single-year calendars are supported",
+  placed: "Hidden-date ('placed') calendars are not supported",
+  nooftypes: "Calendars counting cache types per day are not supported",
+  ExcludedTypes: "Excluded cache types are not supported for calendar checkers",
+  labs: "Lab caches are not part of imported find data"
+};
+
+function parseCalendarConfig(configTextValue: unknown): { minimum: number; perDay: number; allowLeapDaySkip: boolean; filters: ProjectGcFindFilter[]; filterLabel: string } {
+  if (typeof configTextValue !== "string" || !configTextValue.trim()) throw new BadRequestException("Paste the Project-GC tag config as JSON");
+  if (configTextValue.length > MAX_CONFIG_LENGTH) throw new BadRequestException("Project-GC config is too large");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(configTextValue);
+  } catch {
+    throw new BadRequestException("Project-GC tag config must be valid JSON");
+  }
+  const config = objectValue(parsed, "Project-GC tag config");
+  for (const key of Object.keys(config)) {
+    if (CALENDAR_FILTER_KEYS.has(key) || CALENDAR_META_KEYS.has(key)) continue;
+    if (key === "years" && Number(config[key]) === 1) continue;
+    if (CALENDAR_UNSUPPORTED_KEYS[key]) throw new BadRequestException(CALENDAR_UNSUPPORTED_KEYS[key]!);
+    throw new BadRequestException(`Project-GC config option '${key}' is not supported`);
+  }
+  if (config.placed !== undefined) throw new BadRequestException("Hidden-date ('placed') calendars are not supported");
+  const perDay = config.limit === undefined ? 1 : Number(config.limit);
+  if (!Number.isInteger(perDay) || perDay < 1 || perDay > 1_000_000) throw new BadRequestException("Project-GC calendar limit must be a positive integer");
+  const minimum = config.needed === undefined ? 366 : Number(config.needed);
+  if (!Number.isInteger(minimum) || minimum < 1 || minimum > 366) throw new BadRequestException("Project-GC calendar needed must be between 1 and 366");
+  if (config.leapday !== undefined && typeof config.leapday !== "string") throw new BadRequestException("Project-GC calendar leapday must be \"allow\" or omitted");
+  const allowLeapDaySkip = config.leapday === "allow";
+  const singular = config.filter === undefined ? {} : objectValue(config.filter, "Project-GC filter");
+  for (const key of Object.keys(singular)) {
+    if (!CALENDAR_FILTER_KEYS.has(key)) throw new BadRequestException(`Project-GC filter option '${key}' is not supported`);
+  }
+  const topLevel = Object.fromEntries(Object.entries(config).filter(([key]) => CALENDAR_FILTER_KEYS.has(key)));
+  const merged = { ...topLevel, ...singular } as Record<string, unknown>;
+  const rawTypes = merged.types === undefined || merged.types === null || merged.types === "" ? [] : Array.isArray(merged.types) ? merged.types : [merged.types];
+  if ((rawTypes as unknown[]).some((item) => typeof item === "string" && ["lab cache", "labcache"].includes(item.trim().toLowerCase()))) {
+    throw new BadRequestException("Lab caches are not part of imported find data");
+  }
+  const filter = compactFilter(parseFilter(merged));
+  if (Object.keys(filter).length === 0) {
+    throw new BadRequestException("Calendar checkers need at least one find filter; unfiltered calendars can include lab caches, which are not imported");
+  }
+  const filterLabel = projectGcFilterLabel([filter]);
+  return { minimum, perDay, allowLeapDaySkip, filters: [filter], filterLabel };
+}
+
+function validateCalendarFilterFromConfig(source: string) {
+  const definition = functionDefinition(source, "FilterFromConfig");
+  if (!definition || definition.parameters.length !== 1) {
+    throw new BadRequestException("Project-GC FilterFromConfig must derive the find filter from the tag config");
+  }
+  const param = definition.parameters[0]!;
+  const lines = definition.body.split("\n").map((line) => line.trim()).filter((line) => line);
+  const base = lines[0]?.match(/^local\s+([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)\.filter\s+or\s*\{\s*\}$/);
+  if (!base || base[2] !== param) {
+    throw new BadRequestException("Project-GC FilterFromConfig must start from the tag config filter");
+  }
+  const name = base[1]!;
+  let returned = false;
+  for (const line of lines.slice(1)) {
+    if (new RegExp(`^return\\s+${name}$`).test(line)) {
+      returned = true;
+      continue;
+    }
+    const merge = line.match(new RegExp(`^${name}\\.([A-Za-z_]\\w*)\\s*=\\s*${name}\\.\\1\\s+or\\s+${param}\\.\\1$`));
+    if (!merge || !CALENDAR_FILTER_KEYS.has(merge[1]!)) {
+      throw new BadRequestException("Project-GC FilterFromConfig uses an unsupported filter merge");
+    }
+  }
+  if (!returned) throw new BadRequestException("Project-GC FilterFromConfig must return the derived filter");
+}
+
+function validateCalendarFinds(source: string) {
+  const sites = [...source.matchAll(/\bPGC\s*\.\s*GetFinds\s*\(/g)];
+  if (sites.length !== 1) throw new BadRequestException("Project-GC calendar checkers must fetch finds with a single PGC.GetFinds call");
+  const open = (sites[0]!.index ?? 0) + sites[0]![0].length - 1;
+  const argumentsText = balancedCallArguments(source, open);
+  if (argumentsText === null) throw new BadRequestException("Project-GC GetFinds call has unbalanced arguments");
+  const args = topLevelArguments(argumentsText);
+  if (args.length !== 2) throw new BadRequestException("Project-GC GetFinds must pass a profile and an options table");
+  if (args[0]!.trim().replace(/\s/g, "") !== "profileId" && args[0]!.trim().replace(/\s/g, "") !== "args[1].profileId") {
+    throw new BadRequestException("Project-GC GetFinds must count the user's own finds");
+  }
+  const options = args[1]!.trim();
+  if (!/^\{.*\}$/s.test(options)) throw new BadRequestException("Project-GC GetFinds options must be a table");
+  for (const key of [...options.matchAll(/([A-Za-z_]\w*)\s*=/g)].map((match) => match[1]!)) {
+    if (!["includeLabCaches", "fields", "order", "filter"].includes(key)) {
+      throw new BadRequestException(`Project-GC GetFinds option '${key}' is not supported`);
+    }
+  }
+  const filterVar = options.match(/(?:^|[,{])\s*filter\s*=\s*([A-Za-z_]\w*)\s*(?:,|\})/)?.[1];
+  if (!filterVar) throw new BadRequestException("Project-GC GetFinds must use the tag config as its filter");
+  const filterBindings = [...source.matchAll(new RegExp(`(?:^|[;\\n])\\s*local\\s+${filterVar}\\s*=\\s*FilterFromConfig\\s*\\(\\s*conf\\s*\\)\\s*(?=[;\\n])`, "g"))];
+  if (filterBindings.length !== 1) throw new BadRequestException("Project-GC GetFinds must use the tag config as its filter");
+  const calendarBody = functionBody(source, "c_calendar") ?? "";
+  for (const assignment of memberAssignmentSites(calendarBody)) {
+    if (assignment.name !== filterVar) continue;
+    throw new BadRequestException("Project-GC GetFinds filter must come straight from the tag config");
+  }
+  validateCalendarFilterFromConfig(source);
+}
+
+function validateCalendarConfigWrites(source: string, original: string, configKeys: Set<string>) {
+  // Plain rebindings of the whole tag config are only transparent in their
+  // initial form and through the normalizer (whose own writes are checked
+  // below and whose return value is pinned to the config it received).
+  for (const match of source.matchAll(/(?:^|[;\n])\s*(?:local\s+)?(?:conf|config)\s*=(?!=)\s*([^\n;]*)/g)) {
+    const rhs = match[1]!.trim();
+    if (/^(?:args\[1\]\.config|CleanupConfig\s*\([^()\n]*\))$/.test(rhs)) continue;
+    throw new BadRequestException("Project-GC calendar checkers must not replace the tag config");
+  }
+  const normalizer = functionDefinition(source, "CleanupConfig");
+  if (source.match(/CleanupConfig\s*\(/) && (!normalizer || !new RegExp(`^\\s*return\\s+${normalizer.parameters[0] ?? "conf"}\\s*$`, "m").test(normalizer.body))) {
+    throw new BadRequestException("Project-GC calendar checkers must normalize (not replace) the tag config");
+  }
+  // Member writes may only restate the defaults the translation applies
+  // itself; anything else would let the script count something different
+  // than the imported rule. Leap-day/placement literals are checked against
+  // the original text because masking blanks string contents.
+  for (const assignment of memberAssignmentSites(source)) {
+    if (assignment.name !== "conf" && assignment.name !== "config") continue;
+    const field = memberField(assignment.member);
+    if (!field) throw new BadRequestException("The checker changes its tag config in an unsupported way");
+    const rhs = assignment.value;
+    const selfTonumber = new RegExp(`^tonumber\\s*\\(\\s*(?:conf|config)\\s*\\.\\s*${field}\\s*\\)$`).test(rhs);
+    const defaultLiteral = (field === "limit" && rhs === "1") ||
+      (field === "needed" && rhs === "366") ||
+      (field === "years" && rhs === "1") ||
+      (field === "labs" && (rhs === "true" || rhs === "false"));
+    if (selfTonumber || defaultLiteral) continue;
+    if (field === "leapday" || field === "placed") continue;
+    // Clearing a key the tag config does not set (and that has no translated
+    // default) changes nothing; clearing anything else would diverge from
+    // the imported rule.
+    if (rhs === "nil" && !configKeys.has(field) && !["limit", "needed", "years", "leapday", "placed", "labs"].includes(field)) continue;
+    throw new BadRequestException("The checker changes its tag config in an unsupported way");
+  }
+  for (const match of original.matchAll(/\b(?:conf|config)\s*\.\s*(leapday|placed)\s*=(?!=)\s*([^\n;]*)/g)) {
+    const literal = match[2]!.trim().replace(/\s*--.*$/, "");
+    if (literal !== '"false"' && literal !== "'false'" && literal !== '"true"' && literal !== "'true'") {
+      throw new BadRequestException("The checker changes its tag config in an unsupported way");
+    }
+  }
+}
+
+function validateCalendarCondition(source: string, allowLeapDaySkip: boolean) {
+  const body = functionBody(source, "c_calendar");
+  if (!body) throw new BadRequestException("Project-GC c_calendar must be a function taking conf");
+  if ((source.match(/\bfunction\s+c_calendar\s*\(/g) ?? []).length !== 1) {
+    throw new BadRequestException("The importer requires one c_calendar checker");
+  }
+  // The fetched set is pinned to the single GetFinds call: one binding, no
+  // reassignment, no in-place or helper-driven mutation, and iteration only.
+  const bindings = assignmentSites(body).filter((assignment) => assignment.name === "myFinds");
+  // The value may span lines (isWholeCallExpression needs one line), but the
+  // call's balance and options are already proven at source level, so sharing
+  // the call prefix with the single GetFinds site pins this binding to it.
+  if (bindings.length !== 1 || !/^PGC\.GetFinds\s*\(/.test(bindings[0]!.value)) {
+    throw new BadRequestException("Project-GC c_calendar must fetch its finds with one PGC.GetFinds call");
+  }
+  const findLoopVars = new Set<string>();
+  for (const match of body.matchAll(/\bfor\s+([A-Za-z_][\w\s,]*?)\s+in\s+([^\n]+?)\s+do\b/g)) {
+    if (!/\bmyFinds\b/.test(match[2]!)) continue;
+    for (const name of match[1]!.split(",")) {
+      const trimmed = name.trim();
+      if (/^[A-Za-z_]\w*$/.test(trimmed)) findLoopVars.add(trimmed);
+    }
+  }
+  if (!findLoopVars.size) throw new BadRequestException("Project-GC c_calendar must iterate its fetched finds");
+  const writeTargets = ["myFinds", ...findLoopVars].join("|");
+  if (new RegExp(`\\b(?:${writeTargets})\\s*(?:\\.\\s*[A-Za-z_]\\w*|\\[[^\\]]*\\])\\s*=(?!=)`).test(body)) {
+    throw new BadRequestException("Project-GC c_calendar must not rewrite its fetched finds");
+  }
+  for (const call of callSites(body)) {
+    if (CONTROL_CALLS.has(call.name)) continue;
+    const argumentsList = topLevelArguments(call.argumentsText);
+    for (const [index, argument] of argumentsList.entries()) {
+      if (!/\bmyFinds\b/.test(argument)) continue;
+      if (["ipairs", "pairs", "next"].includes(call.name)) continue;
+      if (MUTATING_TABLE_CALLS.has(call.name)) {
+        throw new BadRequestException("Project-GC c_calendar must not change its fetched finds");
+      }
+      const definition = functionDefinition(source, call.name);
+      const parameter = definition?.parameters[index];
+      if (!definition || !parameter || functionMutatesParameter(source, call.name, parameter)) {
+        throw new BadRequestException("Project-GC c_calendar must not pass its fetched finds to mutating helpers");
+      }
+    }
+  }
+  // The calendar grid shape pins the count to distinct month-day cells with
+  // the tag config's per-day limit; the verdict core pins the pass rule.
+  for (const pattern of [
+    /\bfor\s+month\s*=\s*1\s*,\s*12\s+do\b/,
+    /daysinmonth\s*\[\s*month\s*\]/,
+    /makekey\s*\(\s*month\s*,\s*day\s*\)/,
+    /status\[[^\]]+\]\s*>=\s*conf\s*\.\s*limit/,
+    /numdone\s*>=\s*conf\s*\.\s*needed/
+  ]) {
+    if (!pattern.test(body)) throw new BadRequestException("Project-GC c_calendar must count distinct calendar dates");
+  }
+  if (allowLeapDaySkip && !/makekey\s*\(\s*2\s*,\s*29\s*\)/.test(body)) {
+    throw new BadRequestException("Project-GC c_calendar must spell out its leap-day exception");
+  }
+  validateCheckerInvocation(source, "c_calendar", []);
+}
+
+export function importProjectGcCalendarScript(scriptValue: unknown, configTextValue: unknown): { rules: CalendarFillRule[]; summary: string } {
+  if (typeof scriptValue !== "string" || !scriptValue.trim()) throw new BadRequestException("Paste a Project-GC Lua script");
+  if (scriptValue.length > MAX_SCRIPT_LENGTH) throw new BadRequestException("Lua script is too large");
+  if (typeof configTextValue !== "string" || !configTextValue.trim()) throw new BadRequestException("Paste the Project-GC tag config as JSON");
+  let rawConfig: Record<string, unknown>;
+  try {
+    rawConfig = objectValue(JSON.parse(configTextValue), "Project-GC tag config");
+  } catch (error) {
+    if (error instanceof BadRequestException) throw error;
+    throw new BadRequestException("Project-GC tag config must be valid JSON");
+  }
+  const parsed = parseCalendarConfig(configTextValue);
+  const script = stripDeadNilBranches(maskLua(scriptValue), new Set(Object.keys(rawConfig)));
+  validateParseBudgets(script);
+  validateCalendarFinds(script);
+  validateCalendarConfigWrites(script, scriptValue, new Set(Object.keys(rawConfig)));
+  validateCalendarCondition(script, parsed.allowLeapDaySkip);
+  const leapNote = parsed.allowLeapDaySkip ? " (Feb 29 skippable)" : "";
+  return { rules: [{ type: "CALENDAR_FILL", minimum: parsed.minimum, perDay: parsed.perDay, allowLeapDaySkip: parsed.allowLeapDaySkip, filters: parsed.filters, filterLabel: parsed.filterLabel }], summary: `${parsed.minimum} calendar dates, ${parsed.filterLabel}${leapNote}` };
 }
