@@ -78,6 +78,7 @@ export type RuleResult = {
   detail: string;
   evidence: Array<{ date: string; gcCode: string; name: string }>;
   evidenceLimited: boolean;
+  calendar?: { days: Record<string, number>; perDay: number; allowLeapDaySkip: boolean };
 };
 
 const MAX_EVIDENCE_ROWS = 500;
@@ -299,12 +300,15 @@ export function evaluateChallenge(rules: ChallengeRule[], finds: CheckerFind[], 
       label = `Distinct calendar dates (${rule.filterLabel})`;
       const passed = current >= rule.minimum ||
         (rule.allowLeapDaySkip && rule.minimum === 366 && current === 365 && !leapComplete);
+      const days: Record<string, number> = {};
+      for (const [key, group] of byDate) days[key] = group.length;
       return {
         rule,
         passed,
         current,
         required: rule.minimum,
         label,
+        calendar: { days, perDay: rule.perDay, allowLeapDaySkip: rule.allowLeapDaySkip },
         detail: passed
           ? `${current.toLocaleString()} achieved; ${rule.minimum.toLocaleString()} required.`
           : `${current.toLocaleString()} achieved; ${Math.max(rule.minimum - current, 0).toLocaleString()} more needed.`,

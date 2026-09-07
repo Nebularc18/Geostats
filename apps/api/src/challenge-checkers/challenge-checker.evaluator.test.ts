@@ -185,6 +185,7 @@ test("counts distinct calendar dates with a per-day minimum and leap-day skip", 
   assert.equal(result.rules[0]!.current, 2);
   assert.equal(result.rules[0]!.passed, false);
   assert.match(result.rules[0]!.label, /Distinct calendar dates/);
+  assert.deepEqual(result.rules[0]!.calendar, { days: { "01-01": 2, "01-02": 1, "01-03": 2 }, perDay: 2, allowLeapDaySkip: false });
 
   const leapRule = { ...rule, minimum: 366, perDay: 1, allowLeapDaySkip: true };
   const fullYear = Array.from({ length: 365 }, (_, index) => {

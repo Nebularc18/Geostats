@@ -7040,6 +7040,14 @@ select:focus {
 .challenge-evidence p { display: grid; grid-template-columns: 95px 85px minmax(150px, 1fr); gap: 9px; margin: 0; padding: 7px 4px; border-bottom: 1px solid rgba(237, 244, 232, .07); font-size: .85rem; }
 .challenge-evidence a { color: var(--green); }
 .challenge-evidence time { color: var(--muted); }
+.calendar-grid { grid-column: 1 / -1; margin-top: 8px; overflow-x: auto; }
+.calendar-grid table { border-collapse: collapse; font-size: .72rem; }
+.calendar-grid caption { padding-bottom: 7px; color: var(--muted); text-align: left; font-size: .78rem; }
+.calendar-grid th, .calendar-grid td { min-width: 23px; height: 23px; padding: 1px 2px; border: 1px solid var(--line); text-align: center; }
+.calendar-grid thead th, .calendar-grid tbody th { color: var(--muted); font-weight: normal; }
+.calendar-grid td.done { color: var(--green); font-weight: bold; }
+.calendar-grid td.missing { color: var(--danger); }
+.calendar-grid td.invalid { color: var(--muted); opacity: .45; }
 .public-challenge-page { width: min(850px, calc(100% - 32px)); margin: 0 auto; padding: 36px 0; }
 .public-challenge-brand { width: fit-content; }
 .public-challenge-result { border-top: 4px solid var(--green); }
