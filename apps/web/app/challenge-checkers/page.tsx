@@ -23,7 +23,9 @@ type Rule =
   | { type: "FAVORITE_POINTS"; minimumFavoritePoints: number; minimum: number }
   | { type: "ATTRIBUTE"; attributeId: string; attributeLabel: string; minimum: number }
   | { type: "PROJECT_GC_NUMBER"; minimum: number; filters: Array<Record<string, unknown>>; filterLabel: string }
-  | { type: "CALENDAR_FILL"; minimum: number; perDay: number; allowLeapDaySkip: boolean; filters: Array<Record<string, unknown>>; filterLabel: string };
+  | { type: "CALENDAR_FILL"; minimum: number; perDay: number; allowLeapDaySkip: boolean; filters: Array<Record<string, unknown>>; filterLabel: string }
+  | { type: "DISTINCT_TYPES"; minimum: number; filters: Array<Record<string, unknown>>; filterLabel: string }
+  | { type: "MONTHLY_ATTRIBUTE"; months: Array<{ month: number; minimum: number }>; overallMinimum: number; attributeId: string; attributeLabel: string; filters: Array<Record<string, unknown>>; filterLabel: string; excludedGcCodes: string[]; excludeSelf: boolean };
 type Checker = { id: string; name: string; gcCode: string | null; description: string | null; rules: Rule[]; publicSlug: string | null; publishedAt: string | null; updatedAt: string };
 type Evidence = { date: string; gcCode: string; name: string };
 type Result = { passed: boolean; username: string; checkedAt: string; dataUpdatedAt: string | null; proofText: string; rules: Array<{ label: string; current: number; required: number; passed: boolean; detail: string; evidence: Evidence[]; evidenceLimited: boolean; calendar?: CalendarGridData }> };
@@ -38,6 +40,8 @@ const RATINGS = Array.from({ length: 9 }, (_, index) => 1 + index / 2);
 function defaultRule(type: Rule["type"]): Rule {
   if (type === "PROJECT_GC_NUMBER") return { type, minimum: 1, filters: [{}], filterLabel: "all finds" };
   if (type === "CALENDAR_FILL") return { type, minimum: 366, perDay: 1, allowLeapDaySkip: false, filters: [{}], filterLabel: "all finds" };
+  if (type === "DISTINCT_TYPES") return { type, minimum: 10, filters: [{}], filterLabel: "all finds" };
+  if (type === "MONTHLY_ATTRIBUTE") return { type, months: MONTHS.map((_, monthIndex) => ({ month: monthIndex + 1, minimum: 1 })), overallMinimum: 12, attributeId: "", attributeLabel: "Select an attribute", filters: [{}], filterLabel: "all finds", excludedGcCodes: [], excludeSelf: true };
   if (type === "CACHE_TYPE") return { type, cacheTypeId: "2", cacheTypeLabel: "Traditional Cache", minimum: 100 };
   if (type === "LOCATION") return { type, field: "country", value: "", minimum: 1 };
   if (type === "CALENDAR_DAYS") return { type, minimum: 365 };
@@ -247,7 +251,7 @@ export default function ChallengeCheckersPage() {
     <section className="panel" ref={formSectionRef}>
       <div className="challenge-form-heading"><div><h2>{editingId ? "Edit checker" : "Create a checker"}</h2><p className="muted">Build the rules here or translate a supported Project-GC script.</p></div><button className="ghost-button challenge-small-button" type="button" onClick={() => setShowProjectGcImport((current) => !current)}><FileUp size={17} />{showProjectGcImport ? "Close importer" : "Import from Project-GC"}</button></div>
       {showProjectGcImport && <div className="challenge-project-gc-import">
-        <div><h3>Import a Project-GC count checker</h3><p className="muted">Paste the Lua checker and its tag config. Geostats translates supported count (<code>c_number</code>) and calendar (<code>c_calendar</code>) rules and does not run the Lua.</p></div>
+        <div><h3>Import a Project-GC checker</h3><p className="muted">Paste the Lua checker and its tag config. Geostats translates supported count (<code>c_number</code>), calendar (<code>c_calendar</code>), type-matrix and monthly-attribute rules and does not run the Lua.</p></div>
         <label>Lua script<textarea value={projectGcScript} onChange={(event) => setProjectGcScript(event.target.value)} placeholder="Paste the Project-GC Lua script…" rows={9} /></label>
         <label className="challenge-file-button"><span>Or choose a .lua file</span><input type="file" accept=".lua,text/plain" onChange={(event) => { const file = event.target.files?.[0]; if (!file) return; void file.text().then(setProjectGcScript).catch(() => setError("Could not read the Lua file")); }} /></label>
         <label>Project-GC tag config <small>JSON</small><textarea value={projectGcConfig} onChange={(event) => setProjectGcConfig(event.target.value)} rows={6} spellCheck={false} /></label>
@@ -261,10 +265,12 @@ export default function ChallengeCheckersPage() {
         <label>Description <small>Optional note shown on the public result</small><textarea maxLength={1000} value={description} onChange={(event) => setDescription(event.target.value)} placeholder="The challenge requirements…" /></label>
         {showProjectGcImport
           ? <div className="challenge-rules">
-            {rules.some((rule) => rule.type === "PROJECT_GC_NUMBER" || rule.type === "CALENDAR_FILL")
-              ? rules.map((rule, index) => rule.type !== "PROJECT_GC_NUMBER" && rule.type !== "CALENDAR_FILL" ? null : <div className="challenge-rule" key={index}>
-                <div className="challenge-imported-filter"><span>{rule.type === "CALENDAR_FILL" ? "Imported Project-GC calendar" : "Imported Project-GC count"}</span><strong>{rule.filterLabel}</strong><small>Re-import the script to change these filters.</small></div>
-                <label>Required<input type="number" min={1} max={rule.type === "CALENDAR_FILL" ? 366 : 1000000} required value={rule.minimum} onChange={(event) => replaceRule(index, { ...rule, minimum: Number(event.target.value) })} /></label>
+            {rules.some((rule) => rule.type === "PROJECT_GC_NUMBER" || rule.type === "CALENDAR_FILL" || rule.type === "DISTINCT_TYPES" || rule.type === "MONTHLY_ATTRIBUTE")
+              ? rules.map((rule, index) => rule.type !== "PROJECT_GC_NUMBER" && rule.type !== "CALENDAR_FILL" && rule.type !== "DISTINCT_TYPES" && rule.type !== "MONTHLY_ATTRIBUTE" ? null : <div className="challenge-rule" key={index}>
+                <div className="challenge-imported-filter"><span>{rule.type === "CALENDAR_FILL" ? "Imported Project-GC calendar" : rule.type === "DISTINCT_TYPES" ? "Imported Project-GC matrix" : rule.type === "MONTHLY_ATTRIBUTE" ? "Imported Project-GC monthly" : "Imported Project-GC count"}</span><strong>{rule.type === "MONTHLY_ATTRIBUTE" ? `${rule.attributeLabel} · ${rule.filterLabel}` : rule.filterLabel}</strong><small>Re-import the script to change these filters.</small></div>
+                {rule.type === "MONTHLY_ATTRIBUTE"
+                  ? <label>Required months<input type="number" min={1} max={12} required value={rule.overallMinimum} onChange={(event) => replaceRule(index, { ...rule, overallMinimum: Number(event.target.value) })} /></label>
+                  : <label>Required<input type="number" min={1} max={rule.type === "CALENDAR_FILL" ? 366 : 1000000} required value={rule.minimum} onChange={(event) => replaceRule(index, { ...rule, minimum: Number(event.target.value) })} /></label>}
               </div>)
               : <p className="muted">Paste the Lua script and tag config above, then choose “Use imported rules”. The manual rule builder stays hidden while importing.</p>}
           </div>
@@ -273,6 +279,8 @@ export default function ChallengeCheckersPage() {
             <label>Rule type<select value={rule.type} onChange={(event) => replaceRule(index, defaultRule(event.target.value as Rule["type"]))}>
               {rule.type === "PROJECT_GC_NUMBER" && <option value="PROJECT_GC_NUMBER">Imported Project-GC count</option>}
               {rule.type === "CALENDAR_FILL" && <option value="CALENDAR_FILL">Imported calendar fill</option>}
+              {rule.type === "DISTINCT_TYPES" && <option value="DISTINCT_TYPES">Imported type matrix</option>}
+              {rule.type === "MONTHLY_ATTRIBUTE" && <option value="MONTHLY_ATTRIBUTE">Imported monthly attribute</option>}
               <option value="TOTAL_FINDS">Total finds</option>
               <option value="CACHE_TYPE">Finds by cache type</option>
               <option value="CACHE_SIZE">Finds by cache size</option>
@@ -298,7 +306,11 @@ export default function ChallengeCheckersPage() {
             {rule.type === "ATTRIBUTE" && <label>Positive attribute<select required value={rule.attributeId} onChange={(event) => { const selected = attributes.find((attribute) => attribute.id === event.target.value); replaceRule(index, { ...rule, attributeId: event.target.value, attributeLabel: selected?.label ?? event.target.value }); }}><option value="" disabled>Select an attribute</option>{attributes.map((attribute) => <option value={attribute.id} key={attribute.id}>{attribute.label}</option>)}</select></label>}
             {rule.type === "PROJECT_GC_NUMBER" && <div className="challenge-imported-filter"><span>Imported filters</span><strong>{rule.filterLabel}</strong><small>Re-import the script to change these filters.</small></div>}
             {rule.type === "CALENDAR_FILL" && <div className="challenge-imported-filter"><span>Imported calendar</span><strong>{rule.filterLabel}{rule.allowLeapDaySkip ? " · Feb 29 skippable" : ""} · {rule.perDay} per day</strong><small>Re-import the script to change these filters.</small></div>}
-            <label>Required<input type="number" min={1} max={rule.type === "CALENDAR_DAYS" || rule.type === "CALENDAR_FILL" ? 366 : rule.type === "DIFFICULTY_TERRAIN" ? 81 : rule.type === "FIND_STREAK" ? 365 : 1000000} required value={rule.minimum} onChange={(event) => replaceRule(index, { ...rule, minimum: Number(event.target.value) })} /></label>
+            {rule.type === "DISTINCT_TYPES" && <div className="challenge-imported-filter"><span>Imported matrix</span><strong>{rule.filterLabel}</strong><small>Re-import the script to change these filters.</small></div>}
+            {rule.type === "MONTHLY_ATTRIBUTE" && <div className="challenge-imported-filter"><span>Imported monthly</span><strong>{rule.attributeLabel} · {rule.filterLabel} · {rule.months.length} months</strong><small>Re-import the script to change these filters.</small></div>}
+            {rule.type === "MONTHLY_ATTRIBUTE"
+              ? <label>Required months<input type="number" min={1} max={12} required value={rule.overallMinimum} onChange={(event) => replaceRule(index, { ...rule, overallMinimum: Number(event.target.value) })} /></label>
+              : <label>Required<input type="number" min={1} max={rule.type === "CALENDAR_DAYS" || rule.type === "CALENDAR_FILL" ? 366 : rule.type === "DIFFICULTY_TERRAIN" ? 81 : rule.type === "FIND_STREAK" ? 365 : 1000000} required value={rule.minimum} onChange={(event) => replaceRule(index, { ...rule, minimum: Number(event.target.value) })} /></label>}
             {rules.length > 1 && <button className="challenge-icon-button" type="button" aria-label="Remove rule" onClick={() => setRules((current) => current.filter((_, itemIndex) => itemIndex !== index))}><X size={18} /></button>}
           </div>)}
         </div>}

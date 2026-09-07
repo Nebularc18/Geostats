@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { importProjectGcCalendarScript, importProjectGcMatrixScript, importProjectGcNumberScript } from "./project-gc-importer";
+import { importProjectGcCalendarScript, importProjectGcMatrixScript, importProjectGcMonthlyScript, importProjectGcNumberScript, isProjectGcMonthlyScript } from "./project-gc-importer";
 
 const numberScript = `
 local args={...}
@@ -388,12 +388,12 @@ test("rejects scripts whose syntax nesting exceeds the parser budget", () => {
 });
 
 test("rejects scripts whose call count exceeds the parser budget", () => {
-  const script = "f()\n".repeat(1001);
+  const script = "f()\n".repeat(4001);
   assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /contains too many calls/);
 });
 
 test("rejects scripts whose cumulative parser scan work exceeds the budget", () => {
-  const script = `${"f()\n".repeat(101)}${" ".repeat(100_000)}`;
+  const script = `${"f()\n".repeat(500)}${" ".repeat(200_000)}`;
   assert.throws(() => importProjectGcNumberScript(script, '{"limit":1}'), /requires too much parsing work/);
 });
 
@@ -645,4 +645,216 @@ test("rejects matrix scripts that diverge from the tag config", () => {
   assert.throws(() => importProjectGcMatrixScript(matrixScript.replace("if #qualified_tuples >= needed then", "if #qualified_tuples > needed then"), config), /qualifying group count/);
   assert.throws(() => importProjectGcMatrixScript(matrixScript.replace("local y = conf.DifferentY", "local y = 'size'"), config), /tag config dimensions/);
   assert.throws(() => importProjectGcMatrixScript(matrixScript.replace("table.insert (qualified_tuples, f[x])", "table.insert (qualified_tuples, f[y])"), config), /tag config dimensions/);
+});
+
+const monthlyScript = `
+local args = {...}
+local conf = args[1].config
+local profileId = args[1].profileId
+local gccode = args[1].gccode
+
+function countbits(test, bits, range)
+  local nr = 32 * range + 1
+  local bnr = 0
+  while bits > 0 do
+    if bits % 2 > 0 then
+      test.attributes[nr] = (test.attributes[nr] or 0) + 1
+      bits = bits - 1
+      bnr = bnr + 1
+    end
+    bits = bits / 2
+    nr = nr + 1
+  end
+  return bnr
+end
+
+function attrbits(test, cache)
+  return countbits(test, cache.attributes_set_1, 0)
+end
+
+function histogram(field)
+  local ordfield = field .. '_ord'
+  for _, cache in ipairs(finds) do
+    cache[ordfield] = 1
+  end
+  return 1
+end
+
+function order(field, direction)
+  local ordfield = field .. '_ord'
+  for ord, cache in ipairs(finds) do
+    cache[ordfield] = ord
+  end
+  return 1
+end
+
+function MaGeo526()
+  local caches = PGC.GetFinds(7684056, { fields = fields })
+  return caches
+end
+
+local functions = {
+  bitmask = function() value = 1 end,
+  sort = function() value = 1 end,
+  funen = function() value = MaGeo526() end
+}
+
+function func(funcs, value, test, cache)
+  for _, f in ipairs(funcs) do
+    local arg = f
+    functions[arg[1]]()
+  end
+  return value
+end
+
+function preparepolygons()
+  for _, cache in ipairs(finds) do
+    cache.polygon = polyname
+  end
+end
+
+function preparetest(test)
+  test.number = 0
+end
+
+function inittest(tests)
+  for _, test in ipairs(tests) do
+    preparetest(test)
+    if test.visitdate then
+      test.number = 0
+    end
+  end
+end
+
+function itemfilter(filter)
+  return true
+end
+
+function testfilter_or(filters)
+  if filters.field then return true end
+  return true
+end
+
+function testfilter_and(filters)
+  if filters.field then return true end
+  return true
+end
+
+function qualify(test, index)
+  local cache = finds[index]
+  local stamp = iso:parse(cache.visitdate)
+  local gap = stamp:diff(stamp)
+  local peak = math.max(tonumber(cache.difficulty) or 0, 1)
+  local bits = attrbits(test, cache)
+  if test.condition then
+    test.number = test.number + 1
+  end
+  if test.visitdate then
+    cache.total = 1
+  end
+  if test.filters and not testfilter_and(test.filters) then
+    return false
+  end
+  test.number = test.number + 1
+  return true
+end
+
+local fields = {}
+finds = PGC.GetFinds(profileId, { fields = fields, order = 'OLDESTFIRST', filter = conf.filter })
+
+Exclude = {}
+if type(conf.exclude) == "string" then
+  Exclude[conf.exclude] = 1
+else
+  Exclude[gccode] = 1
+end
+
+if conf.labs then
+  table.insert(finds, lab)
+end
+
+if conf.owned then
+  table.insert(finds, cache)
+end
+
+for _, cache in ipairs(finds) do
+  if Exclude[cache.gccode] then
+    cache.exclude = true end
+end
+
+local testnumber = #conf.tests
+if not conf.min then conf.min = testnumber end
+local ok_number = 0
+for _, test in ipairs(conf.tests) do
+  preparetest(test)
+  for index = 1, #finds do
+    qualify(test, index)
+  end
+  if not test.number or test.min and test.number < test.min then
+    test.passed = false
+  else
+    test.passed = true
+    ok_number = ok_number + 1
+  end
+end
+
+if
+  ok_number < conf.min
+  then
+  ok = false
+else
+  ok = true
+end
+return { ok = ok, log = "", html = "" }
+`;
+
+const monthlyConfig = (overrides: Record<string, unknown> = {}) => JSON.stringify({
+  links: true,
+  filter: { types: ["Mystery Cache"] },
+  min: 3,
+  tests: ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"].map((name, position) => ({
+    name: `Find at least 3 caches with the "Challenge" attribute in ${name} (year not important)`,
+    filters: [{ field: "visitdate[6,7]", value: String(position + 1).padStart(2, "0") }, { field: "attribute:71" }],
+    log: { format: "{visitdate} {gccode} - {cache_name}", func: [["sort"]], limit: 3 },
+    min: 3
+  })),
+  ...overrides
+});
+
+test("imports an official-style monthly attribute checker", () => {
+  assert.equal(isProjectGcMonthlyScript(monthlyScript), true);
+  assert.equal(isProjectGcMonthlyScript(matrixScript), false);
+  const imported = importProjectGcMonthlyScript(monthlyScript, monthlyConfig());
+  assert.equal(imported.rules[0]!.type, "MONTHLY_ATTRIBUTE");
+  assert.equal(imported.rules[0]!.months.length, 12);
+  assert.deepEqual(imported.rules[0]!.months[0], { month: 1, minimum: 3 });
+  assert.equal(imported.rules[0]!.overallMinimum, 3);
+  assert.equal(imported.rules[0]!.attributeId, "71");
+  assert.equal(imported.rules[0]!.excludeSelf, true);
+  assert.match(imported.rules[0]!.filterLabel, /Mystery/);
+  assert.match(imported.summary, /3 months of Challenge cache/);
+});
+
+test("rejects monthly configs outside the supported pattern", () => {
+  const base = JSON.parse(monthlyConfig());
+  const withTests = (tests: unknown) => monthlyConfig({ tests });
+  assert.throws(() => importProjectGcMonthlyScript(monthlyScript, withTests([{ ...base.tests[0], filters: [base.tests[0].filters[0]] }])), /one month and one attribute/);
+  assert.throws(() => importProjectGcMonthlyScript(monthlyScript, withTests([base.tests[0], { ...base.tests[1], filters: base.tests[0].filters }])), /distinct months/);
+  assert.throws(() => importProjectGcMonthlyScript(monthlyScript, withTests([{ ...base.tests[0], filters: [{ field: "visitdate[6,7]", value: "13" }, { field: "attribute:71" }] }])), /month must be/);
+  assert.throws(() => importProjectGcMonthlyScript(monthlyScript, withTests([base.tests[0], { ...base.tests[1], filters: [{ field: "visitdate[6,7]", value: "02" }, { field: "attribute:72" }] }])), /same attribute/);
+  assert.throws(() => importProjectGcMonthlyScript(monthlyScript, withTests([{ ...base.tests[0], min: undefined }])), /positive integer min/);
+  assert.throws(() => importProjectGcMonthlyScript(monthlyScript, withTests([{ ...base.tests[0], log: { func: [["bitmask"]] } }])), /log func/);
+  assert.throws(() => importProjectGcMonthlyScript(monthlyScript, monthlyConfig({ min: 0 })), /overall minimum/);
+  assert.throws(() => importProjectGcMonthlyScript(monthlyScript, monthlyConfig({ min: 13 })), /overall minimum/);
+  assert.throws(() => importProjectGcMonthlyScript(monthlyScript, monthlyConfig({ owned: true })), /Owned-cache/);
+});
+
+test("rejects monthly scripts that diverge from the tag config", () => {
+  const config = monthlyConfig();
+  assert.throws(() => importProjectGcMonthlyScript(monthlyScript.replace("filter = conf.filter", "filter = other"), config), /tag config as its filter/);
+  assert.throws(() => importProjectGcMonthlyScript(monthlyScript + "\nlocal extra = PGC.GetFinds(profileId, { filter = conf.filter })", config), /single PGC.GetFinds/);
+  assert.throws(() => importProjectGcMonthlyScript(monthlyScript.replace("test.number = test.number + 1\n  return true", "test.number = test.number + 1\n  cache.total = 2\n  return true"), config), /must not rewrite/);
+  assert.throws(() => importProjectGcMonthlyScript(monthlyScript.replace("ok_number < conf.min", "ok_number <= conf.min"), config), /qualifying count/);
+  assert.throws(() => importProjectGcMonthlyScript(monthlyScript.replace("function testfilter_and", "function testfilter_xor"), config), /count matching finds/);
+  assert.throws(() => importProjectGcMonthlyScript(monthlyScript.replace("test.min and test.number < test.min", "test.number < test.min"), config), /count matching finds/);
 });
