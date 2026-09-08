@@ -24,6 +24,9 @@ type FtfFindRow = {
     gcCode: string;
     name: string;
     cacheType: string | null;
+    difficulty: Prisma.Decimal | number | null;
+    terrain: Prisma.Decimal | number | null;
+    size: string | null;
     country: string | null;
     region: string | null;
   };
@@ -496,6 +499,9 @@ export class StatsService {
               gcCode: true,
               name: true,
               cacheType: true,
+              difficulty: true,
+              terrain: true,
+              size: true,
               country: true,
               region: true
             }
@@ -523,6 +529,9 @@ export class StatsService {
           gcCode: find.cache.gcCode,
           name: find.cache.name,
           cacheType: find.cache.cacheType,
+          difficulty: find.cache.difficulty == null ? null : Number(find.cache.difficulty),
+          terrain: find.cache.terrain == null ? null : Number(find.cache.terrain),
+          size: find.cache.size,
           country: find.cache.country,
           region: find.cache.region
         }
