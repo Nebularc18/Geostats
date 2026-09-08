@@ -40,6 +40,44 @@ test("falls back to imported location metadata when boundary geometry is unavail
   assert.equal(result.rules[0]!.evidence[0]!.date, "2025-05-03");
 });
 
+test("prefers imported metadata over coarse boundaries and uses geometry only for missing fields", async () => {
+  const checker = {
+    id: "checker-1",
+    userId: "user-1",
+    name: "County challenge",
+    gcCode: "GCTEST",
+    description: null,
+    rules: [{ type: "LOCATION", field: "county", value: "Karlskrona", country: "Sweden", region: "Blekinge län", minimum: 1 }],
+    publicSlug: null,
+    publishedAt: null,
+    createdAt: new Date("2026-01-01T00:00:00Z"),
+    updatedAt: new Date("2026-01-01T00:00:00Z")
+  };
+  const find = (gcCode: string, county: string | null, latitude: number, longitude: number) => ({
+    foundAt: new Date("2025-05-02T22:30:00Z"),
+    foundDate: new Date("2025-05-03T00:00:00Z"),
+    cache: { gcCode, name: gcCode, cacheType: "Traditional Cache", difficulty: 1, terrain: 1, country: "Sweden", region: "Blekinge", county, latitude, longitude, userData: [] }
+  });
+  const prisma = {
+    challengeChecker: { findFirst: async () => checker },
+    geocachingProfile: { findUnique: async () => ({ gcUsername: "Geocacher", timeZone: "Europe/Stockholm" }) },
+    find: { findMany: async () => [
+      find("GCMETA", "Karlskrona", 50, 50),
+      find("GCGEO", null, 5, 5),
+      find("GCOUT", null, 50, 50)
+    ] },
+    import: { findFirst: async () => null }
+  };
+  const square = { type: "Polygon", coordinates: [[[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]] };
+  const boundaries = { geometry: async () => square };
+  const service = new ChallengeCheckersService(prisma as never, boundaries as never);
+
+  const result = await service.runOwned("user-1", "checker-1");
+
+  assert.equal(result.rules[0]!.current, 2);
+  assert.deepEqual(result.rules[0]!.evidence.map((row) => row.gcCode).sort(), ["GCGEO", "GCMETA"]);
+});
+
 test("public checker evaluation rejects find histories above its bounded query", async () => {
   const checker = {
     id: "checker-1",

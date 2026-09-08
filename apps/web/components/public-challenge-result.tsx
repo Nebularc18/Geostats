@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { Check, X } from "lucide-react";
 import { API_URL } from "../lib/api";
+import { CalendarGrid, type CalendarGridData } from "./calendar-grid";
 import { formatCacherDateTime } from "../lib/format-time";
 
 type Evidence = { date: string; gcCode: string; name: string };
@@ -21,6 +22,7 @@ type PublicResult = {
     detail: string;
     evidence: Evidence[];
     evidenceLimited: boolean;
+    calendar?: CalendarGridData;
   }>;
 };
 
@@ -97,6 +99,7 @@ export function PublicChallengeResult({ path }: { path: string }) {
                   evidence={rule.evidence}
                   limited={rule.evidenceLimited}
                 />
+                {rule.calendar && <CalendarGrid calendar={rule.calendar} />}
               </div>
             ))}
           </div>

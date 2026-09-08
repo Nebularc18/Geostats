@@ -115,6 +115,27 @@ test("evaluates the expanded imported-data rules", () => {
   assert.deepEqual(result.rules.map((rule) => rule.current), [2, 2, 2, 3, 1, 2, 2, 1, 1]);
 });
 
+test("matches Swedish län/kommun names across Groundspeak and boundary spellings", () => {
+  const karlskronaFind = { foundAt: new Date("2025-01-01T00:00:00Z"), foundDate: new Date("2025-01-01T00:00:00Z"), cache: { gcCode: "GCKNA", name: "Kna find", cacheType: "Traditional Cache", difficulty: 1, terrain: 1, country: "Sweden", region: "Blekinge", county: "Karlskrona" } };
+  const locationResult = evaluateChallenge([
+    { type: "LOCATION", field: "county", value: "Karlskrona", country: "Sweden", region: "Blekinge län", minimum: 1 }
+  ], [karlskronaFind]);
+  assert.equal(locationResult.rules[0]!.current, 1);
+
+  const kommunResult = evaluateChallenge([
+    { type: "LOCATION", field: "county", value: "Karlskrona kommun", country: "Sweden", region: "Blekinge", minimum: 1 }
+  ], [karlskronaFind]);
+  assert.equal(kommunResult.rules[0]!.current, 1);
+
+  const importedResult = evaluateChallenge([{
+    type: "PROJECT_GC_NUMBER",
+    minimum: 1,
+    filterLabel: "Karlskrona",
+    filters: [{ countries: ["Sweden"], regions: ["Blekinge län"], counties: ["Karlskrona"] }]
+  }], [karlskronaFind]);
+  assert.equal(importedResult.rules[0]!.current, 1);
+});
+
 test("evaluates imported Project-GC count filters as alternatives without double counting", () => {
   const result = evaluateChallenge([{
     type: "PROJECT_GC_NUMBER",
@@ -132,4 +153,103 @@ test("evaluates imported Project-GC count filters as alternatives without double
   assert.equal(result.passed, true);
   assert.equal(result.rules[0]!.current, 2);
   assert.match(result.rules[0]!.label, /Project-GC count/);
+});
+
+test("counts distinct calendar dates with a per-day minimum and leap-day skip", () => {
+  const small = (gcCode: string, date: string) => ({
+    foundAt: new Date(`${date}T00:00:00Z`),
+    foundDate: new Date(`${date}T00:00:00Z`),
+    cache: { gcCode, name: gcCode, cacheType: "Traditional Cache", difficulty: 1, terrain: 1, country: "Sweden", region: null, county: null, size: "Small" }
+  });
+  const micro = (gcCode: string, date: string) => ({
+    ...small(gcCode, date),
+    cache: { ...small(gcCode, date).cache, size: "Micro" }
+  });
+  const rule = {
+    type: "CALENDAR_FILL" as const,
+    minimum: 3,
+    perDay: 2,
+    allowLeapDaySkip: false,
+    filters: [{ sizes: ["Small"] }],
+    filterLabel: "size Small"
+  };
+  const result = evaluateChallenge([rule], [
+    small("GC1", "2025-01-01"),
+    small("GC2", "2025-01-01"),
+    small("GC3", "2025-01-02"),
+    micro("GC4", "2025-01-02"),
+    micro("GC5", "2025-01-02"),
+    small("GC6", "2025-01-03"),
+    small("GC7", "2025-01-03")
+  ]);
+  assert.equal(result.rules[0]!.current, 2);
+  assert.equal(result.rules[0]!.passed, false);
+  assert.match(result.rules[0]!.label, /Distinct calendar dates/);
+  assert.deepEqual(result.rules[0]!.calendar, { days: { "01-01": 2, "01-02": 1, "01-03": 2 }, perDay: 2, allowLeapDaySkip: false });
+
+  const leapRule = { ...rule, minimum: 366, perDay: 1, allowLeapDaySkip: true };
+  const fullYear = Array.from({ length: 365 }, (_, index) => {
+    const date = new Date(Date.UTC(2025, 0, 1) + index * 86_400_000);
+    return small(`GCY${index}`, date.toISOString().slice(0, 10));
+  });
+  const leapResult = evaluateChallenge([leapRule], fullYear);
+  assert.equal(leapResult.rules[0]!.current, 365);
+  assert.equal(leapResult.rules[0]!.passed, true);
+  const strictResult = evaluateChallenge([{ ...leapRule, allowLeapDaySkip: false }], fullYear);
+  assert.equal(strictResult.rules[0]!.passed, false);
+});
+
+test("counts distinct cache types by canonical id", () => {
+  const result = evaluateChallenge([{
+    type: "DISTINCT_TYPES",
+    minimum: 2,
+    filters: [{}],
+    filterLabel: "all finds"
+  }], [
+    finds[0]!,
+    { ...finds[0]!, cache: { ...finds[0]!.cache, gcCode: "GCX", cacheType: "Traditional Cache" } },
+    { ...finds[1]!, cache: { ...finds[1]!.cache, cacheType: "Unknown Cache" } },
+    { ...finds[1]!, cache: { ...finds[1]!.cache, gcCode: "GCY", cacheType: "Mystery Cache" } }
+  ]);
+  assert.equal(result.rules[0]!.current, 2);
+  assert.equal(result.rules[0]!.passed, true);
+  assert.match(result.rules[0]!.label, /Distinct cache types/);
+});
+
+test("counts attribute finds per calendar month with exclusions", () => {
+  const attributed = (gcCode: string, date: string) => ({
+    foundAt: new Date(`${date}T00:00:00Z`),
+    foundDate: new Date(`${date}T00:00:00Z`),
+    cache: {
+      gcCode, name: gcCode, cacheType: "Mystery Cache", difficulty: 1, terrain: 1,
+      country: null, region: null, county: null,
+      raw: { "groundspeak:cache": { "groundspeak:attributes": { "groundspeak:attribute": { id: "71", inc: "1" } } } }
+    }
+  });
+  const plain = (gcCode: string, date: string) => ({
+    ...attributed(gcCode, date),
+    cache: { ...attributed(gcCode, date).cache, raw: {} }
+  });
+  const rule = {
+    type: "MONTHLY_ATTRIBUTE" as const,
+    months: [{ month: 1, minimum: 2 }, { month: 2, minimum: 2 }],
+    overallMinimum: 2,
+    attributeId: "71",
+    attributeLabel: "Challenge cache",
+    filters: [{}],
+    filterLabel: "all finds",
+    excludedGcCodes: ["GCEX"],
+    excludeSelf: false
+  };
+  const result = evaluateChallenge([rule], [
+    attributed("GC1", "2025-01-05"),
+    attributed("GC2", "2025-01-06"),
+    attributed("GC3", "2025-02-05"),
+    plain("GC4", "2025-02-06"),
+    attributed("GCEX", "2025-02-07")
+  ]);
+  assert.equal(result.rules[0]!.current, 1);
+  assert.equal(result.rules[0]!.passed, false);
+  assert.match(result.rules[0]!.detail, /Missing: 02/);
+  assert.equal(result.rules[0]!.evidence.length, 3);
 });

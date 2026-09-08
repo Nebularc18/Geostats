@@ -22,6 +22,34 @@ export type ProjectGcFindFilter = {
 
 export type ProjectGcNumberRule = { type: "PROJECT_GC_NUMBER"; minimum: number; filters: ProjectGcFindFilter[]; filterLabel: string };
 
+export type CalendarFillRule = {
+  type: "CALENDAR_FILL";
+  minimum: number;
+  perDay: number;
+  allowLeapDaySkip: boolean;
+  filters: ProjectGcFindFilter[];
+  filterLabel: string;
+};
+
+export type DistinctTypesRule = {
+  type: "DISTINCT_TYPES";
+  minimum: number;
+  filters: ProjectGcFindFilter[];
+  filterLabel: string;
+};
+
+export type MonthlyAttributeRule = {
+  type: "MONTHLY_ATTRIBUTE";
+  months: Array<{ month: number; minimum: number }>;
+  overallMinimum: number;
+  attributeId: string;
+  attributeLabel: string;
+  filters: ProjectGcFindFilter[];
+  filterLabel: string;
+  excludedGcCodes: string[];
+  excludeSelf: boolean;
+};
+
 export type ChallengeRule =
   | { type: "TOTAL_FINDS"; minimum: number }
   | { type: "CACHE_TYPE"; cacheTypeId: string; cacheTypeLabel: string; minimum: number }
@@ -37,7 +65,10 @@ export type ChallengeRule =
   | { type: "TERRAIN_RATING"; rating: number; minimum: number }
   | { type: "FAVORITE_POINTS"; minimumFavoritePoints: number; minimum: number }
   | { type: "ATTRIBUTE"; attributeId: string; attributeLabel: string; minimum: number }
-  | ProjectGcNumberRule;
+  | ProjectGcNumberRule
+  | CalendarFillRule
+  | DistinctTypesRule
+  | MonthlyAttributeRule;
 
 export type CheckerFind = {
   foundAt: Date;
@@ -68,6 +99,7 @@ export type RuleResult = {
   detail: string;
   evidence: Array<{ date: string; gcCode: string; name: string }>;
   evidenceLimited: boolean;
+  calendar?: { days: Record<string, number>; perDay: number; allowLeapDaySkip: boolean };
 };
 
 const MAX_EVIDENCE_ROWS = 500;
@@ -76,12 +108,48 @@ function sameText(left: string | null, right: string) {
   return left?.trim().localeCompare(right.trim(), undefined, { sensitivity: "accent" }) === 0;
 }
 
+function normalizeLocationName(value: string) {
+  // Groundspeak/GPX data uses "Blekinge" while boundary datasets use
+  // "Blekinge län" (and "Karlskrona" vs "Karlskrona kommun"). Normalize
+  // administrative suffixes so the same place matches either naming.
+  let name = value.trim().toLocaleLowerCase();
+  if (name.endsWith("s län")) name = name.slice(0, -"s län".length);
+  else if (name.endsWith(" län")) name = name.slice(0, -" län".length);
+  for (const suffix of [" kommun", " municipality", " county", " kommune", " kunta"]) {
+    if (name.endsWith(suffix)) {
+      name = name.slice(0, -suffix.length);
+      break;
+    }
+  }
+  return name.trim();
+}
+
+export function sameLocationText(left: string | null | undefined, right: string) {
+  if (left == null) return false;
+  const leftTrimmed = left.trim();
+  const rightTrimmed = right.trim();
+  if (leftTrimmed.localeCompare(rightTrimmed, undefined, { sensitivity: "accent" }) === 0) return true;
+  return normalizeLocationName(leftTrimmed).localeCompare(normalizeLocationName(rightTrimmed), undefined, { sensitivity: "accent" }) === 0;
+}
+
 function loggedCalendarKey(find: CheckerFind) {
   return `${String(find.foundDate.getUTCMonth() + 1).padStart(2, "0")}-${String(find.foundDate.getUTCDate()).padStart(2, "0")}`;
 }
 
 function loggedEvidenceDate(find: CheckerFind) {
   return find.foundDate.toISOString().slice(0, 10);
+}
+
+function dedupedByCache(finds: CheckerFind[]) {
+  // The checkers this mirrors skip repeat logs of the same cache; finds
+  // arrive oldest-first so keeping the first row matches that.
+  const seen = new Set<string>();
+  return finds.filter((find) => {
+    const code = find.cache.gcCode.trim().toUpperCase();
+    if (seen.has(code)) return false;
+    seen.add(code);
+    return true;
+  });
 }
 
 function rating(value: unknown) {
@@ -114,14 +182,15 @@ function favoritePoints(find: CheckerFind) {
 
 function projectGcFilterMatches(filter: ProjectGcFindFilter, find: CheckerFind) {
   const inTextList = (value: string | null | undefined, choices: string[] | undefined) => !choices || choices.some((choice) => sameText(value ?? null, choice));
+  const inLocationList = (value: string | null | undefined, choices: string[] | undefined) => !choices || (value != null && choices.some((choice) => sameLocationText(value, choice)));
   const cacheTypeId = find.cache.cacheType ? cacheTypeIdentity(find.cache.cacheType).id : null;
   const visitDate = loggedEvidenceDate(find);
   const hiddenDate = find.cache.hiddenDate?.toISOString().slice(0, 10);
   const latitude = Number(find.cache.latitude);
   const longitude = Number(find.cache.longitude);
-  return inTextList(find.cache.country, filter.countries) &&
-    inTextList(find.cache.region, filter.regions) &&
-    inTextList(find.cache.county, filter.counties) &&
+  return inLocationList(find.cache.country, filter.countries) &&
+    inLocationList(find.cache.region, filter.regions) &&
+    inLocationList(find.cache.county, filter.counties) &&
     (!filter.cacheTypeIds || cacheTypeId !== null && filter.cacheTypeIds.includes(cacheTypeId)) &&
     (!filter.excludedCacheTypeIds || cacheTypeId === null || !filter.excludedCacheTypeIds.includes(cacheTypeId)) &&
     inTextList(find.cache.size, filter.sizes) &&
@@ -186,9 +255,9 @@ export function evaluateChallenge(rules: ChallengeRule[], finds: CheckerFind[], 
     } else if (rule.type === "LOCATION") {
       matchingFinds = finds.filter((find) => options.locationMatch
         ? options.locationMatch(rule, find)
-        : sameText(find.cache[rule.field], rule.value) &&
-          (!rule.country || sameText(find.cache.country, rule.country)) &&
-          (!rule.region || sameText(find.cache.region, rule.region)));
+        : sameLocationText(find.cache[rule.field], rule.value) &&
+          (!rule.country || sameLocationText(find.cache.country, rule.country)) &&
+          (!rule.region || sameLocationText(find.cache.region, rule.region)));
       current = matchingFinds.length;
       label = `Finds in ${[rule.value, rule.field === "county" ? rule.region : null, rule.field !== "country" ? rule.country : null]
         .filter(Boolean)
@@ -245,10 +314,87 @@ export function evaluateChallenge(rules: ChallengeRule[], finds: CheckerFind[], 
       matchingFinds = finds.filter((find) => attributesFromRaw(find.cache.raw).some((attribute) => attribute.id === rule.attributeId));
       current = matchingFinds.length;
       label = `${rule.attributeLabel} attribute finds`;
-    } else {
+    } else if (rule.type === "PROJECT_GC_NUMBER") {
       matchingFinds = finds.filter((find) => rule.filters.some((filter) => projectGcFilterMatches(filter, find)));
       current = matchingFinds.length;
       label = `Project-GC count: ${rule.filterLabel}`;
+    } else if (rule.type === "DISTINCT_TYPES") {
+      // Canonical cache-type ids: alias spellings ("Unknown" vs "Mystery")
+      // merge instead of splitting, so this count never exceeds a
+      // per-string count.
+      const seen = new Map<string, CheckerFind>();
+      for (const find of dedupedByCache(finds.filter((find) => rule.filters.some((filter) => projectGcFilterMatches(filter, find))))) {
+        if (!find.cache.cacheType) continue;
+        const id = cacheTypeIdentity(find.cache.cacheType).id;
+        if (!seen.has(id)) seen.set(id, find);
+      }
+      current = seen.size;
+      matchingFinds = [...seen.values()];
+      label = `Distinct cache types (${rule.filterLabel})`;
+    } else if (rule.type === "MONTHLY_ATTRIBUTE") {
+      const excluded = new Set(rule.excludedGcCodes.map((code) => code.trim().toUpperCase()));
+      const eligible = dedupedByCache(finds.filter((find) => !excluded.has(find.cache.gcCode.trim().toUpperCase()) &&
+        rule.filters.some((filter) => projectGcFilterMatches(filter, find)) &&
+        attributesFromRaw(find.cache.raw).some((attribute) => attribute.id === rule.attributeId)));
+      const monthly = rule.months.map(({ month, minimum }) => {
+        const group = eligible.filter((find) => find.foundDate.getUTCMonth() + 1 === month);
+        return { month, minimum, count: group.length, met: group.length >= minimum, sample: group.slice(0, minimum) };
+      });
+      current = monthly.filter((entry) => entry.met).length;
+      matchingFinds = monthly.flatMap((entry) => entry.sample);
+      const missing = monthly.filter((entry) => !entry.met).map((entry) => String(entry.month).padStart(2, "0"));
+      label = `${rule.attributeLabel} × ${rule.months.length} months (${rule.filterLabel})`;
+      const passed = current >= rule.overallMinimum;
+      return {
+        rule,
+        passed,
+        current,
+        required: rule.overallMinimum,
+        label,
+        detail: passed
+          ? `${current.toLocaleString()} achieved; ${rule.overallMinimum.toLocaleString()} required.`
+          : `${current.toLocaleString()} achieved; ${Math.max(rule.overallMinimum - current, 0).toLocaleString()} more needed.${missing.length ? ` Missing: ${missing.join(", ")}.` : ""}`,
+        evidence: matchingFinds.slice(0, MAX_EVIDENCE_ROWS).map((find) => ({
+          date: loggedEvidenceDate(find),
+          gcCode: find.cache.gcCode,
+          name: find.cache.name
+        })),
+        evidenceLimited: matchingFinds.length > MAX_EVIDENCE_ROWS
+      };
+    } else {
+      const byDate = new Map<string, CheckerFind[]>();
+      for (const find of finds.filter((find) => rule.filters.some((filter) => projectGcFilterMatches(filter, find)))) {
+        const key = loggedCalendarKey(find);
+        const group = byDate.get(key);
+        if (group) group.push(find);
+        else byDate.set(key, [find]);
+      }
+      const complete = [...byDate.entries()].filter(([, group]) => group.length >= rule.perDay);
+      const leapComplete = (byDate.get("02-29")?.length ?? 0) >= rule.perDay;
+      current = complete.length;
+      matchingFinds = complete.map(([, group]) => group[0]!);
+      label = `Distinct calendar dates (${rule.filterLabel})`;
+      const passed = current >= rule.minimum ||
+        (rule.allowLeapDaySkip && rule.minimum === 366 && current === 365 && !leapComplete);
+      const days: Record<string, number> = {};
+      for (const [key, group] of byDate) days[key] = group.length;
+      return {
+        rule,
+        passed,
+        current,
+        required: rule.minimum,
+        label,
+        calendar: { days, perDay: rule.perDay, allowLeapDaySkip: rule.allowLeapDaySkip },
+        detail: passed
+          ? `${current.toLocaleString()} achieved; ${rule.minimum.toLocaleString()} required.`
+          : `${current.toLocaleString()} achieved; ${Math.max(rule.minimum - current, 0).toLocaleString()} more needed.`,
+        evidence: matchingFinds.slice(0, MAX_EVIDENCE_ROWS).map((find) => ({
+          date: loggedEvidenceDate(find),
+          gcCode: find.cache.gcCode,
+          name: find.cache.name
+        })),
+        evidenceLimited: matchingFinds.length > MAX_EVIDENCE_ROWS
+      };
     }
 
     const passed = current >= rule.minimum;

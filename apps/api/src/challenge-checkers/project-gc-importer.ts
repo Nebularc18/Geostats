@@ -1,12 +1,13 @@
 import { BadRequestException } from "@nestjs/common";
 import { cacheTypeIdentity, cacheTypeLabel } from "./cache-type-catalog";
-import type { ProjectGcFindFilter, ProjectGcNumberRule } from "./challenge-checker.evaluator";
+import { geocacheAttributeLabel } from "./geocache-attribute-catalog";
+import type { CalendarFillRule, DistinctTypesRule, MonthlyAttributeRule, ProjectGcFindFilter, ProjectGcNumberRule } from "./challenge-checker.evaluator";
 
 const MAX_SCRIPT_LENGTH = 250_000;
 const MAX_CONFIG_LENGTH = 25_000;
 const MAX_PARSE_NESTING = 100;
-const MAX_PARSE_CALLS = 1000;
-const MAX_PARSE_SCAN_WORK = 10_000_000;
+const MAX_PARSE_CALLS = 4000;
+const MAX_PARSE_SCAN_WORK = 100_000_000;
 const FILTER_KEYS = new Set([
   "country", "region", "county", "minVisitDate", "maxVisitDate", "minHiddenDate", "maxHiddenDate",
   "excludeTypes", "types", "sizes", "difficulties", "terrains", "minlatitude", "maxlatitude",
@@ -18,7 +19,9 @@ const TYPE_GROUPS: Record<string, string[]> = {
   Events: ["Event Cache", "Cache In Trash Out Event", "Community Celebration Event", "Mega-Event Cache", "Geocaching HQ Block Party", "Giga-Event Cache", "Geocaching HQ Celebration"]
 };
 const MUTATING_TABLE_CALLS = new Set(["table.insert", "table.remove", "table.sort", "table.move", "table.clear", "rawset"]);
-const READ_ONLY_CALLS = new Set(["ipairs", "pairs", "next", "tostring", "table.concat", "TableCopy", "PGC.print", "PrinFindsTable", "PrintFindsText", "PrintFindsHtml"]);
+const READ_ONLY_CALLS = new Set(["ipairs", "pairs", "next", "tostring", "tonumber", "table.concat", "TableCopy", "PGC.print", "PGC.ProfileId2Name", "PrinFindsTable", "PrintFindsText", "PrintFindsHtml",
+  "string.sub", "string.format", "string.len", "string.upper", "string.lower", "string.rep", "string.byte", "string.char", "string.match", "string.find", "string.gsub", "string.gmatch",
+  "math.floor", "math.ceil", "math.abs", "math.min", "math.max"]);
 const CONTROL_CALLS = new Set(["if", "for", "while", "repeat", "until", "return", "function"]);
 const SUPPORTED_FIND_CALLS = new Set(["PGC.GetFinds", "GetCombinedFinds"]);
 
@@ -98,6 +101,16 @@ function compactFilter(filter: ProjectGcFindFilter): ProjectGcFindFilter {
 function maskLua(source: string) {
   // Keep line breaks and source positions while removing strings and comments.
   // Validation must inspect Lua syntax, not text that happens to look like syntax.
+  // Bracket access with a plain identifier key (t['field']) is rewritten to
+  // dot form (t.field): identical semantics in Lua, and it keeps the field
+  // name visible to the structural checks below (a blanked key would read as
+  // an unknown field). Keywords are never rewritten so block parsing stays
+  // exact, and only same-line brackets qualify.
+  const LUA_KEYWORDS = new Set([
+    "and", "break", "do", "else", "elseif", "end", "false", "for", "function",
+    "goto", "if", "in", "local", "nil", "not", "or", "repeat", "return",
+    "then", "true", "until", "while"
+  ]);
   const chars = source.split("");
   let index = 0;
   const blank = (from: number, to: number) => {
@@ -130,6 +143,20 @@ function maskLua(source: string) {
         if (chars[end] === quote) { end += 1; break; }
         end += 1;
       }
+      const content = source.slice(index + 1, end - 1);
+      let open = index - 1;
+      while (open >= 0 && (chars[open] === " " || chars[open] === "\t")) open -= 1;
+      let close = end;
+      while (close < chars.length && (chars[close] === " " || chars[close] === "\t")) close += 1;
+      if (/^[A-Za-z_]\w*$/.test(content) && !LUA_KEYWORDS.has(content) && chars[open] === "[" && chars[close] === "]") {
+        // t['field'] means exactly t.field: rewrite it so structural checks
+        // see the field name (a blanked key would read as an unknown field).
+        blank(open, close + 1);
+        const replacement = `.${content}`;
+        for (let cursor = 0; cursor < replacement.length; cursor += 1) chars[open + cursor] = replacement[cursor]!;
+        index = close + 1;
+        continue;
+      }
       blank(index, end); index = end; continue;
     }
     const longStringEnd = longBracketEnd(index);
@@ -137,6 +164,256 @@ function maskLua(source: string) {
       blank(index, longStringEnd); index = longStringEnd; continue;
     }
     index += 1;
+  }
+  return chars.join("");
+}
+
+const LUA_DEFINED_GLOBALS = new Set([
+  "PGC", "table", "string", "math", "pairs", "ipairs", "next", "type", "tostring", "tonumber",
+  "select", "unpack", "print", "pcall", "error", "assert", "rawget", "rawset", "rawequal",
+  "setmetatable", "getmetatable", "require", "os", "io", "coroutine", "package", "debug", "utf8", "_G", "_VERSION"
+]);
+
+function definedLuaNames(source: string) {
+  const defined = new Set(LUA_DEFINED_GLOBALS);
+  for (const match of source.matchAll(/\bfunction\s+([A-Za-z_]\w*)\s*\(/g)) defined.add(match[1]!);
+  for (const match of source.matchAll(/\bfunction\s+[A-Za-z_]\w*\s*\(([^)]*)\)/g)) {
+    for (const parameter of (match[1] ?? "").split(",")) {
+      const name = parameter.trim();
+      if (/^[A-Za-z_]\w*$/.test(name)) defined.add(name);
+    }
+  }
+  for (const match of source.matchAll(/(?:^|[;\n])\s*(?:\blocal\s+)?([A-Za-z_]\w*)\s*=(?!=)/g)) defined.add(match[1]!);
+  for (const match of source.matchAll(/\blocal\s+([A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*)/g)) {
+    for (const name of match[1]!.split(",")) defined.add(name.trim());
+  }
+  for (const match of source.matchAll(/\bfor\s+([A-Za-z_][\w\s,]*?)\s+in\s+[^\n]+\s+do\b/g)) {
+    for (const name of match[1]!.split(",")) {
+      const trimmed = name.trim();
+      if (/^[A-Za-z_]\w*$/.test(trimmed)) defined.add(trimmed);
+    }
+  }
+  for (const match of source.matchAll(/\bfor\s+([A-Za-z_]\w*)\s*=[^,\n]+,[^\n]+\s+do\b/g)) defined.add(match[1]!);
+  return defined;
+}
+
+function luaBranchEnd(lines: string[], offsets: number[], index: number): number {
+  const opener = lines[index]!;
+  const openerThen = opener.search(/\bthen\b/);
+  const openerRemainder = openerThen >= 0 ? opener.slice(openerThen + 4) : "";
+  const openerWithoutForDo = openerRemainder.replace(/\b(?:for|while)\b[^\n]*\bdo\b/g, "");
+  let depth = 1
+    + (openerRemainder.match(/\bfunction\b/g) ?? []).length
+    + (openerRemainder.match(/\bif\b/g) ?? []).length
+    + (openerRemainder.match(/\b(?:for|while)\b[^\n]*\bdo\b/g) ?? []).length
+    + (openerWithoutForDo.match(/\bdo\b/g) ?? []).length
+    + (openerRemainder.match(/\brepeat\b/g) ?? []).length
+    - (openerRemainder.match(/\bend\b/g) ?? []).length
+    - (openerRemainder.match(/\buntil\b/g) ?? []).length;
+  if (depth <= 0) {
+    const closing = [...openerRemainder.matchAll(/\bend\b|\buntil\b/g)].at(-1);
+    return closing && closing.index !== undefined ? offsets[index]! + openerThen + 4 + closing.index : offsets[index]!;
+  }
+  let lineIndex = index + 1;
+  while (lineIndex < lines.length) {
+    const bodyLine = lines[lineIndex]!;
+    const bodyTrimmed = bodyLine.trim();
+    if (depth === 1 && /^(?:elseif|else)\b/.test(bodyTrimmed)) return offsets[lineIndex]!;
+    const withoutForDo = bodyLine.replace(/\b(?:for|while)\b[^\n]*\bdo\b/g, "");
+    depth += (bodyLine.match(/\bfunction\b/g) ?? []).length;
+    // See blockBody: count `if` alone so conditions split across lines stay
+    // balanced.
+    depth += (bodyLine.match(/\bif\b/g) ?? []).length;
+    depth += (bodyLine.match(/\b(?:for|while)\b[^\n]*\bdo\b/g) ?? []).length;
+    depth += (withoutForDo.match(/\bdo\b/g) ?? []).length;
+    depth += (bodyLine.match(/\brepeat\b/g) ?? []).length;
+    depth -= (bodyLine.match(/\bend\b/g) ?? []).length;
+    depth -= (bodyLine.match(/\buntil\b/g) ?? []).length;
+    if (depth <= 0) {
+      const closing = [...bodyLine.matchAll(/\bend\b|\buntil\b/g)].at(-1);
+      return closing ? offsets[lineIndex]! + closing.index! : offsets[lineIndex]!;
+    }
+    lineIndex += 1;
+  }
+  return -1;
+}
+
+function soleWriteInCondition(source: string, writePattern: RegExp, conditionPattern: RegExp, elsePart = false) {
+  // The pass verdict must be produced by its gating condition, not planted
+  // elsewhere: exactly one matching write in the whole script, sitting
+  // between a matching condition line's `then` and that branch's end.
+  const lines = source.split("\n");
+  const offsets: number[] = [];
+  let cursor = 0;
+  for (const line of lines) {
+    offsets.push(cursor);
+    cursor += line.length + 1;
+  }
+  const flags = writePattern.flags.includes("g") ? writePattern.flags : `${writePattern.flags}g`;
+  const writes: number[] = [];
+  for (const match of source.matchAll(new RegExp(writePattern.source, flags))) writes.push(match.index ?? 0);
+  if (writes.length !== 1) return false;
+  for (let index = 0; index < lines.length; index += 1) {
+    if (!conditionPattern.test(lines[index]!)) continue;
+    let thenAt = lines[index]!.search(/\bthen\b/);
+    let thenBase = index;
+    if (thenAt < 0) {
+      for (let scan = index + 1; scan < lines.length; scan += 1) {
+        if (/^\s*(if|for|while|repeat|function)\b/.test(lines[scan]!)) break;
+        const at = lines[scan]!.search(/\bthen\b/);
+        if (at >= 0) {
+          thenAt = at;
+          thenBase = scan;
+          break;
+        }
+      }
+    }
+    if (thenAt < 0) continue;
+    const keepAt = luaBranchEnd(lines, offsets, index);
+    if (keepAt < 0) continue;
+    if (!elsePart) {
+      if (writes[0]! >= offsets[thenBase]! + thenAt + 4 && writes[0]! < keepAt) return true;
+      continue;
+    }
+    // The write must sit in the else part: find its opening else/elseif.
+    let depth = 1;
+    let branch = index + 1;
+    let elseStart = -1;
+    while (branch < lines.length) {
+      const bodyLine = lines[branch]!;
+      const bodyTrimmed = bodyLine.trim();
+      // Only a plain `else` continues the same verdict polarity; an
+      // `elseif` opens a new condition.
+      if (depth === 1 && /^else\b/.test(bodyTrimmed)) {
+        elseStart = branch;
+        break;
+      }
+      if (depth === 1 && /^elseif\b/.test(bodyTrimmed)) break;
+      const withoutForDo = bodyLine.replace(/\b(?:for|while)\b[^\n]*\bdo\b/g, "");
+      depth += (bodyLine.match(/\bfunction\b/g) ?? []).length;
+      depth += (bodyLine.match(/\bif\b/g) ?? []).length;
+      depth += (bodyLine.match(/\b(?:for|while)\b[^\n]*\bdo\b/g) ?? []).length;
+      depth += (withoutForDo.match(/\bdo\b/g) ?? []).length;
+      depth += (bodyLine.match(/\brepeat\b/g) ?? []).length;
+      depth -= (bodyLine.match(/\bend\b/g) ?? []).length;
+      depth -= (bodyLine.match(/\buntil\b/g) ?? []).length;
+      if (depth <= 0) break;
+      branch += 1;
+    }
+    if (elseStart < 0) continue;
+    const chainEnd = luaBranchEnd(lines, offsets, elseStart);
+    if (chainEnd >= 0 && writes[0]! >= offsets[elseStart]! && writes[0]! < chainEnd) return true;
+  }
+  return false;
+}
+
+function stripDeadNilBranches(source: string, configKeys: Set<string> = new Set()) {
+  // The official generic checker guards its legacy excludeTypes handling with
+  // `k == excludeTypes`, where excludeTypes is a never-assigned global (nil).
+  // Loop variables are never nil, so such a branch can never execute. Blank
+  // its body (keeping newlines and offsets) so later checks only see live
+  // code. Anything not provably dead is left untouched and fails closed.
+  const defined = definedLuaNames(source);
+  const lines = source.split("\n");
+  const offsets: number[] = [];
+  let cursor = 0;
+  for (const line of lines) {
+    offsets.push(cursor);
+    cursor += line.length + 1;
+  }
+  const loopVariables = new Set<string>();
+  for (const match of source.matchAll(/\bfor\s+([A-Za-z_][\w\s,]*?)\s+in\s+[^\n]+\s+do\b/g)) {
+    for (const name of match[1]!.split(",")) {
+      const trimmed = name.trim();
+      if (/^[A-Za-z_]\w*$/.test(trimmed)) loopVariables.add(trimmed);
+    }
+  }
+  for (const match of source.matchAll(/\bfor\s+([A-Za-z_]\w*)\s*=[^,\n]+,[^\n]+\s+do\b/g)) loopVariables.add(match[1]!);
+  const nonNilOperand = (value: string) => {
+    const trimmed = value.trim();
+    if (/^[A-Za-z_]\w*$/.test(trimmed)) return loopVariables.has(trimmed) || ["PGC", "table", "string", "math"].includes(trimmed);
+    return /^(['"]).*\1$/.test(trimmed) || /^-?\d/.test(trimmed) || trimmed === "true" || trimmed === "false" || /^\{/.test(trimmed);
+  };
+  const blank = (from: number, to: number, chars: string[]) => {
+    for (let index = from; index < to; index += 1) if (chars[index] !== "\n") chars[index] = " ";
+  };
+  const falsyOperand = (value: string): boolean => {
+    const trimmed = value.trim();
+    if (trimmed === "false" || trimmed === "nil") return true;
+    if (/^[A-Za-z_]\w*$/.test(trimmed)) return !defined.has(trimmed);
+    const confKey = trimmed.match(/^(?:conf|config)\s*\.\s*([A-Za-z_]\w*)$/)?.[1];
+    if (confKey !== undefined) return !configKeys.has(confKey) && confWrites(confKey, 0, source.length) === 0 && !hasOpaqueRebind;
+    return false;
+  };
+  // Plain rebindings of the tag config hide every key they touch, except the
+  // two transparent forms (the initial args binding and the normalizer call
+  // whose own writes are validated separately).
+  let hasOpaqueRebind = false;
+  for (const match of source.matchAll(/(?:^|[;\n])\s*(?:local\s+)?(?:conf|config)\s*=(?!=)\s*([^\n;]*)/g)) {
+    if (!/^(?:args\[1\]\.config|CleanupConfig\s*\([^()\n]*\))$/.test(match[1]!.trim())) hasOpaqueRebind = true;
+  }
+  const confWrites = (key: string, from: number, to: number) => {
+    let count = 0;
+    for (const match of source.matchAll(new RegExp(`\\bconf\\s*\\.\\s*${key}\\s*=(?!=)|\\bconfig\\s*\\.\\s*${key}\\s*=(?!=)`, "g"))) {
+      const position = match.index ?? 0;
+      if (position >= from && position < to) count += 1;
+    }
+    return count;
+  };
+  const chars = source.split("");
+  for (let index = 0; index < lines.length; index += 1) {
+    const trimmed = lines[index]!.trim();
+    let dead = false;
+    if (/^(?:if|elseif)\s/.test(trimmed)) {
+      const equality = trimmed.match(/^(?:if|elseif)\s+\(?\s*([A-Za-z_]\w*)\s*==\s*([A-Za-z_]\w*)\s*\)?\s*then\b/);
+      if (equality) {
+        const [left, right] = [equality[1]!, equality[2]!];
+        dead = !defined.has(left) && nonNilOperand(right) || !defined.has(right) && nonNilOperand(left);
+      } else {
+        const bare = trimmed.match(/^(?:if|elseif)\s+([A-Za-z_]\w*)\s*then\b\s*$/);
+        if (bare && !defined.has(bare[1]!)) {
+          dead = true;
+        } else {
+          // Chains of provably-falsy tests never execute either: `A or B`
+          // needs every operand falsy, `A and B` needs just one. This covers
+          // feature flags (`conf.owned or conf.favorites`) as well as plain
+          // never-assigned globals. Anything compound beyond that is left
+          // alone and fails closed.
+          const chain = trimmed.match(/^(?:if|elseif)\s+(.+?)\s*then\b\s*$/);
+          const chainDead = (condition: string): boolean => {
+            if (/[()]/.test(condition)) return false;
+            if (condition.includes(" or ") && condition.includes(" and ")) return false;
+            const parts = condition.includes(" or ")
+              ? { operands: condition.split(/\s+or\s+/), mode: "or" as const }
+              : condition.includes(" and ")
+                ? { operands: condition.split(/\s+and\s+/), mode: "and" as const }
+                : { operands: [condition], mode: "single" as const };
+            if (parts.mode === "or") return parts.operands.every((part) => falsyOperand(part));
+            if (parts.mode === "and") return parts.operands.some((part) => falsyOperand(part));
+            return falsyOperand(parts.operands[0]!);
+          };
+          if (chain && chainDead(chain[1]!)) {
+            dead = true;
+          } else {
+            // `if conf.KEY ~= nil` with KEY absent from the tag config (and
+            // never assigned outside its own guarded body, so the write cannot
+            // make it non-nil) never executes either.
+            const confGuard = trimmed.match(/^(?:if|elseif)\s+conf\s*\.\s*([A-Za-z_]\w*)\s*~=\s*nil\s*then\b/) ??
+              trimmed.match(/^(?:if|elseif)\s+config\s*\.\s*([A-Za-z_]\w*)\s*~=\s*nil\s*then\b/);
+            if (confGuard && !configKeys.has(confGuard[1]!) && !hasOpaqueRebind) {
+              const keepAt = luaBranchEnd(lines, offsets, index);
+              if (keepAt >= 0) {
+                const bodyStart = offsets[index]! + lines[index]!.length + 1;
+                dead = confWrites(confGuard[1]!, 0, bodyStart) + confWrites(confGuard[1]!, keepAt, source.length) === confWrites(confGuard[1]!, 0, source.length);
+              }
+            }
+          }
+        }
+      }
+    }
+    if (!dead) continue;
+    const keepAt = luaBranchEnd(lines, offsets, index);
+    if (keepAt >= 0) blank(offsets[index]! + lines[index]!.length + 1, keepAt, chars);
   }
   return chars.join("");
 }
@@ -171,7 +448,9 @@ function blockBody(source: string, start: number): string | null {
     const line = source.slice(cursor, end);
     const withoutForDo = line.replace(/\b(?:for|while)\b[^\n]*\bdo\b/g, "");
     depth += (line.match(/\bfunction\b/g) ?? []).length;
-    depth += (line.match(/\bif\b[^\n]*\bthen\b/g) ?? []).length;
+    // `then` always pairs with an `if`, so counting `if` alone also covers
+    // conditions split across lines (which never have `then` on the `if` line).
+    depth += (line.match(/\bif\b/g) ?? []).length;
     depth += (line.match(/\b(?:for|while)\b[^\n]*\bdo\b/g) ?? []).length;
     depth += (withoutForDo.match(/\bdo\b/g) ?? []).length;
     depth += (line.match(/\brepeat\b/g) ?? []).length;
@@ -245,16 +524,109 @@ function referencesAny(value: string, names: Set<string>) {
   return [...names].some((name) => new RegExp("\\b" + name + "\\b").test(value));
 }
 
+function blankNamedFunctionBodies(source: string) {
+  // Top-level verdict checks must ignore returns buried in helpers: blank
+  // every named function body (positions preserved) and inspect the rest.
+  const chars = source.split("");
+  const blank = (from: number, to: number) => {
+    for (let cursor = from; cursor < to; cursor += 1) if (chars[cursor] !== "\n" && chars[cursor] !== "\r") chars[cursor] = " ";
+  };
+  const seen = new Set<string>();
+  for (const match of source.matchAll(/(?:\blocal\s+)?\bfunction\s+([A-Za-z_]\w*)\s*\(/g)) {
+    if (seen.has(match[1]!)) continue;
+    seen.add(match[1]!);
+    const definition = functionDefinition(source, match[1]!);
+    if (!definition) continue;
+    const bodyIndex = source.indexOf(definition.body, match.index ?? 0);
+    if (bodyIndex >= 0) blank(bodyIndex, bodyIndex + definition.body.length);
+  }
+  return chars.join("");
+}
+
+function validateTopLevelVerdict(source: string, options: { allowEmptyFindsEarlyReturn: boolean; okTrueCondition: RegExp; okInElse?: boolean }) {
+  // Scripts without a c_number/c_calendar wrapper compute `ok` at top level.
+  // The verdict must be a single final table return (plus, optionally, an
+  // early literal-false return for empty find lists), and the sole `ok = true`
+  // must sit inside its gating condition.
+  const topLevel = blankNamedFunctionBodies(source);
+  const returns = [...topLevel.matchAll(/\breturn\s*\{([^}]*)\}/g)];
+  const final = returns.at(-1);
+  if (!returns.length || !final || !/\bok\s*=\s*ok\b/.test(final[1]!)) {
+    throw new BadRequestException("The checker must return its pass verdict once");
+  }
+  for (const statement of returns.slice(0, -1)) {
+    const early = statement[1]!.trim();
+    if (!(options.allowEmptyFindsEarlyReturn && /^\s*ok\s*=\s*false\b/.test(early))) {
+      throw new BadRequestException("The checker must return its pass verdict once");
+    }
+    const statementStart = Math.max(topLevel.lastIndexOf("\n", statement.index ?? 0), topLevel.lastIndexOf(";", statement.index ?? 0));
+    const guard = topLevel.slice(Math.max(0, statementStart - 120), statement.index ?? 0);
+    if (!/#finds\s*==\s*0/.test(guard)) {
+      throw new BadRequestException("The checker must return its pass verdict once");
+    }
+  }
+  const okWrites = [...source.matchAll(/\bok\s*=(?!=)\s*([^\n;{}]*)/g)].map((match) => match[1]!.trim().replace(/[,}].*$/, "").trim());
+  if (okWrites.some((value) => value !== "false" && value !== "true" && value !== "ok")) {
+    throw new BadRequestException("The checker contains an additional pass/fail condition");
+  }
+  if (!soleWriteInCondition(source, /\bok\s*=(?!=)\s*true\b/, options.okTrueCondition, options.okInElse === true)) {
+    throw new BadRequestException("The checker must pass on its qualifying count");
+  }
+}
+
+function findsReferenceEscapes(value: string, aliases: Set<string>, source: string) {
+  // Every mention of a finds alias inside an assigned value must be inert:
+  // a length read (#finds), a field read (finds[i]), or an argument to a
+  // call that provably only reads it (display helpers such as
+  // PrintFindsText, or any script-defined function shown not to mutate the
+  // parameter it receives). Anything else — a bare reference, a container
+  // literal, an unknown callee — fails closed.
+  const names = [...aliases].join("|");
+  if (!names) return false;
+  const enclosingCall = (position: number) => {
+    let depth = 0;
+    for (let cursor = position - 1; cursor >= 0; cursor -= 1) {
+      const char = value[cursor]!;
+      if (char === ")") depth += 1;
+      else if (char === "(") {
+        if (depth === 0) {
+          const head = value.slice(0, cursor).match(/([A-Za-z_]\w*(?:\s*\.\s*[A-Za-z_]\w*)?)\s*$/)?.[1]?.replace(/\s/g, "");
+          const rest = balancedCallArguments(value, cursor);
+          return head !== undefined && rest !== null ? { head, argumentsText: rest } : null;
+        }
+        depth -= 1;
+      }
+    }
+    return null;
+  };
+  for (const match of value.matchAll(new RegExp("\\b(?:" + names + ")\\b", "g"))) {
+    const before = value.slice(0, match.index).replace(/\s+$/, "");
+    const after = value.slice(match.index! + match[0].length).replace(/^\s+/, "");
+    if (before.endsWith("#")) continue;
+    if (after.startsWith(".") || after.startsWith("[")) continue;
+    const call = enclosingCall(match.index!);
+    if (!call) return true;
+    if (MUTATING_TABLE_CALLS.has(call.head)) return true;
+    if (READ_ONLY_CALLS.has(call.head) && !functionDefinition(source, call.head)) continue;
+    const definition = functionDefinition(source, call.head);
+    if (!definition) return true;
+    const argumentsList = topLevelArguments(call.argumentsText);
+    const nested = definition.parameters[argumentsList.findIndex((argument) => new RegExp("\\b" + match[0] + "\\b").test(argument))];
+    if (!nested || functionMutatesParameter(source, call.head, nested)) return true;
+  }
+  return false;
+}
+
 function assignmentSites(source: string) {
   const assignments: Array<{ name: string; value: string; local: boolean }> = [];
-  const assignment = /(?:^|[;\n])\s*(\blocal\s+)?([A-Za-z_]\w*)\s*=\s*([^;\n]*)/g;
+  const assignment = /(?:^|[;\n])\s*(\blocal\s+)?([A-Za-z_]\w*)\s*=(?!=)\s*([^;\n]*)/g;
   for (const match of source.matchAll(assignment)) assignments.push({ name: match[2]!, value: match[3]!.trim(), local: Boolean(match[1]) });
   return assignments;
 }
 
 function memberAssignmentSites(source: string) {
   const assignments: Array<{ name: string; member: string; value: string; index: number }> = [];
-  const assignment = /\b([A-Za-z_]\w*)\s*(\.\s*[A-Za-z_]\w*|\[[^\]]*\])\s*=\s*([^\n;]*)/g;
+  const assignment = /\b([A-Za-z_]\w*)\s*(\.\s*[A-Za-z_]\w*|\[[^\]]*\])\s*=(?!=)\s*([^\n;]*)/g;
   for (const match of source.matchAll(assignment)) assignments.push({ name: match[1]!, member: match[2]!.replace(/\s/g, ""), value: match[3]!.trim(), index: match.index ?? 0 });
   return assignments;
 }
@@ -275,7 +647,7 @@ function accumulatorIsPopulated(body: string, assignment: { name: string; member
     if (argumentsList.length < 2 || !sameTableReference(argumentsList[0]!, target)) continue;
     if (referencesAny(argumentsList[1]!, derived) || (argumentsList[2] !== undefined && referencesAny(argumentsList[2]!, derived))) return true;
   }
-  const nestedAssignment = new RegExp("\\b" + assignment.name + "\\s*" + assignment.member.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&") + "(?:\\s*(?:\\.\\s*[A-Za-z_]\\w*|\\[[^\\]]*\\]))\\s*=\\s*([^\\n;]*)", "g");
+  const nestedAssignment = new RegExp("\\b" + assignment.name + "\\s*" + assignment.member.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&") + "(?:\\s*(?:\\.\\s*[A-Za-z_]\\w*|\\[[^\\]]*\\]))\\s*=(?!=)\\s*([^\\n;]*)", "g");
   return [...suffix.matchAll(nestedAssignment)].some((match) => referencesAny(match[1]!.trim(), derived));
 }
 
@@ -374,7 +746,7 @@ function validateExpandedFilter(source: string) {
     const copiedValue = copiesDerivedValue(assignment.value, assignment.member, derived);
     const emptyAccumulator = assignment.value === "{}" && (assignment.member === ".types" || assignment.member === ".excludeTypes" || assignment.member.startsWith("[")) && accumulatorIsPopulated(definition.body, assignment, derived);
     if (!simpleValue && !copiedValue && !emptyAccumulator) {
-      throw new BadRequestException("Project-GC expandFilter must preserve the input filter semantics");
+      throw new BadRequestException(`Project-GC expandFilter must preserve the input filter semantics (unsupported write to ${assignment.name}${assignment.member})`);
     }
   }
   const returns = [...definition.body.matchAll(/\breturn\b([^\n;]*)/g)].map((match) => match[1]!.replace(/\bend\s*$/, "").trim());
@@ -459,7 +831,7 @@ function topLevelArguments(value: string) {
 
 function configAliases(source: string) {
   const aliases = new Set(["conf", "config"]);
-  const assignment = /(?:\blocal\s+)?([A-Za-z_]\w*)\s*=\s*(?:(?:TableCopy\s*\(\s*)?(?:config|conf)\s*\)?)/g;
+  const assignment = /(?:\blocal\s+)?([A-Za-z_]\w*)\s*=\s*(?:(?:TableCopy\s*\(\s*)?(?:config|conf)\s*\)?(?![\w.\[]))/g;
   for (const match of source.matchAll(assignment)) {
     const previous = source.slice(0, match.index ?? 0).trimEnd().at(-1);
     if (previous === "{" || previous === ",") continue;
@@ -490,7 +862,7 @@ function validateFindsConfig(source: string) {
   }
   for (const alias of aliases) {
     if (alias === "conf" || alias === "config") continue;
-    const assignment = new RegExp("(?:\\blocal\\s+)?" + alias + "\\s*=\\s*([^\\n;]+)", "g");
+    const assignment = new RegExp("(?:\\blocal\\s+)?" + alias + "\\s*=(?!=)\\s*([^\\n;]+)", "g");
     for (const match of source.matchAll(assignment)) {
       const rhs = match[1]!.trim();
       if (!/^(?:TableCopy\s*\(\s*(?:config|conf)\s*\)|config|conf)\s*$/i.test(rhs)) {
@@ -507,7 +879,7 @@ function validateFindsConfig(source: string) {
     if (new RegExp("\\b" + alias + "\\s*\\.\\s*filter\\s*\\.\\s*(?!filters\\b)").test(source)) {
       throw new BadRequestException("Project-GC filter config uses an unsupported nested filter");
     }
-    const mutation = new RegExp("\\b" + alias + "\\s*\\.\\s*([A-Za-z_]\\w*(?:\\s*\\.\\s*[A-Za-z_]\\w*)*)\\s*=\\s*([^\\n;]+)", "g");
+    const mutation = new RegExp("\\b" + alias + "\\s*\\.\\s*([A-Za-z_]\\w*(?:\\s*\\.\\s*[A-Za-z_]\\w*)*)\\s*=(?!=)\\s*([^\\n;]+)", "g");
     for (const match of source.matchAll(mutation)) {
       const property = match[1]!.replaceAll(" ", "");
       const rhs = match[2]!.trim();
@@ -529,14 +901,110 @@ function validateFindsConfig(source: string) {
   }
 }
 
+function validateCheckerInvocation(source: string, callee: string, extraOkPatterns: RegExp[]) {
+  const calls = [...source.matchAll(new RegExp(`\\b${callee}\\s*\\(\\s*conf\\s*\\)`, "g"))].filter((match) => !/\bfunction\s*$/.test(source.slice(0, match.index ?? 0)));
+  if (calls.length !== 1) throw new BadRequestException(`The importer requires one direct ${callee}(conf) checker invocation`);
+  const invocation = calls[0]!;
+  const invocationIndex = invocation.index ?? 0;
+  const statementStart = Math.max(source.lastIndexOf("\n", invocationIndex), source.lastIndexOf(";", invocationIndex)) + 1;
+  const invocationEnd = invocationIndex + invocation[0]!.length;
+  const nextNewline = source.indexOf("\n", invocationEnd);
+  const nextSemicolon = source.indexOf(";", invocationEnd);
+  const statementEnd = [nextNewline, nextSemicolon].filter((index) => index >= 0).sort((left, right) => left - right)[0] ?? source.length;
+  const beforeInvocation = source.slice(statementStart, invocationIndex);
+  const afterInvocationStatement = source.slice(invocationEnd, statementEnd);
+  const assignmentMatch = /^\s*$/.test(afterInvocationStatement) ? beforeInvocation.match(/^\s*(?:local\s+)?([A-Za-z_]\w*)\s*=\s*$/) : null;
+  const directReturn = /^\s*return\s*$/.test(beforeInvocation) && /^\s*$/.test(afterInvocationStatement);
+  if (!assignmentMatch && !directReturn) {
+    throw new BadRequestException(`The ${callee} result must be returned or assigned directly`);
+  }
+  if (directReturn) {
+    if (source.slice(statementEnd).trim()) throw new BadRequestException(`The ${callee} result must be returned or assigned directly`);
+  } else {
+    const resultName = assignmentMatch?.[1];
+    if (!resultName) throw new BadRequestException(`The ${callee} result must be returned or assigned directly`);
+    const afterInvocation = source.slice(invocationEnd);
+    const aliases = new Set([resultName]);
+    const verdictAliases = new Set<string>();
+    const assignments = /(?:^|[;\n])\s*(?:\blocal\s+)?([A-Za-z_]\w*)\s*=(?!=)\s*([^;\n]*)/g;
+    for (const assignment of afterInvocation.matchAll(assignments)) {
+      const name = assignment[1]!;
+      const value = assignment[2]!.trim();
+      const valueName = value.match(/^([A-Za-z_]\w*)$/)?.[1];
+      const isResultRead = [...aliases].some((alias) => new RegExp("^" + alias + "\\s*\\.\\s*ok$").test(value));
+      if (isResultRead) verdictAliases.add(name);
+      if (verdictAliases.has(name) && !isResultRead && value !== name) {
+        throw new BadRequestException(`The ${callee} result must not be reassigned or have its verdict overridden`);
+      }
+      if (aliases.has(name)) {
+        if (!valueName || !aliases.has(valueName)) {
+          throw new BadRequestException(`The ${callee} result must not be reassigned or have its verdict overridden`);
+        }
+      } else if (valueName && aliases.has(valueName)) {
+        aliases.add(name);
+      } else if (!isResultRead && [...aliases].some((alias) => new RegExp("\\b" + alias + "\\b").test(value))) {
+        // Reads of display fields (slog/shtml/log/html) into fresh locals
+        // cannot fabricate a pass: the returned verdict must still be res.ok
+        // or a boolean read of it (checked with returnVerdict below), and
+        // verdict aliases cannot be reassigned from these locals.
+        const fieldReadPattern = new RegExp("\\b(?:" + [...aliases].map((alias) => alias).join("|") + ")\\s*\\.\\s*[A-Za-z_]\\w*", "g");
+        if ([...aliases].some((alias) => new RegExp("\\b" + alias + "\\b").test(value.replace(fieldReadPattern, "")))) {
+          throw new BadRequestException(`The ${callee} result must not be reassigned or have its verdict overridden`);
+        }
+      }
+    }
+    const aliasPattern = [...aliases].map((alias) => "\\b" + alias + "\\b").join("|");
+    const resultAssignment = new RegExp("(?:" + aliasPattern + ")\\s*(?:\\.\\s*ok\\s*=(?!=)|\\[[^\\]]*\\]\\s*=(?!=))");
+    const methodCall = new RegExp("(?:" + aliasPattern + ")\\s*:\\s*[A-Za-z_]\\w*\\s*\\(");
+    const containerAssignment = /\b[A-Za-z_]\w*\s*(?:\.\s*[A-Za-z_]\w*|\[[^\]]*\])\s*=(?!=)\s*([^\n;]*)/g;
+    const resultRead = (value: string) => [...aliases].some((alias) => new RegExp("^" + alias + "\\s*\\.\\s*ok$").test(value.trim()));
+    const aliasReference = new RegExp("(?:" + aliasPattern + ")");
+    if ([...afterInvocation.matchAll(/\breturn\s*\{([^}]*)\}/g)].some((statement) => (statement[1]!.match(/\bok\s*=/g) ?? []).length > 1)) {
+      throw new BadRequestException(`The ${callee} result must not contain duplicate verdict fields`);
+    }
+    const containerReference = [...afterInvocation.matchAll(containerAssignment)].some((assignment) => !resultRead(assignment[1]!) && aliasReference.test(assignment[1]!));
+    // Calls that only read the result (e.g. ok_html(res.ok) for display) are
+    // fine when the callee is defined in the script and provably does not
+    // mutate the argument it receives. Unknown callees still fail closed.
+    const callReference = callSites(afterInvocation).some((call) => {
+      if (!aliasReference.test(call.argumentsText)) return false;
+      if (MUTATING_TABLE_CALLS.has(call.name) || READ_ONLY_CALLS.has(call.name)) return MUTATING_TABLE_CALLS.has(call.name);
+      const definition = functionDefinition(source, call.name);
+      if (!definition) return true;
+      const argumentsList = topLevelArguments(call.argumentsText);
+      return argumentsList.some((argument, index) => {
+        if (!aliasReference.test(argument)) return false;
+        const parameter = definition.parameters[index];
+        return !parameter || functionMutatesParameter(source, call.name, parameter);
+      });
+    });
+    const returnVerdict = [...afterInvocation.matchAll(/\breturn\s*\{([^}]*)\}/g)].some((statement) => {
+      const value = statement[1]!.match(/\bok\s*=\s*([^,}\n]+)/)?.[1]?.trim();
+      if (value === undefined) return false;
+      return !resultRead(value) && ![...verdictAliases].some((alias) => new RegExp("^" + alias + "$").test(value));
+    });
+    if (resultAssignment.test(afterInvocation) || methodCall.test(afterInvocation) || containerReference || callReference || returnVerdict) {
+      throw new BadRequestException(`The ${callee} result must not be reassigned or have its verdict overridden`);
+    }
+  }
+  const allOkAssignments = [...source.matchAll(/\bok\s*=(?!=)\s*([^\n;}]*)/g)].map((match) => match[1]!.trim().replace(/[,}].*$/, "").replace(/\bend\s*$/, "").trim());
+  if (allOkAssignments.some((value) => value !== "true" && value !== "false" && value !== "ok" && value !== "nil" && value !== "res.ok" && !extraOkPatterns.some((pattern) => pattern.test(value)))) {
+    throw new BadRequestException("The checker contains an additional pass/fail condition");
+  }
+}
+
 function validateCountCondition(source: string) {
   const body = functionBody(source, "c_number");
   if (!body) throw new BadRequestException("Project-GC c_number must be a function taking conf");
   if ((source.match(/\bfunction\s+c_number\s*\(/g) ?? []).length !== 1 || (source.match(/\bc_number\s*\(\s*conf\s*\)/g) ?? []).length !== 2) {
     throw new BadRequestException("The importer requires one c_number(conf) checker invocation");
   }
-  if ((source.match(/#\s*finds/g) ?? []).length !== 1 || (body.match(/#\s*finds/g) ?? []).length !== 1) throw new BadRequestException("c_number must compare the complete find count exactly once");
-  const findsAssignmentCount = body.match(/\bfinds\s*=\s*/g) ?? [];
+  // The single-comparison requirement is enforced structurally below
+  // (exactly one `#finds >= conf.limit` check, gated ok-assignments and a
+  // gated verdict return). Other `#finds` uses — index math such as
+  // `#finds+1` or display text such as `".." .. #finds .. ".."` — cannot
+  // reach the verdict, so they are not counted here.
+  const findsAssignmentCount = body.match(/\bfinds\s*=(?!=)\s*/g) ?? [];
   if (findsAssignmentCount.length !== 1) throw new BadRequestException("The c_number finds result must not be reassigned");
   if (!/\bfinds\s*=\s*(?:(?:[A-Za-z_]\w*\s*\.\s*)?[A-Za-z_]\w*)\s*\(/.test(body)) {
     throw new BadRequestException("The c_number finds result must come from a function call");
@@ -572,7 +1040,7 @@ function validateCountCondition(source: string) {
         const valueRead = [...findsAliases].some((alias) => new RegExp("^" + alias + "\\s*(?:\\.\\s*[A-Za-z_]\\w*|\\[[^\\]]*\\]|$)").test(assignment.value));
         const valueLength = new RegExp("^#\\s*(?:" + [...findsAliases].join("|") + ")$").test(assignment.value);
         const valueCopy = /^TableCopy\s*\(/.test(assignment.value);
-        if (!valueRead && !valueLength && !valueCopy) {
+        if (!valueRead && !valueLength && !valueCopy && findsReferenceEscapes(assignment.value, findsAliases, source)) {
           throw new BadRequestException("The c_number finds result must not escape its local scope");
         }
       }
@@ -643,6 +1111,9 @@ function validateCountCondition(source: string) {
   const exactIf = body.match(/\bif\s*\(?\s*#\s*finds\s*>=\s*conf\s*\.\s*limit\s*\)?\s*then\b/g) ?? [];
   const exactReturn = body.match(/\bok\s*=\s*#\s*finds\s*>=\s*conf\s*\.\s*limit\b\s*(?=[,}])/g) ?? [];
   if (exactIf.length + exactReturn.length !== 1) throw new BadRequestException("c_number must return exactly the conf.limit count condition");
+  if (exactIf.length === 1 && !soleWriteInCondition(source, /\bok\s*=(?!=)\s*true\b/, /#finds\s*>=\s*conf\s*\.\s*limit/)) {
+    throw new BadRequestException("c_number has an additional pass/fail condition");
+  }
   const returnStatements = [...body.matchAll(/\breturn\s*\{([^}]*)\}/g)].map((match) => match[1] ?? "");
   if (returnStatements.some((value) => (value.match(/\bok\s*=/g) ?? []).length > 1)) {
     throw new BadRequestException("The c_number result must not contain duplicate verdict fields");
@@ -658,75 +1129,7 @@ function validateCountCondition(source: string) {
       throw new BadRequestException("c_number has an additional pass/fail condition");
     }
   }
-  const cNumberCalls = [...source.matchAll(/\bc_number\s*\(\s*conf\s*\)/g)].filter((match) => !/\bfunction\s*$/.test(source.slice(0, match.index ?? 0)));
-  if (cNumberCalls.length !== 1) throw new BadRequestException("The importer requires one direct c_number(conf) checker invocation");
-  const invocation = cNumberCalls[0]!;
-  const invocationIndex = invocation.index ?? 0;
-  const statementStart = Math.max(source.lastIndexOf("\n", invocationIndex), source.lastIndexOf(";", invocationIndex)) + 1;
-  const invocationEnd = invocationIndex + invocation[0]!.length;
-  const nextNewline = source.indexOf("\n", invocationEnd);
-  const nextSemicolon = source.indexOf(";", invocationEnd);
-  const statementEnd = [nextNewline, nextSemicolon].filter((index) => index >= 0).sort((left, right) => left - right)[0] ?? source.length;
-  const beforeInvocation = source.slice(statementStart, invocationIndex);
-  const afterInvocationStatement = source.slice(invocationEnd, statementEnd);
-  const assignmentMatch = /^\s*$/.test(afterInvocationStatement) ? beforeInvocation.match(/^\s*(?:local\s+)?([A-Za-z_]\w*)\s*=\s*$/) : null;
-  const directReturn = /^\s*return\s*$/.test(beforeInvocation) && /^\s*$/.test(afterInvocationStatement);
-  if (!assignmentMatch && !directReturn) {
-    throw new BadRequestException("The c_number result must be returned or assigned directly");
-  }
-  if (directReturn) {
-    if (source.slice(statementEnd).trim()) throw new BadRequestException("The c_number result must be returned or assigned directly");
-  } else {
-    const resultName = assignmentMatch?.[1];
-    if (!resultName) throw new BadRequestException("The c_number result must be returned or assigned directly");
-    const afterInvocation = source.slice(invocationEnd);
-    const aliases = new Set([resultName]);
-    const verdictAliases = new Set<string>();
-    const assignments = /(?:^|[;\n])\s*(?:\blocal\s+)?([A-Za-z_]\w*)\s*=\s*([^;\n]*)/g;
-    for (const assignment of afterInvocation.matchAll(assignments)) {
-      const name = assignment[1]!;
-      const value = assignment[2]!.trim();
-      const valueName = value.match(/^([A-Za-z_]\w*)$/)?.[1];
-      const isResultRead = [...aliases].some((alias) => new RegExp("^" + alias + "\\s*\\.\\s*ok$").test(value));
-      if (isResultRead) verdictAliases.add(name);
-      if (verdictAliases.has(name) && !isResultRead && value !== name) {
-        throw new BadRequestException("The c_number result must not be reassigned or have its verdict overridden");
-      }
-      if (aliases.has(name)) {
-        if (!valueName || !aliases.has(valueName)) {
-          throw new BadRequestException("The c_number result must not be reassigned or have its verdict overridden");
-        }
-      } else if (valueName && aliases.has(valueName)) {
-        aliases.add(name);
-      } else if (!isResultRead && [...aliases].some((alias) => new RegExp("\\b" + alias + "\\b").test(value))) {
-        throw new BadRequestException("The c_number result must not be reassigned or have its verdict overridden");
-      }
-    }
-    const aliasPattern = [...aliases].map((alias) => "\\b" + alias + "\\b").join("|");
-    const resultAssignment = new RegExp("(?:" + aliasPattern + ")\\s*(?:\\.\\s*ok\\s*=|\\[[^\\]]*\\]\\s*=)");
-    const methodCall = new RegExp("(?:" + aliasPattern + ")\\s*:\\s*[A-Za-z_]\\w*\\s*\\(");
-    const containerAssignment = /\b[A-Za-z_]\w*\s*(?:\.\s*[A-Za-z_]\w*|\[[^\]]*\])\s*=\s*([^\n;]*)/g;
-    const resultRead = (value: string) => [...aliases].some((alias) => new RegExp("^" + alias + "\\s*\\.\\s*ok$").test(value.trim()));
-    const aliasReference = new RegExp("(?:" + aliasPattern + ")");
-    if ([...afterInvocation.matchAll(/\breturn\s*\{([^}]*)\}/g)].some((statement) => (statement[1]!.match(/\bok\s*=/g) ?? []).length > 1)) {
-      throw new BadRequestException("The c_number result must not contain duplicate verdict fields");
-    }
-    const containerReference = [...afterInvocation.matchAll(containerAssignment)].some((assignment) => !resultRead(assignment[1]!) && aliasReference.test(assignment[1]!));
-    const callReference = callSites(afterInvocation).some((call) => aliasReference.test(call.argumentsText));
-    const returnVerdict = [...afterInvocation.matchAll(/\breturn\s*\{([^}]*)\}/g)].some((statement) => {
-      const value = statement[1]!.match(/\bok\s*=\s*([^,}\n]+)/)?.[1]?.trim();
-      if (value === undefined) return false;
-      return !resultRead(value) && ![...verdictAliases].some((alias) => new RegExp("^" + alias + "$").test(value));
-    });
-    if (resultAssignment.test(afterInvocation) || methodCall.test(afterInvocation) || containerReference || callReference || returnVerdict) {
-      throw new BadRequestException("The c_number result must not be reassigned or have its verdict overridden");
-    }
-  }
-  const allOkAssignments = [...source.matchAll(/\bok\s*=\s*([^\n;}]*)/g)].map((match) => match[1]!.trim().replace(/[,}].*$/, "").replace(/\bend\s*$/, "").trim());
-  const allowedCountExpression = /^#\s*finds\s*>=\s*conf\s*\.\s*limit$/;
-  if (allOkAssignments.some((value) => value !== "true" && value !== "false" && value !== "ok" && value !== "nil" && value !== "res.ok" && !allowedCountExpression.test(value))) {
-    throw new BadRequestException("The checker contains an additional pass/fail condition");
-  }
+  validateCheckerInvocation(source, "c_number", [/^#\s*finds\s*>=\s*conf\s*\.\s*limit$/]);
 }
 
 export function projectGcFilterLabel(filters: ProjectGcFindFilter[]): string {
@@ -751,7 +1154,7 @@ export function projectGcFilterLabel(filters: ProjectGcFindFilter[]): string {
 export function importProjectGcNumberScript(scriptValue: unknown, configTextValue: unknown): { rules: ProjectGcNumberRule[]; summary: string } {
   if (typeof scriptValue !== "string" || !scriptValue.trim()) throw new BadRequestException("Paste a Project-GC Lua script");
   if (scriptValue.length > MAX_SCRIPT_LENGTH) throw new BadRequestException("Lua script is too large");
-  const script = maskLua(scriptValue);
+  const script = stripDeadNilBranches(maskLua(scriptValue));
   validateParseBudgets(script);
   validateFindsConfig(script);
   validateCountCondition(script);
@@ -775,4 +1178,1008 @@ export function importProjectGcNumberScript(scriptValue: unknown, configTextValu
   const filters = alternatives.map((value, index) => compactFilter(parseFilter({ ...base, ...objectValue(value, `filters[${index}]`) })));
   const summary = projectGcFilterLabel(filters);
   return { rules: [{ type: "PROJECT_GC_NUMBER", minimum, filters, filterLabel: summary }], summary: `${minimum.toLocaleString()} finds, ${summary}` };
+}
+
+export function isProjectGcCalendarScript(scriptValue: unknown) {
+  if (typeof scriptValue !== "string" || !scriptValue.trim() || scriptValue.length > MAX_SCRIPT_LENGTH) return false;
+  return /\bfunction\s+c_calendar\s*\(/.test(maskLua(scriptValue));
+}
+
+export function isProjectGcMatrixScript(scriptValue: unknown) {
+  if (typeof scriptValue !== "string" || !scriptValue.trim() || scriptValue.length > MAX_SCRIPT_LENGTH) return false;
+  const script = maskLua(scriptValue);
+  return /\bqualified_tuples\b/.test(script) && !/\bfunction\s+c_(number|calendar)\s*\(/.test(script);
+}
+
+const CALENDAR_FILTER_KEYS = new Set([...FILTER_KEYS].filter((key) =>
+  !["minlatitude", "maxlatitude", "minlongitude", "maxlongitude"].includes(key)));
+const CALENDAR_META_KEYS = new Set(["limit", "needed", "leapday", "filter", "debug", "brief"]);
+const CALENDAR_UNSUPPORTED_KEYS: Record<string, string> = {
+  filters: "Calendar checkers use a single 'filter' object, not a 'filters' list",
+  type: "Use 'types' instead of 'type' for calendar checkers",
+  years: "Only single-year calendars are supported",
+  placed: "Hidden-date ('placed') calendars are not supported",
+  nooftypes: "Calendars counting cache types per day are not supported",
+  ExcludedTypes: "Excluded cache types are not supported for calendar checkers",
+  labs: "Lab caches are not part of imported find data"
+};
+
+function parseCalendarConfig(configTextValue: unknown): { minimum: number; perDay: number; allowLeapDaySkip: boolean; filters: ProjectGcFindFilter[]; filterLabel: string } {
+  if (typeof configTextValue !== "string" || !configTextValue.trim()) throw new BadRequestException("Paste the Project-GC tag config as JSON");
+  if (configTextValue.length > MAX_CONFIG_LENGTH) throw new BadRequestException("Project-GC config is too large");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(configTextValue);
+  } catch {
+    throw new BadRequestException("Project-GC tag config must be valid JSON");
+  }
+  const config = objectValue(parsed, "Project-GC tag config");
+  for (const key of Object.keys(config)) {
+    if (CALENDAR_FILTER_KEYS.has(key) || CALENDAR_META_KEYS.has(key)) continue;
+    if (key === "years" && Number(config[key]) === 1) continue;
+    if (CALENDAR_UNSUPPORTED_KEYS[key]) throw new BadRequestException(CALENDAR_UNSUPPORTED_KEYS[key]!);
+    throw new BadRequestException(`Project-GC config option '${key}' is not supported`);
+  }
+  if (config.placed !== undefined) throw new BadRequestException("Hidden-date ('placed') calendars are not supported");
+  const perDay = config.limit === undefined ? 1 : Number(config.limit);
+  if (!Number.isInteger(perDay) || perDay < 1 || perDay > 1_000_000) throw new BadRequestException("Project-GC calendar limit must be a positive integer");
+  const minimum = config.needed === undefined ? 366 : Number(config.needed);
+  if (!Number.isInteger(minimum) || minimum < 1 || minimum > 366) throw new BadRequestException("Project-GC calendar needed must be between 1 and 366");
+  if (config.leapday !== undefined && typeof config.leapday !== "string") throw new BadRequestException("Project-GC calendar leapday must be \"allow\" or omitted");
+  const allowLeapDaySkip = config.leapday === "allow";
+  const singular = config.filter === undefined ? {} : objectValue(config.filter, "Project-GC filter");
+  for (const key of Object.keys(singular)) {
+    if (!CALENDAR_FILTER_KEYS.has(key)) throw new BadRequestException(`Project-GC filter option '${key}' is not supported`);
+  }
+  const topLevel = Object.fromEntries(Object.entries(config).filter(([key]) => CALENDAR_FILTER_KEYS.has(key)));
+  const merged = { ...topLevel, ...singular } as Record<string, unknown>;
+  const rawTypes = merged.types === undefined || merged.types === null || merged.types === "" ? [] : Array.isArray(merged.types) ? merged.types : [merged.types];
+  if ((rawTypes as unknown[]).some((item) => typeof item === "string" && ["lab cache", "labcache"].includes(item.trim().toLowerCase()))) {
+    throw new BadRequestException("Lab caches are not part of imported find data");
+  }
+  const filter = compactFilter(parseFilter(merged));
+  if (Object.keys(filter).length === 0) {
+    throw new BadRequestException("Calendar checkers need at least one find filter; unfiltered calendars can include lab caches, which are not imported");
+  }
+  const filterLabel = projectGcFilterLabel([filter]);
+  return { minimum, perDay, allowLeapDaySkip, filters: [filter], filterLabel };
+}
+
+function validateCalendarFilterFromConfig(source: string) {
+  const definition = functionDefinition(source, "FilterFromConfig");
+  if (!definition || definition.parameters.length !== 1) {
+    throw new BadRequestException("Project-GC FilterFromConfig must derive the find filter from the tag config");
+  }
+  const param = definition.parameters[0]!;
+  const lines = definition.body.split("\n").map((line) => line.trim()).filter((line) => line);
+  const base = lines[0]?.match(/^local\s+([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)\.filter\s+or\s*\{\s*\}$/);
+  if (!base || base[2] !== param) {
+    throw new BadRequestException("Project-GC FilterFromConfig must start from the tag config filter");
+  }
+  const name = base[1]!;
+  let returned = false;
+  for (const line of lines.slice(1)) {
+    if (new RegExp(`^return\\s+${name}$`).test(line)) {
+      returned = true;
+      continue;
+    }
+    const merge = line.match(new RegExp(`^${name}\\.([A-Za-z_]\\w*)\\s*=\\s*${name}\\.\\1\\s+or\\s+${param}\\.\\1$`));
+    if (!merge || !CALENDAR_FILTER_KEYS.has(merge[1]!)) {
+      throw new BadRequestException("Project-GC FilterFromConfig uses an unsupported filter merge");
+    }
+  }
+  if (!returned) throw new BadRequestException("Project-GC FilterFromConfig must return the derived filter");
+}
+
+function validateCalendarFinds(source: string) {
+  const sites = [...source.matchAll(/\bPGC\s*\.\s*GetFinds\s*\(/g)];
+  if (sites.length !== 1) throw new BadRequestException("Project-GC calendar checkers must fetch finds with a single PGC.GetFinds call");
+  const open = (sites[0]!.index ?? 0) + sites[0]![0].length - 1;
+  const argumentsText = balancedCallArguments(source, open);
+  if (argumentsText === null) throw new BadRequestException("Project-GC GetFinds call has unbalanced arguments");
+  const args = topLevelArguments(argumentsText);
+  if (args.length !== 2) throw new BadRequestException("Project-GC GetFinds must pass a profile and an options table");
+  if (args[0]!.trim().replace(/\s/g, "") !== "profileId" && args[0]!.trim().replace(/\s/g, "") !== "args[1].profileId") {
+    throw new BadRequestException("Project-GC GetFinds must count the user's own finds");
+  }
+  const options = args[1]!.trim();
+  if (!/^\{.*\}$/s.test(options)) throw new BadRequestException("Project-GC GetFinds options must be a table");
+  for (const key of [...options.matchAll(/([A-Za-z_]\w*)\s*=/g)].map((match) => match[1]!)) {
+    if (!["includeLabCaches", "fields", "order", "filter"].includes(key)) {
+      throw new BadRequestException(`Project-GC GetFinds option '${key}' is not supported`);
+    }
+  }
+  const filterVar = options.match(/(?:^|[,{])\s*filter\s*=\s*([A-Za-z_]\w*)\s*(?:,|\})/)?.[1];
+  if (!filterVar) throw new BadRequestException("Project-GC GetFinds must use the tag config as its filter");
+  const filterBindings = [...source.matchAll(new RegExp(`(?:^|[;\\n])\\s*local\\s+${filterVar}\\s*=\\s*FilterFromConfig\\s*\\(\\s*conf\\s*\\)\\s*(?=[;\\n])`, "g"))];
+  if (filterBindings.length !== 1) throw new BadRequestException("Project-GC GetFinds must use the tag config as its filter");
+  const calendarBody = functionBody(source, "c_calendar") ?? "";
+  for (const assignment of memberAssignmentSites(calendarBody)) {
+    if (assignment.name !== filterVar) continue;
+    throw new BadRequestException("Project-GC GetFinds filter must come straight from the tag config");
+  }
+  validateCalendarFilterFromConfig(source);
+}
+
+function validateCalendarConfigWrites(source: string, original: string, configKeys: Set<string>) {
+  // Plain rebindings of the whole tag config are only transparent in their
+  // initial form and through the normalizer (whose own writes are checked
+  // below and whose return value is pinned to the config it received).
+  for (const match of source.matchAll(/(?:^|[;\n])\s*(?:local\s+)?(?:conf|config)\s*=(?!=)\s*([^\n;]*)/g)) {
+    const rhs = match[1]!.trim();
+    if (/^(?:args\[1\]\.config|CleanupConfig\s*\([^()\n]*\))$/.test(rhs)) continue;
+    throw new BadRequestException("Project-GC calendar checkers must not replace the tag config");
+  }
+  const normalizer = functionDefinition(source, "CleanupConfig");
+  if (source.match(/CleanupConfig\s*\(/) && (!normalizer || !new RegExp(`^\\s*return\\s+${normalizer.parameters[0] ?? "conf"}\\s*$`, "m").test(normalizer.body))) {
+    throw new BadRequestException("Project-GC calendar checkers must normalize (not replace) the tag config");
+  }
+  // Member writes may only restate the defaults the translation applies
+  // itself; anything else would let the script count something different
+  // than the imported rule. Leap-day/placement literals are checked against
+  // the original text because masking blanks string contents.
+  for (const assignment of memberAssignmentSites(source)) {
+    if (assignment.name !== "conf" && assignment.name !== "config") continue;
+    const field = memberField(assignment.member);
+    if (!field) throw new BadRequestException("The checker changes its tag config in an unsupported way");
+    const rhs = assignment.value;
+    const selfTonumber = new RegExp(`^tonumber\\s*\\(\\s*(?:conf|config)\\s*\\.\\s*${field}\\s*\\)$`).test(rhs);
+    const defaultLiteral = (field === "limit" && rhs === "1") ||
+      (field === "needed" && rhs === "366") ||
+      (field === "years" && rhs === "1") ||
+      (field === "labs" && (rhs === "true" || rhs === "false"));
+    if (selfTonumber || defaultLiteral) continue;
+    if (field === "leapday" || field === "placed") continue;
+    // Clearing a key the tag config does not set (and that has no translated
+    // default) changes nothing; clearing anything else would diverge from
+    // the imported rule.
+    if (rhs === "nil" && !configKeys.has(field) && !["limit", "needed", "years", "leapday", "placed", "labs"].includes(field)) continue;
+    throw new BadRequestException("The checker changes its tag config in an unsupported way");
+  }
+  for (const match of original.matchAll(/\b(?:conf|config)\s*\.\s*(leapday|placed)\s*=(?!=)\s*([^\n;]*)/g)) {
+    const literal = match[2]!.trim().replace(/\s*--.*$/, "");
+    if (literal !== '"false"' && literal !== "'false'" && literal !== '"true"' && literal !== "'true'") {
+      throw new BadRequestException("The checker changes its tag config in an unsupported way");
+    }
+  }
+}
+
+function validateCalendarCondition(source: string, allowLeapDaySkip: boolean) {
+  const body = functionBody(source, "c_calendar");
+  if (!body) throw new BadRequestException("Project-GC c_calendar must be a function taking conf");
+  if ((source.match(/\bfunction\s+c_calendar\s*\(/g) ?? []).length !== 1) {
+    throw new BadRequestException("The importer requires one c_calendar checker");
+  }
+  // The fetched set is pinned to the single GetFinds call: one binding, no
+  // reassignment, no in-place or helper-driven mutation, and iteration only.
+  const bindings = assignmentSites(body).filter((assignment) => assignment.name === "myFinds");
+  // The value may span lines (isWholeCallExpression needs one line), but the
+  // call's balance and options are already proven at source level, so sharing
+  // the call prefix with the single GetFinds site pins this binding to it.
+  if (bindings.length !== 1 || !/^PGC\.GetFinds\s*\(/.test(bindings[0]!.value)) {
+    throw new BadRequestException("Project-GC c_calendar must fetch its finds with one PGC.GetFinds call");
+  }
+  const findLoopVars = new Set<string>();
+  for (const match of body.matchAll(/\bfor\s+([A-Za-z_][\w\s,]*?)\s+in\s+([^\n]+?)\s+do\b/g)) {
+    if (!/\bmyFinds\b/.test(match[2]!)) continue;
+    for (const name of match[1]!.split(",")) {
+      const trimmed = name.trim();
+      if (/^[A-Za-z_]\w*$/.test(trimmed)) findLoopVars.add(trimmed);
+    }
+  }
+  if (!findLoopVars.size) throw new BadRequestException("Project-GC c_calendar must iterate its fetched finds");
+  const writeTargets = ["myFinds", ...findLoopVars].join("|");
+  if (new RegExp(`\\b(?:${writeTargets})\\s*(?:\\.\\s*[A-Za-z_]\\w*|\\[[^\\]]*\\])\\s*=(?!=)`).test(body)) {
+    throw new BadRequestException("Project-GC c_calendar must not rewrite its fetched finds");
+  }
+  for (const call of callSites(body)) {
+    if (CONTROL_CALLS.has(call.name)) continue;
+    const argumentsList = topLevelArguments(call.argumentsText);
+    for (const [index, argument] of argumentsList.entries()) {
+      if (!/\bmyFinds\b/.test(argument)) continue;
+      if (["ipairs", "pairs", "next"].includes(call.name)) continue;
+      if (MUTATING_TABLE_CALLS.has(call.name)) {
+        throw new BadRequestException("Project-GC c_calendar must not change its fetched finds");
+      }
+      const definition = functionDefinition(source, call.name);
+      const parameter = definition?.parameters[index];
+      if (process.env.PGC_DEBUG) console.error("MX-PURE", JSON.stringify({ call: call.name, param: parameter ?? null }));
+      if (!definition || !parameter || functionMutatesParameter(source, call.name, parameter)) {
+        throw new BadRequestException("Project-GC c_calendar must not pass its fetched finds to mutating helpers");
+      }
+    }
+  }
+  // The calendar grid shape pins the count to distinct month-day cells with
+  // the tag config's per-day limit; the verdict core pins the pass rule.
+  for (const pattern of [
+    /\bfor\s+month\s*=\s*1\s*,\s*12\s+do\b/,
+    /daysinmonth\s*\[\s*month\s*\]/,
+    /makekey\s*\(\s*month\s*,\s*day\s*\)/,
+    /status\[[^\]]+\]\s*>=\s*conf\s*\.\s*limit/,
+    /numdone\s*>=\s*conf\s*\.\s*needed/
+  ]) {
+    if (!pattern.test(body)) throw new BadRequestException("Project-GC c_calendar must count distinct calendar dates");
+  }
+  if (allowLeapDaySkip && !/makekey\s*\(\s*2\s*,\s*29\s*\)/.test(body)) {
+    throw new BadRequestException("Project-GC c_calendar must spell out its leap-day exception");
+  }
+  if (!soleWriteInCondition(source, /\bok\s*=(?!=)\s*true\b/, /numdone\s*>=\s*conf\s*\.\s*needed/)) {
+    throw new BadRequestException("Project-GC c_calendar must pass on its completed-day count");
+  }
+  validateCheckerInvocation(source, "c_calendar", []);
+}
+
+export function importProjectGcCalendarScript(scriptValue: unknown, configTextValue: unknown): { rules: CalendarFillRule[]; summary: string } {
+  if (typeof scriptValue !== "string" || !scriptValue.trim()) throw new BadRequestException("Paste a Project-GC Lua script");
+  if (scriptValue.length > MAX_SCRIPT_LENGTH) throw new BadRequestException("Lua script is too large");
+  if (typeof configTextValue !== "string" || !configTextValue.trim()) throw new BadRequestException("Paste the Project-GC tag config as JSON");
+  let rawConfig: Record<string, unknown>;
+  try {
+    rawConfig = objectValue(JSON.parse(configTextValue), "Project-GC tag config");
+  } catch (error) {
+    if (error instanceof BadRequestException) throw error;
+    throw new BadRequestException("Project-GC tag config must be valid JSON");
+  }
+  const parsed = parseCalendarConfig(configTextValue);
+  const script = stripDeadNilBranches(maskLua(scriptValue), new Set(Object.keys(rawConfig)));
+  validateParseBudgets(script);
+  validateCalendarFinds(script);
+  validateCalendarConfigWrites(script, scriptValue, new Set(Object.keys(rawConfig)));
+  validateCalendarCondition(script, parsed.allowLeapDaySkip);
+  const leapNote = parsed.allowLeapDaySkip ? " (Feb 29 skippable)" : "";
+  return { rules: [{ type: "CALENDAR_FILL", minimum: parsed.minimum, perDay: parsed.perDay, allowLeapDaySkip: parsed.allowLeapDaySkip, filters: parsed.filters, filterLabel: parsed.filterLabel }], summary: `${parsed.minimum} calendar dates, ${parsed.filterLabel}${leapNote}` };
+}
+
+const MATRIX_FILTER_KEYS = new Set([
+  "country", "region", "county", "minVisitDate", "maxVisitDate", "minHiddenDate",
+  "maxHiddenDate", "types", "sizes", "difficulties", "terrains"
+]);
+const MATRIX_META_KEYS = new Set(["SameX", "DifferentY", "Groups", "Minimum", "Show", "ShowFields", "GiveAdvice", "WeekStartsOn", "labcaches", "brief", "debug"]);
+const MATRIX_UNSUPPORTED_KEYS: Record<string, string> = {
+  Require: "Row filters (Require) are not supported for matrix checkers",
+  Exclude: "Row filters (Exclude) are not supported for matrix checkers",
+  owned: "Owned-cache matrices are not supported",
+  favorites: "Favorite-based matrices are not supported",
+  filter: "Matrix checkers read location filters from top-level options, not a 'filter' object",
+  excludeTypes: "Excluded cache types are not supported for matrix checkers"
+};
+const MATRIX_TYPE_GROUPS = new Set(["physical", "events"]);
+
+function parseMatrixConfig(configTextValue: unknown): { minimum: number; filters: ProjectGcFindFilter[]; filterLabel: string; labNote: boolean } {
+  if (typeof configTextValue !== "string" || !configTextValue.trim()) throw new BadRequestException("Paste the Project-GC tag config as JSON");
+  if (configTextValue.length > MAX_CONFIG_LENGTH) throw new BadRequestException("Project-GC config is too large");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(configTextValue);
+  } catch {
+    throw new BadRequestException("Project-GC tag config must be valid JSON");
+  }
+  const config = objectValue(parsed, "Project-GC tag config");
+  for (const key of Object.keys(config)) {
+    if (MATRIX_FILTER_KEYS.has(key) || MATRIX_META_KEYS.has(key)) continue;
+    if (MATRIX_UNSUPPORTED_KEYS[key]) throw new BadRequestException(MATRIX_UNSUPPORTED_KEYS[key]!);
+    throw new BadRequestException(`Project-GC config option '${key}' is not supported`);
+  }
+  if (config.DifferentY !== "type") throw new BadRequestException("Only cache-type matrices (DifferentY 'type') can be imported");
+  if (config.SameX !== undefined && config.SameX !== "same") throw new BadRequestException("Only single-group matrices (SameX 'same') can be imported");
+  if (config.Groups !== undefined && Number(config.Groups) !== 1) throw new BadRequestException("Only single-group matrices (Groups 1) can be imported");
+  const minimum = config.Minimum === undefined ? 2 : Number(config.Minimum);
+  if (!Number.isInteger(minimum) || minimum < 1 || minimum > 100) throw new BadRequestException("Project-GC matrix Minimum must be between 1 and 100");
+  const base = Object.fromEntries(Object.entries(config).filter(([key]) => MATRIX_FILTER_KEYS.has(key)));
+  const rawTypes = (base as Record<string, unknown>).types;
+  const typeNames = rawTypes === undefined || rawTypes === null || rawTypes === "" ? [] : Array.isArray(rawTypes) ? rawTypes : [rawTypes];
+  if ((typeNames as unknown[]).some((item) => typeof item === "string" && MATRIX_TYPE_GROUPS.has(item.trim().toLowerCase()))) {
+    throw new BadRequestException("Cache-type groups (Physical/Events) are not supported for matrix checkers; list the types instead");
+  }
+  if (config.ShowFields !== undefined) {
+    const fields = Array.isArray(config.ShowFields) ? config.ShowFields : [config.ShowFields];
+    if (!fields.length || fields.some((item) => typeof item !== "string" || !item.trim())) {
+      throw new BadRequestException("Project-GC ShowFields must be a string or an array of strings");
+    }
+  }
+  const filter = compactFilter(parseFilter(base));
+  const filterLabel = projectGcFilterLabel([filter]);
+  const labNote = !!config.labcaches;
+  return { minimum, filters: [filter], filterLabel, labNote };
+}
+
+function dimensionEntryHasReader(source: string, dim: string) {
+  // The display-derivation loop may only ever write fields whose dimension
+  // definition provably lacks a cache-reading `read` function, and the
+  // display formatter call may only ever resolve to a missing `write`
+  // function. Scan single-line entries for dim: a dynamic hook (or an
+  // unscannable layout) fails closed. Constant readers (e.g. the stock
+  // `same` dimension returning "") cannot rewire grouping.
+  let found = false;
+  for (const line of source.split("\n")) {
+    const entry = line.match(new RegExp(`\\.${dim}\\s*=\\s*\\{(.*)\\}\\s*$`)) ??
+      line.match(new RegExp(`\\["${dim}"\\]\\s*=\\s*\\{(.*)\\}\\s*$`)) ??
+      line.match(new RegExp(`\\['${dim}'\\]\\s*=\\s*\\{(.*)\\}\\s*$`));
+    if (!entry) continue;
+    found = true;
+    for (const hook of ["read", "write"]) {
+      const hookFn = entry[1]!.match(new RegExp(`(?:\\.${hook}|\\["${hook}"\\]|\\['${hook}'\\])\\s*=\\s*function\\s*\\(([^)]*)\\)([\\s\\S]*)$`));
+      if (!hookFn) {
+        if (new RegExp(`(?:\\.${hook}|\\["${hook}"\\]|\\['${hook}'\\])\\s*=`).test(entry[1]!)) return true;
+        continue;
+      }
+      const params = hookFn[1]!.split(",").map((parameter) => parameter.trim()).filter((parameter) => /^[A-Za-z_]\w*$/.test(parameter));
+      if (params.some((parameter) => new RegExp(`\\b${parameter}\\b`).test(hookFn[2]!))) return true;
+    }
+  }
+  return found ? false : true;
+}
+
+function validateMatrixCondition(source: string, original: string) {
+  // The find set is pinned to one GetFinds call whose filter is built only
+  // from direct tag-config reads; the verdict is pinned to the group count.
+  const sites = [...source.matchAll(/\bPGC\s*\.\s*GetFinds\s*\(/g)];
+  if (sites.length !== 1) throw new BadRequestException("Project-GC matrix checkers must fetch finds with a single PGC.GetFinds call");
+  const open = (sites[0]!.index ?? 0) + sites[0]![0].length - 1;
+  const argumentsText = balancedCallArguments(source, open);
+  if (argumentsText === null) throw new BadRequestException("Project-GC GetFinds call has unbalanced arguments");
+  const args = topLevelArguments(argumentsText);
+  if (args.length !== 2) throw new BadRequestException("Project-GC GetFinds must pass a profile and an options table");
+  if (args[0]!.trim().replace(/\s/g, "") !== "profileId" && args[0]!.trim().replace(/\s/g, "") !== "args[1].profileId") {
+    throw new BadRequestException("Project-GC GetFinds must count the user's own finds");
+  }
+  const options = args[1]!.trim();
+  if (!/^\{.*\}$/s.test(options)) throw new BadRequestException("Project-GC GetFinds options must be a table");
+  for (const key of [...options.matchAll(/([A-Za-z_]\w*)\s*=/g)].map((match) => match[1]!)) {
+    if (!["fields", "filter", "includeLabCaches"].includes(key)) {
+      throw new BadRequestException(`Project-GC GetFinds option '${key}' is not supported`);
+    }
+  }
+  const filterVar = options.match(/(?:^|[,{])\s*filter\s*=\s*([A-Za-z_]\w*)\s*(?:,|\})/)?.[1];
+  if (!filterVar || filterVar !== "filter") throw new BadRequestException("Project-GC GetFinds must use the tag config as its filter");
+  const bindings = assignmentSites(source).filter((assignment) => assignment.name === "finds");
+  const supportedBinding = bindings.find((assignment) => /^PGC\.GetFinds\s*\(/.test(assignment.value));
+  if (!supportedBinding || bindings.length !== 1) {
+    throw new BadRequestException("Project-GC matrix checkers must fetch finds with a single PGC.GetFinds call");
+  }
+  // Fetched-data calls only supply rows; blank their spans so later
+  // statement scans never mistake call arguments for assignments.
+  const blankSpans = (text: string, spans: Array<[number, number]>) => text.split("").map((char, position) => {
+    if (char === "\n" || char === "\r") return char;
+    return spans.some(([from, to]) => position >= from && position < to) ? " " : char;
+  }).join("");
+  const fetchSpans: Array<[number, number]> = [[(sites[0]!.index ?? 0), open + 1 + argumentsText.length + 1]];
+  for (const match of source.matchAll(/\bPGC\s*\.\s*GetPublishers\s*\(/g)) {
+    const callOpen = (match.index ?? 0) + match[0].length - 1;
+    const callArgs = balancedCallArguments(source, callOpen);
+    if (callArgs !== null) fetchSpans.push([(match.index ?? 0), callOpen + 1 + callArgs.length + 1]);
+  }
+  const body = blankSpans(source, fetchSpans);
+  // The filter table starts empty (exactly once) and gains exactly the
+  // tag-config reads; anything else would count a different find set.
+  const filterAssigns = [...body.matchAll(/(?:^|[;\n])\s*(?:local\s+)?filter\s*=(?!=)\s*([^\n;]*)/g)];
+  if (filterAssigns.length !== 1 || !/local\s+filter/.test(filterAssigns[0]![0]!) || filterAssigns[0]![1]!.trim() !== "{}") {
+    throw new BadRequestException("Project-GC GetFinds must use the tag config as its filter");
+  }
+  for (const assignment of memberAssignmentSites(body)) {
+    if (assignment.name !== "filter") continue;
+    const field = memberField(assignment.member);
+    if (!field || !MATRIX_FILTER_KEYS.has(field) || assignment.value !== `conf.${field}`) {
+      throw new BadRequestException("Project-GC GetFinds must use the tag config as its filter");
+    }
+  }
+  const iteration = body.match(/\bfor\s+([A-Za-z_]\w*)\s*,\s*([A-Za-z_]\w*)\s+in\s+ipairs\s*\(\s*finds\s*\)\s+do\b/);
+  if (!iteration) throw new BadRequestException("Project-GC matrix checkers must iterate their fetched finds");
+  // Finds rows travel under every loop variable bound by iterating the
+  // fetched finds (plus `cache`, the conventional row alias this script
+  // family reuses for the same rows). Anything else cannot name fetched
+  // data; single-letter display locals such as the dimension functions'
+  // parameters stay invisible on purpose.
+  const rowVars = new Set<string>(["finds", "cache"]);
+  for (const match of body.matchAll(/\bfor\s+([A-Za-z_]\w*)\s*,\s*([A-Za-z_]\w*)\s+in\s+ipairs\s*\(\s*finds\s*\)\s+do\b/g)) {
+    for (const name of [match[1]!, match[2]!]) {
+      if (name !== "_") rowVars.add(name);
+    }
+  }
+  const rowNames = [...rowVars].join("|");
+  const derivation = /for\s+([A-Za-z_]\w*)\s*,\s*([A-Za-z_]\w*)\s+in\s+ipairs\s*\(\s*finds\s*\)\s+do\s+for\s+_\s*,\s*([A-Za-z_]\w*)\s+in\s+ipairs\s*\(\s*xy\s*\)\s+do\s+if\s+known_dimensions\s*\[\s*\3\s*\]\s*\.read\s*~=\s*nil\s+then\s+\2\s*\[\s*\3\s*\]\s*=\s*known_dimensions\s*\[\s*\3\s*\]\s*\.read\s*\(\s*\2\s*\)\s+end\s+end\s+end/g;
+  const derivationSpans: Array<[number, number]> = [];
+  for (const match of source.matchAll(derivation)) {
+    derivationSpans.push([match.index ?? 0, (match.index ?? 0) + match[0].length]);
+  }
+  const bodyForCalls = body.split("").map((char, position) => {
+    if (char === "\n" || char === "\r") return char;
+    return derivationSpans.some(([from, to]) => position >= from && position < to) ? " " : char;
+  }).join("");
+  if (derivationSpans.length && (dimensionEntryHasReader(original, "same") || dimensionEntryHasReader(original, "type"))) {
+    throw new BadRequestException("Project-GC matrix checkers must not rewrite their counted fields");
+  }
+  for (const assignment of memberAssignmentSites(body)) {
+    if (!new RegExp(`^(?:${rowNames})$`).test(assignment.name)) continue;
+    const insideDerivation = derivationSpans.some(([from, to]) => (assignment.index ?? 0) >= from && (assignment.index ?? 0) < to);
+    const isDedupMark = assignment.member === ".exclude" && assignment.value === "true";
+    if (!insideDerivation && !isDedupMark) {
+      throw new BadRequestException("Project-GC matrix checkers must not rewrite their fetched finds");
+    }
+  }
+  for (const call of callSites(bodyForCalls)) {
+    if (CONTROL_CALLS.has(call.name)) continue;
+    const argumentsList = topLevelArguments(call.argumentsText);
+    const rowRef = new RegExp(`\\b(?:${rowNames})\\b`);
+    if (call.name === "write") {
+      // Display formatters (`known_dimensions[y].write(row)`). The dimension
+      // gate above proves the counted dimensions define none, so this call
+      // site is dead for accepted configs; only whole-array smuggling
+      // through it is still rejected.
+      if (/\bfinds\b(?!\s*[.\[])/.test(call.argumentsText)) {
+        throw new BadRequestException("Project-GC matrix checkers must not pass their fetched finds to mutating helpers");
+      }
+      continue;
+    }
+    if (MUTATING_TABLE_CALLS.has(call.name)) {
+      // Rewriting the fetched array (or one of its rows) in place changes the
+      // count. Copying single field reads (strings) elsewhere cannot.
+      if (argumentsList.length && rowRef.test(argumentsList[0]!)) {
+        throw new BadRequestException("Project-GC matrix checkers must not change their fetched finds");
+      }
+      if (call.name === "table.insert" && argumentsList.some((argument, position) => position > 0 && /\bfinds\b/.test(argument))) {
+        throw new BadRequestException("Project-GC matrix checkers must not alias their fetched finds");
+      }
+      continue;
+    }
+    for (const [index, argument] of argumentsList.entries()) {
+      if (!rowRef.test(argument)) continue;
+      if (process.env.PGC_DEBUG) console.error("MX-ARG", JSON.stringify({ call: call.name, argument: argument.slice(0, 60) }));
+      if (["ipairs", "pairs", "next"].includes(call.name)) continue;
+      if (READ_ONLY_CALLS.has(call.name)) continue;
+      const definition = functionDefinition(source, call.name);
+      const parameter = definition?.parameters[index];
+      if (!definition || !parameter || functionMutatesParameter(source, call.name, parameter)) {
+        throw new BadRequestException("Project-GC matrix checkers must not pass their fetched finds to mutating helpers");
+      }
+    }
+  }
+  // Grouping dimensions are pinned: one group keyed by a constant, cell keys
+  // by cache type. Anything else would count a different matrix.
+  if (!/local\s+x\s*=\s*conf\.SameX/.test(body) || !/local\s+y\s*=\s*conf\.DifferentY/.test(body)) {
+    throw new BadRequestException("Project-GC matrix checkers must group by the tag config dimensions");
+  }
+  if (!/local\s+xy\s*=\s*\{\s*x\s*,\s*y\s*\}/.test(body)) {
+    throw new BadRequestException("Project-GC matrix checkers must group by the tag config dimensions");
+  }
+  // Newly qualifying groups are collected by their group key: exactly one
+  // such insert, indexing an iteration row by the group dimension.
+  const groupInserts = [...body.matchAll(/table\.insert\s*\(\s*qualified_tuples\s*,\s*([A-Za-z_]\w*)\s*\[\s*([A-Za-z_]\w*)\s*\]\s*\)/g)];
+  if (groupInserts.length !== 1 || !rowVars.has(groupInserts[0]![1]!) || groupInserts[0]![2] !== "x") {
+    throw new BadRequestException("Project-GC matrix checkers must group by the tag config dimensions");
+  }
+  for (const match of source.matchAll(/\bneeded\s*=(?!=)\s*([^\n;]*)/g)) {
+    const rhs = match[1]!.trim();
+    if (rhs === "1" || /^tonumber\s*\(\s*conf\.Groups\s*\)$/.test(rhs)) continue;
+    throw new BadRequestException("Project-GC matrix checkers must count one group of distinct types");
+  }
+  for (const match of source.matchAll(/\bmintuplesize\s*=(?!=)\s*([^\n;]*)/g)) {
+    const rhs = match[1]!.trim();
+    if (rhs === "2" || /^tonumber\s*\(\s*conf\.Minimum\s*\)$/.test(rhs)) continue;
+    throw new BadRequestException("Project-GC matrix checkers must count distinct types per the tag config minimum");
+  }
+  if (!/#qualified_tuples\s*>=\s*needed/.test(body)) {
+    throw new BadRequestException("Project-GC matrix checkers must pass on their qualifying group count");
+  }
+  validateTopLevelVerdict(source, { allowEmptyFindsEarlyReturn: true, okTrueCondition: /#qualified_tuples\s*>=\s*needed/ });
+}
+
+export function importProjectGcMatrixScript(scriptValue: unknown, configTextValue: unknown): { rules: DistinctTypesRule[]; summary: string } {
+  if (typeof scriptValue !== "string" || !scriptValue.trim()) throw new BadRequestException("Paste a Project-GC Lua script");
+  if (scriptValue.length > MAX_SCRIPT_LENGTH) throw new BadRequestException("Lua script is too large");
+  const parsed = parseMatrixConfig(configTextValue);
+  const script = stripDeadNilBranches(maskLua(scriptValue), new Set(Object.keys(objectValue(JSON.parse(configTextValue as string), "Project-GC tag config"))));
+  validateParseBudgets(script);
+  validateMatrixCondition(script, scriptValue);
+  const labNote = parsed.labNote ? " (lab caches not imported)" : "";
+  return { rules: [{ type: "DISTINCT_TYPES", minimum: parsed.minimum, filters: parsed.filters, filterLabel: parsed.filterLabel }], summary: `${parsed.minimum} distinct cache types, ${parsed.filterLabel}${labNote}` };
+}
+
+export function isProjectGcMonthlyScript(scriptValue: unknown) {
+  if (typeof scriptValue !== "string" || !scriptValue.trim() || scriptValue.length > MAX_SCRIPT_LENGTH) return false;
+  const script = maskLua(scriptValue);
+  return /\btestfilter_and\b/.test(script) && /\bok_number\b/.test(script) &&
+    !/\bfunction\s+c_(number|calendar)\s*\(/.test(script) && !/\bqualified_tuples\b/.test(script);
+}
+
+const MONTHLY_FILTER_KEYS = new Set([...FILTER_KEYS]);
+const MONTHLY_UNSUPPORTED_KEYS: Record<string, string> = {
+  max: "Upper-bound pass counts are not supported",
+  owned: "Owned-cache challenges are not supported",
+  favorites: "Favorite-based challenges are not supported",
+  labs: "Lab caches are not part of imported find data",
+  polysets: "Polygon challenges are not supported",
+  polygons: "Polygon challenges are not supported",
+  polyset: "Polygon challenges are not supported",
+  excludepolys: "Polygon challenges are not supported",
+  exclude: "Per-cache exclusions are not supported for monthly checkers",
+  Exclude: "Per-cache exclusions are not supported for monthly checkers",
+  timeout: "Solver timeouts are not supported",
+  nofilterfix: "Numeric range filters are not supported for monthly checkers",
+  Require: "Row filters (Require) are not supported for monthly checkers",
+  GiveAdvice: "Advice output is not supported",
+  Show: "Custom result display is not supported",
+  ShowFields: "Custom result display is not supported",
+  WeekStartsOn: "Week-number dimensions are not supported",
+  SameX: "Matrix dimensions are not supported for monthly checkers",
+  DifferentY: "Matrix dimensions are not supported for monthly checkers",
+  Groups: "Matrix dimensions are not supported for monthly checkers",
+  Minimum: "Matrix dimensions are not supported for monthly checkers",
+  needed: "Count checkers use a different importer",
+  limit: "Count checkers use a different importer",
+  leapday: "Calendar checkers use a different importer",
+  filters: "Monthly checkers use a single 'filter' object, not a 'filters' list",
+  type: "Use 'types' instead of 'type' for monthly checkers",
+  years: "Multi-year calendars are not supported",
+  placed: "Hidden-date ('placed') calendars are not supported",
+  nooftypes: "Per-day type counts are not supported",
+  ExcludedTypes: "Excluded cache types are not supported for monthly checkers",
+  excludeTypes: "Excluded cache types are not supported for monthly checkers",
+  excludeTravelingGeocaches: "Traveling-cache exclusions are not supported",
+  excludeDupFinds: "Duplicate-log handling is not supported"
+};
+
+function parseMonthlyMonthlyTest(value: unknown, index: number): { month: number; minimum: number; attribute: string } {
+  const test = objectValue(value, `tests[${index}]`);
+  const allowed = new Set(["name", "filters", "min", "log"]);
+  for (const key of Object.keys(test)) {
+    if (!allowed.has(key)) throw new BadRequestException(`Monthly test ${index + 1} option '${key}' is not supported`);
+  }
+  if (!Array.isArray(test.filters) || test.filters.length !== 2) {
+    throw new BadRequestException(`Monthly test ${index + 1} must filter one month and one attribute`);
+  }
+  let month: number | undefined;
+  let attribute: string | undefined;
+  for (const entry of test.filters) {
+    const filter = objectValue(entry, `tests[${index}].filters`);
+    for (const key of Object.keys(filter)) {
+      if (!["field", "value"].includes(key)) throw new BadRequestException(`Monthly test ${index + 1} filters support only field and value`);
+    }
+    if (typeof filter.field !== "string") throw new BadRequestException(`Monthly test ${index + 1} filter field must be a string`);
+    const monthMatch = filter.field.match(/^visitdate\[\s*6\s*,\s*7\s*\]$/);
+    if (monthMatch) {
+      if (typeof filter.value !== "string" || !/^(0[1-9]|1[0-2])$/.test(filter.value)) {
+        throw new BadRequestException(`Monthly test ${index + 1} month must be "01" to "12"`);
+      }
+      if (month !== undefined) throw new BadRequestException(`Monthly test ${index + 1} must filter exactly one month`);
+      month = Number(filter.value);
+      continue;
+    }
+    const attributeMatch = filter.field.match(/^attribute:(\d+)$/);
+    if (attributeMatch) {
+      if (filter.value !== undefined) throw new BadRequestException(`Monthly test ${index + 1} attribute filters take no value`);
+      if (attribute !== undefined) throw new BadRequestException(`Monthly test ${index + 1} must filter exactly one attribute`);
+      attribute = attributeMatch[1]!;
+      continue;
+    }
+    throw new BadRequestException(`Monthly test ${index + 1} field '${filter.field}' is not supported`);
+  }
+  if (month === undefined || attribute === undefined) {
+    throw new BadRequestException(`Monthly test ${index + 1} must filter one month and one attribute`);
+  }
+  if (test.min === undefined || !Number.isInteger(Number(test.min)) || Number(test.min) < 1 || Number(test.min) > 1_000_000) {
+    throw new BadRequestException(`Monthly test ${index + 1} needs a positive integer min`);
+  }
+  if (test.log !== undefined) {
+    const log = objectValue(test.log, `tests[${index}].log`);
+    // Only output sorting is harmless (it reorders display strings after
+    // counting); anything else running here could rewrite verdict state.
+    // The engine iterates func specs, so each entry must be its own array.
+    if (log.func !== undefined) {
+      if (!Array.isArray(log.func) || !log.func.length ||
+        log.func.some((item: unknown) => !Array.isArray(item) || (item as unknown[])[0] !== "sort")) {
+        throw new BadRequestException(`Monthly test ${index + 1} log func is not supported`);
+      }
+    }
+  }
+  return { month, minimum: Number(test.min), attribute };
+}
+
+function parseMonthlyConfig(configTextValue: unknown): {
+  months: Array<{ month: number; minimum: number }>;
+  overallMinimum: number;
+  attributeId: string;
+  attributeLabel: string;
+  filters: ProjectGcFindFilter[];
+  filterLabel: string;
+  excludedGcCodes: string[];
+} {
+  if (typeof configTextValue !== "string" || !configTextValue.trim()) throw new BadRequestException("Paste the Project-GC tag config as JSON");
+  if (configTextValue.length > MAX_CONFIG_LENGTH) throw new BadRequestException("Project-GC config is too large");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(configTextValue);
+  } catch {
+    throw new BadRequestException("Project-GC tag config must be valid JSON");
+  }
+  const config = objectValue(parsed, "Project-GC tag config");
+  const MONTHLY_TOP_KEYS = new Set(["tests", "links", "min", "filter", "debug", "brief", "fields", "exclude"]);
+  for (const key of Object.keys(config)) {
+    if (MONTHLY_FILTER_KEYS.has(key)) {
+      throw new BadRequestException("Monthly checkers read location filters from the 'filter' object, not top-level options");
+    }
+    if (!MONTHLY_TOP_KEYS.has(key)) {
+      if (MONTHLY_UNSUPPORTED_KEYS[key]) throw new BadRequestException(MONTHLY_UNSUPPORTED_KEYS[key]!);
+      throw new BadRequestException(`Project-GC config option '${key}' is not supported`);
+    }
+  }
+  if (!Array.isArray(config.tests) || config.tests.length < 1 || config.tests.length > 12) {
+    throw new BadRequestException("Monthly checkers need between 1 and 12 monthly tests");
+  }
+  const months = (config.tests as unknown[]).map((test, index) => parseMonthlyMonthlyTest(test, index));
+  const seenMonths = new Set<number>();
+  for (const entry of months) {
+    if (seenMonths.has(entry.month)) throw new BadRequestException("Monthly tests must cover distinct months");
+    seenMonths.add(entry.month);
+  }
+  const attributeId = months[0]!.attribute;
+  if (months.some((entry) => entry.attribute !== attributeId)) {
+    throw new BadRequestException("Monthly tests must all use the same attribute");
+  }
+  const overallMinimum = config.min === undefined ? months.length : Number(config.min);
+  if (!Number.isInteger(overallMinimum) || overallMinimum < 1 || overallMinimum > 12) {
+    throw new BadRequestException("Monthly overall minimum must be between 1 and 12");
+  }
+  let base: Record<string, unknown> = {};
+  if (config.filter !== undefined) {
+    const singular = objectValue(config.filter, "Project-GC filter");
+    for (const key of Object.keys(singular)) {
+      if (!MONTHLY_FILTER_KEYS.has(key)) throw new BadRequestException(`Project-GC filter option '${key}' is not supported`);
+    }
+    base = singular as Record<string, unknown>;
+  }
+  const rawTypes = base.types;
+  const typeNames = rawTypes === undefined || rawTypes === null || rawTypes === "" ? [] : Array.isArray(rawTypes) ? rawTypes : [rawTypes];
+  if ((typeNames as unknown[]).some((item) => typeof item === "string" && ["physical", "events"].includes(item.trim().toLowerCase()))) {
+    throw new BadRequestException("Cache-type groups (Physical/Events) are not supported for monthly checkers; list the types instead");
+  }
+  const excludedGcCodes: string[] = [];
+  if (config.exclude !== undefined) {
+    const excluded = Array.isArray(config.exclude) ? config.exclude : [config.exclude];
+    for (const code of excluded) {
+      if (typeof code !== "string" || !/^GC[A-Z0-9]+$/i.test(code.trim())) {
+        throw new BadRequestException("Monthly exclusions must be GC codes");
+      }
+      excludedGcCodes.push(code.trim().toUpperCase());
+    }
+  }
+  const filter = compactFilter(parseFilter(base));
+  const filterLabel = projectGcFilterLabel([filter]);
+  return { months: months.map(({ month, minimum }) => ({ month, minimum })), overallMinimum, attributeId, attributeLabel: geocacheAttributeLabel(attributeId) ?? `Attribute ${attributeId}`, filters: [filter], filterLabel, excludedGcCodes };
+}
+
+function validateMonthlyCondition(source: string) {
+  // The find set is pinned to one GetFinds call; per-test counting is pinned
+  // to the engine's qualify/testfilter shape; the verdict is pinned to the
+  // passed-test count. Display plumbing (logs, advice, sorting) is ignored.
+  const withoutHelpers = blankPolygonFill(blankNamedFunction(source, "MaGeo526"));
+  const sites = [...withoutHelpers.matchAll(/\bPGC\s*\.\s*GetFinds\s*\(/g)];
+  if (sites.length !== 1) throw new BadRequestException("Project-GC monthly checkers must fetch finds with a single PGC.GetFinds call");
+  const open = (sites[0]!.index ?? 0) + sites[0]![0].length - 1;
+  const argumentsText = balancedCallArguments(source, open);
+  if (argumentsText === null) throw new BadRequestException("Project-GC GetFinds call has unbalanced arguments");
+  const args = topLevelArguments(argumentsText);
+  if (args.length !== 2) throw new BadRequestException("Project-GC GetFinds must pass a profile and an options table");
+  if (args[0]!.trim().replace(/\s/g, "") !== "profileId" && args[0]!.trim().replace(/\s/g, "") !== "args[1].profileId") {
+    throw new BadRequestException("Project-GC GetFinds must count the user's own finds");
+  }
+  const options = args[1]!.trim();
+  if (!/^\{.*\}$/s.test(options)) throw new BadRequestException("Project-GC GetFinds options must be a table");
+  for (const key of [...options.matchAll(/([A-Za-z_]\w*)\s*=/g)].map((match) => match[1]!)) {
+    if (["fields", "order", "filter"].includes(key)) continue;
+    // Optional traveling-cache/duplicate handling reads rejected config keys,
+    // so it is always off for accepted configs.
+    if ((key === "excludeTravelingGeocaches" || key === "excludeDupFinds") &&
+      new RegExp(`\\b${key}\\s*=\\s*conf\\.${key}\\b`).test(options)) continue;
+    throw new BadRequestException(`Project-GC GetFinds option '${key}' is not supported`);
+  }
+  const filterRef = options.match(/(?:^|[,{])\s*filter\s*=\s*([A-Za-z_]\w*(?:\s*\.\s*[A-Za-z_]\w*)?)\s*(?:,|\})/)?.[1]?.replace(/\s/g, "");
+  if (filterRef !== "conf.filter") throw new BadRequestException("Project-GC GetFinds must use the tag config as its filter");
+  // The fetched set must flow straight into `finds`: exactly one binding and
+  // it must be the GetFinds call itself (the call starts on the binding line,
+  // so a prefix test suffices despite the multi-line options table).
+  const bindings = assignmentSites(withoutHelpers).filter((assignment) => assignment.name === "finds");
+  if (bindings.length !== 1 || !/^PGC\.GetFinds\s*\(/.test(bindings[0]!.value)) {
+    throw new BadRequestException("Project-GC monthly checkers must fetch finds with a single PGC.GetFinds call");
+  }
+  // Test-condition and visitdate subtests cannot appear (the tag config
+  // pattern rejects them), so their handlers are dead code here. Owned and
+  // favorite injection cannot appear either (both rejected top-level keys),
+  // which also removes the extra GetHides/GetFPDetails fetches and the
+  // finds-by-gccode index. Ranking helpers only stamp write-only `<field>_ord`
+  // display fields the counting core never reads, so their bodies are blanked
+  // while their definitions (and calls) stay visible.
+  const withoutDeadTests = blankConfKeyRegions(blankTestBlocks(withoutHelpers), new Set(["owned", "favorites"]));
+  const withoutDisplay = blankNamedFunction(blankNamedFunction(withoutDeadTests, "histogram"), "order");
+  // Fetched rows travel under loop variables bound by iterating the finds;
+  // single-letter display locals stay invisible on purpose, as for matrices.
+  const rowVars = new Set<string>(["finds", "cache"]);
+  for (const match of withoutDisplay.matchAll(/\bfor\s+([A-Za-z_]\w*)\s*,\s*([A-Za-z_]\w*)\s+in\s+ipairs\s*\(\s*finds\s*\)\s+do\b/g)) {
+    for (const name of [match[1]!, match[2]!]) {
+      if (name !== "_") rowVars.add(name);
+    }
+  }
+  const rowNames = [...rowVars].join("|");
+  for (const assignment of memberAssignmentSites(withoutDisplay)) {
+    if (!new RegExp(`^(?:${rowNames})$`).test(assignment.name)) continue;
+    if (assignment.name === "cache" && assignment.member === ".exclude" && cleanDedupValue(assignment.value)) continue;
+    throw new BadRequestException("Project-GC monthly checkers must not rewrite their fetched finds");
+  }
+  for (const call of callSites(withoutDisplay)) {
+    if (CONTROL_CALLS.has(call.name)) continue;
+    const argumentsList = topLevelArguments(call.argumentsText);
+    const rowRef = new RegExp(`\\b(?:${rowNames})\\b`);
+    if (call.name === "func" && isEngineFuncDispatcher(source)) {
+      // The generic value-transform dispatcher: every func spec reachable
+      // under accepted tag patterns (bitmask/substr from field preparation,
+      // sort from result logs) only reads. Mutating specs would have to come
+      // from rejected tag keys.
+      continue;
+    }
+    if (/^math\s*\.\s*[A-Za-z_]\w*$/.test(call.name)) {
+      // The Lua math library is side-effect free; min/max/floor only read.
+      continue;
+    }
+    if ((call.name === "parse" || call.name === "diff") && isMethodOnlyCall(withoutDisplay, call.name)) {
+      // The iso date library is method-called (`iso:parse(...)`, `:diff(...)`),
+      // which the call scanner reports as bare names. Allowed only when every
+      // call site is method form and no global redefinition exists; anything
+      // else resolves textually below and fails closed.
+      continue;
+    }
+    if (MUTATING_TABLE_CALLS.has(call.name)) {
+      if (argumentsList.length && rowRef.test(argumentsList[0]!)) {
+        throw new BadRequestException("Project-GC monthly checkers must not change their fetched finds");
+      }
+      if (call.name === "table.insert" && argumentsList.some((argument, position) => position > 0 && /\bfinds\b/.test(argument))) {
+        throw new BadRequestException("Project-GC monthly checkers must not alias their fetched finds");
+      }
+      continue;
+    }
+    for (const [index, argument] of argumentsList.entries()) {
+      if (!rowRef.test(argument)) continue;
+      if (["ipairs", "pairs", "next"].includes(call.name)) continue;
+      if (READ_ONLY_CALLS.has(call.name)) continue;
+      const definition = functionDefinition(source, call.name);
+      const parameter = definition?.parameters[index];
+      if (!definition || !parameter || !rowParamIsReadOnly(source, withoutDisplay, call.name, parameter)) {
+        throw new BadRequestException("Project-GC monthly checkers must not pass their fetched finds to mutating helpers");
+      }
+    }
+  }
+  // Counting core: every find runs through qualify, which numbers matching
+  // tests; the engine helpers it relies on must be the stock ones. Each test
+  // passes on its own minimum before it can increment the passed-test count.
+  for (const pattern of [
+    /\bfor\s+\w+\s*,\s*test\s+in\s+ipairs\s*\(\s*conf\.tests\s*\)/,
+    /\bfor\s+index\s*=\s*1\s*,\s*#finds\s+do\b/,
+    /\bqualify\s*\(\s*test\s*,\s*index\s*\)/,
+    /\btest\.number\s*=\s*test\.number\s*\+\s*1\b/,
+    /\btest\.number\s*=\s*0\b/,
+    /\btest\.min\s+and\s+test\.number\s*<\s*test\.min\b/,
+    /\blocal\s+testnumber\s*=\s*#conf\.tests\b/,
+    /\bconf\.min\s*=\s*testnumber\b/
+  ]) {
+    if (!pattern.test(withoutDisplay)) throw new BadRequestException("Project-GC monthly checkers must count matching finds per test");
+  }
+  if (!/local\s+ok_number\s*=\s*0\b/.test(withoutDisplay) || !/ok_number\s*=\s*ok_number\s*\+\s*1\b/.test(withoutDisplay)) {
+    throw new BadRequestException("Project-GC monthly checkers must count passing tests");
+  }
+  for (const name of ["qualify", "testfilter_and", "testfilter_or", "itemfilter", "preparetest", "inittest"]) {
+    if (!new RegExp(`\\bfunction\\s+${name}\\s*\\(`).test(withoutDisplay)) {
+      throw new BadRequestException("Project-GC monthly checkers must count matching finds per test");
+    }
+  }
+  // The verdict passes in the else branch of the fail condition (`if
+  // ok_number < conf.min ... then FAILED else PASSED`); conf.max stays nil
+  // because the tag pattern rejects it, so the else means the count qualifies.
+  validateTopLevelVerdict(withoutDisplay, { allowEmptyFindsEarlyReturn: false, okTrueCondition: /ok_number\s*<\s*conf\.min/, okInElse: true });
+}
+
+function isMethodOnlyCall(text: string, name: string) {
+  if (new RegExp(`\\bfunction\\s+${name}\\s*\\(`).test(text)) return false;
+  for (const match of text.matchAll(new RegExp(`\\b${name}\\s*\\(`, "g"))) {
+    const before = text.slice(0, match.index ?? 0).replace(/\s+$/, "");
+    if (!before.endsWith(":")) return false;
+  }
+  return true;
+}
+
+function rowParamIsReadOnly(source: string, withoutDisplay: string, name: string, parameter: string, stack = new Set<string>()): boolean {
+  // Monthly-engine row check: fetched rows are Lua tables, so only member or
+  // index writes rooted at the row (or its aliases) and destructive table.*
+  // calls on them can change fetched data. Plain rebinding never escapes
+  // (Lua value semantics), reads never mutate, and the `test` accumulator is
+  // engine state rather than fetched data. Anything unresolvable fails
+  // closed. This is stricter where it matters and looser where the shared
+  // checker is conservative (counter arithmetic such as `bits = bits - 1`,
+  // display reads such as `'{' .. cache[field] .. '}'`).
+  const key = `${name}:${parameter}`;
+  if (stack.has(key)) return false;
+  const definition = functionDefinition(source, name);
+  if (!definition || !definition.parameters.includes(parameter)) return false;
+  const nextStack = new Set(stack);
+  nextStack.add(key);
+  const aliases = new Set([parameter]);
+  const namesPattern = () => [...aliases].map((alias) => "\\b" + alias + "\\b").join("|");
+  const valueMentionsAlias = (value: string) => new RegExp(namesPattern()).test(value);
+  for (const assignment of assignmentSites(definition.body)) {
+    if (aliases.has(assignment.name)) {
+      // Rebinding the row name itself: safe only when the new value derives
+      // from already-aliased values and literals (counter arithmetic on a
+      // row-derived number). Anything else severs the alias instead of
+      // failing: the name no longer names fetched data.
+      const rhs = assignment.value;
+      const stripped = rhs.replace(new RegExp(namesPattern(), "g"), "").replace(/-?\d+(\.\d+)?/g, "");
+      if (/^[+\-*/%^#().\s]*$/.test(stripped)) continue;
+      aliases.delete(assignment.name);
+      continue;
+    }
+    const valueName = assignment.value.match(/^([A-Za-z_]\w*)$/)?.[1];
+    if (valueName && aliases.has(valueName) && (assignment.local || aliases.has(assignment.name))) {
+      aliases.add(assignment.name);
+      continue;
+    }
+    // Indexing a tracked table may yield a tracked row (`local x = finds[i]`,
+    // `x = cache.sub`). Track it the same way; reads into plain values
+    // (`txt = cache[field]`) stay untracked because only writes matter below.
+    const indexed = assignment.value.match(/^([A-Za-z_]\w*)\s*(?:\.\s*[A-Za-z_]\w*|\[[^\]]*\])$/)?.[1];
+    if (indexed && (aliases.has(indexed) || indexed === "finds") && (assignment.local || aliases.has(assignment.name))) {
+      aliases.add(assignment.name);
+    }
+  }
+  for (const assignment of memberAssignmentSites(definition.body)) {
+    if (!new RegExp(`^(?:${namesPattern()})$`).test(assignment.name)) continue;
+    // The dedup mark is the one sanctioned row write (mirrors the member
+    // scan's exemption).
+    if (assignment.member === ".exclude" && cleanDedupValue(assignment.value)) continue;
+    return false;
+  }
+  for (const call of callSites(definition.body)) {
+    if (CONTROL_CALLS.has(call.name)) continue;
+    const argumentsList = topLevelArguments(call.argumentsText);
+    if (call.name === "func" && isEngineFuncDispatcher(source)) continue;
+    if (/^math\s*\.\s*[A-Za-z_]\w*$/.test(call.name)) continue;
+    if ((call.name === "parse" || call.name === "diff") && isMethodOnlyCall(withoutDisplay, call.name)) continue;
+    if (READ_ONLY_CALLS.has(call.name)) continue;
+    if (MUTATING_TABLE_CALLS.has(call.name)) {
+      if (argumentsList.length && new RegExp(`^(?:${namesPattern()})$`).test(argumentsList[0]!.replace(/\s/g, ""))) return false;
+      continue;
+    }
+    for (const [index, argument] of argumentsList.entries()) {
+      if (!valueMentionsAlias(argument)) continue;
+      const nested = functionDefinition(source, call.name);
+      const nestedParameter = nested?.parameters[index];
+      if (!nested || !nestedParameter || !rowParamIsReadOnly(source, withoutDisplay, call.name, nestedParameter, nextStack)) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+function cleanDedupValue(value: string) {
+  // The dedup mark shares its line with the closing `end` or a comment in
+  // the official script; strip those so the comparison sees the value.
+  return value.split("--")[0]!.replace(/(\s*\bend\b\s*)+$/, "").trim() === "true";
+}
+
+function isEngineFuncDispatcher(source: string) {
+  // The generic value-transform dispatcher every func spec runs through.
+  // Only its exact official shape is exempted from argument-purity checks;
+  // reachable specs under accepted tag patterns (bitmask/substr/sort) only
+  // read. Anything else using the name fails closed elsewhere.
+  const definition = functionDefinition(source, "func");
+  if (!definition || definition.parameters.join(",") !== "funcs,value,test,cache") return false;
+  return /\bfunctions\s*\[\s*arg\s*\[\s*1\s*\]\s*\]\s*\(\s*\)/.test(definition.body);
+}
+
+function blankConfKeyRegions(source: string, keys: Set<string>) {
+  // Regions gated only on rejected top-level tag-config keys can never run
+  // for accepted configs (the tag pattern rejects those keys, so they stay
+  // nil). Blank their bodies the way blankTestBlocks does. Anything gated on
+  // anything else stays and fails closed. (stripDeadNilBranches cannot do
+  // this here: the counting core legitimately writes conf.min, which marks
+  // the config opaquely rebound for that shared helper.)
+  const lines = source.split("\n");
+  const offsets: number[] = [];
+  let cursor = 0;
+  for (const line of lines) {
+    offsets.push(cursor);
+    cursor += line.length + 1;
+  }
+  const chars = source.split("");
+  for (let index = 0; index < lines.length; index += 1) {
+    const condition = /^\s*if\s+(.+?)\s*then\s*$/.exec(lines[index]!)?.[1];
+    if (!condition) continue;
+    const keyNames = [...condition.matchAll(/\bconf\s*\.\s*([A-Za-z_]\w*)/g)].map((match) => match[1]!);
+    if (!keyNames.length || !keyNames.every((key) => keys.has(key))) continue;
+    const keepAt = luaBranchEnd(lines, offsets, index);
+    if (keepAt >= 0) {
+      for (let blanked = offsets[index]! + lines[index]!.length + 1; blanked < keepAt; blanked += 1) {
+        if (chars[blanked] !== "\n" && chars[blanked] !== "\r") chars[blanked] = " ";
+      }
+    }
+  }
+  return chars.join("");
+}
+
+function blankPolygonFill(source: string) {
+  // The polygon stamper's only effect is cache.polygon, built from tables
+  // that stay empty without polygon config keys (polygons/polysets/polyset,
+  // all rejected by the tag pattern). Blank its loop so row-write scans see
+  // only live code. Anchored on the stamp itself (comments are already masked
+  // away); anything structural (zero or several stamps, no enclosing loop)
+  // stays and fails closed.
+  const stamp = [...source.matchAll(/\bcache\s*\.\s*polygon\s*=\s*polyname\b/g)];
+  if (stamp.length !== 1 || stamp[0]!.index === undefined) return source;
+  const stampAt = stamp[0]!.index;
+  const loops = [...source.slice(0, stampAt).matchAll(/\bfor\b[^\n]*\bdo\b/g)];
+  const loop = loops.at(-1);
+  if (!loop || loop.index === undefined) return source;
+  const lineEnd = source.indexOf("\n", loop.index);
+  if (lineEnd < 0 || lineEnd > stampAt) return source;
+  const body = blockBody(source, lineEnd + 1);
+  if (!body || lineEnd + 1 + body.length < stampAt) return source;
+  const chars = source.split("");
+  const stop = lineEnd + 1 + body.length + 3;
+  for (let cursor = loop.index; cursor < stop && cursor < chars.length; cursor += 1) {
+    if (chars[cursor] !== "\n" && chars[cursor] !== "\r") chars[cursor] = " ";
+  }
+  return chars.join("");
+}
+
+function blankNamedFunction(source: string, name: string) {
+  // Blank one named helper (positions preserved) when it is provably dead
+  // for accepted configs; anything else keeps it and fails closed.
+  const declaration = new RegExp(`(?:\\blocal\\s+)?\\bfunction\\s+${name}\\s*\\([^)]*\\)`).exec(source);
+  if (!declaration || declaration.index === undefined) return source;
+  const body = blockBody(source, declaration.index + declaration[0].length);
+  if (!body) return source;
+  const chars = source.split("");
+  for (let cursor = declaration.index; cursor < declaration.index + declaration[0].length + body.length && cursor < chars.length; cursor += 1) {
+    if (chars[cursor] !== "\n" && chars[cursor] !== "\r") chars[cursor] = " ";
+  }
+  return chars.join("");
+}
+
+function blankTestBlocks(source: string) {
+  // `if test.condition ...` and `if test.visitdate ...` regions are dead
+  // exactly when no tag test uses those keys; the tag pattern above rejects
+  // them, so blanking here only ever removes unexecutable code.
+  const lines = source.split("\n");
+  const offsets: number[] = [];
+  let cursor = 0;
+  for (const line of lines) {
+    offsets.push(cursor);
+    cursor += line.length + 1;
+  }
+  const chars = source.split("");
+  const blank = (from: number, to: number) => {
+    for (let index = from; index < to; index += 1) if (chars[index] !== "\n" && chars[index] !== "\r") chars[index] = " ";
+  };
+  for (let index = 0; index < lines.length; index += 1) {
+    if (!/^\s*if\s+test\.(condition|visitdate)\b/.test(lines[index]!)) continue;
+    const keepAt = luaBranchEnd(lines, offsets, index);
+    if (keepAt >= 0) blank(offsets[index]! + lines[index]!.length + 1, keepAt);
+  }
+  return chars.join("");
+}
+
+export function importProjectGcMonthlyScript(scriptValue: unknown, configTextValue: unknown): { rules: MonthlyAttributeRule[]; summary: string } {
+  if (typeof scriptValue !== "string" || !scriptValue.trim()) throw new BadRequestException("Paste a Project-GC Lua script");
+  if (scriptValue.length > MAX_SCRIPT_LENGTH) throw new BadRequestException("Lua script is too large");
+  if (typeof configTextValue !== "string" || !configTextValue.trim()) throw new BadRequestException("Paste the Project-GC tag config as JSON");
+  let rawConfig: Record<string, unknown>;
+  try {
+    rawConfig = objectValue(JSON.parse(configTextValue), "Project-GC tag config");
+  } catch (error) {
+    if (error instanceof BadRequestException) throw error;
+    throw new BadRequestException("Project-GC tag config must be valid JSON");
+  }
+  const parsed = parseMonthlyConfig(configTextValue);
+  const script = stripDeadNilBranches(maskLua(scriptValue), new Set(Object.keys(rawConfig)));
+  validateParseBudgets(script);
+  validateMonthlyCondition(script);
+  return { rules: [{ type: "MONTHLY_ATTRIBUTE", months: parsed.months, overallMinimum: parsed.overallMinimum, attributeId: parsed.attributeId, attributeLabel: parsed.attributeLabel, filters: parsed.filters, filterLabel: parsed.filterLabel, excludedGcCodes: parsed.excludedGcCodes, excludeSelf: rawConfig.exclude === undefined }], summary: `${parsed.overallMinimum} months of ${parsed.attributeLabel}, ${parsed.filterLabel}` };
 }
