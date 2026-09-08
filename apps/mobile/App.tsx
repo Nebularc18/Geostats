@@ -17,6 +17,7 @@ import { tokenCache } from "@clerk/expo/token-cache";
 import { parseCoordinate } from "@geostats/shared";
 import { pickAndUploadDocument, type UploadKind } from "./upload";
 import { hasNativeMapSupport, scratchMapGeometryBudget, SCRATCH_WORLD_REGION, selectNativeMapPoints } from "./mobile-map";
+import { formatShortDt, ftfRowToListPoint, ftfRowToMapPoint, hasDtData } from "./ftf-points";
 import { schedulePostImportStatsRefresh } from "./import-refresh";
 import {
   MAX_MYSTERY_SNAPSHOT_BYTES,
@@ -30,7 +31,7 @@ import {
 type CountBucket = { key: string; count: number };
 type LocationBucket = { name: string; count: number };
 type PercentBucket = CountBucket & { percent: number };
-type CachePoint = { id: string; gcCode: string; name: string; cacheType: string | null; latitude: number; longitude: number; foundAt?: string; placedAt?: string; isOwnHide?: boolean };
+type CachePoint = { id: string; gcCode: string; name: string; cacheType: string | null; difficulty?: number | null; terrain?: number | null; size?: string | null; latitude: number; longitude: number; foundAt?: string; placedAt?: string; isOwnHide?: boolean };
 type ImportListItem = { id: string; fileName: string; source: string; status: string; createdAt: string; errorMessage: string | null };
 type AuthConfig = { mode: "dev" | "clerk" | "password"; providerName: string; clerkPublishableKey?: string };
 type ServerProbeState = {
@@ -1620,11 +1621,11 @@ function FtfScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
       <Panel title="FTFs by found date"><CalendarHeatmap data={s.foundDateMatrix ?? []} /></Panel>
       <Panel title="FTF D/T chart"><DifficultyGrid data={s.byDifficultyTerrain ?? []} /></Panel>
       <Panel title="Way to 81 (FTF)"><Rows rows={(s.wayTo81 ?? []).map((row: any) => [String(row.index), row.gcCode, `${row.difficulty}/${row.terrain}`])} /></Panel>
-      <Panel title="FTF map"><NativeMap points={(s.rows ?? []).map((row: any) => ({ id: `${row.gcCode}-${row.dateTime}`, gcCode: row.gcCode, name: row.name, cacheType: row.cacheType, latitude: row.latitude ?? Number.NaN, longitude: row.longitude ?? Number.NaN, foundAt: row.dateTime }))} /></Panel>
-      <Panel title="FTF list">{(s.rows ?? []).map((row: any) => <CacheRow key={`${row.gcCode}-${row.dateTime}`} point={{ id: row.gcCode, gcCode: row.gcCode, name: row.name, cacheType: row.cacheType, latitude: row.latitude ?? 0, longitude: row.longitude ?? 0, foundAt: row.dateTime }} />)}</Panel>
+      <Panel title="FTF map"><NativeMap points={(s.rows ?? []).map((row: any) => ftfRowToMapPoint(row))} /></Panel>
+      <Panel title="FTF list">{(s.rows ?? []).map((row: any) => <CacheRow key={`${row.gcCode}-${row.dateTime}`} point={ftfRowToListPoint(row)} />)}</Panel>
       <Panel title="Mark FTF finds" subtitle={`${allFinds.length} loaded`}>
         <Field label="Search loaded finds" value={query} onChangeText={setQuery} autoCapitalize="none" />
-        {visibleFinds.map((find) => <Pressable key={find.id} onPress={() => void toggle(find)} style={[styles.toggleRow, find.isFtf && styles.toggleRowActive]}><Text style={styles.rowTitle}>{find.cache.gcCode} - {find.cache.name}</Text><Text style={styles.muted}>{find.isFtf ? "Marked FTF" : "Tap to mark"} - {dateText(find.foundAt)}</Text></Pressable>)}
+        {visibleFinds.map((find) => <Pressable key={find.id} onPress={() => void toggle(find)} style={[styles.toggleRow, find.isFtf && styles.toggleRowActive]}><Text style={styles.rowTitle}>{find.cache.gcCode} - {find.cache.name}</Text><Text style={styles.muted}>{find.isFtf ? "Marked FTF" : "Tap to mark"} - {dateText(find.foundAt)}{hasDtData(find.cache) ? ` · D/T ${formatShortDt(find.cache.difficulty, find.cache.terrain)}` : ""}{find.cache?.size ? ` · ${find.cache.size}` : ""}</Text></Pressable>)}
         {nextCursor ? <SecondaryButton label={loadingMore ? "Loading..." : "Load 100 more"} onPress={() => void loadMore()} /> : null}
         {actionError ? <Text style={styles.error}>{actionError}</Text> : null}
        </Panel>
@@ -2835,6 +2836,7 @@ function NativeMap({ points }: { points: CachePoint[] }) {
                 <Text style={styles.calloutTitle}>{point.gcCode}</Text>
                 <Text style={styles.calloutBody}>{point.name}</Text>
                 <Text style={styles.calloutMeta}>{point.isOwnHide ? "Own hide" : point.cacheType ?? "Unknown"}</Text>
+                {hasDtData(point) ? <Text style={styles.calloutMeta}>D/T {formatShortDt(point.difficulty, point.terrain)}{point.size ? ` · ${point.size}` : ""}</Text> : null}
               </View>
             </Callout>
           </Marker>
@@ -3011,7 +3013,7 @@ function CacheRow({ point }: { point: CachePoint }) {
   return (
     <Pressable onPress={() => Linking.openURL(`https://coord.info/${point.gcCode}`)} style={styles.cacheRow}>
       <Text style={[styles.rowTitle, { color: getCacheTypeColor(point.cacheType, point.isOwnHide) }]}>{point.gcCode} - {point.name}</Text>
-      <Text style={styles.muted}>{point.isOwnHide ? "Own hide - " : ""}{point.cacheType ?? "Unknown"} - {point.latitude}, {point.longitude}</Text>
+      <Text style={styles.muted}>{point.isOwnHide ? "Own hide - " : ""}{point.cacheType ?? "Unknown"}{hasDtData(point) ? ` · D/T ${formatShortDt(point.difficulty, point.terrain)}` : ""} - {point.latitude}, {point.longitude}</Text>
     </Pressable>
   );
 }
