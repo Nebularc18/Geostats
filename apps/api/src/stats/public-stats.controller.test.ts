@@ -3,6 +3,23 @@ import test from "node:test";
 import { HEADERS_METADATA } from "@nestjs/common/constants";
 import { PublicStatsController } from "./public-stats.controller";
 
+test("public profile images allow embedding on other websites", () => {
+  for (const handler of [
+    PublicStatsController.prototype.profileStatsImage,
+    PublicStatsController.prototype.profileExtremesImage,
+    PublicStatsController.prototype.profileScratchMapImage
+  ]) {
+    const headers = Reflect.getMetadata(HEADERS_METADATA, handler) as Array<{
+      name: string;
+      value: string;
+    }>;
+    assert.equal(
+      headers.find((header) => header.name === "Cross-Origin-Resource-Policy")?.value,
+      "cross-origin"
+    );
+  }
+});
+
 test("public profile responses are never cached after consent is revoked", () => {
   for (const handler of [
     PublicStatsController.prototype.profileStats,

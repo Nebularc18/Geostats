@@ -30,6 +30,7 @@ export class PublicStatsController {
   @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @Get("profile-stats-image/:username")
   @Header("Content-Type", "image/svg+xml; charset=utf-8")
+  @Header("Cross-Origin-Resource-Policy", "cross-origin")
   @Header("Cache-Control", "no-store")
   async profileStatsImage(@Param("username") username: string) {
     const { profile, stats } = await this.stats.publicSnapshotForUsername(username);
@@ -39,6 +40,7 @@ export class PublicStatsController {
   @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @Get("profile-extremes-image/:username")
   @Header("Content-Type", "image/svg+xml; charset=utf-8")
+  @Header("Cross-Origin-Resource-Policy", "cross-origin")
   @Header("Cache-Control", "no-store")
   async profileExtremesImage(@Param("username") username: string) {
     const { profile, stats } = await this.stats.publicSnapshotForUsername(username);
@@ -48,6 +50,7 @@ export class PublicStatsController {
   @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @Get("profile-scratch-map-image/:username")
   @Header("Content-Type", "image/svg+xml; charset=utf-8")
+  @Header("Cross-Origin-Resource-Policy", "cross-origin")
   @Header("Cache-Control", "no-store")
   async profileScratchMapImage(@Param("username") username: string) {
     const { profile, stats } = await this.stats.publicSnapshotForUsername(username);
