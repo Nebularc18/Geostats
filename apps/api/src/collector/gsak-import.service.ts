@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable } from "@nestjs/common";
 import { Prisma } from "@geostats/db";
-import { parseCsvRows, ImportFileType, ImportSource, ImportStatus } from "@geostats/shared";
+import { parseCsvRows, ImportFileType, ImportSource, ImportStatus, canonicalCacheTypeName } from "@geostats/shared";
 import { PrismaService } from "../common/prisma.service";
 import { StatsService } from "../stats/stats.service";
 
@@ -467,7 +467,7 @@ export class GsakImportService {
           create: {
             gcCode: row.gcCode,
             name: row.name,
-            cacheType: row.cacheType,
+            cacheType: canonicalCacheTypeName(row.cacheType),
             difficulty: row.difficulty,
             terrain: row.terrain,
             size: row.size,
@@ -482,7 +482,7 @@ export class GsakImportService {
           },
           update: {
             name: row.name,
-            cacheType: row.cacheType,
+            cacheType: canonicalCacheTypeName(row.cacheType),
             difficulty: row.difficulty,
             terrain: row.terrain,
             size: row.size,
@@ -611,7 +611,9 @@ export class GsakImportService {
         const metadata = {
           gcCode: row.gcCode,
           name: row.name,
-          cacheType: row.cacheType,
+          // Canonicalize GSAK short names ("Mystery") to the same stored
+          // value GPX imports use ("Mystery Cache").
+          cacheType: canonicalCacheTypeName(row.cacheType),
           difficulty: row.difficulty,
           terrain: row.terrain,
           size: row.size,

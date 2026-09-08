@@ -4,7 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from "@nestjs/common";
-import { AuthUser, ImportSource, ImportStatus } from "@geostats/shared";
+import { AuthUser, ImportSource, ImportStatus, canonicalCacheTypeName } from "@geostats/shared";
 import { Prisma } from "@geostats/db";
 import { AuthService } from "../auth/auth.service";
 import { PrismaService } from "../common/prisma.service";
@@ -448,7 +448,7 @@ export class AdminService {
     const data = {
       gcCode,
       name,
-      cacheType: optionalText(body.cacheType, "cacheType", 100),
+      cacheType: canonicalCacheTypeName(optionalText(body.cacheType, "cacheType", 100)),
       difficulty: optionalNumber(body.difficulty, "difficulty", 1, 5),
       terrain: optionalNumber(body.terrain, "terrain", 1, 5),
       size: optionalText(body.size, "size", 100),

@@ -247,6 +247,39 @@ test("GSAK cache batches upsert owned caches and corrected coordinates", async (
   );
 });
 
+test("GSAK cache batches store short type names under the canonical label", async () => {
+  const actions: Array<[string, any]> = [];
+  const tx = {
+    cache: {
+      upsert: async (input: any) => {
+        actions.push(["cache", input]);
+        return { id: "cache-1", metadataTrusted: true };
+      },
+    },
+    userCacheData: {
+      upsert: async (input: any) => actions.push(["userData", input]),
+    },
+    hide: { upsert: async (input: any) => actions.push(["hide", input]) },
+    correctedCoordinate: {
+      upsert: async (input: any) => actions.push(["correction", input]),
+    },
+  };
+  const prisma = {
+    cache: { findMany: async () => [] },
+    $transaction: async (run: (client: any) => Promise<unknown>) => run(tx),
+  };
+  const service = new GsakImportService(prisma as any, {} as any);
+  const csv = [
+    "gcCode,name,cacheType,difficulty,terrain,size,latitude,longitude,country,region,county,hiddenDate,ownerName,foundDate,isFtf,isOwner,favoritePoints,elevationMeters,status,isPremium,correctedLatitude,correctedLongitude,hasCorrected,userNote,attributes",
+    "GC123,Mystery cache,Mystery,2,2.5,Small,56.1,15.6,Sweden,Blekinge,Ronneby,2024-01-02,Owner,2024-01-03,0,0,7,42,Available,0,,,0,,",
+  ].join("\r\n");
+
+  const result = await service.importBatch("user-1", "caches", csv);
+
+  assert.deepEqual(result, { caches: 1, hides: 0, corrections: 0 });
+  assert.equal(actions[0][1].create.cacheType, "Mystery Cache");
+});
+
 test("personal GSAK cache batches repair placeholders", async () => {
   const updates: any[] = [];
   const existingCache = {
