@@ -1,6 +1,6 @@
 import { Cache, calculateUserStats, PrismaClient, Prisma } from "@geostats/db";
 import { DEFAULT_FTF_DETECTION_TERMS, detectFtfLog, parseImportFile, termRegex as ftfTermRegex } from "@geostats/gpx-parser";
-import { ImportFileType, ImportJobPayload, ImportSource, ImportStatus } from "@geostats/shared";
+import { ImportFileType, ImportJobPayload, ImportSource, ImportStatus, canonicalCacheTypeName } from "@geostats/shared";
 import { ObjectStorage } from "../storage/object-storage";
 
 type ParsedImportResult = Awaited<ReturnType<typeof parseImportFile>>;
@@ -408,7 +408,9 @@ export class ImportProcessor {
     return {
       gcCode,
       name: cache.name,
-      cacheType: cache.cacheType,
+      // Canonicalize so GPX full names ("Unknown Cache") and GSAK short
+      // names ("Mystery") land on one stored value and stay linked.
+      cacheType: canonicalCacheTypeName(cache.cacheType),
       difficulty: cache.difficulty,
       terrain: cache.terrain,
       size: cache.size,

@@ -593,6 +593,95 @@ test("process creates missing cache metadata before the import transaction", asy
   assert.equal(importTransactionStarted, true);
 });
 
+test("process stores source-specific cache-type spellings under one canonical name", async () => {
+  const shortTypeGpx = `<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.0">
+  <wpt lat="56.161200" lon="15.586900">
+    <time>2020-01-01T00:00:00Z</time>
+    <name>GC12345</name>
+    <groundspeak:cache>
+      <groundspeak:name>Short Type Cache</groundspeak:name>
+      <groundspeak:type>Mystery</groundspeak:type>
+      <groundspeak:container>Regular</groundspeak:container>
+      <groundspeak:difficulty>2</groundspeak:difficulty>
+      <groundspeak:terrain>1.5</groundspeak:terrain>
+    </groundspeak:cache>
+  </wpt>
+</gpx>`;
+  const createdCache = {
+    id: "cache-1",
+    gcCode: "GC12345",
+    name: "Short Type Cache",
+    cacheType: "Mystery Cache",
+    difficulty: 2,
+    terrain: 1.5,
+    size: "Regular",
+    latitude: 56.1612,
+    longitude: 15.5869,
+    country: null,
+    region: null,
+    county: null,
+    hiddenDate: null,
+    ownerName: null,
+    raw: null,
+    createdAt: new Date(),
+    updatedAt: new Date()
+  };
+  const importRecord = {
+    id: "import-1",
+    userId: "user-1",
+    fileName: "my-hides.gpx",
+    fileType: ImportFileType.GPX,
+    source: ImportSource.MY_HIDES_GPX,
+    objectKey: "user-1/original.gpx"
+  };
+  let storedCacheType: unknown;
+  const tx = {
+    hide: { upsert: async () => ({}) },
+    find: { upsert: async () => ({}) },
+    statSnapshot: {
+      deleteMany: async () => ({ count: 0 }),
+      create: async () => ({})
+    }
+  };
+  const prisma = {
+    import: {
+      findFirst: async () => importRecord,
+      update: async () => ({})
+    },
+    cache: {
+      upsert: async ({ create, update }: any) => {
+        storedCacheType = create.cacheType;
+        assert.deepEqual(update, {});
+        return createdCache;
+      }
+    },
+    userCacheData: { upsert: async () => ({}) },
+    $transaction: async (callback: (transaction: typeof tx) => Promise<unknown>) => callback(tx),
+    geocachingProfile: { findUnique: async () => null },
+    find: { findMany: async () => [] },
+    hide: { findMany: async () => [] },
+    ownerFinderCountryStat: { findMany: async () => [] },
+    statSnapshot: {
+      deleteMany: async () => ({ count: 0 }),
+      create: async () => ({})
+    }
+  };
+  const storage = {
+    getObject: async () => Buffer.from(shortTypeGpx)
+  };
+
+  const processor = new ImportProcessor(importTestClient(prisma) as any, storage as any);
+  await processor.process({
+    importId: "import-1",
+    userId: "user-1",
+    objectKey: "user-1/original.gpx",
+    source: ImportSource.MY_HIDES_GPX
+  });
+
+  assert.equal(storedCacheType, "Mystery Cache");
+});
+
 test("process marks a committed import failed when stats recalculation fails", async () => {
   const existingCache = {
     id: "cache-1",

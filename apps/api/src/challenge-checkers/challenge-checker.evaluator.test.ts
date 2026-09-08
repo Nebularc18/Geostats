@@ -80,6 +80,31 @@ test("matches imported cache-type aliases by canonical id", () => {
   assert.equal(result.rules[0]!.current, 2);
 });
 
+test("matches GSAK short cache-type names by canonical id", () => {
+  const result = evaluateChallenge([
+    { type: "CACHE_TYPE", cacheTypeId: "8", cacheTypeLabel: "Mystery Cache", minimum: 2 }
+  ], [
+    { ...finds[0]!, cache: { ...finds[0]!.cache, cacheType: "Mystery" } },
+    { ...finds[1]!, cache: { ...finds[1]!.cache, cacheType: "Unknown" } }
+  ]);
+  assert.equal(result.passed, true);
+  assert.equal(result.rules[0]!.current, 2);
+
+  const calendar = evaluateChallenge([{
+    type: "CALENDAR_FILL",
+    minimum: 2,
+    perDay: 1,
+    allowLeapDaySkip: false,
+    filters: [{ cacheTypeIds: ["8"] }],
+    filterLabel: "Mystery Cache"
+  }], [
+    { ...finds[0]!, foundDate: new Date("2025-01-01T00:00:00Z"), cache: { ...finds[0]!.cache, gcCode: "GSA", cacheType: "Mystery" } },
+    { ...finds[1]!, foundDate: new Date("2025-01-02T00:00:00Z"), cache: { ...finds[1]!.cache, gcCode: "GSB", cacheType: "Mystery" } }
+  ]);
+  assert.equal(calendar.rules[0]!.current, 2);
+  assert.equal(calendar.passed, true);
+});
+
 test("labels text-free GSAK attributes by Groundspeak id", () => {
   const raw = {
     "groundspeak:cache": {
