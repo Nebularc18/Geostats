@@ -265,9 +265,17 @@ ghcr.io/OWNER/REPO/worker:<tag>
 ghcr.io/OWNER/REPO/web:<tag>
 ```
 
-Every run publishes `sha-<commit>`. A run dispatched from `main` additionally
-publishes `latest` and a shared timestamp release tag for all app images, for
-example `release-20260613-173045-utc`.
+Each successful image build publishes `sha-<commit>`. On `main`, a final
+**Publish matching release images** job waits for all three builds to succeed,
+then publishes a shared timestamp release tag from their exact image digests,
+for example `release-20260613-173045-utc`. It updates `latest` after publishing
+all three release tags.
+
+Deploy only after the final job succeeds. Its **Ready to deploy** summary
+provides the shared tag and deployment commands. Registry tag updates are not
+atomic across images; a failed publishing job may leave partial tags. Keep
+using the previous successful release until publishing succeeds, and pin all
+services to the shared release tag instead of `latest`.
 
 The workflow accepts these GitHub Actions repository variables as web-image
 build settings:
@@ -323,13 +331,13 @@ slow and memory-hungry there. The prebuilt multi-arch (`linux/amd64`,
 
    ```env
    GEOSTATS_IMAGE_PREFIX=ghcr.io/nebularc18/geostats
-   GEOSTATS_IMAGE_TAG=latest
+   GEOSTATS_IMAGE_TAG=release-YYYYMMDD-HHMMSS-utc
    ```
 
    Every successful **Docker Images** workflow run from `main` publishes a new
    shared timestamp tag for `api`, `worker`, and `web` (plus `latest`).
-   `latest` tracks the newest green run; use a timestamp tag to pin the Pi to
-   a specific build.
+   Replace the placeholder with the tag from the successful publishing job's
+   **Ready to deploy** summary.
 3. On memory-constrained boards, lower the import concurrency:
 
    ```env

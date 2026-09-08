@@ -43,8 +43,6 @@ jobs:
       cache-mode: max
       meta-images: ghcr.io/${{ github.repository }}/api
       meta-tags: |
-        type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
-        type=raw,value=${{ needs.release-tag.outputs.tag }},enable=${{ github.ref == 'refs/heads/main' }}
         type=sha,prefix=sha-
     secrets:
       registry-auths: |
@@ -72,8 +70,6 @@ jobs:
       cache-mode: max
       meta-images: ghcr.io/${{ github.repository }}/worker
       meta-tags: |
-        type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
-        type=raw,value=${{ needs.release-tag.outputs.tag }},enable=${{ github.ref == 'refs/heads/main' }}
         type=sha,prefix=sha-
     secrets:
       registry-auths: |
@@ -101,8 +97,6 @@ jobs:
       cache-mode: max
       meta-images: ghcr.io/${{ github.repository }}/web
       meta-tags: |
-        type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
-        type=raw,value=${{ needs.release-tag.outputs.tag }},enable=${{ github.ref == 'refs/heads/main' }}
         type=sha,prefix=sha-
       build-args: |
         NEXT_PUBLIC_API_URL=${{ vars.NEXT_PUBLIC_API_URL || 'http://localhost:3001' }}
@@ -114,3 +108,62 @@ jobs:
         - registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-release:
+    name: Publish matching release images
+    needs: [release-tag, build-api, build-worker, build-web]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish release tags, then latest
+        shell: bash
+        env:
+          IMAGE_REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.release-tag.outputs.tag }}
+          API_DIGEST: ${{ needs.build-api.outputs.digest }}
+          WORKER_DIGEST: ${{ needs.build-worker.outputs.digest }}
+          WEB_DIGEST: ${{ needs.build-web.outputs.digest }}
+        run: |
+          set -euo pipefail
+          image_prefix="ghcr.io/${IMAGE_REPOSITORY,,}"
+          services=(api worker web)
+          digests=("$API_DIGEST" "$WORKER_DIGEST" "$WEB_DIGEST")
+
+          # Validate every build output before publishing any release tags.
+          for digest in "${digests[@]}"; do
+            if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "::error::Missing or invalid image digest: $digest"
+              exit 1
+            fi
+          done
+
+          # Promote immutable build outputs, never a mutable SHA tag.
+          for tag in "$RELEASE_TAG" latest; do
+            for i in "${!services[@]}"; do
+              docker buildx imagetools create \
+                --tag "$image_prefix/${services[$i]}:$tag" \
+                "$image_prefix/${services[$i]}@${digests[$i]}"
+            done
+          done
+
+          # Only advertise the release after all promotions have succeeded.
+          {
+            echo "## Ready to deploy"
+            echo
+            echo "All three images were published with the shared tag: $RELEASE_TAG"
+            echo
+            echo '```bash'
+            echo "export GEOSTATS_IMAGE_PREFIX=$image_prefix"
+            echo "export GEOSTATS_IMAGE_TAG=$RELEASE_TAG"
+            echo 'docker compose pull api worker web'
+            echo 'docker compose up -d --no-build'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
