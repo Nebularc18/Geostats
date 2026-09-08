@@ -6,7 +6,7 @@ import { CountBarChart, CumulativeFindsChart } from "../../components/charts";
 import { DifficultyTerrainGrid } from "../../components/difficulty-terrain-grid";
 import { ExtremeBadge, type ExtremeBadgeKind } from "../../components/extreme-badge";
 import { StatCard } from "../../components/stat-card";
-import { API_URL, apiFetch } from "../../lib/api";
+import { apiFetch } from "../../lib/api";
 
 type CountBucket = { key: string; count: number };
 type PercentBucket = CountBucket & { percent: number };
@@ -931,63 +931,49 @@ function MonthPerYearTable({ findsByMonth, findsByDay }: { findsByMonth: CountBu
 }
 
 export default function StatsPage() {
-  const [html, setHtml] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [stats, setStats] = useState<any>(null);
 
   useEffect(() => {
-    const controller = new AbortController();
-    let mapObjectUrl: string | null = null;
-    void fetch(API_URL + "/stats/html", {
-      credentials: "include",
-      signal: controller.signal
-    })
-      .then(async (response) => {
-        if (!response.ok) {
-          const body = await response.json().catch(() => ({ message: response.statusText }));
-          throw new Error(body.message ?? "Could not load statistics");
-        }
-        return response.text();
-      })
-      .then(async (document) => {
-        const mapResponse = await fetch(API_URL + "/stats/scratch-map-image", {
-          credentials: "include",
-          signal: controller.signal
-        });
-        if (!mapResponse.ok) {
-          const body = await mapResponse.json().catch(() => ({ message: mapResponse.statusText }));
-          throw new Error(body.message ?? "Could not load the statistics map");
-        }
-        const mapSvg = await mapResponse.text();
-        if (controller.signal.aborted) {
-          return;
-        }
-        mapObjectUrl = URL.createObjectURL(new Blob([mapSvg], { type: "image/svg+xml" }));
-        const renderedDocument = document
-          .replace("img-src 'self';", "img-src 'self' blob:;")
-          .replace('src="/stats/scratch-map-image"', 'src="' + mapObjectUrl + '"');
-        setHtml(renderedDocument);
-        setError(null);
-      })
-      .catch((cause: Error) => {
-        if (cause.name !== "AbortError") {
-          setError(cause.message);
-        }
-      });
-    return () => {
-      controller.abort();
-      if (mapObjectUrl) {
-        URL.revokeObjectURL(mapObjectUrl);
-      }
-    };
+    void apiFetch<{ stats: any }>("/stats/summary").then((data) => setStats(data.stats));
   }, []);
 
   return (
     <AppShell>
-      <div className="stats-html-page">
-        {error ? <p className="stats-html-error">{error}</p> : null}
-        {!error && !html ? <p className="stats-html-loading">Loading statistics…</p> : null}
-        {html ? <iframe className="stats-html-frame" title="GSAK-style statistics" srcDoc={html} /> : null}
-      </div>
+      <header className="page-header">
+        <p className="eyebrow">Reusable stats package</p>
+        <h1>Statistics</h1>
+      </header>
+      <section className="stat-grid">
+        <StatCard label="Total finds" value={stats?.totalFinds ?? 0} />
+        <StatCard label="Longest streak" value={stats?.streaks?.longest ?? 0} detail="days" />
+        <StatCard label="Current streak" value={stats?.streaks?.current ?? 0} detail="days" />
+        <StatCard label="Milestones" value={stats?.milestones?.length ?? 0} />
+      </section>
+      <section className="two-column">
+        <MonthlyStatsCard stats={stats} />
+        <div className="panel">
+          <h2>Cache types</h2>
+          <CountBarChart data={stats?.cacheTypes ?? []} />
+        </div>
+        <div className="panel">
+          <h2>Sizes</h2>
+          <CountBarChart data={stats?.sizes ?? []} />
+        </div>
+        <div className="panel">
+          <h2>Countries</h2>
+          <CountBarChart data={stats?.countries ?? []} />
+        </div>
+      </section>
+      <section className="panel">
+        <h2>Difficulty / Terrain</h2>
+        <DifficultyTerrainGrid data={stats?.difficultyTerrain ?? []} />
+      </section>
+      <BreakdownStatsPanel stats={stats} />
+      <HomeDistancePanel distanceStats={stats?.distanceStats} />
+      <WayTo81Panel entries={stats?.wayTo81 ?? []} />
+      <ExtremeCachesPanel />
+      <DateGridPanel stats={stats} />
+      <OwnerPanel owners={stats?.ownerBuckets ?? []} />
     </AppShell>
   );
 }
