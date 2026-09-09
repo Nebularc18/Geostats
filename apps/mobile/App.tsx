@@ -40,7 +40,13 @@ type ServerProbeState = {
   config: AuthConfig;
 };
 type ScratchLevel = "countries" | "regions" | "counties";
-type ScreenId = "dashboard" | "explore" | "upload" | "imports" | "stats" | "ftf" | "hides" | "milestones" | "map" | "mysteries" | "travel" | "trackables" | "scratch" | "profile";
+type TabId = "home" | "stats" | "maps" | "field" | "more";
+type StatsSection = "overview" | "badges" | "milestones" | "ftf" | "hides";
+type MapsSection = "finds" | "scratch";
+type FieldSection = "mysteries" | "trips" | "trackables";
+type MoreSection = "sync" | "profile";
+type TabSection = StatsSection | MapsSection | FieldSection | MoreSection;
+type Navigate = (tab: TabId, section?: TabSection) => void;
 type Session = { token: string; user: { id: string; email: string; username: string } };
 type CheckState = "correct" | "wrong" | "unchecked";
 type MysteryStatus = "solving" | "solved" | "planned";
@@ -129,19 +135,6 @@ type TravelPoolSummary = { total: number; found: number; unfound: number; poolTr
 type TrackableState = "OWNED" | "DISCOVERED" | "RETRIEVED" | "DROPPED" | "VISITED" | "MISSING";
 type MobileTrackable = { id: string; trackingCode: string; name: string; state: TrackableState; lastSeenAt: string | null; lastSeenLocation: string | null; distanceKm: number | null; notes: string | null; stuck: boolean };
 type TrackableJourneyPoint = { id: string; trackableId: string; trackingCode: string; name: string; logType: string; loggedAt: string; dateEstimated: boolean; sequence: number; sequenceTotal: number; gcCode: string | null; cacheName: string | null; locationName: string | null; holderName: string | null; latitude: number | null; longitude: number | null; notes: string | null };
-type ReferenceExtremeEntry = { gcCode: string; name: string; elevationMeters: number | null; found: boolean };
-type ExtremeCachesData = {
-  countries: string[];
-  selectedCountry: string | null;
-  selectedRegion: string | null;
-  referenceRegions: string[];
-  homeCountry: string | null;
-  reference: null | {
-    country: string;
-    region: string | null;
-    extremes: Record<"northernmost" | "southernmost" | "easternmost" | "westernmost" | "highest" | "lowest", ReferenceExtremeEntry>;
-  };
-};
 
 const MAX_GOOGLE_MAPS_ROUTE_CACHES = 8;
 
@@ -236,29 +229,33 @@ class ApiError extends Error {
   }
 }
 
-const screenDetails: Record<ScreenId, { label: string; eyebrow: string; icon: string }> = {
-  dashboard: { label: "Home", eyebrow: "Your geocaching overview", icon: "⌂" },
-  stats: { label: "Stats", eyebrow: "Patterns and progress", icon: "▥" },
-  map: { label: "Map", eyebrow: "Every find in context", icon: "⌖" },
-  explore: { label: "Explore", eyebrow: "All Geostats tools", icon: "✦" },
-  profile: { label: "Profile", eyebrow: "Account settings", icon: "●" },
-  scratch: { label: "Scratch Map", eyebrow: "Coverage around the world", icon: "◎" },
-  milestones: { label: "Milestones", eyebrow: "Memorable firsts", icon: "◇" },
-  ftf: { label: "First to Find", eyebrow: "Track your FTF history", icon: "⚑" },
-  hides: { label: "Owned Caches", eyebrow: "Your hides and finders", icon: "△" },
-  trackables: { label: "Trackables", eyebrow: "Keep track of items on the move", icon: "⌁" },
-  mysteries: { label: "Mysteries", eyebrow: "Solve and collaborate", icon: "?" },
-  travel: { label: "Trip Planner", eyebrow: "Build a caching route", icon: "↗" },
-  upload: { label: "Import Data", eyebrow: "Add caches to your archive", icon: "+" },
-  imports: { label: "Import History", eyebrow: "Processing and recent files", icon: "↻" }
+const tabDetails: Record<TabId, { label: string; context: string; icon: string }> = {
+  home: { label: "Home", context: "Your geocaching overview", icon: "⌂" },
+  stats: { label: "Stats", context: "Finds, badges, milestones, FTF, hides", icon: "▥" },
+  maps: { label: "Maps", context: "Finds and scratch coverage", icon: "⌖" },
+  field: { label: "Field", context: "Mysteries, trips, trackables", icon: "?" },
+  more: { label: "More", context: "Sync and profile", icon: "⋯" }
 };
 
-const primaryScreens: ScreenId[] = ["dashboard", "stats", "map", "explore", "profile"];
-const exploreGroups: Array<{ title: string; subtitle: string; screens: ScreenId[] }> = [
-  { title: "Maps & progress", subtitle: "See where you have cached and what comes next.", screens: ["scratch", "milestones", "ftf"] },
-  { title: "Caching tools", subtitle: "Manage hides, trackables, puzzles, and upcoming trips.", screens: ["hides", "trackables", "mysteries", "travel"] },
-  { title: "Data", subtitle: "Keep your archive current and review recent imports.", screens: ["upload", "imports"] }
-];
+const tabOrder: TabId[] = ["home", "stats", "maps", "field", "more"];
+const statsSections: StatsSection[] = ["overview", "badges", "milestones", "ftf", "hides"];
+const statsSectionLabels: Record<StatsSection, string> = {
+  overview: "Overview",
+  badges: "Badges",
+  milestones: "Milestones",
+  ftf: "FTF",
+  hides: "Hides"
+};
+const mapsSections: MapsSection[] = ["finds", "scratch"];
+const mapsSectionLabels: Record<MapsSection, string> = { finds: "Finds", scratch: "Scratch" };
+const fieldSections: FieldSection[] = ["mysteries", "trips", "trackables"];
+const fieldSectionLabels: Record<FieldSection, string> = {
+  mysteries: "Mysteries",
+  trips: "Trips",
+  trackables: "Trackables"
+};
+const moreSections: MoreSection[] = ["sync", "profile"];
+const moreSectionLabels: Record<MoreSection, string> = { sync: "Sync", profile: "Profile" };
 
 function normalizeServerUrl(value: string) {
   const trimmed = value.trim().replace(/\/+$/, "");
@@ -1130,7 +1127,11 @@ export default function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [booting, setBooting] = useState(true);
   const [needsOnboarding, setNeedsOnboarding] = useState(false);
-  const [screen, setScreen] = useState<ScreenId>("dashboard");
+  const [tab, setTab] = useState<TabId>("home");
+  const [statsSection, setStatsSection] = useState<StatsSection>("overview");
+  const [mapsSection, setMapsSection] = useState<MapsSection>("finds");
+  const [fieldSection, setFieldSection] = useState<FieldSection>("mysteries");
+  const [moreSection, setMoreSection] = useState<MoreSection>("sync");
   const contentScrollRef = useRef<ScrollView>(null);
   useEffect(() => {
     if (__DEV__ || !Updates.isEnabled) return;
@@ -1175,10 +1176,27 @@ export default function App() {
       })
       .finally(() => setBooting(false));
   }, []);
+  function navigate(nextTab: TabId, section?: TabSection) {
+    if (section) {
+      if (nextTab === "stats") setStatsSection(section as StatsSection);
+      if (nextTab === "maps") setMapsSection(section as MapsSection);
+      if (nextTab === "field") setFieldSection(section as FieldSection);
+      if (nextTab === "more") setMoreSection(section as MoreSection);
+    }
+    setTab(nextTab);
+    requestAnimationFrame(() => contentScrollRef.current?.scrollTo({ y: 0, animated: false }));
+  }
   async function logout() {
     await SecureStore.deleteItemAsync(TOKEN_KEY);
     setSession(null);
     setNeedsOnboarding(false);
+  }
+  function sectionLabel(): string {
+    if (tab === "stats") return statsSectionLabels[statsSection];
+    if (tab === "maps") return mapsSectionLabels[mapsSection];
+    if (tab === "field") return fieldSectionLabels[fieldSection];
+    if (tab === "more") return moreSectionLabels[moreSection];
+    return tabDetails.home.context;
   }
   let content;
   if (booting) {
@@ -1188,28 +1206,27 @@ export default function App() {
   } else if (needsOnboarding) {
     content = <OnboardingScreen apiBaseUrl={apiBaseUrl} token={session.token} onComplete={() => setNeedsOnboarding(false)} onLogout={logout} />;
   } else {
-    const activePrimaryScreen = primaryScreens.includes(screen) ? screen : "explore";
     content = (
       <SafeAreaView style={styles.safe}>
         <StatusBar style="light" />
         <View style={styles.shellHeader}>
           <View style={styles.brandLockup}>
             <Image accessible={false} source={require("./assets/icon.png")} style={styles.headerBrandIcon} />
-            <View style={styles.headerBrandText}><Text style={styles.brandSmall}>Geostats</Text><Text numberOfLines={1} ellipsizeMode="tail" style={styles.shellContext}>{screenDetails[screen].label}</Text></View>
+            <View style={styles.headerBrandText}><Text style={styles.brandSmall}>Geostats</Text><Text numberOfLines={1} ellipsizeMode="tail" style={styles.shellContext}>{tabDetails[tab].label} · {sectionLabel()}</Text></View>
           </View>
-          <Pressable accessibilityRole="button" accessibilityLabel="Open profile" onPress={() => setScreen("profile")} style={styles.avatarButton}>
+          <Pressable accessibilityRole="button" accessibilityLabel="Open profile" onPress={() => navigate("more", "profile")} style={styles.avatarButton}>
             <Text style={styles.avatarText}>{session.user.username.slice(0, 1).toUpperCase()}</Text>
           </Pressable>
         </View>
-        <ScrollView ref={contentScrollRef} key={screen} style={styles.content} contentContainerStyle={styles.contentInner} showsVerticalScrollIndicator={false}>
-          <ScreenSwitch apiBaseUrl={apiBaseUrl} screen={screen} token={session.token} userId={session.user.id} username={session.user.username} onNavigate={setScreen} onLogout={logout} onRequestScrollTop={() => contentScrollRef.current?.scrollTo({ y: 0, animated: false })} />
+        <ScrollView ref={contentScrollRef} key={`${tab}-${statsSection}-${mapsSection}-${fieldSection}-${moreSection}`} style={styles.content} contentContainerStyle={styles.contentInner} showsVerticalScrollIndicator={false}>
+          <TabSwitch apiBaseUrl={apiBaseUrl} tab={tab} statsSection={statsSection} mapsSection={mapsSection} fieldSection={fieldSection} moreSection={moreSection} token={session.token} userId={session.user.id} username={session.user.username} onNavigate={navigate} onStatsSection={setStatsSection} onMapsSection={setMapsSection} onFieldSection={setFieldSection} onMoreSection={setMoreSection} onLogout={logout} onRequestScrollTop={() => contentScrollRef.current?.scrollTo({ y: 0, animated: false })} />
         </ScrollView>
         <View style={styles.bottomNav}>
-          {primaryScreens.map((item) => {
-            const detail = screenDetails[item];
-            const active = activePrimaryScreen === item;
+          {tabOrder.map((item) => {
+            const detail = tabDetails[item];
+            const active = tab === item;
             return (
-              <Pressable accessibilityRole="tab" accessibilityState={{ selected: active }} key={item} onPress={() => setScreen(item)} style={styles.bottomNavItem}>
+              <Pressable accessibilityRole="tab" accessibilityState={{ selected: active }} key={item} onPress={() => navigate(item)} style={styles.bottomNavItem}>
                 <View style={[styles.bottomNavIcon, active && styles.bottomNavIconActive]}><Text style={[styles.bottomNavGlyph, active && styles.bottomNavGlyphActive]}>{detail.icon}</Text></View>
                 <Text style={[styles.bottomNavLabel, active && styles.bottomNavLabelActive]}>{detail.label}</Text>
               </Pressable>
@@ -1222,21 +1239,70 @@ export default function App() {
   return <SafeAreaProvider>{content}</SafeAreaProvider>;
 }
 
-function ScreenSwitch({ apiBaseUrl, screen, token, userId, username, onNavigate, onLogout, onRequestScrollTop }: { apiBaseUrl: string; screen: ScreenId; token: string; userId: string; username: string; onNavigate: (screen: ScreenId) => void; onLogout: () => void; onRequestScrollTop: () => void }) {
-  if (screen === "dashboard") return <DashboardScreen apiBaseUrl={apiBaseUrl} token={token} username={username} onNavigate={onNavigate} />;
-  if (screen === "explore") return <ExploreScreen username={username} onNavigate={onNavigate} />;
-  if (screen === "stats") return <StatsScreen apiBaseUrl={apiBaseUrl} token={token} />;
-  if (screen === "map") return <MapScreen apiBaseUrl={apiBaseUrl} token={token} />;
-  if (screen === "scratch") return <ScratchScreen apiBaseUrl={apiBaseUrl} token={token} />;
-  if (screen === "milestones") return <MilestonesScreen apiBaseUrl={apiBaseUrl} token={token} />;
-  if (screen === "ftf") return <FtfScreen apiBaseUrl={apiBaseUrl} token={token} />;
-  if (screen === "hides") return <HidesScreen apiBaseUrl={apiBaseUrl} token={token} />;
-  if (screen === "trackables") return <TrackablesScreen apiBaseUrl={apiBaseUrl} token={token} />;
-  if (screen === "mysteries") return <MysteriesScreen apiBaseUrl={apiBaseUrl} token={token} userId={userId} onRequestScrollTop={onRequestScrollTop} />;
-  if (screen === "travel") return <TravelScreen apiBaseUrl={apiBaseUrl} token={token} userId={userId} />;
-  if (screen === "upload") return <UploadScreen apiBaseUrl={apiBaseUrl} token={token} />;
-  if (screen === "imports") return <ImportsScreen apiBaseUrl={apiBaseUrl} token={token} />;
-  return <ProfileScreen apiBaseUrl={apiBaseUrl} token={token} onLogout={onLogout} />;
+function TabSwitch({ apiBaseUrl, tab, statsSection, mapsSection, fieldSection, moreSection, token, userId, username, onNavigate, onStatsSection, onMapsSection, onFieldSection, onMoreSection, onLogout, onRequestScrollTop }: { apiBaseUrl: string; tab: TabId; statsSection: StatsSection; mapsSection: MapsSection; fieldSection: FieldSection; moreSection: MoreSection; token: string; userId: string; username: string; onNavigate: Navigate; onStatsSection: (section: StatsSection) => void; onMapsSection: (section: MapsSection) => void; onFieldSection: (section: FieldSection) => void; onMoreSection: (section: MoreSection) => void; onLogout: () => void; onRequestScrollTop: () => void }) {
+  if (tab === "stats") return <StatsTab apiBaseUrl={apiBaseUrl} token={token} section={statsSection} onSection={onStatsSection} />;
+  if (tab === "maps") return <MapsTab apiBaseUrl={apiBaseUrl} token={token} section={mapsSection} onSection={onMapsSection} />;
+  if (tab === "field") return <FieldTab apiBaseUrl={apiBaseUrl} token={token} userId={userId} section={fieldSection} onSection={onFieldSection} onRequestScrollTop={onRequestScrollTop} />;
+  if (tab === "more") return <MoreTab apiBaseUrl={apiBaseUrl} token={token} section={moreSection} onSection={onMoreSection} onLogout={onLogout} />;
+  return <HomeScreen apiBaseUrl={apiBaseUrl} token={token} username={username} onNavigate={onNavigate} />;
+}
+
+function StatsTab({ apiBaseUrl, token, section, onSection }: { apiBaseUrl: string; token: string; section: StatsSection; onSection: (section: StatsSection) => void }) {
+  return (
+    <>
+      <PageTitle eyebrow="Patterns and progress" title="Statistics" />
+      <Segmented values={statsSections.map((item) => statsSectionLabels[item])} active={statsSectionLabels[section]} onPress={(value) => {
+        const next = statsSections.find((item) => statsSectionLabels[item] === value);
+        if (next) onSection(next);
+      }} />
+      {section === "overview" ? <StatsScreen apiBaseUrl={apiBaseUrl} token={token} /> : null}
+      {section === "badges" ? <BadgesSection apiBaseUrl={apiBaseUrl} token={token} /> : null}
+      {section === "milestones" ? <MilestonesScreen apiBaseUrl={apiBaseUrl} token={token} /> : null}
+      {section === "ftf" ? <FtfScreen apiBaseUrl={apiBaseUrl} token={token} /> : null}
+      {section === "hides" ? <HidesScreen apiBaseUrl={apiBaseUrl} token={token} /> : null}
+    </>
+  );
+}
+
+function MapsTab({ apiBaseUrl, token, section, onSection }: { apiBaseUrl: string; token: string; section: MapsSection; onSection: (section: MapsSection) => void }) {
+  return (
+    <>
+      <PageTitle eyebrow="Every find in context" title="Maps" />
+      <Segmented values={mapsSections.map((item) => mapsSectionLabels[item])} active={mapsSectionLabels[section]} onPress={(value) => {
+        const next = mapsSections.find((item) => mapsSectionLabels[item] === value);
+        if (next) onSection(next);
+      }} />
+      {section === "finds" ? <MapScreen apiBaseUrl={apiBaseUrl} token={token} /> : <ScratchScreen apiBaseUrl={apiBaseUrl} token={token} />}
+    </>
+  );
+}
+
+function FieldTab({ apiBaseUrl, token, userId, section, onSection, onRequestScrollTop }: { apiBaseUrl: string; token: string; userId: string; section: FieldSection; onSection: (section: FieldSection) => void; onRequestScrollTop: () => void }) {
+  return (
+    <>
+      <PageTitle eyebrow="Caching-day toolkit" title="Field" />
+      <Segmented values={fieldSections.map((item) => fieldSectionLabels[item])} active={fieldSectionLabels[section]} onPress={(value) => {
+        const next = fieldSections.find((item) => fieldSectionLabels[item] === value);
+        if (next) onSection(next);
+      }} />
+      {section === "mysteries" ? <MysteriesScreen apiBaseUrl={apiBaseUrl} token={token} userId={userId} onRequestScrollTop={onRequestScrollTop} /> : null}
+      {section === "trips" ? <TravelScreen apiBaseUrl={apiBaseUrl} token={token} userId={userId} /> : null}
+      {section === "trackables" ? <TrackablesScreen apiBaseUrl={apiBaseUrl} token={token} /> : null}
+    </>
+  );
+}
+
+function MoreTab({ apiBaseUrl, token, section, onSection, onLogout }: { apiBaseUrl: string; token: string; section: MoreSection; onSection: (section: MoreSection) => void; onLogout: () => void }) {
+  return (
+    <>
+      <PageTitle eyebrow="Data and account" title="More" />
+      <Segmented values={moreSections.map((item) => moreSectionLabels[item])} active={moreSectionLabels[section]} onPress={(value) => {
+        const next = moreSections.find((item) => moreSectionLabels[item] === value);
+        if (next) onSection(next);
+      }} />
+      {section === "sync" ? <SyncScreen apiBaseUrl={apiBaseUrl} token={token} /> : <ProfileScreen apiBaseUrl={apiBaseUrl} token={token} onLogout={onLogout} />}
+    </>
+  );
 }
 
 function OnboardingScreen({ apiBaseUrl, token, onComplete, onLogout }: { apiBaseUrl: string; token: string; onComplete: () => void; onLogout: () => void }) {
@@ -1285,34 +1351,23 @@ function OnboardingScreen({ apiBaseUrl, token, onComplete, onLogout }: { apiBase
   );
 }
 
-function ExploreScreen({ username, onNavigate }: { username: string; onNavigate: (screen: ScreenId) => void }) {
+function HomeShortcut({ icon, label, hint, onPress }: { icon: string; label: string; hint: string; onPress: () => void }) {
   return (
-    <>
-      <PageTitle eyebrow="Everything in one place" title="Explore Geostats" />
-      <View style={styles.exploreIntro}>
-        <Text style={styles.exploreIntroTitle}>Where to next, {username}?</Text>
-        <Text style={styles.exploreIntroText}>Your maps, cache management, imports, puzzles, and publishing tools are organized below.</Text>
+    <Pressable accessibilityRole="button" onPress={onPress} style={({ pressed }) => [styles.featureCard, pressed && styles.pressed]}>
+      <View style={styles.featureCardTop}>
+        <View style={styles.featureIcon}><Text style={styles.featureIconText}>{icon}</Text></View>
+        <Text style={styles.featureArrow}>›</Text>
       </View>
-      {exploreGroups.map((group) => (
-        <View key={group.title} style={styles.exploreGroup}>
-          <View style={styles.exploreGroupHeading}>
-            <Text style={styles.exploreGroupTitle}>{group.title}</Text>
-            <Text style={styles.muted}>{group.subtitle}</Text>
-          </View>
-          <View style={styles.featureGrid}>
-            {group.screens.map((item) => <FeatureCard key={item} screen={item} onPress={() => onNavigate(item)} />)}
-          </View>
-        </View>
-      ))}
-    </>
+      <Text style={styles.featureTitle}>{label}</Text>
+      <Text style={styles.featureSubtitle} numberOfLines={2}>{hint}</Text>
+    </Pressable>
   );
 }
 
-function DashboardScreen({ apiBaseUrl, token, username, onNavigate }: { apiBaseUrl: string; token: string; username: string; onNavigate: (screen: ScreenId) => void }) {
+function HomeScreen({ apiBaseUrl, token, username, onNavigate }: { apiBaseUrl: string; token: string; username: string; onNavigate: Navigate }) {
   const stats = useApi<{ stats: any }>(apiBaseUrl, token, "/stats/summary", { stats: {} });
   const imports = useApi<{ imports: ImportListItem[] }>(apiBaseUrl, token, "/imports", { imports: [] });
   const s = stats.data.stats;
-  const latestImport = imports.data.imports[0];
   const importActive = hasActiveImports(imports.data.imports);
   const hadActiveImport = useRef(false);
   useEffect(() => {
@@ -1336,19 +1391,44 @@ function DashboardScreen({ apiBaseUrl, token, username, onNavigate }: { apiBaseU
         <Text style={styles.heroValue}>{Number(s.totalFinds ?? 0).toLocaleString()}</Text>
         <Text style={styles.heroLabel}>lifetime finds across {s.countries?.length ?? 0} countries</Text>
         <View style={styles.heroActions}>
-          <Pressable onPress={() => onNavigate("upload")} style={styles.heroPrimaryAction}><Text style={styles.heroPrimaryActionText}>＋ Import finds</Text></Pressable>
-          <Pressable onPress={() => onNavigate("map")} style={styles.heroSecondaryAction}><Text style={styles.heroSecondaryActionText}>Open map  ›</Text></Pressable>
+          <Pressable onPress={() => onNavigate("more", "sync")} style={styles.heroPrimaryAction}><Text style={styles.heroPrimaryActionText}>＋ Import finds</Text></Pressable>
+          <Pressable onPress={() => onNavigate("maps", "finds")} style={styles.heroSecondaryAction}><Text style={styles.heroSecondaryActionText}>Open map  ›</Text></Pressable>
         </View>
       </View>
-      <StatGrid rows={[["Total finds", s.totalFinds ?? 0], ["Cache types", s.cacheTypes?.length ?? 0], ["Countries", s.countries?.length ?? 0], ["Longest streak", `${s.streaks?.longest ?? 0} days`]]} />
-      <View style={styles.quickActions}>
-        {(["scratch", "milestones", "trackables", "mysteries", "travel"] as ScreenId[]).map((item) => <QuickAction key={item} screen={item} onPress={() => onNavigate(item)} />)}
-      </View>
-      <Panel title="At a glance" subtitle={`Last import: ${dateText(imports.data.imports[0]?.createdAt)}`}>
-        <Bars data={latestTwelveMonths(s.findsByMonth ?? [])} />
-        <KeyValue rows={[["Best day", s.summaryNumbers?.bestDay ? `${s.summaryNumbers.bestDay.count} on ${s.summaryNumbers.bestDay.key}` : "-"], ["Best month", s.summaryNumbers?.bestMonth ? `${s.summaryNumbers.bestMonth.count} in ${s.summaryNumbers.bestMonth.key}` : "-"], ["Cache days", s.summaryNumbers?.cachingDays ?? 0], ["Average/day", s.summaryNumbers?.findsPerDay?.toFixed(2) ?? "0.00"], ["Average distance", s.distanceStats?.averageDistanceKm == null ? "-" : `${Math.round(s.distanceStats.averageDistanceKm)} km`]]} />
+      <Panel title={importActive ? "Import running" : "Archive status"} subtitle={`Last import: ${dateText(imports.data.imports[0]?.createdAt)}`}>
+        <Text style={styles.muted}>{importActive ? "Your GPX is being processed. Stats refresh automatically when it finishes." : "Your archive is up to date. Add a GPX or Pocket Query to grow it."}</Text>
+        <SecondaryButton label={importActive ? "Watch progress" : "Go to Sync"} onPress={() => onNavigate("more", "sync")} />
       </Panel>
-      <BadgesPanel apiBaseUrl={apiBaseUrl} stats={s} token={token} />
+      <StatGrid rows={[["Total finds", s.totalFinds ?? 0], ["Cache types", s.cacheTypes?.length ?? 0], ["Countries", s.countries?.length ?? 0], ["Longest streak", `${s.streaks?.longest ?? 0} days`]]} />
+      <View style={styles.exploreGroup}>
+        <View style={styles.exploreGroupHeading}>
+          <Text style={styles.exploreGroupTitle}>Field toolkit</Text>
+          <Text style={styles.muted}>Solve, plan, and log while you are out caching.</Text>
+        </View>
+        <View style={styles.featureGrid}>
+          <HomeShortcut icon="?" label="Mysteries" hint="Solve and collaborate" onPress={() => onNavigate("field", "mysteries")} />
+          <HomeShortcut icon="↗" label="Trips" hint="Caches along your route" onPress={() => onNavigate("field", "trips")} />
+          <HomeShortcut icon="⌁" label="Trackables" hint="Items on the move" onPress={() => onNavigate("field", "trackables")} />
+          <HomeShortcut icon="⌖" label="Finds map" hint="Every find in context" onPress={() => onNavigate("maps", "finds")} />
+        </View>
+      </View>
+      <View style={styles.exploreGroup}>
+        <View style={styles.exploreGroupHeading}>
+          <Text style={styles.exploreGroupTitle}>Your progress</Text>
+          <Text style={styles.muted}>Badges, firsts, and coverage live under Stats and Maps.</Text>
+        </View>
+        <View style={styles.featureGrid}>
+          <HomeShortcut icon="★" label="Badges" hint="Achievement levels" onPress={() => onNavigate("stats", "badges")} />
+          <HomeShortcut icon="◇" label="Milestones" hint="Memorable firsts" onPress={() => onNavigate("stats", "milestones")} />
+          <HomeShortcut icon="⚑" label="FTF" hint="First-to-find history" onPress={() => onNavigate("stats", "ftf")} />
+          <HomeShortcut icon="△" label="Hides" hint="Your hides and finders" onPress={() => onNavigate("stats", "hides")} />
+          <HomeShortcut icon="◎" label="Scratch" hint="Country coverage" onPress={() => onNavigate("maps", "scratch")} />
+          <HomeShortcut icon="▥" label="All stats" hint="Patterns and history" onPress={() => onNavigate("stats", "overview")} />
+        </View>
+      </View>
+      <Panel title="Last 12 months" subtitle="Finds per month">
+        <Bars data={latestTwelveMonths(s.findsByMonth ?? [])} />
+      </Panel>
       <LoadState loading={stats.loading || imports.loading} error={stats.error || imports.error} />
     </>
   );
@@ -1360,19 +1440,17 @@ function StatsScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string 
   const s = data.stats;
   return (
     <>
-      <PageTitle eyebrow="Your caching story" title="Statistics" />
       <StatGrid rows={[["Total finds", s.totalFinds ?? 0], ["Longest streak", `${s.streaks?.longest ?? 0} days`], ["Current streak", `${s.streaks?.current ?? 0} days`], ["Milestones", s.milestoneStats?.countMilestones?.length ?? 0]]} />
       <Segmented values={["Overview", "Patterns", "History"]} active={section} onPress={setSection} />
       {section === "Overview" ? <>
         <Panel title="Finds by month" subtitle="Rolling latest 12 months"><Bars data={latestTwelveMonths(s.findsByMonth ?? [])} /></Panel>
         <Panel title="Summary numbers"><KeyValue rows={[["Total days", s.summaryNumbers?.totalDays ?? 0], ["Finds/caching day", s.summaryNumbers?.findsPerCachingDay?.toFixed(2) ?? "0.00"], ["Finds/week", s.summaryNumbers?.findsPerWeek?.toFixed(2) ?? "0.00"], ["Last 365 finds", s.summaryNumbers?.last365Finds ?? 0]]} /></Panel>
         <Panel title="Difficulty / Terrain"><DifficultyGrid data={s.difficultyTerrain ?? []} /></Panel>
-        <Panel title="Home distance">{s.distanceStats ? <><KeyValue rows={[["Average distance", s.distanceStats.averageDistanceKm == null ? "-" : `${Math.round(s.distanceStats.averageDistanceKm)} km`], ["Maximum distance", s.distanceStats.maxDistanceKm == null ? "-" : `${Math.round(s.distanceStats.maxDistanceKm)} km`], ["Bearing degrees", s.distanceStats.bearingBuckets?.filter((x: PercentBucket) => x.count > 0).length ?? 0]]} /><Text style={styles.sectionLabel}>Distance buckets</Text><Bars data={s.distanceStats.distanceBuckets ?? []} /><Text style={styles.sectionLabel}>Bearings from home</Text><Bars data={s.distanceStats.bearingBuckets ?? []} /></> : <Text style={styles.muted}>Set home coordinates in Profile to show distance and bearing stats.</Text>}</Panel>
+        <Panel title="Home distance">{s.distanceStats ? <><KeyValue rows={[["Average distance", s.distanceStats.averageDistanceKm == null ? "-" : `${Math.round(s.distanceStats.averageDistanceKm)} km`], ["Maximum distance", s.distanceStats.maxDistanceKm == null ? "-" : `${Math.round(s.distanceStats.maxDistanceKm)} km`], ["Bearing degrees", s.distanceStats.bearingBuckets?.filter((x: PercentBucket) => x.count > 0).length ?? 0]]} /><Text style={styles.sectionLabel}>Distance buckets</Text><Bars data={s.distanceStats.distanceBuckets ?? []} /><Text style={styles.sectionLabel}>Bearings from home</Text><Bars data={s.distanceStats.bearingBuckets ?? []} /></> : <Text style={styles.muted}>Set home coordinates in More → Profile to show distance and bearing stats.</Text>}</Panel>
       </> : null}
       {section === "Patterns" ? <>
         <BreakdownPanel title="Cache breakdowns" groups={[["Cache types", s.cacheTypes ?? []], ["Sizes", s.sizes ?? []], ["Countries", s.countries ?? []], ["Regions", s.regions ?? []], ["Counties / municipalities", s.counties ?? []], ["Finds by difficulty", s.findsByDifficulty ?? []], ["Finds by terrain", s.findsByTerrain ?? []], ["Finds by calendar month", s.findsByCalendarMonth ?? []], ["Finds by weekday", s.findsByWeekday ?? []], ["Finds by year placed", s.findsByPlacedYear ?? []], ["Finds to today for each year", s.findsToTodayByYear ?? []], ["Average difficulty per year", s.averageDifficultyPerYear ?? s.averageDifficultyByYear ?? []], ["Average terrain per year", s.averageTerrainPerYear ?? s.averageTerrainByYear ?? []], ["Top hiders", (s.ownerBuckets ?? []).slice(0, 20)]]} />
         <Panel title="Elevation"><Bars data={s.elevationBuckets ?? []} /></Panel>
-        <ExtremeCachesPanel apiBaseUrl={apiBaseUrl} token={token} />
       </> : null}
       {section === "History" ? <>
         <Panel title="Way to 81"><Rows rows={(s.wayTo81 ?? []).map((entry: any) => [String(entry.index), `${entry.gcCode} ${entry.name}`, `${entry.difficulty}/${entry.terrain}`])} /></Panel>
@@ -1384,6 +1462,13 @@ function StatsScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string 
       <LoadState loading={loading} error={error} />
     </>
   );
+}
+
+function BadgesSection({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
+  const { data, loading, error } = useApi<{ stats: any }>(apiBaseUrl, token, "/stats/summary", { stats: {} });
+  if (loading) return <LoadState loading error={null} />;
+  if (error) return <LoadState loading={false} error={error} />;
+  return <BadgesPanel apiBaseUrl={apiBaseUrl} stats={data.stats} token={token} />;
 }
 
 function MapScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
@@ -1403,7 +1488,6 @@ function MapScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
   const recent = [...visiblePoints].sort((a, b) => Date.parse(b.foundAt ?? b.placedAt ?? "") - Date.parse(a.foundAt ?? a.placedAt ?? "")).slice(0, 24);
   return (
     <>
-      <PageTitle eyebrow="Your caching footprint" title="Map" />
       <StatGrid rows={[["Finds", findCount], ["Own hides", points.length - findCount]]} />
       <Segmented values={["All", "Finds", "Hides"]} active={mapFilter} onPress={setMapFilter} />
       <Panel title={`${visiblePoints.length.toLocaleString()} points in view`} subtitle="Tap a marker for cache details">
@@ -1514,7 +1598,6 @@ function ScratchScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: strin
   }, [active?.name, config.isDetail, config.propertyName, config.url, configIsCurrent, level, points]);
   return (
     <>
-      <PageTitle eyebrow="Scratch-off coverage" title="Scratch Map" />
       <StatGrid rows={[["Logged finds", data.truncated ? `${data.limit}+` : data.totalFinds ?? 0], ["Continents", data.continents?.length ?? 0], ["Countries", countries.length], ["Top country", countries[0]?.name ?? "-"]]} />
       <Panel title="Coverage map" subtitle={effectiveLevel === level ? `${effectiveLevel} in view` : "Country map shown until region data is added"}>
         <View style={styles.segmented}>
@@ -1559,7 +1642,6 @@ function MilestonesScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: st
   const m = data.stats.milestoneStats ?? {};
   return (
     <>
-      <PageTitle eyebrow="Progress markers" title="Milestones" />
       <StatGrid rows={[["Count marks", m.countMilestones?.length ?? 0], ["Countries", m.firstByCountry?.length ?? 0], ["Types", m.firstByType?.length ?? 0], ["D/T firsts", m.firstByDifficultyTerrain?.length ?? 0]]} />
       <MilestoneList title="Find count milestones" rows={m.countMilestones ?? []} labelKey="count" />
       <MilestoneList title="First cache by country" rows={m.firstByCountry ?? []} />
@@ -1612,7 +1694,6 @@ function FtfScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
   }
   return (
     <>
-      <PageTitle eyebrow="First to find" title="FTF" />
       <StatGrid rows={[["FTF finds", s.total ?? 0], ["Percent", s.percentOfFinds == null ? "-" : `${s.percentOfFinds.toFixed(2)}%`], ["Average interval", s.averageIntervalDays == null ? "-" : `${s.averageIntervalDays.toFixed(1)} days`], ["Archived", s.archivedCount ?? 0]]} />
       <Panel title="Some numbers"><KeyValue rows={[["First", s.first ? `${s.first.gcCode} ${dateText(s.first.dateTime)}` : "-"], ["Latest", s.latest ? `${s.latest.gcCode} ${dateText(s.latest.dateTime)}` : "-"], ["Best day", s.bestDay ? `${s.bestDay.count} on ${s.bestDay.key}` : "-"], ["Best month", s.bestMonth ? `${s.bestMonth.count} in ${s.bestMonth.key}` : "-"], ["Average distance", s.averageDistanceKm == null ? "-" : `${Math.round(s.averageDistanceKm)} km`]]} /></Panel>
       <BreakdownPanel title="FTF breakdowns" groups={[["FTF by year", s.byYear ?? []], ["FTF by month", s.byMonth ?? []], ["FTFs by calendar month", s.byCalendarMonth ?? []], ["FTFs by type", s.byType ?? []], ["FTFs by size", s.bySize ?? []], ["FTFs by difficulty", s.byDifficulty ?? []], ["FTFs by terrain", s.byTerrain ?? []], ["FTFs by country", s.byCountry ?? []], ["FTFs by region", s.byRegion ?? []], ["FTFs by weekday", s.byWeekday ?? []]]} />
@@ -1661,7 +1742,6 @@ function HidesScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string 
   );
   return (
     <>
-      <PageTitle eyebrow="Owner statistics" title="Hides" />
       <StatGrid rows={[["Owned", h.totalHides ?? 0], ["Active", h.activeHides ?? 0], ["Received logs", h.totalReceivedLogs ?? 0], ["Finders", h.totalUniqueFinders ?? 0]]} />
       <BreakdownPanel title="Owner charts" groups={ownerGroups} />
       <Panel title="Owned cache statistics"><KeyValue rows={(h.hideSummaryRows ?? []).map((row: any) => [row.label, row.value])} /></Panel>
@@ -1745,7 +1825,6 @@ function TrackablesScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: st
 
   return (
     <>
-      <PageTitle eyebrow="Trackable logbook" title="Trackables" />
       <Text style={styles.muted}>Record what you own, what you have found, and where each item was last seen.</Text>
       <StatGrid rows={[["Total", trackables.data.summary.total], ["Owned", trackables.data.summary.byState.OWNED ?? 0], ["In the wild", (trackables.data.summary.byState.DROPPED ?? 0) + (trackables.data.summary.byState.VISITED ?? 0)], ["Needs a look", trackables.data.summary.stuck]]} />
       <Panel title={editingId ? "Edit trackable" : "Add a trackable"} subtitle="Use the code printed on the item.">
@@ -1789,44 +1868,9 @@ function TrackablesScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: st
   );
 }
 
-function UploadScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
+function SyncScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
   const [message, setMessage] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
-  const imports = useApi<{ imports: ImportListItem[] }>(apiBaseUrl, token, "/imports", { imports: [] });
-  useEffect(() => {
-    if (!hasActiveImports(imports.data.imports)) return;
-    const interval = setInterval(() => {
-      void imports.refresh();
-    }, 3000);
-    return () => clearInterval(interval);
-  }, [imports.data.imports]);
-  async function pickAndUpload(kind: UploadKind) {
-    if (uploading) return;
-    setUploading(true);
-    try {
-      await pickAndUploadDocument(kind, {
-        pick: (options) => DocumentPicker.getDocumentAsync(options),
-        createFile: (uri) => new File(uri),
-        request: (path, body) => apiFetch(apiBaseUrl, path, token, { method: "POST", body }),
-        refresh: imports.refresh,
-        onMessage: setMessage
-      });
-    } finally {
-      setUploading(false);
-    }
-  }
-  return (
-    <>
-      <PageTitle eyebrow="Import pipeline" title="Upload cache data" />
-      <Panel title="GPX or ZIP"><PrimaryButton label={uploading ? "Uploading..." : "Choose GPX or ZIP"} onPress={() => pickAndUpload("cache")} /></Panel>
-      {message ? <Text style={styles.note}>{message}</Text> : null}
-      <Panel title="Latest imports"><ImportRows imports={imports.data.imports.slice(0, 8)} /></Panel>
-      <LoadState loading={imports.loading} error={imports.error} />
-    </>
-  );
-}
-
-function ImportsScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
   const { data, loading, error, refresh } = useApi<{ imports: ImportListItem[] }>(apiBaseUrl, token, "/imports", { imports: [] });
   useEffect(() => {
     if (!hasActiveImports(data.imports)) return;
@@ -1835,7 +1879,36 @@ function ImportsScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: strin
     }, 3000);
     return () => clearInterval(interval);
   }, [data.imports]);
-  return <><PageTitle eyebrow="Background jobs" title="Import history" /><PrimaryButton label="Refresh" onPress={refresh} /><Panel title="Imports"><ImportRows imports={data.imports} /></Panel><LoadState loading={loading} error={error} /></>;
+  async function pickAndUpload(kind: UploadKind) {
+    if (uploading) return;
+    setUploading(true);
+    try {
+      await pickAndUploadDocument(kind, {
+        pick: (options) => DocumentPicker.getDocumentAsync(options),
+        createFile: (uri) => new File(uri),
+        request: (path, body) => apiFetch(apiBaseUrl, path, token, { method: "POST", body }),
+        refresh,
+        onMessage: setMessage
+      });
+    } finally {
+      setUploading(false);
+    }
+  }
+  const active = hasActiveImports(data.imports);
+  return (
+    <>
+      <Panel title="Add cache data" subtitle="GPX My Finds/My Hides or a Pocket Query ZIP.">
+        <PrimaryButton label={uploading ? "Uploading..." : "Choose GPX or ZIP"} onPress={() => pickAndUpload("cache")} />
+        {message ? <Text style={styles.note}>{message}</Text> : null}
+        {active ? <Text style={styles.muted}>Processing in the background — this list refreshes on its own.</Text> : null}
+      </Panel>
+      <Panel title="Import history" subtitle={`${data.imports.length} files`}>
+        <SecondaryButton label="Refresh" onPress={refresh} />
+        <ImportRows imports={data.imports} />
+      </Panel>
+      <LoadState loading={loading} error={error} />
+    </>
+  );
 }
 
 function ProfileScreen({ apiBaseUrl, token, onLogout }: { apiBaseUrl: string; token: string; onLogout: () => void }) {
@@ -1866,7 +1939,6 @@ function ProfileScreen({ apiBaseUrl, token, onLogout }: { apiBaseUrl: string; to
   }
   return (
     <>
-      <PageTitle eyebrow="Per-user ownership" title="Geocaching profile" />
       <Panel title="Profile"><Field label="Geocaching username" value={gcUsername} onChangeText={setGcUsername} /><Field label="Home latitude" value={homeLatitude} onChangeText={setHomeLatitude} keyboardType="numeric" /><Field label="Home longitude" value={homeLongitude} onChangeText={setHomeLongitude} keyboardType="numeric" /><Field label="Time zone" value={timeZone} onChangeText={setTimeZone} /><Field label="FTF auto-detect phrases" value={ftfTerms} onChangeText={setFtfTerms} multiline /><PrimaryButton label="Save profile" onPress={save} /></Panel>
       {message ? <Text style={styles.note}>{message}</Text> : null}
       <Panel title="Account" subtitle="Your imported data remains on the selected Geostats server.">
@@ -2364,7 +2436,6 @@ function MysteriesScreen({ apiBaseUrl, token, userId, onRequestScrollTop }: { ap
   return (
     <>
       {!detailOpen || !selected ? <>
-      <PageTitle eyebrow="Offline solving workspace" title="Mysteries" />
       <StatGrid rows={[["Caches", caches.length], ["Solved", caches.filter((cache) => cache.status === "solved").length], ["Planned", caches.filter((cache) => cache.status === "planned").length], ["Shared", caches.filter((cache) => cache.sharedBy || cache.sharedWith.length).length]]} />
       <View style={styles.actionRow}>
         <View style={styles.flex}><PrimaryButton label={showAdd ? "Close add form" : "Add mystery"} onPress={() => setShowAdd((value) => !value)} /></View>
@@ -2569,7 +2640,6 @@ function TravelScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; token
 
   return (
     <>
-      <PageTitle eyebrow="Find caches for the journey" title="Travel" />
       <Text style={styles.muted}>Search around a place or find caches along the drive. Your solved mysteries join the imported cache pool.</Text>
       <StatGrid rows={[["Trips", tripCount], ["Ready to find", readyCount], ["Still solving", Math.max(0, caches.length - readyCount)], ["Total caches", caches.length]]} />
       <Panel title="Find caches" subtitle={pool.loading ? "Checking your cache pool..." : `${pool.data.unfound}${pool.data.poolTruncated ? "+" : ""} unfound of ${pool.data.total}${pool.data.poolTruncated ? "+" : ""} imported caches`}>
@@ -2613,30 +2683,6 @@ function TravelScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; token
 
 function PageTitle({ eyebrow, title }: { eyebrow: string; title: string }) {
   return <View style={styles.pageTitle}><Text style={styles.eyebrow}>{eyebrow}</Text><Text style={styles.title}>{title}</Text></View>;
-}
-
-function FeatureCard({ screen, onPress }: { screen: ScreenId; onPress: () => void }) {
-  const detail = screenDetails[screen];
-  return (
-    <Pressable accessibilityRole="button" onPress={onPress} style={({ pressed }) => [styles.featureCard, pressed && styles.pressed]}>
-      <View style={styles.featureCardTop}>
-        <View style={styles.featureIcon}><Text style={styles.featureIconText}>{detail.icon}</Text></View>
-        <Text style={styles.featureArrow}>↗</Text>
-      </View>
-      <Text style={styles.featureTitle}>{detail.label}</Text>
-      <Text style={styles.featureSubtitle} numberOfLines={2}>{detail.eyebrow}</Text>
-    </Pressable>
-  );
-}
-
-function QuickAction({ screen, onPress }: { screen: ScreenId; onPress: () => void }) {
-  const detail = screenDetails[screen];
-  return (
-    <Pressable accessibilityRole="button" onPress={onPress} style={({ pressed }) => [styles.quickAction, pressed && styles.pressed]}>
-      <Text style={styles.quickActionIcon}>{detail.icon}</Text>
-      <Text style={styles.quickActionLabel}>{detail.label}</Text>
-    </Pressable>
-  );
 }
 
 function Field(props: React.ComponentProps<typeof TextInput> & { label: string }) {
@@ -2697,37 +2743,6 @@ function BreakdownGroup({ label, data }: { label: string; data: any[] }) {
       </Pressable>
       {expanded ? <View style={styles.breakdownContent}><Bars data={data} /></View> : null}
     </View>
-  );
-}
-
-function ExtremeCachesPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
-  const [country, setCountry] = useState("");
-  const path = country ? `/stats/extreme-caches?country=${encodeURIComponent(country)}` : "/stats/extreme-caches";
-  const { data, loading, error } = useApi<ExtremeCachesData>(apiBaseUrl, token, path, { countries: [], selectedCountry: null, selectedRegion: null, referenceRegions: [], homeCountry: null, reference: null });
-  const selectingHomeCountry = !country && Boolean(data.homeCountry) && data.countries.includes(data.homeCountry!);
-  useEffect(() => {
-    if (selectingHomeCountry) setCountry(data.homeCountry!);
-  }, [data.homeCountry, selectingHomeCountry]);
-  const labels: Array<[keyof NonNullable<ExtremeCachesData["reference"]>["extremes"], string, string]> = [
-    ["northernmost", "Northernmost", "N"],
-    ["southernmost", "Southernmost", "S"],
-    ["easternmost", "Easternmost", "E"],
-    ["westernmost", "Westernmost", "W"],
-    ["highest", "Highest", "↑"],
-    ["lowest", "Lowest", "↓"]
-  ];
-  const reference = data.reference;
-  return (
-    <Panel title="Extreme caches" subtitle={reference ? `Project-GC reference points for ${reference.region ?? reference.country}` : "Project-GC reference points for your home country"}>
-      {reference ? <View style={styles.extremeGrid}>{labels.map(([key, label, mark]) => {
-        const entry = reference.extremes[key];
-        return <Pressable key={key} onPress={() => void Linking.openURL(`https://coord.info/${entry.gcCode}`)} style={[styles.extremeCard, entry.found && styles.extremeCardFound]}>
-          <View style={[styles.extremeMark, entry.found && styles.extremeMarkFound]}><Text style={styles.extremeMarkText}>{entry.found ? "✓" : mark}</Text></View>
-          <View style={styles.flex}><Text style={styles.extremeLabel}>{label}</Text><Text style={styles.rowTitle} numberOfLines={2}>{entry.gcCode} · {entry.name}</Text>{entry.elevationMeters != null ? <Text style={styles.muted}>{Math.round(entry.elevationMeters)} m</Text> : null}</View>
-        </Pressable>;
-      })}</View> : !loading && !selectingHomeCountry ? <Text style={styles.muted}>Import finds from a supported country to see its reference extremes.</Text> : null}
-      <LoadState loading={loading || selectingHomeCountry} error={error} />
-    </Panel>
   );
 }
 
@@ -3240,13 +3255,6 @@ const styles = StyleSheet.create({
   heroPrimaryActionText: { color: "#172016", fontWeight: "900" },
   heroSecondaryAction: { backgroundColor: "#143b25", borderRadius: 13, paddingHorizontal: 15, paddingVertical: 12 },
   heroSecondaryActionText: { color: "#ecf7ef", fontWeight: "900" },
-  quickActions: { flexDirection: "row", gap: 8 },
-  quickAction: { flex: 1, minWidth: 0, minHeight: 72, alignItems: "center", justifyContent: "center", gap: 6, borderRadius: 15, backgroundColor: "#0f2119", borderWidth: 1, borderColor: "#203c2f" },
-  quickActionIcon: { color: "#f3b34d", fontSize: 19, fontWeight: "900" },
-  quickActionLabel: { color: "#c8d7ce", fontSize: 10, fontWeight: "800", textAlign: "center" },
-  exploreIntro: { borderRadius: 18, backgroundColor: "#163525", borderWidth: 1, borderColor: "#28543b", padding: 17, gap: 4 },
-  exploreIntroTitle: { color: "#f1f8f3", fontSize: 19, fontWeight: "900" },
-  exploreIntroText: { color: "#a8bdb1", fontSize: 13, lineHeight: 19 },
   exploreGroup: { gap: 11, marginTop: 4 },
   exploreGroupHeading: { gap: 2, paddingHorizontal: 2 },
   exploreGroupTitle: { color: "#e8f2eb", fontSize: 17, fontWeight: "900" },
@@ -3345,13 +3353,6 @@ const styles = StyleSheet.create({
   travelCheck: { width: 24, height: 24, borderRadius: 7, borderWidth: 1, borderColor: "#50675b", alignItems: "center", justifyContent: "center" },
   travelCheckSelected: { borderColor: "#f3b34d", backgroundColor: "#f3b34d" },
   travelCheckText: { color: "#172016", fontWeight: "900" },
-  extremeGrid: { gap: 9 },
-  extremeCard: { minHeight: 78, flexDirection: "row", alignItems: "center", gap: 12, padding: 12, borderWidth: 1, borderColor: "#233f32", borderRadius: 13, backgroundColor: "#0b1912" },
-  extremeCardFound: { borderColor: "#427958", backgroundColor: "#122c1f" },
-  extremeMark: { width: 42, height: 42, borderRadius: 21, alignItems: "center", justifyContent: "center", backgroundColor: "#243a2e", borderWidth: 1, borderColor: "#4b6256" },
-  extremeMarkFound: { backgroundColor: "#f3b34d", borderColor: "#f3b34d" },
-  extremeMarkText: { color: "#edf7ef", fontSize: 17, fontWeight: "900" },
-  extremeLabel: { color: "#f3b34d", fontSize: 10, fontWeight: "900", textTransform: "uppercase", letterSpacing: 0.7 },
   mysteryImage: { width: "100%", height: 210, borderRadius: 8, backgroundColor: "#14271d" },
   linkText: { color: "#f3b34d", fontWeight: "800" },
   dtChart: { gap: 6 },
