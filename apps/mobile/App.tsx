@@ -43,7 +43,7 @@ type ScratchLevel = "countries" | "regions" | "counties";
 type TabId = "home" | "stats" | "maps" | "field" | "more";
 type StatsSection = "overview" | "badges" | "milestones" | "ftf" | "hides";
 type MapsSection = "finds" | "scratch";
-type FieldSection = "mysteries" | "trips" | "trackables";
+type FieldSection = "mysteries" | "trips" | "trackables" | "challenges";
 type MoreSection = "sync" | "profile";
 type TabSection = StatsSection | MapsSection | FieldSection | MoreSection;
 type Navigate = (tab: TabId, section?: TabSection) => void;
@@ -135,11 +135,16 @@ type TravelPoolSummary = { total: number; found: number; unfound: number; poolTr
 type TrackableState = "OWNED" | "DISCOVERED" | "RETRIEVED" | "DROPPED" | "VISITED" | "MISSING";
 type MobileTrackable = { id: string; trackingCode: string; name: string; state: TrackableState; lastSeenAt: string | null; lastSeenLocation: string | null; distanceKm: number | null; notes: string | null; stuck: boolean };
 type TrackableJourneyPoint = { id: string; trackableId: string; trackingCode: string; name: string; logType: string; loggedAt: string; dateEstimated: boolean; sequence: number; sequenceTotal: number; gcCode: string | null; cacheName: string | null; locationName: string | null; holderName: string | null; latitude: number | null; longitude: number | null; notes: string | null };
+type ChallengeChecker = { id: string; name: string; gcCode: string | null; description: string | null; rules: Array<Record<string, unknown>>; publicSlug: string | null; publishedAt: string | null; updatedAt: string };
+type ChallengeEvidence = { date: string; gcCode: string; name: string };
+type ChallengeRuleResult = { label: string; current: number; required: number; passed: boolean; detail: string; evidence: ChallengeEvidence[]; evidenceLimited: boolean };
+type ChallengeResult = { passed: boolean; username: string; checkedAt: string; dataUpdatedAt: string | null; proofText: string; rules: ChallengeRuleResult[] };
 
 const MAX_GOOGLE_MAPS_ROUTE_CACHES = 8;
 
 const HOSTED_API_URL = process.env.EXPO_PUBLIC_API_URL ?? "https://geostats-api.hampusek.com";
 const DEFAULT_API_URL = process.env.EXPO_PUBLIC_API_URL ?? (__DEV__ ? "http://10.0.2.2:3001" : HOSTED_API_URL);
+const HOSTED_WEB_URL = process.env.EXPO_PUBLIC_WEB_URL ?? "https://geostats.hampusek.com";
 const ANDROID_MAP_PROVIDER = Platform.OS === "android" ? PROVIDER_GOOGLE : undefined;
 const NATIVE_MAP_AVAILABLE = hasNativeMapSupport(Platform.OS, process.env.EXPO_PUBLIC_GOOGLE_MAPS_ANDROID_API_KEY);
 const TOKEN_KEY = "geostats_session";
@@ -233,7 +238,7 @@ const tabDetails: Record<TabId, { label: string; context: string; icon: string }
   home: { label: "Home", context: "Your geocaching overview", icon: "⌂" },
   stats: { label: "Stats", context: "Finds, badges, milestones, FTF, hides", icon: "▥" },
   maps: { label: "Maps", context: "Finds and scratch coverage", icon: "⌖" },
-  field: { label: "Field", context: "Mysteries, trips, trackables", icon: "?" },
+  field: { label: "Field", context: "Mysteries, trips, trackables, challenges", icon: "?" },
   more: { label: "More", context: "Sync and profile", icon: "⋯" }
 };
 
@@ -248,11 +253,12 @@ const statsSectionLabels: Record<StatsSection, string> = {
 };
 const mapsSections: MapsSection[] = ["finds", "scratch"];
 const mapsSectionLabels: Record<MapsSection, string> = { finds: "Finds", scratch: "Scratch" };
-const fieldSections: FieldSection[] = ["mysteries", "trips", "trackables"];
+const fieldSections: FieldSection[] = ["mysteries", "trips", "trackables", "challenges"];
 const fieldSectionLabels: Record<FieldSection, string> = {
   mysteries: "Mysteries",
   trips: "Trips",
-  trackables: "Trackables"
+  trackables: "Trackables",
+  challenges: "Challenges"
 };
 const moreSections: MoreSection[] = ["sync", "profile"];
 const moreSectionLabels: Record<MoreSection, string> = { sync: "Sync", profile: "Profile" };
@@ -281,6 +287,35 @@ function displayServerHost(value: string) {
   } catch {
     return value.trim() || "Not configured";
   }
+}
+
+function resolveWebBaseUrl(apiBaseUrl: string) {
+  const configured = process.env.EXPO_PUBLIC_WEB_URL?.trim().replace(/\/+$/, "");
+  if (configured) return configured;
+  if (__DEV__ && !process.env.EXPO_PUBLIC_WEB_URL) {
+    try {
+      const url = new URL(apiBaseUrl);
+      if (url.port === "3001") {
+        url.port = "3000";
+        return url.origin;
+      }
+    } catch {
+      // Fall through to hosted default below.
+    }
+  }
+  try {
+    const url = new URL(apiBaseUrl);
+    if (url.hostname.includes("-api.")) {
+      return `${url.protocol}//${url.hostname.replace("-api.", ".")}`;
+    }
+  } catch {
+    // Fall through to hosted default below.
+  }
+  return HOSTED_WEB_URL;
+}
+
+function publicChallengeUrl(apiBaseUrl: string, username: string, gcCode: string) {
+  return `${resolveWebBaseUrl(apiBaseUrl)}/challenge/${encodeURIComponent(username)}/${encodeURIComponent(gcCode)}`;
 }
 
 function isLocalDevelopmentUrl(url: URL) {
@@ -1288,6 +1323,7 @@ function FieldTab({ apiBaseUrl, token, userId, section, onSection, onRequestScro
       {section === "mysteries" ? <MysteriesScreen apiBaseUrl={apiBaseUrl} token={token} userId={userId} onRequestScrollTop={onRequestScrollTop} /> : null}
       {section === "trips" ? <TravelScreen apiBaseUrl={apiBaseUrl} token={token} userId={userId} /> : null}
       {section === "trackables" ? <TrackablesScreen apiBaseUrl={apiBaseUrl} token={token} /> : null}
+      {section === "challenges" ? <ChallengesScreen apiBaseUrl={apiBaseUrl} token={token} /> : null}
     </>
   );
 }
@@ -1403,12 +1439,13 @@ function HomeScreen({ apiBaseUrl, token, username, onNavigate }: { apiBaseUrl: s
       <View style={styles.exploreGroup}>
         <View style={styles.exploreGroupHeading}>
           <Text style={styles.exploreGroupTitle}>Field toolkit</Text>
-          <Text style={styles.muted}>Solve, plan, and log while you are out caching.</Text>
+          <Text style={styles.muted}>Solve, plan, log, and check while you are out caching.</Text>
         </View>
         <View style={styles.featureGrid}>
           <HomeShortcut icon="?" label="Mysteries" hint="Solve and collaborate" onPress={() => onNavigate("field", "mysteries")} />
           <HomeShortcut icon="↗" label="Trips" hint="Caches along your route" onPress={() => onNavigate("field", "trips")} />
           <HomeShortcut icon="⌁" label="Trackables" hint="Items on the move" onPress={() => onNavigate("field", "trackables")} />
+          <HomeShortcut icon="🏅" label="Challenges" hint="Check challenge caches" onPress={() => onNavigate("field", "challenges")} />
           <HomeShortcut icon="⌖" label="Finds map" hint="Every find in context" onPress={() => onNavigate("maps", "finds")} />
         </View>
       </View>
@@ -1906,6 +1943,181 @@ function SyncScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
         <SecondaryButton label="Refresh" onPress={refresh} />
         <ImportRows imports={data.imports} />
       </Panel>
+      <LoadState loading={loading} error={error} />
+    </>
+  );
+}
+
+function ChallengesScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
+  const [checkers, setCheckers] = useState<ChallengeChecker[]>([]);
+  const [accountUsername, setAccountUsername] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [results, setResults] = useState<Record<string, ChallengeResult>>({});
+  const [query, setQuery] = useState("");
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [batching, setBatching] = useState(false);
+  const [batchProgress, setBatchProgress] = useState<{ done: number; total: number } | null>(null);
+
+  async function load() {
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await apiFetch<{ checkers: ChallengeChecker[]; username: string }>(apiBaseUrl, "/challenge-checkers", token);
+      setCheckers(data.checkers);
+      setAccountUsername(data.username);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not load challenge checkers");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void load();
+  }, [apiBaseUrl, token]);
+
+  async function run(checker: ChallengeChecker) {
+    setBusyId(checker.id);
+    setError(null);
+    try {
+      const result = await apiFetch<ChallengeResult>(apiBaseUrl, `/challenge-checkers/${encodeURIComponent(checker.id)}/run`, token, { method: "POST" });
+      setResults((current) => ({ ...current, [checker.id]: result }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : `Could not run ${checker.gcCode ?? checker.name}`);
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function runAll(targets: ChallengeChecker[]) {
+    if (!targets.length || batching || busyId) return;
+    setBatching(true);
+    setError(null);
+    setBatchProgress({ done: 0, total: targets.length });
+    let completed = 0;
+    const failures: string[] = [];
+    for (const checker of targets) {
+      try {
+        const result = await apiFetch<ChallengeResult>(apiBaseUrl, `/challenge-checkers/${encodeURIComponent(checker.id)}/run`, token, { method: "POST" });
+        setResults((current) => ({ ...current, [checker.id]: result }));
+      } catch {
+        failures.push(checker.gcCode ?? checker.name);
+      } finally {
+        completed += 1;
+        setBatchProgress({ done: completed, total: targets.length });
+      }
+    }
+    if (failures.length) setError(`Could not run ${failures.length} checker${failures.length === 1 ? "" : "s"}: ${failures.join(", ")}`);
+    setBatching(false);
+    setBatchProgress(null);
+  }
+
+  async function togglePublish(checker: ChallengeChecker) {
+    setBusyId(checker.id);
+    setError(null);
+    try {
+      const data = await apiFetch<{ checker: ChallengeChecker }>(apiBaseUrl, `/challenge-checkers/${encodeURIComponent(checker.id)}/publish`, token, {
+        method: "PATCH",
+        body: JSON.stringify({ published: !checker.publishedAt })
+      });
+      setCheckers((current) => current.map((item) => item.id === checker.id ? data.checker : item));
+      setNotice(data.checker.publishedAt ? "Published. Share the public link as proof." : "Unpublished. The public link no longer works.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not update sharing");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function copyPublicLink(checker: ChallengeChecker) {
+    if (!checker.gcCode) return;
+    const url = publicChallengeUrl(apiBaseUrl, accountUsername, checker.gcCode);
+    const ok = await Clipboard.setStringAsync(url).then(() => true).catch(() => false);
+    setNotice(ok ? "Public link copied. Paste it in your log to prove the result." : url);
+  }
+
+  function openPublicLink(checker: ChallengeChecker) {
+    if (!checker.gcCode) return;
+    void Linking.openURL(publicChallengeUrl(apiBaseUrl, accountUsername, checker.gcCode));
+  }
+
+  async function copyProof(checkerId: string) {
+    const result = results[checkerId];
+    if (!result) return;
+    const ok = await Clipboard.setStringAsync(result.proofText).then(() => true).catch(() => false);
+    setNotice(ok ? "Proof text copied. Paste it in your log." : "Could not copy automatically.");
+  }
+
+  const normalizedQuery = query.trim().toLowerCase();
+  const visible = normalizedQuery
+    ? checkers.filter((checker) => [checker.gcCode, checker.name, checker.description].some((value) => value?.toLowerCase().includes(normalizedQuery)))
+    : checkers;
+  const qualified = Object.values(results).filter((result: ChallengeResult) => result.passed).length;
+  const published = checkers.filter((checker) => checker.publishedAt).length;
+  const busy = busyId !== null || batching;
+
+  return (
+    <>
+      <Text style={styles.muted}>Check-only on mobile. Create and edit checkers on the website, then run them here against your imported finds.</Text>
+      <StatGrid rows={[["Checkers", checkers.length], ["Qualified", qualified], ["Published", published], ["With result", Object.keys(results).length]]} />
+      <Panel title="Find a checker" subtitle={checkers.length ? `Showing ${visible.length} of ${checkers.length}` : "Checkers you save on the website appear here."}>
+        <Field label="Search" value={query} onChangeText={setQuery} autoCapitalize="none" placeholder="GC code or name" />
+        <View style={styles.actionRow}>
+          <View style={styles.flex}><SecondaryButton label="Refresh" onPress={() => void load()} /></View>
+          <View style={styles.flex}><SecondaryButton label={batchProgress ? `Running ${batchProgress.done}/${batchProgress.total}…` : `Run all (${checkers.length})`} onPress={() => void runAll(checkers)} /></View>
+        </View>
+        {batchProgress ? <Text style={styles.muted}>Running {batchProgress.done} of {batchProgress.total}…</Text> : null}
+      </Panel>
+      {notice ? <Text style={styles.note}>{notice}</Text> : null}
+      {visible.map((checker) => {
+        const result = results[checker.id];
+        const isBusy = busyId === checker.id;
+        const isPublished = Boolean(checker.publishedAt);
+        return (
+          <View key={checker.id} style={styles.panel}>
+            <Text style={styles.eyebrow}>{checker.gcCode || "Unlinked checker"}</Text>
+            <Text style={styles.panelTitle}>{checker.name}</Text>
+            {checker.description ? <Text style={styles.muted}>{checker.description}</Text> : null}
+            <View style={styles.challengeStatusRow}>
+              <Text style={[styles.statusPill, result?.passed && styles.statusPillComplete, result && !result.passed && styles.statusPillFailed]}>
+                {result ? (result.passed ? "QUALIFIED" : "NOT YET") : "NOT RUN"}
+              </Text>
+              {isPublished ? <Text style={styles.muted}>Published</Text> : null}
+            </View>
+            <PrimaryButton label={isBusy ? "Running…" : result ? "Run again" : "Run checker"} onPress={() => { if (!busy) void run(checker); }} />
+            <View style={styles.actionRow}>
+              <View style={styles.flex}><SecondaryButton label={isPublished ? "Unpublish" : "Publish result"} onPress={() => { if (!busy) void togglePublish(checker); }} /></View>
+              {isPublished && checker.gcCode ? <View style={styles.flex}><SecondaryButton label="Copy public link" onPress={() => void copyPublicLink(checker)} /></View> : null}
+            </View>
+            {isPublished && checker.gcCode ? <SecondaryButton label="Open public result" onPress={() => openPublicLink(checker)} /> : null}
+            {result ? (
+              <View style={styles.challengeResult}>
+                {result.rules.map((rule, index) => (
+                  <View key={index} style={styles.challengeRule}>
+                    <Text style={styles.rowTitle}>{rule.passed ? "✓ " : "× "}{rule.label}</Text>
+                    <Text style={styles.muted}>{rule.current.toLocaleString()} / {rule.required.toLocaleString()}</Text>
+                    <Text style={styles.muted}>{rule.detail}</Text>
+                    {rule.evidence.slice(0, 5).map((row, rowIndex) => (
+                      <Pressable key={`${row.gcCode}-${row.date}-${rowIndex}`} onPress={() => void Linking.openURL(`https://coord.info/${row.gcCode}`)}>
+                        <Text style={styles.linkText}>{row.date} · {row.gcCode} · {row.name}</Text>
+                      </Pressable>
+                    ))}
+                    {rule.evidence.length > 5 ? <Text style={styles.muted}>+ {rule.evidence.length - 5} more on the website result</Text> : null}
+                  </View>
+                ))}
+                <Text style={styles.sectionLabel}>Proof for your log</Text>
+                <Text selectable style={styles.proofBox}>{result.proofText}</Text>
+                <SecondaryButton label="Copy proof" onPress={() => void copyProof(checker.id)} />
+                <Text style={styles.muted}>Checked {dateText(result.checkedAt)}{result.dataUpdatedAt ? ` · data updated ${dateText(result.dataUpdatedAt)}` : ""}</Text>
+              </View>
+            ) : null}
+          </View>
+        );
+      })}
+      {!loading && !checkers.length ? <Text style={styles.note}>No saved checkers yet. Create one on the website and it will appear here for checking.</Text> : null}
+      {!loading && checkers.length > 0 && !visible.length ? <Text style={styles.note}>No challenge caches match “{query}”.</Text> : null}
       <LoadState loading={loading} error={error} />
     </>
   );
@@ -3465,5 +3677,9 @@ const styles = StyleSheet.create({
   badgeCellCurrent: { backgroundColor: "#f3b34d" },
   danger: { color: "#ffb4a8", fontWeight: "900" },
   loader: { padding: 14 },
-  flex: { flex: 1 }
+  flex: { flex: 1 },
+  challengeStatusRow: { flexDirection: "row", alignItems: "center", gap: 10, marginTop: 8 },
+  challengeResult: { gap: 10, borderTopWidth: 1, borderColor: "#1b3729", paddingTop: 12, marginTop: 4 },
+  challengeRule: { gap: 3, borderWidth: 1, borderColor: "#233f32", borderRadius: 12, backgroundColor: "#0b1912", padding: 12 },
+  proofBox: { color: "#edf7ef", backgroundColor: "#0b1912", borderWidth: 1, borderColor: "#233f32", borderRadius: 12, padding: 12, fontSize: 13, lineHeight: 19 }
 });
