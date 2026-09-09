@@ -36,7 +36,7 @@
     "web": "expo start --web",
     "prebuild:android": "expo prebuild --platform android",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsc -p tsconfig.test.json --noEmit && tsx --test ftf-points.test.ts import-refresh.test.ts mobile-map.test.ts mystery-storage.test.ts upload.test.ts"
+    "test": "tsc -p tsconfig.test.json --noEmit && tsx --test date-format.test.ts ftf-points.test.ts import-refresh.test.ts mobile-map.test.ts mystery-storage.test.ts upload.test.ts"
   },
   "expo": {
     "autolinking": {

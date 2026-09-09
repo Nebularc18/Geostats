@@ -19,6 +19,7 @@ import { pickAndUploadDocument, type UploadKind } from "./upload";
 import { hasNativeMapSupport, scratchMapGeometryBudget, SCRATCH_WORLD_REGION, selectNativeMapPoints } from "./mobile-map";
 import { formatShortDt, ftfRowToListPoint, ftfRowToMapPoint, hasDtData } from "./ftf-points";
 import { schedulePostImportStatsRefresh } from "./import-refresh";
+import { formatSwedishDate } from "./date-format";
 import {
   MAX_MYSTERY_SNAPSHOT_BYTES,
   mysterySnapshotByteLength,
@@ -380,9 +381,7 @@ function text(value: unknown, fallback = "0") {
 }
 
 function dateText(value?: string | null) {
-  if (!value) return "-";
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString();
+  return formatSwedishDate(value);
 }
 
 function monthKey(date: Date) {
@@ -2666,7 +2665,7 @@ function MysteriesScreen({ apiBaseUrl, token, userId, onRequestScrollTop }: { ap
         <Segmented values={["all", "solving", "solved", "planned"]} active={filter} onPress={(value) => setFilter(value as typeof filter)} />
         {visible.map((cache) => {
           const isSelected = selected?.id === cache.id;
-          return <Pressable accessibilityRole="button" accessibilityLabel={`Open ${cache.gcCode} ${cache.name}`} accessibilityState={{ selected: isSelected }} key={`${cache.sharedBy?.id ?? "own"}-${cache.id}`} onPress={() => showMystery(cache.id)} style={[styles.cacheRow, isSelected && styles.selectedRow]}><View style={styles.cacheRowHeading}><Text style={[styles.rowTitle, isSelected && styles.selectedRowTitle]}>{cache.gcCode} · {cache.name}</Text><Text style={styles.cacheRowAction}>Open ›</Text></View><Text style={[styles.muted, isSelected && styles.selectedRowMeta]}>{cache.status} · {mysteryLocation(cache) || "No location"}{cache.sharedBy ? ` · from ${cache.sharedBy.username}` : ""}</Text></Pressable>;
+          return <Pressable accessibilityRole="button" accessibilityLabel={`Open ${cache.gcCode} ${cache.name}`} accessibilityState={{ selected: isSelected }} key={`${cache.sharedBy?.id ?? "own"}-${cache.id}`} onPress={() => showMystery(cache.id)} style={[styles.cacheRow, isSelected && styles.selectedRow]}><View style={styles.cacheRowHeading}><Text numberOfLines={2} style={[styles.rowTitle, styles.cacheRowTitle, isSelected && styles.selectedRowTitle]}>{cache.gcCode} · {cache.name}</Text><Text style={styles.cacheRowAction}>Open ›</Text></View><Text style={[styles.muted, isSelected && styles.selectedRowMeta]}>{cache.status} · {mysteryLocation(cache) || "No location"}{cache.sharedBy ? ` · from ${cache.sharedBy.username}` : ""}</Text></Pressable>;
         })}
         {!visible.length ? <Text style={styles.muted}>No mysteries match this view.</Text> : null}
       </Panel>
@@ -3539,8 +3538,9 @@ const styles = StyleSheet.create({
   selectedRow: { backgroundColor: "#1b3929", borderWidth: 2, borderColor: "#f3b34d", paddingHorizontal: 11, paddingVertical: 11, borderRadius: 12, marginTop: 5 },
   selectedRowTitle: { color: "#fff2cf" },
   selectedRowMeta: { color: "#c8d8ce" },
-  cacheRowHeading: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 },
-  cacheRowAction: { color: "#f3b34d", fontSize: 12, fontWeight: "900" },
+  cacheRowHeading: { flexDirection: "row", alignItems: "flex-start", gap: 8 },
+  cacheRowTitle: { flex: 1, minWidth: 0 },
+  cacheRowAction: { flexShrink: 0, color: "#f3b34d", fontSize: 12, fontWeight: "900", paddingTop: 1 },
   mysteryBackButton: { alignSelf: "flex-start", minHeight: 44, justifyContent: "center", paddingHorizontal: 4 },
   mysteryBackButtonText: { color: "#f3b34d", fontSize: 15, fontWeight: "900" },
   chip: { color: "#dce8df", backgroundColor: "#173326", alignSelf: "flex-start", paddingHorizontal: 9, paddingVertical: 6, borderRadius: 14, marginBottom: 4 },
