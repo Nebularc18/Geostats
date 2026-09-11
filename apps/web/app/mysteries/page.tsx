@@ -984,6 +984,36 @@ export default function MysteriesPage() {
   }, []);
 
   useEffect(() => {
+    if (!ready || !storageKeys) return;
+    const requestRefresh = () => {
+      const keys = storageKeysRef.current;
+      if (!keys || activeStorageNamespace.current !== keys.namespace) return;
+      if (document.visibilityState !== "visible") return;
+      if (!navigator.onLine) return;
+      if (serverLoadInFlight.current) return;
+      serverLoadRetryCount.current = 0;
+      syncRetryCount.current = 0;
+      lastFailedServerLoadSnapshot.current = "";
+      setServerLoadAttempt((attempt) => attempt + 1);
+    };
+    // External writers (for example the AI mystery solver token) update the
+    // server snapshot without touching this tab's localStorage, so poll for
+    // server changes instead of requiring a manual refresh.
+    const interval = window.setInterval(requestRefresh, 15000);
+    const handleFocus = () => requestRefresh();
+    const handleVisibility = () => {
+      if (document.visibilityState === "visible") requestRefresh();
+    };
+    window.addEventListener("focus", handleFocus);
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("focus", handleFocus);
+      document.removeEventListener("visibilitychange", handleVisibility);
+    };
+  }, [ready, storageKeys]);
+
+  useEffect(() => {
     const applyDeletion = (cacheId: string) => {
       if (!cacheId) return;
       rememberDeletedCache(cacheId);
