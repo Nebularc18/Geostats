@@ -120,6 +120,107 @@ test("stats recalculations for one user run in order", async () => {
   assert.deepEqual(events, ["start-1", "finish-1", "start-2", "finish-2"]);
 });
 
+test("cache resolution uses a bounded worker pool and keeps unique codes", async () => {
+  let activeResolutions = 0;
+  let maxActiveResolutions = 0;
+  let cacheUpsertCalls = 0;
+  const prisma = {
+    cache: {
+      upsert: async ({ create }: any) => {
+        cacheUpsertCalls += 1;
+        activeResolutions += 1;
+        maxActiveResolutions = Math.max(maxActiveResolutions, activeResolutions);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        activeResolutions -= 1;
+        return { ...create, id: create.gcCode, metadataTrusted: true };
+      }
+    },
+    userCacheData: { upsert: async () => ({}) }
+  };
+  const processor = new ImportProcessor(prisma as any, {} as any);
+  const caches = Array.from({ length: 20 }, (_, index) => ({
+    gcCode: `GC${String(index + 1).padStart(5, "0")}`,
+    name: `Cache ${index + 1}`,
+    latitude: 56,
+    longitude: 15,
+    raw: null
+  }));
+  caches.push({ ...caches[0], name: "Duplicate metadata" });
+
+  const resolved = await (processor as any).resolveCaches("user-1", caches);
+
+  assert.equal(resolved.size, 20);
+  assert.equal(cacheUpsertCalls, 20);
+  assert.equal(maxActiveResolutions, 8);
+  assert.equal(resolved.get("GC00001")?.id, "GC00001");
+});
+
+test("cache resolution waits for active workers and stops scheduling after a failure", async () => {
+  const startedCodes: string[] = [];
+  let activeResolutions = 0;
+  const prisma = {
+    cache: {
+      upsert: async ({ create }: any) => {
+        startedCodes.push(create.gcCode);
+        activeResolutions += 1;
+        try {
+          if (create.gcCode === "GC00001") {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+            throw new Error("cache write failed");
+          }
+          await new Promise<void>((resolve) => setTimeout(resolve, 5));
+          return { ...create, id: create.gcCode, metadataTrusted: true };
+        } finally {
+          activeResolutions -= 1;
+        }
+      }
+    },
+    userCacheData: { upsert: async () => ({}) }
+  };
+  const processor = new ImportProcessor(prisma as any, {} as any);
+  const caches = Array.from({ length: 20 }, (_, index) => ({
+    gcCode: `GC${String(index + 1).padStart(5, "0")}`,
+    name: `Cache ${index + 1}`,
+    latitude: 56,
+    longitude: 15,
+    raw: null
+  }));
+
+  await assert.rejects((processor as any).resolveCaches("user-1", caches), /cache write failed/);
+
+  assert.equal(startedCodes.length, 8);
+  assert.equal(activeResolutions, 0);
+});
+
+test("new finds are inserted with chunked createMany calls", async () => {
+  const processor = new ImportProcessor({} as any, {} as any);
+  const finds: Prisma.FindCreateManyInput[] = Array.from({ length: 1001 }, (_, index) => ({
+    userId: "user-1",
+    cacheId: `cache-${index}`,
+    importId: "import-1",
+    foundAt: new Date(`2024-01-${String((index % 28) + 1).padStart(2, "0")}T00:00:00.000Z`),
+    foundDate: new Date("2024-01-01T00:00:00.000Z"),
+    logText: null,
+    isFtf: false,
+    isFtfManual: false,
+    importedFrom: ImportSource.MY_FINDS_GPX
+  }));
+  const batches: Prisma.FindCreateManyInput[][] = [];
+  const tx = {
+    find: {
+      createMany: async ({ data }: { data: Prisma.FindCreateManyInput[] }) => {
+        batches.push(data);
+        return { count: data.length };
+      }
+    }
+  };
+
+  await (processor as any).createFindsInBatches(tx, finds);
+
+  assert.deepEqual(batches.map((batch) => batch.length), [500, 500, 1]);
+  assert.deepEqual(batches.flat(), finds);
+});
+
 test("stats recalculation holds a database user lock before loading inputs", async () => {
   const events: string[] = [];
   const tx = {
@@ -1287,15 +1388,19 @@ test("process creates multiple same-cache finds when no existing row matches the
       update: async () => {
         throw new Error("new same-cache finds should not update a row created earlier in the import");
       },
-      create: async ({ data }: any) => {
-        const created = {
-          id: `find-${createdFinds.length + 1}`,
-          ...data,
-          createdAt: new Date(),
-          updatedAt: new Date()
-        };
-        createdFinds.push(created);
-        return created;
+      create: async () => {
+        throw new Error("new finds should use createMany");
+      },
+      createMany: async ({ data }: { data: any[] }) => {
+        for (const row of data) {
+          createdFinds.push({
+            id: `find-${createdFinds.length + 1}`,
+            ...row,
+            createdAt: new Date(),
+            updatedAt: new Date()
+          });
+        }
+        return { count: data.length };
       }
     },
     statSnapshot: {
@@ -1503,14 +1608,12 @@ async function importFindTimestamp(
       update: async () => {
         throw new Error("new find should be created");
       },
-      create: async ({ data }: any) => {
-        createdFind = data;
-        return {
-          id: "find-1",
-          ...data,
-          createdAt: new Date(),
-          updatedAt: new Date()
-        };
+      create: async () => {
+        throw new Error("new find should use createMany");
+      },
+      createMany: async ({ data }: { data: any[] }) => {
+        createdFind = data[0];
+        return { count: data.length };
       }
     },
     statSnapshot: {

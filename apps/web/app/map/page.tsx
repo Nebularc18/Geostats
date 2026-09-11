@@ -1,10 +1,17 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AppShell } from "../../components/app-shell";
 import { CacheMap, CacheMapPoint, getCacheTypeColor } from "../../components/cache-map";
 import { apiFetch } from "../../lib/api";
 import { activeMapFilterCount, EMPTY_MAP_FILTERS, filterMapPoints, MapFilters, mapFilterValues } from "../../lib/map-filters";
+import {
+  applyMapLoadProgress,
+  loadMapPoints,
+  MAX_MAP_POINTS,
+  type MapLoadProgress,
+  type MapPath
+} from "../../lib/map-loader";
 
 function mapPointDate(point: CacheMapPoint) {
   return point.isOwnHide ? point.placedAt : point.foundAt;
@@ -15,162 +22,109 @@ function mapPointTime(point: CacheMapPoint) {
   return Number.isFinite(timestamp) ? timestamp : 0;
 }
 
-type MapPointsResponse = {
-  points: CacheMapPoint[];
-  truncated?: boolean;
-  nextCursor?: string | null;
-  snapshot?: string;
-  snapshotRevision?: string;
-  totalCount?: number;
-};
-
-type LoadedMapPoints = {
-  points: CacheMapPoint[];
-  truncated: boolean;
-  totalCount: number;
-};
-
-const MAX_MAP_POINTS = 20_000;
-const MAP_SNAPSHOT_EXPIRED = "map snapshot expired";
-
-function mapFilterParams(filters: MapFilters) {
-  const params = new URLSearchParams();
-  const entries: Array<[string, string]> = [
-    ["query", filters.query.trim()],
-    ["cacheType", filters.cacheType],
-    ["size", filters.size],
-    ["country", filters.country],
-    ["region", filters.region],
-    ["difficultyMin", filters.difficultyMin],
-    ["difficultyMax", filters.difficultyMax],
-    ["terrainMin", filters.terrainMin],
-    ["terrainMax", filters.terrainMax],
-    ["dateFrom", filters.dateFrom],
-    ["dateTo", filters.dateTo]
-  ];
-  for (const [key, value] of entries) {
-    if (value) {
-      params.set(key, value);
-    }
-  }
-  return params;
-}
-
-async function loadMapPoints(
-  path: "/map/caches" | "/map/hides",
-  signal: AbortSignal,
-  filters: MapFilters,
-  restartCount = 0
-): Promise<LoadedMapPoints> {
-  const points: CacheMapPoint[] = [];
-  let cursor: string | undefined;
-  let snapshot: string | undefined;
-  let snapshotRevision: string | undefined;
-  let totalCount: number | undefined;
-  // The API applies active filters before paging, so filtered searches can traverse every match.
-  const bounded = activeMapFilterCount(filters) === 0;
-
-  while (true) {
-    const params = mapFilterParams(filters);
-    if (cursor) {
-      params.set("cursor", cursor);
-    }
-    if (snapshot) {
-      params.set("snapshot", snapshot);
-    }
-    if (snapshotRevision) {
-      params.set("snapshotRevision", snapshotRevision);
-    }
-    const query = params.toString();
-    let response: MapPointsResponse;
-    try {
-      response = await apiFetch<MapPointsResponse>(`${path}${query ? `?${query}` : ""}`, { signal });
-    } catch (error) {
-      if (error instanceof Error && error.message === MAP_SNAPSHOT_EXPIRED && restartCount < 2) {
-        return loadMapPoints(path, signal, filters, restartCount + 1);
-      }
-      throw error;
-    }
-
-    if (!snapshot) {
-      if (typeof response.snapshot !== "string" || response.snapshot.length === 0) {
-        throw new Error("Map data pagination did not return a snapshot.");
-      }
-      if (typeof response.snapshotRevision !== "string" || response.snapshotRevision.length === 0) {
-        throw new Error("Map data pagination did not return a snapshot revision.");
-      }
-      const pageTotalCount = response.totalCount;
-      if (typeof pageTotalCount !== "number" || !Number.isSafeInteger(pageTotalCount) || pageTotalCount < 0) {
-        throw new Error("Map data pagination did not return a total count.");
-      }
-      totalCount = pageTotalCount;
-      snapshot = response.snapshot;
-      snapshotRevision = response.snapshotRevision;
-    } else if (response.snapshot !== snapshot) {
-      throw new Error("Map data pagination changed its snapshot.");
-    } else if (response.snapshotRevision !== snapshotRevision) {
-      throw new Error("Map data pagination changed its snapshot revision.");
-    } else if (response.totalCount !== undefined && response.totalCount !== totalCount) {
-      throw new Error("Map data pagination changed its total count.");
-    }
-
-    const remaining = MAX_MAP_POINTS - points.length;
-    const pageExceedsLimit = bounded && response.points.length > remaining;
-    points.push(...(bounded ? response.points.slice(0, remaining) : response.points));
-
-    if (!response.truncated) {
-      return { points, truncated: pageExceedsLimit, totalCount: totalCount ?? points.length };
-    }
-    if (bounded && points.length >= MAX_MAP_POINTS) {
-      return { points, truncated: true, totalCount: totalCount ?? points.length };
-    }
-
-    const nextCursor = response.nextCursor;
-    if (typeof nextCursor !== "string" || nextCursor.length === 0 || nextCursor === cursor) {
-      throw new Error("Map data pagination did not advance.");
-    }
-    cursor = nextCursor;
-  }
-}
-
 export default function MapPage() {
   const [points, setPoints] = useState<CacheMapPoint[]>([]);
+  // Keep the option source independent from the currently filtered result.
+  // Otherwise selecting one value leaves only that value in the next response
+  // and makes the other choices disappear from the controls.
+  const [optionPoints, setOptionPoints] = useState<CacheMapPoint[]>([]);
   const [filters, setFilters] = useState<MapFilters>(EMPTY_MAP_FILTERS);
+  const [loadedFilters, setLoadedFilters] = useState<MapFilters>(EMPTY_MAP_FILTERS);
+  const [debouncedQuery, setDebouncedQuery] = useState(EMPTY_MAP_FILTERS.query);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [historyTruncated, setHistoryTruncated] = useState(false);
   const [totalCount, setTotalCount] = useState(0);
+  const loadSequenceRef = useRef(0);
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => setDebouncedQuery(filters.query), 300);
+    return () => window.clearTimeout(timeout);
+  }, [filters.query]);
+
+  const requestFilters = useMemo(
+    () => ({
+      query: debouncedQuery,
+      source: filters.source,
+      cacheType: filters.cacheType,
+      size: filters.size,
+      country: filters.country,
+      region: filters.region,
+      difficultyMin: filters.difficultyMin,
+      difficultyMax: filters.difficultyMax,
+      terrainMin: filters.terrainMin,
+      terrainMax: filters.terrainMax,
+      dateFrom: filters.dateFrom,
+      dateTo: filters.dateTo
+    }),
+    [
+      debouncedQuery,
+      filters.cacheType,
+      filters.country,
+      filters.dateFrom,
+      filters.dateTo,
+      filters.difficultyMax,
+      filters.difficultyMin,
+      filters.region,
+      filters.size,
+      filters.source,
+      filters.terrainMax,
+      filters.terrainMin
+    ]
+  );
 
   useEffect(() => {
     let active = true;
+    const sequence = ++loadSequenceRef.current;
     const abortController = new AbortController();
     setLoading(true);
-    setPoints([]);
     setError(null);
-    setHistoryTruncated(false);
-    setTotalCount(0);
 
-    const paths: Array<"/map/caches" | "/map/hides"> =
-      filters.source === "finds" ? ["/map/caches"] : filters.source === "hides" ? ["/map/hides"] : ["/map/caches", "/map/hides"];
+    const paths: MapPath[] =
+      requestFilters.source === "finds" ? ["/map/caches"] : requestFilters.source === "hides" ? ["/map/hides"] : ["/map/caches", "/map/hides"];
     const findIndex = paths.indexOf("/map/caches");
     const hideIndex = paths.indexOf("/map/hides");
+    const progressByPath = new Map<MapPath, Omit<MapLoadProgress, "path" | "reset" | "terminal">>();
+    let published = false;
 
-    void Promise.allSettled(paths.map((path) => loadMapPoints(path, abortController.signal, filters))).then((results) => {
-      if (!active) {
+    const publishProgress = (progress: MapLoadProgress) => {
+      if (!active || sequence !== loadSequenceRef.current) {
+        return;
+      }
+      const next = applyMapLoadProgress(paths, progressByPath, progress);
+      if (!progress.reset && !published) {
+        published = true;
+        setLoadedFilters(requestFilters);
+      }
+      setPoints(next.points);
+      // Text search and source selection may narrow the loaded response, but
+      // metadata filters must not rewrite their own option lists. Refresh the
+      // option source only while loading an otherwise unfiltered history.
+      const hasMetadataFilters = Boolean(
+        requestFilters.cacheType ||
+          requestFilters.size ||
+          requestFilters.country ||
+          requestFilters.region ||
+          requestFilters.difficultyMin ||
+          requestFilters.difficultyMax ||
+          requestFilters.terrainMin ||
+          requestFilters.terrainMax ||
+          requestFilters.dateFrom ||
+          requestFilters.dateTo
+      );
+      if (!hasMetadataFilters) {
+        setOptionPoints(next.points);
+      }
+      setHistoryTruncated(next.truncated);
+      setTotalCount(next.totalCount);
+    };
+
+    void Promise.allSettled(paths.map((path) => loadMapPoints(path, abortController.signal, requestFilters, apiFetch, 0, publishProgress))).then((results) => {
+      if (!active || sequence !== loadSequenceRef.current) {
         return;
       }
       const findResult = findIndex >= 0 ? results[findIndex] : undefined;
       const hideResult = hideIndex >= 0 ? results[hideIndex] : undefined;
-      const findPoints = findResult?.status === "fulfilled" ? findResult.value.points : [];
-      const hidePoints = hideResult?.status === "fulfilled" ? hideResult.value.points : [];
-      setPoints([...findPoints, ...hidePoints]);
-      setHistoryTruncated(
-        (findResult?.status === "fulfilled" && findResult.value.truncated) || (hideResult?.status === "fulfilled" && hideResult.value.truncated)
-      );
-      setTotalCount(
-        (findResult?.status === "fulfilled" ? findResult.value.totalCount : 0) +
-          (hideResult?.status === "fulfilled" ? hideResult.value.totalCount : 0)
-      );
       const findsFailed = findResult?.status === "rejected";
       const hidesFailed = hideResult?.status === "rejected";
       setError(
@@ -192,17 +146,22 @@ export default function MapPage() {
       active = false;
       abortController.abort();
     };
-  }, [filters]);
+  }, [requestFilters]);
 
-  const cacheTypes = useMemo(() => mapFilterValues(points, "cacheType"), [points]);
-  const sizes = useMemo(() => mapFilterValues(points, "size"), [points]);
-  const countries = useMemo(() => mapFilterValues(points, "country"), [points]);
-  const regions = useMemo(() => mapFilterValues(filters.country ? points.filter((point) => point.country === filters.country) : points, "region"), [filters.country, points]);
-  const filteredPoints = useMemo(() => filterMapPoints(points, filters), [filters, points]);
-  const findCount = filteredPoints.filter((point) => !point.isOwnHide).length;
+  const filterOptionPoints = optionPoints.length > 0 ? optionPoints : points;
+  const cacheTypes = useMemo(() => mapFilterValues(filterOptionPoints, "cacheType"), [filterOptionPoints]);
+  const sizes = useMemo(() => mapFilterValues(filterOptionPoints, "size"), [filterOptionPoints]);
+  const countries = useMemo(() => mapFilterValues(filterOptionPoints, "country"), [filterOptionPoints]);
+  const regions = useMemo(
+    () => mapFilterValues(filters.country ? filterOptionPoints.filter((point) => point.country === filters.country) : filterOptionPoints, "region"),
+    [filterOptionPoints, filters.country]
+  );
+  const filteredPoints = useMemo(() => filterMapPoints(points, loadedFilters), [loadedFilters, points]);
+  const findCount = useMemo(() => filteredPoints.filter((point) => !point.isOwnHide).length, [filteredPoints]);
   const ownHideCount = filteredPoints.length - findCount;
-  const visiblePoints = [...filteredPoints].sort((a, b) => mapPointTime(b) - mapPointTime(a)).slice(0, 20);
+  const visiblePoints = useMemo(() => [...filteredPoints].sort((a, b) => mapPointTime(b) - mapPointTime(a)).slice(0, 20), [filteredPoints]);
   const activeFilterCount = activeMapFilterCount(filters);
+  const mapLoading = loading || filters.query !== debouncedQuery;
   const ratings = Array.from({ length: 9 }, (_, index) => String(1 + index * 0.5));
 
   function setFilter<K extends keyof MapFilters>(key: K, value: MapFilters[K]) {
@@ -329,7 +288,7 @@ export default function MapPage() {
       {historyTruncated ? <p className="notice">Unfiltered map history is capped at {MAX_MAP_POINTS.toLocaleString()} points to keep the browser responsive. Use a filter to search the complete matching history.</p> : null}
       <section className="map-stage">
         <div className="map-toolbar">
-          <strong>{loading ? "Loading map points..." : `${filteredPoints.length} of ${totalCount.toLocaleString()} matching points shown`}</strong>
+          <strong aria-live="polite">{mapLoading ? "Loading map points..." : `${filteredPoints.length} of ${totalCount.toLocaleString()} matching points shown`}</strong>
           <span>
             {findCount} finds, {ownHideCount} own hides
           </span>
@@ -362,7 +321,7 @@ export default function MapPage() {
               </small>
             </div>
           ))}
-          {!loading && visiblePoints.length === 0 ? <p className="muted">No map points match these filters.</p> : null}
+          {!mapLoading && visiblePoints.length === 0 ? <p className="muted">No map points match these filters.</p> : null}
         </div>
       </section>
     </AppShell>

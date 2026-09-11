@@ -6,7 +6,7 @@ import { CacheMap, CacheMapPoint } from "../../components/cache-map";
 import { CountBarChart } from "../../components/charts";
 import { DifficultyTerrainGrid } from "../../components/difficulty-terrain-grid";
 import { StatCard } from "../../components/stat-card";
-import { apiFetch } from "../../lib/api";
+import { apiFetch, getStatsSummary } from "../../lib/api";
 import { formatShortDt, ftfRowsToMapPoints } from "../../lib/ftf-map-points";
 
 type CountBucket = { key: string; count: number };
@@ -527,7 +527,7 @@ export default function FtfPage() {
     }
     const [findData, statData] = await Promise.all([
       apiFetch<FtfFindsResponse>(`/stats/ftf/finds?${params.toString()}`),
-      append ? Promise.resolve(null) : apiFetch<{ stats: { ftfStats?: FtfStats } }>("/stats/summary")
+      append ? Promise.resolve(null) : getStatsSummary<{ ftfStats?: FtfStats }>()
     ]);
     if (!append && sequence !== loadSequenceRef.current) {
       return;

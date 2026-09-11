@@ -59,6 +59,7 @@ model User {
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
+  mapRevision             MapRevision?
   profile                 GeocachingProfile?
   imports                 Import[]
   adminActivityLogs       AdminActivityLog[]       @relation("AdminActivityActor")
@@ -462,4 +463,21 @@ model PendingObjectDeletion {
 
   @@index([createdAt])
   @@map("pending_object_deletions")
+}
+
+// Queued by statement triggers and updated at commit by migration 000035.
+model MapRevision {
+  userId   String @id @map("user_id")
+  revision BigInt @default(0)
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("map_revisions")
+}
+
+model MapRevisionChange {
+  transactionId BigInt @map("transaction_id")
+  userId        String @map("user_id")
+
+  @@id([transactionId, userId])
+  @@map("map_revision_changes")
 }

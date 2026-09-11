@@ -24,9 +24,16 @@ function cache(index = 1) {
 }
 
 function controllerWith({ finds = [], hides = [] }: { finds?: any[]; hides?: any[] } = {}) {
-  const calls = { finds: [] as any[], hides: [] as any[] };
-  let latestImport: any = null;
+  const calls = { finds: [] as any[], hides: [] as any[], revisions: 0 };
+  let revision = 0n;
+  let onRead: (() => void) | undefined;
   const prisma = {
+    mapRevision: {
+      findUnique: async () => {
+        calls.revisions += 1;
+        return { revision };
+      }
+    },
     geocachingProfile: {
       findUnique: async () => ({ gcUsername: "owner" })
     },
@@ -35,6 +42,7 @@ function controllerWith({ finds = [], hides = [] }: { finds?: any[]; hides?: any
       findFirst: async () => finds.length ? { id: finds[0].id, updatedAt: finds[0].updatedAt ?? new Date("2024-01-01T00:00:00.000Z") } : null,
       findMany: async (query: any) => {
         calls.finds.push(query);
+        onRead?.();
         const cursorIndex = query.cursor ? finds.findIndex((find) => find.id === query.cursor.id) : -1;
         const start = cursorIndex >= 0 ? cursorIndex + (query.skip ?? 0) : 0;
         return finds.slice(start, query.take === undefined ? undefined : start + query.take);
@@ -45,26 +53,19 @@ function controllerWith({ finds = [], hides = [] }: { finds?: any[]; hides?: any
       findFirst: async () => hides.length ? { id: hides[0].id, updatedAt: hides[0].updatedAt ?? new Date("2024-01-01T00:00:00.000Z") } : null,
       findMany: async (query: any) => {
         calls.hides.push(query);
+        onRead?.();
         const cursorIndex = query.cursor ? hides.findIndex((hide) => hide.id === query.cursor.id) : -1;
         const start = cursorIndex >= 0 ? cursorIndex + (query.skip ?? 0) : 0;
         return hides.slice(start, query.take === undefined ? undefined : start + query.take);
       }
-    },
-    import: {
-      findFirst: async () => latestImport
     }
   } as any;
 
   return {
     controller: new MapController(prisma, {} as any),
     calls,
-    setLatestImport: (id: string) => {
-      latestImport = {
-        id,
-        createdAt: new Date("2024-01-01T00:00:00.000Z"),
-        updatedAt: new Date("2024-01-01T00:00:00.000Z")
-      };
-    }
+    advanceRevision: () => { revision += 1n; },
+    mutateDuringRead: () => { onRead = () => { revision += 1n; }; }
   };
 }
 
@@ -120,9 +121,10 @@ test("rejects a cursor when an import adds a newer find", async () => {
     foundAt: new Date("2024-01-02T00:00:00.000Z"),
     cache: cache(index)
   }));
-  const { controller } = controllerWith({ finds });
+  const { controller, advanceRevision } = controllerWith({ finds });
 
   const firstPage = await controller.caches(user, {});
+  advanceRevision();
   finds.unshift({
     id: "find-imported",
     foundAt: new Date("2025-01-02T00:00:00.000Z"),
@@ -165,10 +167,10 @@ test("rejects a cursor when an import changes the map snapshot", async () => {
     foundAt: new Date("2024-01-02T00:00:00.000Z"),
     cache: cache(index)
   }));
-  const { controller, setLatestImport } = controllerWith({ finds });
+  const { controller, advanceRevision } = controllerWith({ finds });
 
   const firstPage = await controller.caches(user, {});
-  setLatestImport("import-1");
+  advanceRevision();
 
   await assert.rejects(
     () => controller.caches(user, {
@@ -187,9 +189,10 @@ test("rejects a cursor when an existing point is updated", async () => {
     updatedAt: new Date("2024-01-01T00:00:00.000Z"),
     cache: cache(index)
   }));
-  const { controller } = controllerWith({ finds });
+  const { controller, advanceRevision } = controllerWith({ finds });
 
   const firstPage = await controller.caches(user, {});
+  advanceRevision();
   finds[0]!.updatedAt = new Date("2025-01-01T00:00:00.000Z");
 
   await assert.rejects(
@@ -231,4 +234,23 @@ test("map filters are applied before pagination", async () => {
     lte: new Date("2024-12-31T23:59:59.999Z")
   });
   assert.equal(result.totalCount, 1);
+});
+
+for (const endpoint of ["caches", "hides"] as const) {
+  test(`${endpoint} performs two revision reads and rejects a write during page loading`, async () => {
+    const { controller, calls, mutateDuringRead } = controllerWith();
+    const page = await controller[endpoint](user, {});
+    assert.equal(page.snapshotRevision, "v2:0");
+    assert.equal(calls.revisions, 2);
+    mutateDuringRead();
+    await assert.rejects(() => controller[endpoint](user, {}), ConflictException);
+    assert.equal(calls.revisions, 4);
+  });
+}
+
+test("rejects revision tokens issued before the persisted revision migration", async () => {
+  const { controller } = controllerWith();
+  await assert.rejects(() => controller.caches(user, {
+    cursor: "find-1", snapshot: new Date().toISOString(), snapshotRevision: "none:none:none:0:0"
+  }), ConflictException);
 });

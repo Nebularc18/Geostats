@@ -3,5 +3,5 @@
   "compilerOptions": {
     "strict": true
   },
-  "exclude": ["ftf-points.test.ts", "import-refresh.test.ts", "mobile-map.test.ts", "mystery-storage.test.ts", "upload.test.ts"]
+  "exclude": ["ftf-points.test.ts", "import-refresh.test.ts", "import-status.test.ts", "mobile-map.test.ts", "mystery-storage.test.ts", "stats-cache.test.ts", "upload.test.ts"]
 }

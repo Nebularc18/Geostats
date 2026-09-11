@@ -6,7 +6,7 @@ import { CountBarChart, CumulativeFindsChart } from "../../components/charts";
 import { DifficultyTerrainGrid } from "../../components/difficulty-terrain-grid";
 import { ExtremeBadge, type ExtremeBadgeKind } from "../../components/extreme-badge";
 import { StatCard } from "../../components/stat-card";
-import { apiFetch } from "../../lib/api";
+import { apiFetch, getStatsSummary } from "../../lib/api";
 
 type CountBucket = { key: string; count: number };
 type PercentBucket = CountBucket & { percent: number };
@@ -934,7 +934,21 @@ export default function StatsPage() {
   const [stats, setStats] = useState<any>(null);
 
   useEffect(() => {
-    void apiFetch<{ stats: any }>("/stats/summary").then((data) => setStats(data.stats));
+    let active = true;
+    void getStatsSummary<any>()
+      .then((data) => {
+        if (active) {
+          setStats(data.stats);
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setStats(null);
+        }
+      });
+    return () => {
+      active = false;
+    };
   }, []);
 
   return (
@@ -977,4 +991,3 @@ export default function StatsPage() {
     </AppShell>
   );
 }
-

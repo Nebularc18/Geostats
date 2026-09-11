@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { hasNativeMapSupport, scratchMapGeometryBudget, SCRATCH_WORLD_REGION, selectNativeMapPoints } from "./mobile-map";
+import { groupTrackableJourneyPoints, hasNativeMapSupport, scratchMapGeometryBudget, SCRATCH_WORLD_REGION, selectNativeMapPoints } from "./mobile-map";
 
 test("Scratch Map's world camera stays inside Google Maps latitude bounds", () => {
   const south = SCRATCH_WORLD_REGION.latitude - SCRATCH_WORLD_REGION.latitudeDelta / 2;
@@ -58,4 +58,25 @@ test("Android country and county layers can retain their complete feature sets",
 test("dense detail layers retain their lower hard vertex ceiling", () => {
   assert.ok(scratchMapGeometryBudget("regions", "android").maxVertices < scratchMapGeometryBudget("countries", "android").maxVertices);
   assert.equal(scratchMapGeometryBudget("counties", "android").maxVertices, 12_000);
+});
+
+test("trackable journey grouping preserves order with one append per point", () => {
+  const points = [
+    { id: "a-1", trackableId: "a" },
+    { id: "b-1", trackableId: "b" },
+    { id: "a-2", trackableId: "a" },
+    { id: "a-3", trackableId: "a" }
+  ];
+
+  const groups = groupTrackableJourneyPoints(points);
+
+  assert.deepEqual([...groups.keys()], ["a", "b"]);
+  assert.deepEqual(groups.get("a"), [points[0], points[2], points[3]]);
+  assert.deepEqual(groups.get("b"), [points[1]]);
+  assert.deepEqual(points, [
+    { id: "a-1", trackableId: "a" },
+    { id: "b-1", trackableId: "b" },
+    { id: "a-2", trackableId: "a" },
+    { id: "a-3", trackableId: "a" }
+  ]);
 });

@@ -48,7 +48,7 @@ import {
 } from "lucide-react";
 import type { CacheMapPoint } from "./cache-map";
 import { BadgeEmblem } from "./badge-emblem";
-import { apiFetch } from "../lib/api";
+import { apiFetch, getStatsSummary } from "../lib/api";
 import { boundaryNames, deriveBucketsFromBoundaries } from "../lib/scratch-boundaries";
 import {
   boundaryConfigForLevel,
@@ -667,7 +667,7 @@ export function AchievementBadges({
     }
 
     let active = true;
-    void apiFetch<{ stats: StatsSummary }>("/stats/summary")
+    void getStatsSummary<StatsSummary>()
       .then((data) => {
         if (active) {
           setStats(data.stats);
