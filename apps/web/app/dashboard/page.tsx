@@ -6,7 +6,7 @@ import { AchievementBadges } from "../../components/achievement-badges";
 import { AppShell } from "../../components/app-shell";
 import { CountBarChart } from "../../components/charts";
 import { StatCard } from "../../components/stat-card";
-import { apiFetch } from "../../lib/api";
+import { apiFetch, getStatsSummary, StatsSummaryStaleError, subscribeStatsSummaryCache } from "../../lib/api";
 
 const monthLabels = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const isDevelopment = process.env.NODE_ENV === "development";
@@ -96,16 +96,41 @@ export default function DashboardPage() {
   const [imports, setImports] = useState<any[]>([]);
 
   useEffect(() => {
-    void apiFetch<{ stats: any }>("/stats/summary")
+    let active = true;
+    const loadStats = () => {
+      void getStatsSummary<any>()
+        .then((data) => {
+          if (active) {
+            setStats(data.stats);
+          }
+        })
+        .catch((error) => {
+          if (active && !isDevelopment && !(error instanceof StatsSummaryStaleError)) {
+            setStats({});
+          }
+        });
+    };
+    const unsubscribe = subscribeStatsSummaryCache(() => {
+      if (active) {
+        loadStats();
+      }
+    });
+    loadStats();
+    void apiFetch<{ imports: any[] }>("/imports")
       .then((data) => {
-        setStats(data.stats);
+        if (active) {
+          setImports(data.imports);
+        }
       })
       .catch(() => {
-        if (!isDevelopment) {
-          setStats({});
+        if (active) {
+          setImports([]);
         }
       });
-    void apiFetch<{ imports: any[] }>("/imports").then((data) => setImports(data.imports)).catch(() => setImports([]));
+    return () => {
+      active = false;
+      unsubscribe();
+    };
   }, []);
 
   return (

@@ -3,15 +3,27 @@
 import { useEffect, useState } from "react";
 import { AppShell } from "../../components/app-shell";
 import { MilestonePanel, type MilestoneStats } from "../../components/milestone-panel";
-import { apiFetch } from "../../lib/api";
+import { getStatsSummary } from "../../lib/api";
 
 export default function MilestonesPage() {
   const [stats, setStats] = useState<MilestoneStats | undefined>();
 
   useEffect(() => {
-    void apiFetch<{ stats: { milestoneStats?: MilestoneStats } }>("/stats/summary").then((data) =>
-      setStats(data.stats.milestoneStats)
-    );
+    let active = true;
+    void getStatsSummary<{ milestoneStats?: MilestoneStats }>()
+      .then((data) => {
+        if (active) {
+          setStats(data.stats.milestoneStats);
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setStats(undefined);
+        }
+      });
+    return () => {
+      active = false;
+    };
   }, []);
 
   return (

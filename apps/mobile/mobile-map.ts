@@ -1,6 +1,19 @@
 type MapPointKind = { isOwnHide?: boolean };
 export type ScratchMapLevel = "countries" | "regions" | "counties";
 
+export function groupTrackableJourneyPoints<T extends { trackableId: string }>(points: T[]) {
+  const groups = new Map<string, T[]>();
+  for (const point of points) {
+    let group = groups.get(point.trackableId);
+    if (!group) {
+      group = [];
+      groups.set(point.trackableId, group);
+    }
+    group.push(point);
+  }
+  return groups;
+}
+
 export const SCRATCH_WORLD_REGION = {
   latitude: 0,
   longitude: 0,

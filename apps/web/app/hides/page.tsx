@@ -5,7 +5,7 @@ import { AppShell } from "../../components/app-shell";
 import { CountBarChart, CumulativeFindsChart } from "../../components/charts";
 import { DifficultyTerrainGrid } from "../../components/difficulty-terrain-grid";
 import { StatCard } from "../../components/stat-card";
-import { apiFetch } from "../../lib/api";
+import { apiFetch, getStatsSummary } from "../../lib/api";
 
 type CountBucket = { key: string; count: number };
 type PercentBucket = CountBucket & { percent: number };
@@ -293,12 +293,32 @@ export default function HidesPage() {
   const hasFinderCountries = hideStats?.finderCountryBuckets?.some((row) => row.key !== "Unknown" && row.count > 0) ?? false;
 
   useEffect(() => {
-    void apiFetch<{ stats: { hideStats?: HideStats } }>("/stats/summary")
-      .then((data) => setHideStats(data.stats.hideStats ?? null))
-      .catch(() => setHideStats(null));
+    let active = true;
+    void getStatsSummary<{ hideStats?: HideStats }>()
+      .then((data) => {
+        if (active) {
+          setHideStats(data.stats.hideStats ?? null);
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setHideStats(null);
+        }
+      });
     void apiFetch<{ user?: { username?: string } }>("/auth/me")
-      .then((data) => setOwnerName(data.user?.username ?? "you"))
-      .catch(() => setOwnerName("you"));
+      .then((data) => {
+        if (active) {
+          setOwnerName(data.user?.username ?? "you");
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setOwnerName("you");
+        }
+      });
+    return () => {
+      active = false;
+    };
   }, []);
 
   return (

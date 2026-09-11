@@ -1,7 +1,7 @@
 import { StatusBar } from "expo-status-bar";
 import { fetch as expoFetch } from "expo/fetch";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Alert, AppState, Image, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, Alert, AppState, FlatList, Image, Platform, Pressable, ScrollView, SectionList, StyleSheet, Text, TextInput, View } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import * as DocumentPicker from "expo-document-picker";
 import { File, Paths } from "expo-file-system";
@@ -16,8 +16,18 @@ import { useHostedAuth } from "@clerk/expo/hosted-auth";
 import { tokenCache } from "@clerk/expo/token-cache";
 import { parseCoordinate } from "@geostats/shared";
 import { pickAndUploadDocument, type UploadKind } from "./upload";
-import { hasNativeMapSupport, scratchMapGeometryBudget, SCRATCH_WORLD_REGION, selectNativeMapPoints } from "./mobile-map";
+import { groupTrackableJourneyPoints, hasNativeMapSupport, scratchMapGeometryBudget, SCRATCH_WORLD_REGION, selectNativeMapPoints } from "./mobile-map";
 import { schedulePostImportStatsRefresh } from "./import-refresh";
+import { clearImportStatusTracking, importStatusScopeKey, observeImportStatuses } from "./import-status";
+import {
+  getStatsSummaryCache,
+  getStatsSummaryCacheGeneration,
+  invalidateStatsSummary,
+  requestStatsSummary,
+  statsSummaryCacheKey,
+  subscribeStatsSummaryCache,
+  type StatsSummaryCacheEvent
+} from "./stats-cache";
 import {
   MAX_MYSTERY_SNAPSHOT_BYTES,
   mysterySnapshotByteLength,
@@ -331,6 +341,8 @@ async function apiFetch<T>(baseUrl: string, path: string, token: string | null, 
     const body = await response.json().catch(() => ({ message: response.statusText }));
     throw new ApiError(body.message ?? "Request failed", response.status);
   }
+  const method = (options.method ?? "GET").toUpperCase();
+  if (token && !["GET", "HEAD", "OPTIONS"].includes(method)) invalidateStatsSummary(baseUrl, token);
   return response.json() as Promise<T>;
 }
 
@@ -871,24 +883,157 @@ function scratchBucketsForLevel(countries: any[], activeCountry: any, level: Scr
 }
 
 function useApi<T>(baseUrl: string, token: string, path: string, fallback: T) {
-  const [data, setData] = useState<T>(fallback);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  async function refresh() {
-    setLoading(true);
-    setError(null);
-    try {
-      setData(await apiFetch<T>(baseUrl, path, token));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not load data");
-    } finally {
-      setLoading(false);
-    }
+  const requestKey = `${baseUrl.length}:${baseUrl}|${path.length}:${path}|${token.length}:${token}`;
+  const fallbackRef = useRef(fallback);
+  fallbackRef.current = fallback;
+  const identityRef = useRef({ key: requestKey, generation: 0 });
+  if (identityRef.current.key !== requestKey) {
+    identityRef.current = { key: requestKey, generation: identityRef.current.generation + 1 };
   }
+  const mountedRef = useRef(true);
+  const requestSequenceRef = useRef(0);
+  const [state, setState] = useState<{ key: string; data: T; loading: boolean; error: string | null }>(() => ({
+    key: requestKey,
+    data: fallback,
+    loading: true,
+    error: null
+  }));
+
+  const refresh = useMemo(() => async () => {
+    const requestGeneration = identityRef.current.generation;
+    const requestKeyAtStart = requestKey;
+    const requestSequence = requestSequenceRef.current + 1;
+    requestSequenceRef.current = requestSequence;
+    const isCurrent = () => mountedRef.current && identityRef.current.key === requestKeyAtStart && identityRef.current.generation === requestGeneration && requestSequenceRef.current === requestSequence;
+    if (!isCurrent()) return;
+    setState((current) => current.key === requestKeyAtStart
+      ? { ...current, loading: true, error: null }
+      : { key: requestKeyAtStart, data: fallbackRef.current, loading: true, error: null });
+    try {
+      const next = await apiFetch<T>(baseUrl, path, token);
+      if (!isCurrent()) return;
+      setState({ key: requestKeyAtStart, data: next, loading: false, error: null });
+    } catch (err) {
+      if (!isCurrent()) return;
+      setState((current) => ({
+        key: requestKeyAtStart,
+        data: current.key === requestKeyAtStart ? current.data : fallbackRef.current,
+        loading: false,
+        error: err instanceof Error ? err.message : "Could not load data"
+      }));
+    }
+  }, [baseUrl, path, requestKey, token]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      identityRef.current = { key: identityRef.current.key, generation: identityRef.current.generation + 1 };
+      requestSequenceRef.current += 1;
+    };
+  }, []);
   useEffect(() => {
     void refresh();
-  }, [baseUrl, path, token]);
-  return { data, loading, error, refresh };
+  }, [refresh]);
+
+  const visible = state.key === requestKey
+    ? state
+    : { key: requestKey, data: fallback, loading: true, error: null };
+  return { data: visible.data, loading: visible.loading, error: visible.error, refresh };
+}
+
+function useStatsSummary(baseUrl: string, token: string) {
+  const key = statsSummaryCacheKey(baseUrl, token);
+  const cached = getStatsSummaryCache<{ stats: any }>(key);
+  const identityRef = useRef({ key, generation: 0 });
+  if (identityRef.current.key !== key) {
+    identityRef.current = { key, generation: identityRef.current.generation + 1 };
+  }
+  const mountedRef = useRef(true);
+  const [state, setState] = useState<{ key: string; data: { stats: any }; loading: boolean; error: string | null }>(() => ({
+    key,
+    data: cached?.data ?? { stats: {} },
+    loading: !cached,
+    error: null
+  }));
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      identityRef.current = { key: identityRef.current.key, generation: identityRef.current.generation + 1 };
+    };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    const hookGeneration = identityRef.current.generation;
+    const isCurrent = () => active && mountedRef.current && identityRef.current.key === key && identityRef.current.generation === hookGeneration;
+    async function load(force = false) {
+      if (!isCurrent()) return;
+      const visible = getStatsSummaryCache<{ stats: any }>(key);
+      if (visible) {
+        setState({ key, data: visible.data, loading: false, error: null });
+      } else {
+        setState((current) => ({ key, data: current.key === key ? current.data : { stats: {} }, loading: true, error: null }));
+      }
+      const cacheGeneration = getStatsSummaryCacheGeneration(key);
+      try {
+        const next = await requestStatsSummary(key, () => apiFetch<{ stats: any }>(baseUrl, "/stats/summary", token), { force });
+        if (!isCurrent() || getStatsSummaryCacheGeneration(key) !== cacheGeneration) return;
+        setState({ key, data: next, loading: false, error: null });
+      } catch (err) {
+        if (!isCurrent() || getStatsSummaryCacheGeneration(key) !== cacheGeneration) return;
+        setState((current) => ({ key, data: current.key === key ? current.data : { stats: {} }, loading: false, error: err instanceof Error ? err.message : "Could not load data" }));
+      }
+    }
+
+    const unsubscribe = subscribeStatsSummaryCache(key, (event: StatsSummaryCacheEvent) => {
+      if (!isCurrent()) return;
+      if (event.type === "set") {
+        const next = getStatsSummaryCache<{ stats: any }>(key);
+        if (next) setState({ key, data: next.data, loading: false, error: null });
+        return;
+      }
+      void load(true);
+    });
+    void load();
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, [baseUrl, key, token]);
+
+  const refresh = useMemo(() => async () => {
+    const hookGeneration = identityRef.current.generation;
+    const isCurrent = () => mountedRef.current && identityRef.current.key === key && identityRef.current.generation === hookGeneration;
+    if (!isCurrent()) return undefined;
+    const cacheGeneration = getStatsSummaryCacheGeneration(key);
+    try {
+      const next = await requestStatsSummary(key, () => apiFetch<{ stats: any }>(baseUrl, "/stats/summary", token), { force: true });
+      if (!isCurrent() || getStatsSummaryCacheGeneration(key) !== cacheGeneration) return undefined;
+      setState({ key, data: next, loading: false, error: null });
+      return next;
+    } catch (err) {
+      if (!isCurrent() || getStatsSummaryCacheGeneration(key) !== cacheGeneration) return undefined;
+      setState((current) => ({ key, data: current.key === key ? current.data : { stats: {} }, loading: false, error: err instanceof Error ? err.message : "Could not load data" }));
+      throw err;
+    }
+  }, [baseUrl, key, token]);
+
+  const visible = state.key === key
+    ? state
+    : { key, data: cached?.data ?? { stats: {} }, loading: !cached, error: null };
+  return { data: visible.data, loading: visible.loading, error: visible.error, refresh };
+}
+
+function useImports(baseUrl: string, token: string) {
+  const result = useApi<{ imports: ImportListItem[] }>(baseUrl, token, "/imports", { imports: [] });
+  useEffect(() => {
+    const scope = importStatusScopeKey(baseUrl, token);
+    if (observeImportStatuses(scope, result.data.imports)) invalidateStatsSummary(baseUrl, token);
+  }, [baseUrl, result.data.imports, token]);
+  return result;
 }
 
 function ClerkAuthButton({
@@ -1131,6 +1276,13 @@ export default function App() {
   const [needsOnboarding, setNeedsOnboarding] = useState(false);
   const [screen, setScreen] = useState<ScreenId>("dashboard");
   const contentScrollRef = useRef<ScrollView>(null);
+  const sessionGenerationRef = useRef(0);
+  function changeApiBaseUrl(nextUrl: string) {
+    sessionGenerationRef.current += 1;
+    invalidateStatsSummary(undefined, undefined, { notify: false });
+    clearImportStatusTracking();
+    setApiBaseUrl(nextUrl);
+  }
   useEffect(() => {
     if (__DEV__ || !Updates.isEnabled) return;
     let active = true;
@@ -1150,11 +1302,15 @@ export default function App() {
     };
   }, []);
   async function acceptSession(nextSession: Session, baseUrl = apiBaseUrl) {
+    const sessionGeneration = ++sessionGenerationRef.current;
     setSession(nextSession);
+    setNeedsOnboarding(false);
     try {
       const profile = await apiFetch<{ profile: any }>(baseUrl, "/profile", nextSession.token);
+      if (sessionGenerationRef.current !== sessionGeneration) return;
       setNeedsOnboarding(!profile.profile);
     } catch {
+      if (sessionGenerationRef.current !== sessionGeneration) return;
       setNeedsOnboarding(false);
     }
   }
@@ -1175,19 +1331,28 @@ export default function App() {
       .finally(() => setBooting(false));
   }, []);
   async function logout() {
-    await SecureStore.deleteItemAsync(TOKEN_KEY);
+    // Clearing the cache must not notify mounted summary hooks: their
+    // invalidate listener would otherwise start another request with the token
+    // that is being logged out.
+    invalidateStatsSummary(undefined, undefined, { notify: false });
+    clearImportStatusTracking();
+    sessionGenerationRef.current += 1;
     setSession(null);
     setNeedsOnboarding(false);
+    // Unmount authenticated screens before waiting on storage so their
+    // schedulers cannot start another request with the old token.
+    await SecureStore.deleteItemAsync(TOKEN_KEY);
   }
   let content;
   if (booting) {
     content = <SafeAreaView style={styles.safeCenter}><ActivityIndicator color="#f3b34d" /></SafeAreaView>;
   } else if (!session) {
-    content = <AuthScreen apiBaseUrl={apiBaseUrl} onApiBaseUrlChange={setApiBaseUrl} onSession={acceptSession} />;
+    content = <AuthScreen apiBaseUrl={apiBaseUrl} onApiBaseUrlChange={changeApiBaseUrl} onSession={acceptSession} />;
   } else if (needsOnboarding) {
     content = <OnboardingScreen apiBaseUrl={apiBaseUrl} token={session.token} onComplete={() => setNeedsOnboarding(false)} onLogout={logout} />;
   } else {
     const activePrimaryScreen = primaryScreens.includes(screen) ? screen : "explore";
+    const ownsScrollRoot = screen === "ftf" || screen === "trackables";
     content = (
       <SafeAreaView style={styles.safe}>
         <StatusBar style="light" />
@@ -1200,9 +1365,15 @@ export default function App() {
             <Text style={styles.avatarText}>{session.user.username.slice(0, 1).toUpperCase()}</Text>
           </Pressable>
         </View>
-        <ScrollView ref={contentScrollRef} key={screen} style={styles.content} contentContainerStyle={styles.contentInner} showsVerticalScrollIndicator={false}>
-          <ScreenSwitch apiBaseUrl={apiBaseUrl} screen={screen} token={session.token} userId={session.user.id} username={session.user.username} onNavigate={setScreen} onLogout={logout} onRequestScrollTop={() => contentScrollRef.current?.scrollTo({ y: 0, animated: false })} />
-        </ScrollView>
+        {ownsScrollRoot ? (
+          <View style={styles.content}>
+            <ScreenSwitch apiBaseUrl={apiBaseUrl} screen={screen} token={session.token} userId={session.user.id} username={session.user.username} onNavigate={setScreen} onLogout={logout} onRequestScrollTop={() => contentScrollRef.current?.scrollTo({ y: 0, animated: false })} />
+          </View>
+        ) : (
+          <ScrollView ref={contentScrollRef} key={screen} style={styles.content} contentContainerStyle={styles.contentInner} showsVerticalScrollIndicator={false}>
+            <ScreenSwitch apiBaseUrl={apiBaseUrl} screen={screen} token={session.token} userId={session.user.id} username={session.user.username} onNavigate={setScreen} onLogout={logout} onRequestScrollTop={() => contentScrollRef.current?.scrollTo({ y: 0, animated: false })} />
+          </ScrollView>
+        )}
         <View style={styles.bottomNav}>
           {primaryScreens.map((item) => {
             const detail = screenDetails[item];
@@ -1308,8 +1479,8 @@ function ExploreScreen({ username, onNavigate }: { username: string; onNavigate:
 }
 
 function DashboardScreen({ apiBaseUrl, token, username, onNavigate }: { apiBaseUrl: string; token: string; username: string; onNavigate: (screen: ScreenId) => void }) {
-  const stats = useApi<{ stats: any }>(apiBaseUrl, token, "/stats/summary", { stats: {} });
-  const imports = useApi<{ imports: ImportListItem[] }>(apiBaseUrl, token, "/imports", { imports: [] });
+  const stats = useStatsSummary(apiBaseUrl, token);
+  const imports = useImports(apiBaseUrl, token);
   const s = stats.data.stats;
   const latestImport = imports.data.imports[0];
   const importActive = hasActiveImports(imports.data.imports);
@@ -1354,7 +1525,7 @@ function DashboardScreen({ apiBaseUrl, token, username, onNavigate }: { apiBaseU
 }
 
 function StatsScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
-  const { data, loading, error } = useApi<{ stats: any }>(apiBaseUrl, token, "/stats/summary", { stats: {} });
+  const { data, loading, error } = useStatsSummary(apiBaseUrl, token);
   const [section, setSection] = useState("Overview");
   const s = data.stats;
   return (
@@ -1554,7 +1725,7 @@ function ScratchScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: strin
 }
 
 function MilestonesScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
-  const { data, loading, error } = useApi<{ stats: any }>(apiBaseUrl, token, "/stats/summary", { stats: {} });
+  const { data, loading, error } = useStatsSummary(apiBaseUrl, token);
   const m = data.stats.milestoneStats ?? {};
   return (
     <>
@@ -1572,7 +1743,7 @@ function MilestonesScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: st
 }
 
 function FtfScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
-  const summary = useApi<{ stats: any }>(apiBaseUrl, token, "/stats/summary", { stats: {} });
+  const summary = useStatsSummary(apiBaseUrl, token);
   const finds = useApi<{ finds: any[]; nextCursor: string | null }>(apiBaseUrl, token, "/stats/ftf/finds?limit=100", { finds: [], nextCursor: null });
   const [extraFinds, setExtraFinds] = useState<any[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
@@ -1580,12 +1751,49 @@ function FtfScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
   const [loadingMore, setLoadingMore] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const s = summary.data.stats.ftfStats ?? {};
-  const allFinds = [...finds.data.finds, ...extraFinds].filter((find, index, rows) => rows.findIndex((row) => row.id === find.id) === index);
-  const visibleFinds = allFinds.filter((find) => !query.trim() || `${find.cache.gcCode} ${find.cache.name}`.toLowerCase().includes(query.trim().toLowerCase()));
+  const listGenerationRef = useRef(0);
+  const listIdentity = `${apiBaseUrl.length}:${apiBaseUrl}|${token.length}:${token}`;
+  const listIdentityRef = useRef(listIdentity);
+  const firstPageRef = useRef(finds.data.finds);
+  const loadMoreSequenceRef = useRef(0);
+  const mountedRef = useRef(true);
+  if (listIdentityRef.current !== listIdentity) {
+    listIdentityRef.current = listIdentity;
+    listGenerationRef.current += 1;
+    loadMoreSequenceRef.current += 1;
+  }
+  if (firstPageRef.current !== finds.data.finds) {
+    firstPageRef.current = finds.data.finds;
+    listGenerationRef.current += 1;
+    loadMoreSequenceRef.current += 1;
+  }
+  const allFinds = useMemo(() => {
+    const seen = new Set<string>();
+    return [...finds.data.finds, ...extraFinds].filter((find) => {
+      if (seen.has(find.id)) return false;
+      seen.add(find.id);
+      return true;
+    });
+  }, [extraFinds, finds.data.finds]);
+  const visibleFinds = useMemo(() => {
+    const normalizedQuery = query.trim().toLowerCase();
+    if (!normalizedQuery) return allFinds;
+    return allFinds.filter((find) => `${find.cache.gcCode} ${find.cache.name}`.toLowerCase().includes(normalizedQuery));
+  }, [allFinds, query]);
+  const ftfRows = useMemo(() => s.rows ?? [], [s.rows]);
   useEffect(() => {
     setNextCursor(finds.data.nextCursor);
     setExtraFinds([]);
+    setLoadingMore(false);
   }, [finds.data.finds]);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      listGenerationRef.current += 1;
+      loadMoreSequenceRef.current += 1;
+    };
+  }, []);
   async function toggle(find: any) {
     setActionError(null);
     try {
@@ -1597,20 +1805,34 @@ function FtfScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
   }
   async function loadMore() {
     if (!nextCursor || loadingMore) return;
+    const requestGeneration = listGenerationRef.current;
+    const requestSequence = loadMoreSequenceRef.current + 1;
+    loadMoreSequenceRef.current = requestSequence;
+    const requestCursor = nextCursor;
     setLoadingMore(true);
     setActionError(null);
     try {
-      const page = await apiFetch<{ finds: any[]; nextCursor: string | null }>(apiBaseUrl, `/stats/ftf/finds?limit=100&cursor=${encodeURIComponent(nextCursor)}`, token);
+      const page = await apiFetch<{ finds: any[]; nextCursor: string | null }>(apiBaseUrl, `/stats/ftf/finds?limit=100&cursor=${encodeURIComponent(requestCursor)}`, token);
+      if (!mountedRef.current || listGenerationRef.current !== requestGeneration || loadMoreSequenceRef.current !== requestSequence) return;
       setExtraFinds((current) => [...current, ...page.finds]);
       setNextCursor(page.nextCursor);
     } catch (error) {
+      if (!mountedRef.current || listGenerationRef.current !== requestGeneration || loadMoreSequenceRef.current !== requestSequence) return;
       setActionError(error instanceof Error ? error.message : "Could not load more finds.");
     } finally {
-      setLoadingMore(false);
+      if (mountedRef.current && listGenerationRef.current === requestGeneration && loadMoreSequenceRef.current === requestSequence) {
+        setLoadingMore(false);
+      }
     }
   }
-  return (
-    <>
+
+  const sections = useMemo(() => [
+    { key: "ftf-results", kind: "results" as const, title: "FTF list", subtitle: `${ftfRows.length.toLocaleString()} listed`, data: ftfRows },
+    { key: "ftf-mark", kind: "mark" as const, title: "Mark FTF finds", subtitle: `${allFinds.length.toLocaleString()} loaded`, data: visibleFinds }
+  ], [allFinds.length, ftfRows, visibleFinds]);
+
+  const listHeader = (
+    <View style={styles.virtualListHeader}>
       <PageTitle eyebrow="First to find" title="FTF" />
       <StatGrid rows={[["FTF finds", s.total ?? 0], ["Percent", s.percentOfFinds == null ? "-" : `${s.percentOfFinds.toFixed(2)}%`], ["Average interval", s.averageIntervalDays == null ? "-" : `${s.averageIntervalDays.toFixed(1)} days`], ["Archived", s.archivedCount ?? 0]]} />
       <Panel title="Some numbers"><KeyValue rows={[["First", s.first ? `${s.first.gcCode} ${dateText(s.first.dateTime)}` : "-"], ["Latest", s.latest ? `${s.latest.gcCode} ${dateText(s.latest.dateTime)}` : "-"], ["Best day", s.bestDay ? `${s.bestDay.count} on ${s.bestDay.key}` : "-"], ["Best month", s.bestMonth ? `${s.bestMonth.count} in ${s.bestMonth.key}` : "-"], ["Average distance", s.averageDistanceKm == null ? "-" : `${Math.round(s.averageDistanceKm)} km`]]} /></Panel>
@@ -1620,21 +1842,54 @@ function FtfScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
       <Panel title="FTFs by found date"><CalendarHeatmap data={s.foundDateMatrix ?? []} /></Panel>
       <Panel title="FTF D/T chart"><DifficultyGrid data={s.byDifficultyTerrain ?? []} /></Panel>
       <Panel title="Way to 81 (FTF)"><Rows rows={(s.wayTo81 ?? []).map((row: any) => [String(row.index), row.gcCode, `${row.difficulty}/${row.terrain}`])} /></Panel>
-      <Panel title="FTF map"><NativeMap points={(s.rows ?? []).map((row: any) => ({ id: `${row.gcCode}-${row.dateTime}`, gcCode: row.gcCode, name: row.name, cacheType: row.cacheType, latitude: row.latitude ?? Number.NaN, longitude: row.longitude ?? Number.NaN, foundAt: row.dateTime }))} /></Panel>
-      <Panel title="FTF list">{(s.rows ?? []).map((row: any) => <CacheRow key={`${row.gcCode}-${row.dateTime}`} point={{ id: row.gcCode, gcCode: row.gcCode, name: row.name, cacheType: row.cacheType, latitude: row.latitude ?? 0, longitude: row.longitude ?? 0, foundAt: row.dateTime }} />)}</Panel>
-      <Panel title="Mark FTF finds" subtitle={`${allFinds.length} loaded`}>
-        <Field label="Search loaded finds" value={query} onChangeText={setQuery} autoCapitalize="none" />
-        {visibleFinds.map((find) => <Pressable key={find.id} onPress={() => void toggle(find)} style={[styles.toggleRow, find.isFtf && styles.toggleRowActive]}><Text style={styles.rowTitle}>{find.cache.gcCode} - {find.cache.name}</Text><Text style={styles.muted}>{find.isFtf ? "Marked FTF" : "Tap to mark"} - {dateText(find.foundAt)}</Text></Pressable>)}
-        {nextCursor ? <SecondaryButton label={loadingMore ? "Loading..." : "Load 100 more"} onPress={() => void loadMore()} /> : null}
-        {actionError ? <Text style={styles.error}>{actionError}</Text> : null}
-       </Panel>
-       <LoadState loading={summary.loading || finds.loading} error={summary.error || finds.error} />
-    </>
+      <Panel title="FTF map"><NativeMap points={ftfRows.map((row: any) => ({ id: `${row.gcCode}-${row.dateTime}`, gcCode: row.gcCode, name: row.name, cacheType: row.cacheType, latitude: row.latitude ?? Number.NaN, longitude: row.longitude ?? Number.NaN, foundAt: row.dateTime }))} /></Panel>
+    </View>
+  );
+
+  return (
+    <SectionList
+      style={styles.content}
+      contentContainerStyle={[styles.contentInner, styles.virtualListInner]}
+      sections={sections}
+      ListHeaderComponent={listHeader}
+      ListFooterComponent={<LoadState loading={summary.loading || finds.loading} error={summary.error || finds.error} />}
+      keyExtractor={(item: any, index) => item.id ? `find-${item.id}` : `ftf-${item.gcCode ?? "row"}-${item.dateTime ?? "date"}-${index}`}
+      renderSectionHeader={({ section }) => (
+        <View style={styles.virtualSectionHeader}>
+          <Text style={styles.panelTitle}>{section.title}</Text>
+          <Text style={styles.muted}>{section.subtitle}</Text>
+          {section.kind === "mark" ? <Field label="Search loaded finds" value={query} onChangeText={setQuery} autoCapitalize="none" /> : null}
+        </View>
+      )}
+      renderItem={({ item, section }) => section.kind === "results" ? (
+        <View style={styles.virtualRow}><CacheRow point={{ id: item.gcCode, gcCode: item.gcCode, name: item.name, cacheType: item.cacheType, latitude: item.latitude ?? 0, longitude: item.longitude ?? 0, foundAt: item.dateTime }} /></View>
+      ) : (
+        <Pressable onPress={() => void toggle(item)} style={[styles.toggleRow, item.isFtf && styles.toggleRowActive]}><Text style={styles.rowTitle}>{item.cache.gcCode} - {item.cache.name}</Text><Text style={styles.muted}>{item.isFtf ? "Marked FTF" : "Tap to mark"} - {dateText(item.foundAt)}</Text></Pressable>
+      )}
+      renderSectionFooter={({ section }) => section.kind === "results" ? (
+        section.data.length > 0 ? null : <Text style={styles.virtualEmpty}>No FTF rows yet.</Text>
+      ) : (
+        <View style={styles.virtualSectionFooter}>
+          {section.data.length === 0 ? <Text style={styles.virtualEmpty}>{allFinds.length ? "No loaded finds match this search." : "No finds available to mark."}</Text> : null}
+          {nextCursor ? <SecondaryButton label={loadingMore ? "Loading..." : "Load 100 more"} onPress={() => void loadMore()} /> : null}
+          {actionError ? <Text style={styles.error}>{actionError}</Text> : null}
+        </View>
+      )}
+      ListFooterComponentStyle={styles.virtualListFooter}
+      stickySectionHeadersEnabled={false}
+      initialNumToRender={12}
+      maxToRenderPerBatch={12}
+      updateCellsBatchingPeriod={50}
+      windowSize={7}
+      removeClippedSubviews
+      keyboardShouldPersistTaps="handled"
+      showsVerticalScrollIndicator={false}
+    />
   );
 }
 
 function HidesScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
-  const { data, loading, error } = useApi<{ stats: any }>(apiBaseUrl, token, "/stats/summary", { stats: {} });
+  const { data, loading, error } = useStatsSummary(apiBaseUrl, token);
   const h = data.stats.hideStats ?? {};
   const ownerGroups: Array<[string, any[]]> = [
     ["Cumulative logs on my caches", h.cumulativeReceivedLogsByMonth ?? []],
@@ -1674,6 +1929,7 @@ function HidesScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string 
   );
 }
 
+
 function TrackablesScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
   const trackables = useApi<{ trackables: MobileTrackable[]; summary: { total: number; stuck: number; byState: Partial<Record<TrackableState, number>> } }>(apiBaseUrl, token, "/trackables", { trackables: [], summary: { total: 0, stuck: 0, byState: {} } });
   const journey = useApi<{ points: TrackableJourneyPoint[]; total: number; truncated: boolean; unmapped: number }>(apiBaseUrl, token, "/trackables/map", { points: [], total: 0, truncated: false, unmapped: 0 });
@@ -1692,7 +1948,9 @@ function TrackablesScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: st
   const [importing, setImporting] = useState(false);
   const labels: Record<TrackableState, string> = { OWNED: "Owned", DISCOVERED: "Discovered", RETRIEVED: "Retrieved", DROPPED: "Dropped", VISITED: "Visited", MISSING: "Missing" };
   const filterValues = ["ALL", ...Object.keys(labels)] as Array<TrackableState | "ALL">;
-  const visible = trackables.data.trackables.filter((item) => stateFilter === "ALL" || item.state === stateFilter);
+  const visible = useMemo(() => trackables.data.trackables.filter((item) => stateFilter === "ALL" || item.state === stateFilter), [stateFilter, trackables.data.trackables]);
+  const mapFilterItems = useMemo(() => ["ALL", ...trackables.data.trackables.map((item) => item.id)], [trackables.data.trackables]);
+  const mapFilterLabels = useMemo(() => new Map(trackables.data.trackables.map((item) => [item.id, item.trackingCode])), [trackables.data.trackables]);
 
   function reset() {
     setTrackingCode(""); setName(""); setState("DISCOVERED"); setLastSeenAt(""); setLastSeenLocation(""); setDistanceKm(""); setNotes(""); setEditingId(null);
@@ -1728,70 +1986,107 @@ function TrackablesScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: st
   async function importHistory() {
     if (importing) return;
     setImporting(true);
-    await pickAndUploadDocument("trackable", {
-      pick: (options) => DocumentPicker.getDocumentAsync(options),
-      createFile: (uri) => new File(uri),
-      request: (path, body) => apiFetch(apiBaseUrl, path, token, { method: "POST", body }),
-      refresh: async () => {
-        await Promise.all([trackables.refresh(), journey.refresh()]);
-      },
-      onMessage: setActionError
-    });
-    setImporting(false);
+    try {
+      await pickAndUploadDocument("trackable", {
+        pick: (options) => DocumentPicker.getDocumentAsync(options),
+        createFile: (uri) => new File(uri),
+        request: (path, body) => apiFetch(apiBaseUrl, path, token, { method: "POST", body }),
+        refresh: async () => {
+          await Promise.all([trackables.refresh(), journey.refresh()]);
+        },
+        onMessage: setActionError
+      });
+    } finally {
+      setImporting(false);
+    }
   }
 
-  const visibleJourney = mapTrackableId === "ALL" ? journey.data.points : journey.data.points.filter((point) => point.trackableId === mapTrackableId);
+  const visibleJourney = useMemo(() => mapTrackableId === "ALL" ? journey.data.points : journey.data.points.filter((point) => point.trackableId === mapTrackableId), [journey.data.points, mapTrackableId]);
+  const sections = useMemo(() => [{ key: "trackable-logbook", title: "Logbook", subtitle: `${visible.length.toLocaleString()} shown`, data: visible }], [visible]);
 
   return (
-    <>
-      <PageTitle eyebrow="Trackable logbook" title="Trackables" />
-      <Text style={styles.muted}>Record what you own, what you have found, and where each item was last seen.</Text>
-      <StatGrid rows={[["Total", trackables.data.summary.total], ["Owned", trackables.data.summary.byState.OWNED ?? 0], ["In the wild", (trackables.data.summary.byState.DROPPED ?? 0) + (trackables.data.summary.byState.VISITED ?? 0)], ["Needs a look", trackables.data.summary.stuck]]} />
-      <Panel title={editingId ? "Edit trackable" : "Add a trackable"} subtitle="Use the code printed on the item.">
-        <Field label="Tracking code" value={trackingCode} onChangeText={setTrackingCode} autoCapitalize="characters" placeholder="TB1234" />
-        <Field label="Name" value={name} onChangeText={setName} placeholder="A red geocoin" />
-        <Text style={styles.fieldLabel}>State</Text>
-        <Segmented values={(["OWNED", "DISCOVERED", "RETRIEVED", "DROPPED", "VISITED", "MISSING"] as TrackableState[]).map((item) => labels[item])} active={labels[state]} onPress={(value) => { const next = (Object.keys(labels) as TrackableState[]).find((item) => labels[item] === value); if (next) setState(next); }} />
-        <Field label="Last seen date" value={lastSeenAt} onChangeText={setLastSeenAt} placeholder="YYYY-MM-DD" />
-        <Field label="Last-seen location" value={lastSeenLocation} onChangeText={setLastSeenLocation} placeholder="GC7ABC or Stockholm" />
-        <Field label="Distance (km)" value={distanceKm} onChangeText={setDistanceKm} keyboardType="numeric" />
-        <Field label="Notes" value={notes} onChangeText={setNotes} multiline placeholder="Who has it, or where it is headed" />
-        <PrimaryButton label={busy ? "Saving..." : editingId ? "Save changes" : "Add trackable"} onPress={() => void save()} />
-        {editingId ? <SecondaryButton label="Cancel edit" onPress={reset} /> : null}
-        {actionError ? <Text style={styles.error}>{actionError}</Text> : null}
-      </Panel>
-      <Panel title="Import movement history" subtitle="Geocaching or GSAK GPX, ZIP/KMZ, CSV, KML, or API JSON.">
-        <Text style={styles.muted}>Journey cache details stay with your private movement history; matching cache records are linked from your archive.</Text>
-        <PrimaryButton label={importing ? "Importing..." : "Choose history export"} onPress={() => void importHistory()} />
-      </Panel>
-      <Panel title="Movement map" subtitle={journey.data.total ? `${visibleJourney.length} movement points` : "Import a journey to see its path."}>
-        <View style={styles.trackableFilter}>{["ALL", ...trackables.data.trackables.map((item) => item.id)].map((value) => {
-          const active = mapTrackableId === value;
-          const label = value === "ALL" ? "All" : trackables.data.trackables.find((item) => item.id === value)?.trackingCode ?? value;
-          return <Pressable key={value} accessibilityRole="button" accessibilityState={{ selected: active }} onPress={() => setMapTrackableId(value)} style={[styles.trackableFilterButton, active && styles.trackableFilterButtonActive]}><Text style={[styles.trackableFilterText, active && styles.trackableFilterTextActive]}>{label}</Text></Pressable>;
-        })}</View>
-        <NativeTrackableMap points={visibleJourney} />
-        {journey.data.truncated ? <Text style={styles.trackableWarning}>Map is showing the newest 20,000 of {journey.data.total.toLocaleString()} movement points. The full history remains in your logbook export.</Text> : null}
-        {journey.data.unmapped > 0 ? <Text style={styles.muted}>{journey.data.unmapped} movement points have no coordinates.</Text> : null}
-      </Panel>
-      <Panel title="Logbook" subtitle={`${visible.length} shown`}>
-        <View style={styles.trackableFilter}>{filterValues.map((value) => {
-          const active = stateFilter === value;
-          const label = value === "ALL" ? "All" : labels[value];
-          return <Pressable key={value} accessibilityRole="button" accessibilityState={{ selected: active }} onPress={() => setStateFilter(value)} style={[styles.trackableFilterButton, active && styles.trackableFilterButtonActive]}><Text style={[styles.trackableFilterText, active && styles.trackableFilterTextActive]}>{label}</Text></Pressable>;
-        })}</View>
-        {visible.map((item) => <View key={item.id} style={styles.trackableRow}><View style={styles.flex}><Text style={styles.rowTitle}>{item.name}</Text><Text style={styles.trackableCode}>{item.trackingCode}</Text><Text style={styles.muted}>{labels[item.state]} · {item.lastSeenAt ? dateText(item.lastSeenAt) : "No last-seen date"}{item.lastSeenLocation ? ` · ${item.lastSeenLocation}` : ""}{item.distanceKm != null ? ` · ${item.distanceKm} km` : ""}</Text>{item.stuck ? <Text style={styles.trackableWarning}>Last seen over 90 days ago</Text> : null}{item.notes ? <Text style={styles.muted}>{item.notes}</Text> : null}</View><View style={styles.trackableActions}><SecondaryButton label="Edit" onPress={() => edit(item)} /><SecondaryButton label="Remove" danger onPress={() => remove(item)} /></View></View>)}
-        {!visible.length ? <Text style={styles.muted}>{trackables.data.trackables.length ? "No trackables match this state." : "Your logbook is empty. Add your first trackable above."}</Text> : null}
-      </Panel>
-      <LoadState loading={trackables.loading} error={trackables.error} />
-    </>
+    <SectionList
+      style={styles.content}
+      contentContainerStyle={[styles.contentInner, styles.virtualListInner]}
+      sections={sections}
+      ListHeaderComponent={(
+        <View style={styles.virtualListHeader}>
+          <PageTitle eyebrow="Trackable logbook" title="Trackables" />
+          <Text style={styles.muted}>Record what you own, what you have found, and where each item was last seen.</Text>
+          <StatGrid rows={[["Total", trackables.data.summary.total], ["Owned", trackables.data.summary.byState.OWNED ?? 0], ["In the wild", (trackables.data.summary.byState.DROPPED ?? 0) + (trackables.data.summary.byState.VISITED ?? 0)], ["Needs a look", trackables.data.summary.stuck]]} />
+          <Panel title={editingId ? "Edit trackable" : "Add a trackable"} subtitle="Use the code printed on the item.">
+            <Field label="Tracking code" value={trackingCode} onChangeText={setTrackingCode} autoCapitalize="characters" placeholder="TB1234" />
+            <Field label="Name" value={name} onChangeText={setName} placeholder="A red geocoin" />
+            <Text style={styles.fieldLabel}>State</Text>
+            <Segmented values={(Object.keys(labels) as TrackableState[]).map((item) => labels[item])} active={labels[state]} onPress={(value) => { const next = (Object.keys(labels) as TrackableState[]).find((item) => labels[item] === value); if (next) setState(next); }} />
+            <Field label="Last seen date" value={lastSeenAt} onChangeText={setLastSeenAt} placeholder="YYYY-MM-DD" />
+            <Field label="Last-seen location" value={lastSeenLocation} onChangeText={setLastSeenLocation} placeholder="GC7ABC or Stockholm" />
+            <Field label="Distance (km)" value={distanceKm} onChangeText={setDistanceKm} keyboardType="numeric" />
+            <Field label="Notes" value={notes} onChangeText={setNotes} multiline placeholder="Who has it, or where it is headed" />
+            <PrimaryButton label={busy ? "Saving..." : editingId ? "Save changes" : "Add trackable"} onPress={() => void save()} />
+            {editingId ? <SecondaryButton label="Cancel edit" onPress={reset} /> : null}
+            {actionError ? <Text style={styles.error}>{actionError}</Text> : null}
+          </Panel>
+          <Panel title="Import movement history" subtitle="Geocaching or GSAK GPX, ZIP/KMZ, CSV, KML, or API JSON.">
+            <Text style={styles.muted}>Journey cache details stay with your private movement history; matching cache records are linked from your archive.</Text>
+            <PrimaryButton label={importing ? "Importing..." : "Choose history export"} onPress={() => void importHistory()} />
+          </Panel>
+          <Panel title="Movement map" subtitle={journey.data.total ? `${visibleJourney.length} movement points` : "Import a journey to see its path."}>
+            <FlatList
+              horizontal
+              data={mapFilterItems}
+              keyExtractor={(value) => value}
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.horizontalFilterContent}
+              renderItem={({ item: value }) => {
+                const active = mapTrackableId === value;
+                const label = value === "ALL" ? "All" : mapFilterLabels.get(value) ?? value;
+                return <Pressable accessibilityRole="button" accessibilityState={{ selected: active }} onPress={() => setMapTrackableId(value)} style={[styles.trackableFilterButton, active && styles.trackableFilterButtonActive]}><Text style={[styles.trackableFilterText, active && styles.trackableFilterTextActive]}>{label}</Text></Pressable>;
+              }}
+              initialNumToRender={8}
+              maxToRenderPerBatch={8}
+              windowSize={5}
+              removeClippedSubviews
+            />
+            <NativeTrackableMap points={visibleJourney} />
+            {journey.data.truncated ? <Text style={styles.trackableWarning}>Map is showing the newest 20,000 of {journey.data.total.toLocaleString()} movement points. The full history remains in your logbook export.</Text> : null}
+            {journey.data.unmapped > 0 ? <Text style={styles.muted}>{journey.data.unmapped} movement points have no coordinates.</Text> : null}
+          </Panel>
+        </View>
+      )}
+      ListFooterComponent={<LoadState loading={trackables.loading || journey.loading} error={trackables.error || journey.error} />}
+      keyExtractor={(item) => item.id}
+      renderSectionHeader={({ section }) => (
+        <View style={styles.virtualSectionHeader}>
+          <Text style={styles.panelTitle}>{section.title}</Text>
+          <Text style={styles.muted}>{section.subtitle}</Text>
+          <View style={styles.trackableFilter}>{filterValues.map((value) => {
+            const active = stateFilter === value;
+            const label = value === "ALL" ? "All" : labels[value];
+            return <Pressable key={value} accessibilityRole="button" accessibilityState={{ selected: active }} onPress={() => setStateFilter(value)} style={[styles.trackableFilterButton, active && styles.trackableFilterButtonActive]}><Text style={[styles.trackableFilterText, active && styles.trackableFilterTextActive]}>{label}</Text></Pressable>;
+          })}</View>
+        </View>
+      )}
+      renderItem={({ item }) => (
+        <View style={styles.virtualRow}><View style={styles.trackableRow}><View style={styles.flex}><Text style={styles.rowTitle}>{item.name}</Text><Text style={styles.trackableCode}>{item.trackingCode}</Text><Text style={styles.muted}>{labels[item.state]} · {item.lastSeenAt ? dateText(item.lastSeenAt) : "No last-seen date"}{item.lastSeenLocation ? ` · ${item.lastSeenLocation}` : ""}{item.distanceKm != null ? ` · ${item.distanceKm} km` : ""}</Text>{item.stuck ? <Text style={styles.trackableWarning}>Last seen over 90 days ago</Text> : null}{item.notes ? <Text style={styles.muted}>{item.notes}</Text> : null}</View><View style={styles.trackableActions}><SecondaryButton label="Edit" onPress={() => edit(item)} /><SecondaryButton label="Remove" danger onPress={() => remove(item)} /></View></View></View>
+      )}
+      renderSectionFooter={({ section }) => section.data.length > 0 ? null : <Text style={styles.virtualEmpty}>{trackables.data.trackables.length ? "No trackables match this state." : "Your logbook is empty. Add your first trackable above."}</Text>}
+      ListFooterComponentStyle={styles.virtualListFooter}
+      stickySectionHeadersEnabled={false}
+      initialNumToRender={12}
+      maxToRenderPerBatch={12}
+      updateCellsBatchingPeriod={50}
+      windowSize={7}
+      removeClippedSubviews
+      showsVerticalScrollIndicator={false}
+    />
   );
 }
 
 function UploadScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
   const [message, setMessage] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
-  const imports = useApi<{ imports: ImportListItem[] }>(apiBaseUrl, token, "/imports", { imports: [] });
+  const imports = useImports(apiBaseUrl, token);
   useEffect(() => {
     if (!hasActiveImports(imports.data.imports)) return;
     const interval = setInterval(() => {
@@ -1826,7 +2121,7 @@ function UploadScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string
 }
 
 function ImportsScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
-  const { data, loading, error, refresh } = useApi<{ imports: ImportListItem[] }>(apiBaseUrl, token, "/imports", { imports: [] });
+  const { data, loading, error, refresh } = useImports(apiBaseUrl, token);
   useEffect(() => {
     if (!hasActiveImports(data.imports)) return;
     const interval = setInterval(() => {
@@ -2850,8 +3145,7 @@ function NativeTrackableMap({ points }: { points: TrackableJourneyPoint[] }) {
   if (!NATIVE_MAP_AVAILABLE) {
     return <View style={styles.mapUnavailable}><Text style={styles.mapUnavailableTitle}>Map preview unavailable</Text><Text style={styles.muted}>This Android build does not have a Google Maps key. Movement locations remain available in the logbook.</Text></View>;
   }
-  const groups = new Map<string, TrackableJourneyPoint[]>();
-  for (const point of visible) groups.set(point.trackableId, [...(groups.get(point.trackableId) ?? []), point]);
+  const groups = groupTrackableJourneyPoints(visible);
   const colorFor = (type: string) => type === "DROPPED" ? "#f3b34d" : type === "MISSING" ? "#ff8db3" : type === "RETRIEVED" || type === "GRABBED" ? "#d9468f" : "#4ec878";
   return (
     <View style={styles.nativeMapFrame}>
@@ -3224,6 +3518,13 @@ const styles = StyleSheet.create({
   bottomNavLabelActive: { color: "#e9f2ec" },
   content: { flex: 1 },
   contentInner: { paddingHorizontal: 17, paddingTop: 20, paddingBottom: 30, gap: 15 },
+  virtualListInner: { paddingBottom: 30 },
+  virtualListHeader: { gap: 15 },
+  virtualSectionHeader: { gap: 5, paddingTop: 8, paddingBottom: 8, backgroundColor: "#08120e" },
+  virtualSectionFooter: { gap: 8, paddingBottom: 4 },
+  virtualRow: { backgroundColor: "#0d1f17" },
+  virtualEmpty: { color: "#91a79c", paddingVertical: 12 },
+  virtualListFooter: { paddingTop: 8 },
   pageTitle: { marginBottom: 3, gap: 3 },
   eyebrow: { color: "#83a393", fontSize: 11, textTransform: "uppercase", letterSpacing: 1.1, fontWeight: "900" },
   title: { color: "#f1f8f3", fontSize: 32, lineHeight: 37, letterSpacing: -1, fontWeight: "900" },
@@ -3401,6 +3702,7 @@ const styles = StyleSheet.create({
   importRow: { flexDirection: "row", alignItems: "center", gap: 10, borderTopWidth: 1, borderColor: "#1b3729", paddingVertical: 10 },
   trackableRow: { flexDirection: "row", alignItems: "flex-start", gap: 10, borderTopWidth: 1, borderColor: "#1b3729", paddingVertical: 12 },
   trackableFilter: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
+  horizontalFilterContent: { gap: 6, paddingVertical: 2 },
   trackableFilterButton: { borderWidth: 1, borderColor: "#365346", borderRadius: 999, paddingHorizontal: 12, paddingVertical: 8 },
   trackableFilterButtonActive: { borderColor: "#f3b34d", backgroundColor: "#f3b34d" },
   trackableFilterText: { color: "#b9c8bf", fontSize: 12, fontWeight: "800" },

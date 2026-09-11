@@ -3,5 +3,5 @@
   "compilerOptions": {
     "strict": true
   },
-  "exclude": ["import-refresh.test.ts", "mobile-map.test.ts", "mystery-storage.test.ts", "upload.test.ts"]
+  "exclude": ["import-refresh.test.ts", "import-status.test.ts", "mobile-map.test.ts", "mystery-storage.test.ts", "stats-cache.test.ts", "upload.test.ts"]
 }

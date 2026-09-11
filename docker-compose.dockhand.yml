@@ -75,6 +75,7 @@ services:
         "packages/db/prisma/schema.prisma"
       ]
     environment:
+      NODE_ENV: ${NODE_ENV:-production}
       DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL}
     depends_on:
       postgres:
@@ -87,6 +88,7 @@ services:
       dockerfile: apps/api/Dockerfile
     restart: unless-stopped
     environment:
+      NODE_ENV: ${NODE_ENV:-production}
       DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL}
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET}
       COLLECTOR_TOKEN_ENCRYPTION_KEY: ${COLLECTOR_TOKEN_ENCRYPTION_KEY:?Set COLLECTOR_TOKEN_ENCRYPTION_KEY}
@@ -134,6 +136,7 @@ services:
       dockerfile: apps/worker/Dockerfile
     restart: unless-stopped
     environment:
+      NODE_ENV: ${NODE_ENV:-production}
       DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL}
       REDIS_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD}@redis:6379
       S3_ENDPOINT: http://minio:9000

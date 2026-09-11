@@ -7,6 +7,10 @@ type ParsedImportResult = Awaited<ReturnType<typeof parseImportFile>>;
 type ParsedFindWithDate = ParsedImportResult["finds"][number] & { foundAt: Date };
 type ImportAttempt = { attemptsMade: number; maxAttempts: number };
 const FTF_TIME_LOOKAHEAD_LINES = 3;
+// Bound fan-out so a large import does not turn every unique cache into an
+// in-flight query chain.
+const CACHE_RESOLUTION_CONCURRENCY = 8;
+const FIND_CREATE_BATCH_SIZE = 500;
 
 function rawObject(value: unknown): Record<string, any> {
   return value && typeof value === "object" && !Array.isArray(value) ? { ...(value as Record<string, any>) } : {};
@@ -295,6 +299,7 @@ export class ImportProcessor {
           existingFindsByCacheId.set(existingFind.cacheId, [...(existingFindsByCacheId.get(existingFind.cacheId) ?? []), existingFind]);
         }
 
+        const newFinds: Prisma.FindCreateManyInput[] = [];
         const importFinds = datedFinds
           .map((parsedFind) => {
             const cache = this.cacheFor(cachesByCode, parsedFind.cache.gcCode);
@@ -357,19 +362,21 @@ export class ImportProcessor {
             continue;
           }
 
-          await tx.find.create({
-            data: {
-              userId: payload.userId,
-              cacheId: cache.id,
-              importId: payload.importId,
-              foundAt,
-              foundDate,
-              logText: parsedFind.logText,
-              isFtf,
-              isFtfManual: false,
-              importedFrom: effectiveSource
-            }
+          newFinds.push({
+            userId: payload.userId,
+            cacheId: cache.id,
+            importId: payload.importId,
+            foundAt,
+            foundDate,
+            logText: parsedFind.logText,
+            isFtf,
+            isFtfManual: false,
+            importedFrom: effectiveSource
           });
+        }
+
+        if (newFinds.length > 0) {
+          await this.createFindsInBatches(tx, newFinds);
           shouldRecalculateStats = true;
         }
 
@@ -432,11 +439,43 @@ export class ImportProcessor {
       }
     }
 
-    const resolvedCaches = await Promise.all(
-      Array.from(uniqueCaches.values()).map(async (cache) => [cache.gcCode, await this.findOrCreateCache(userId, cache)] as const)
-    );
+    const uniqueCacheValues = Array.from(uniqueCaches.values());
+    const resolvedCaches: Array<readonly [string, Cache]> = new Array(uniqueCacheValues.length);
+    let nextIndex = 0;
+    let failed = false;
+    let firstError: unknown;
+    const resolveNextCache = async () => {
+      while (true) {
+        if (failed) return;
+        const index = nextIndex;
+        nextIndex += 1;
+        if (index >= uniqueCacheValues.length) return;
+
+        const cache = uniqueCacheValues[index];
+        try {
+          resolvedCaches[index] = [cache.gcCode, await this.findOrCreateCache(userId, cache)];
+        } catch (error) {
+          if (!failed) {
+            failed = true;
+            firstError = error;
+          }
+          return;
+        }
+      }
+    };
+    const workerCount = Math.min(CACHE_RESOLUTION_CONCURRENCY, uniqueCacheValues.length);
+    // Each worker finishes its current cache before the first failure is
+    // rethrown, so no cache writes remain in flight when the import is retried.
+    await Promise.all(Array.from({ length: workerCount }, () => resolveNextCache()));
+    if (failed) throw firstError;
     const byCode = new Map<string, Cache>(resolvedCaches);
     return byCode;
+  }
+
+  private async createFindsInBatches(tx: Prisma.TransactionClient, finds: Prisma.FindCreateManyInput[]) {
+    for (let offset = 0; offset < finds.length; offset += FIND_CREATE_BATCH_SIZE) {
+      await tx.find.createMany({ data: finds.slice(offset, offset + FIND_CREATE_BATCH_SIZE) });
+    }
   }
 
   private async findOrCreateCache(userId: string, cache: any): Promise<Cache> {

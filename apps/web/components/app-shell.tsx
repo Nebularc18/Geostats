@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { BarChart3, BookOpen, Code2, Database, Flag, Footprints, Globe2, Home, Map, Navigation, Puzzle, Settings, Shield, ShieldCheck, Trophy, Upload, Users } from "lucide-react";
-import { API_URL, apiFetch } from "../lib/api";
+import { API_URL, apiFetch, invalidateStatsSummaryCache, setStatsSummaryAccount } from "../lib/api";
 import { ClerkSignOutButton } from "./clerk-sign-out-button";
 
 const nav = [
@@ -86,6 +86,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         if (!active) {
           return;
         }
+        setStatsSummaryAccount(typeof data.profile?.userId === "string" ? data.profile.userId : null);
         if (!data.profile) {
           if (pathname === "/admin" || pathname.startsWith("/admin/")) {
             void apiFetch<{ isAdmin: boolean }>("/admin/access")
@@ -154,6 +155,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, [pathname, router]);
 
   async function clearLocalSession() {
+    invalidateStatsSummaryCache();
+    setStatsSummaryAccount(null);
     if (DEV_OFFLINE) {
       return;
     }

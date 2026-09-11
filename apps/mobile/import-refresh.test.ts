@@ -26,3 +26,18 @@ test("post-import stats refresh retries through the recalculation window", () =>
   stop();
   assert.deepEqual(cancelled, delays);
 });
+
+test("scheduled refresh absorbs a rejected request", async () => {
+  const callbacks: Array<() => void> = [];
+  const stop = schedulePostImportStatsRefresh(
+    () => Promise.reject(new Error("temporary failure")),
+    (callback) => {
+      callbacks.push(callback);
+      return callbacks.length;
+    }
+  );
+
+  callbacks.forEach((callback) => callback());
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  stop();
+});

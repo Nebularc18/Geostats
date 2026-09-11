@@ -2,7 +2,7 @@
 
 import { useAuth } from "@clerk/nextjs";
 import { useEffect, useState } from "react";
-import { apiFetch } from "../lib/api";
+import { apiFetch, setStatsSummaryAccount } from "../lib/api";
 
 type GateState = "waiting" | "ready" | "error";
 
@@ -30,6 +30,7 @@ export function ClerkSessionGate({ children }: { children: React.ReactNode }) {
     const clerkUserId = userId;
     if (!isSignedIn || !clerkUserId) {
       let active = true;
+      setStatsSummaryAccount(null);
       setState("waiting");
       setErrorMessage(null);
       void enqueueSessionSync(async () => {
@@ -69,11 +70,12 @@ export function ClerkSessionGate({ children }: { children: React.ReactNode }) {
           throw new Error("Clerk did not return a session token");
         }
         if (!active) return;
-        await apiFetch("/auth/clerk/exchange", {
+        const exchanged = await apiFetch<{ user?: { id?: unknown } }>("/auth/clerk/exchange", {
           method: "POST",
           headers: { Authorization: `Bearer ${token}` }
         });
         if (active) {
+          setStatsSummaryAccount(typeof exchanged.user?.id === "string" ? exchanged.user.id : clerkUserId);
           setSyncedUserId(clerkUserId);
           setState("ready");
         }
