@@ -17,6 +17,7 @@ import { tokenCache } from "@clerk/expo/token-cache";
 import { parseCoordinate } from "@geostats/shared";
 import { pickAndUploadDocument, type UploadKind } from "./upload";
 import { groupTrackableJourneyPoints, hasNativeMapSupport, scratchMapGeometryBudget, SCRATCH_WORLD_REGION, selectNativeMapPoints } from "./mobile-map";
+import { formatShortDt, ftfRowToListPoint, ftfRowToMapPoint, hasDtData } from "./ftf-points";
 import { schedulePostImportStatsRefresh } from "./import-refresh";
 import { clearImportStatusTracking, importStatusScopeKey, observeImportStatuses } from "./import-status";
 import {
@@ -40,7 +41,7 @@ import {
 type CountBucket = { key: string; count: number };
 type LocationBucket = { name: string; count: number };
 type PercentBucket = CountBucket & { percent: number };
-type CachePoint = { id: string; gcCode: string; name: string; cacheType: string | null; latitude: number; longitude: number; foundAt?: string; placedAt?: string; isOwnHide?: boolean };
+type CachePoint = { id: string; gcCode: string; name: string; cacheType: string | null; difficulty?: number | null; terrain?: number | null; size?: string | null; latitude: number; longitude: number; foundAt?: string; placedAt?: string; isOwnHide?: boolean };
 type ImportListItem = { id: string; fileName: string; source: string; status: string; createdAt: string; errorMessage: string | null };
 type AuthConfig = { mode: "dev" | "clerk" | "password"; providerName: string; clerkPublishableKey?: string };
 type ServerProbeState = {
@@ -49,7 +50,7 @@ type ServerProbeState = {
   config: AuthConfig;
 };
 type ScratchLevel = "countries" | "regions" | "counties";
-type ScreenId = "dashboard" | "explore" | "upload" | "imports" | "stats" | "ftf" | "hides" | "milestones" | "map" | "mysteries" | "travel" | "trackables" | "scratch" | "profile";
+type ScreenId = "dashboard" | "explore" | "upload" | "imports" | "stats" | "ftf" | "hides" | "milestones" | "map" | "mysteries" | "travel" | "trackables" | "scratch" | "challenges" | "profile";
 type Session = { token: string; user: { id: string; email: string; username: string } };
 type CheckState = "correct" | "wrong" | "unchecked";
 type MysteryStatus = "solving" | "solved" | "planned";
@@ -151,11 +152,16 @@ type ExtremeCachesData = {
     extremes: Record<"northernmost" | "southernmost" | "easternmost" | "westernmost" | "highest" | "lowest", ReferenceExtremeEntry>;
   };
 };
+type ChallengeChecker = { id: string; name: string; gcCode: string | null; description: string | null; rules: Array<Record<string, unknown>>; publicSlug: string | null; publishedAt: string | null; updatedAt: string };
+type ChallengeEvidence = { date: string; gcCode: string; name: string };
+type ChallengeRuleResult = { label: string; current: number; required: number; passed: boolean; detail: string; evidence: ChallengeEvidence[]; evidenceLimited: boolean };
+type ChallengeResult = { passed: boolean; username: string; checkedAt: string; dataUpdatedAt: string | null; proofText: string; rules: ChallengeRuleResult[] };
 
 const MAX_GOOGLE_MAPS_ROUTE_CACHES = 8;
 
 const HOSTED_API_URL = process.env.EXPO_PUBLIC_API_URL ?? "https://geostats-api.hampusek.com";
 const DEFAULT_API_URL = process.env.EXPO_PUBLIC_API_URL ?? (__DEV__ ? "http://10.0.2.2:3001" : HOSTED_API_URL);
+const HOSTED_WEB_URL = process.env.EXPO_PUBLIC_WEB_URL ?? "https://geostats.hampusek.com";
 const ANDROID_MAP_PROVIDER = Platform.OS === "android" ? PROVIDER_GOOGLE : undefined;
 const NATIVE_MAP_AVAILABLE = hasNativeMapSupport(Platform.OS, process.env.EXPO_PUBLIC_GOOGLE_MAPS_ANDROID_API_KEY);
 const TOKEN_KEY = "geostats_session";
@@ -258,6 +264,7 @@ const screenDetails: Record<ScreenId, { label: string; eyebrow: string; icon: st
   trackables: { label: "Trackables", eyebrow: "Keep track of items on the move", icon: "⌁" },
   mysteries: { label: "Mysteries", eyebrow: "Solve and collaborate", icon: "?" },
   travel: { label: "Trip Planner", eyebrow: "Build a caching route", icon: "↗" },
+  challenges: { label: "Challenges", eyebrow: "Check challenge caches", icon: "🏅" },
   upload: { label: "Import Data", eyebrow: "Add caches to your archive", icon: "+" },
   imports: { label: "Import History", eyebrow: "Processing and recent files", icon: "↻" }
 };
@@ -265,7 +272,7 @@ const screenDetails: Record<ScreenId, { label: string; eyebrow: string; icon: st
 const primaryScreens: ScreenId[] = ["dashboard", "stats", "map", "explore", "profile"];
 const exploreGroups: Array<{ title: string; subtitle: string; screens: ScreenId[] }> = [
   { title: "Maps & progress", subtitle: "See where you have cached and what comes next.", screens: ["scratch", "milestones", "ftf"] },
-  { title: "Caching tools", subtitle: "Manage hides, trackables, puzzles, and upcoming trips.", screens: ["hides", "trackables", "mysteries", "travel"] },
+  { title: "Caching tools", subtitle: "Manage hides, trackables, puzzles, challenges, and upcoming trips.", screens: ["hides", "trackables", "mysteries", "challenges", "travel"] },
   { title: "Data", subtitle: "Keep your archive current and review recent imports.", screens: ["upload", "imports"] }
 ];
 
@@ -293,6 +300,35 @@ function displayServerHost(value: string) {
   } catch {
     return value.trim() || "Not configured";
   }
+}
+
+function resolveWebBaseUrl(apiBaseUrl: string) {
+  const configured = process.env.EXPO_PUBLIC_WEB_URL?.trim().replace(/\/+$/, "");
+  if (configured) return configured;
+  if (__DEV__ && !process.env.EXPO_PUBLIC_WEB_URL) {
+    try {
+      const url = new URL(apiBaseUrl);
+      if (url.port === "3001") {
+        url.port = "3000";
+        return url.origin;
+      }
+    } catch {
+      // Fall through to hosted default below.
+    }
+  }
+  try {
+    const url = new URL(apiBaseUrl);
+    if (url.hostname.includes("-api.")) {
+      return `${url.protocol}//${url.hostname.replace("-api.", ".")}`;
+    }
+  } catch {
+    // Fall through to hosted default below.
+  }
+  return HOSTED_WEB_URL;
+}
+
+function publicChallengeUrl(apiBaseUrl: string, username: string, gcCode: string) {
+  return `${resolveWebBaseUrl(apiBaseUrl)}/challenge/${encodeURIComponent(username)}/${encodeURIComponent(gcCode)}`;
 }
 
 function isLocalDevelopmentUrl(url: URL) {
@@ -1403,6 +1439,7 @@ function ScreenSwitch({ apiBaseUrl, screen, token, userId, username, onNavigate,
   if (screen === "hides") return <HidesScreen apiBaseUrl={apiBaseUrl} token={token} />;
   if (screen === "trackables") return <TrackablesScreen apiBaseUrl={apiBaseUrl} token={token} />;
   if (screen === "mysteries") return <MysteriesScreen apiBaseUrl={apiBaseUrl} token={token} userId={userId} onRequestScrollTop={onRequestScrollTop} />;
+  if (screen === "challenges") return <ChallengesScreen apiBaseUrl={apiBaseUrl} token={token} />;
   if (screen === "travel") return <TravelScreen apiBaseUrl={apiBaseUrl} token={token} userId={userId} />;
   if (screen === "upload") return <UploadScreen apiBaseUrl={apiBaseUrl} token={token} />;
   if (screen === "imports") return <ImportsScreen apiBaseUrl={apiBaseUrl} token={token} />;
@@ -1842,7 +1879,7 @@ function FtfScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
       <Panel title="FTFs by found date"><CalendarHeatmap data={s.foundDateMatrix ?? []} /></Panel>
       <Panel title="FTF D/T chart"><DifficultyGrid data={s.byDifficultyTerrain ?? []} /></Panel>
       <Panel title="Way to 81 (FTF)"><Rows rows={(s.wayTo81 ?? []).map((row: any) => [String(row.index), row.gcCode, `${row.difficulty}/${row.terrain}`])} /></Panel>
-      <Panel title="FTF map"><NativeMap points={ftfRows.map((row: any) => ({ id: `${row.gcCode}-${row.dateTime}`, gcCode: row.gcCode, name: row.name, cacheType: row.cacheType, latitude: row.latitude ?? Number.NaN, longitude: row.longitude ?? Number.NaN, foundAt: row.dateTime }))} /></Panel>
+      <Panel title="FTF map"><NativeMap points={ftfRows.map((row: any) => ftfRowToMapPoint(row))} /></Panel>
     </View>
   );
 
@@ -1862,9 +1899,9 @@ function FtfScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
         </View>
       )}
       renderItem={({ item, section }) => section.kind === "results" ? (
-        <View style={styles.virtualRow}><CacheRow point={{ id: item.gcCode, gcCode: item.gcCode, name: item.name, cacheType: item.cacheType, latitude: item.latitude ?? 0, longitude: item.longitude ?? 0, foundAt: item.dateTime }} /></View>
+        <View style={styles.virtualRow}><CacheRow point={ftfRowToListPoint(item)} /></View>
       ) : (
-        <Pressable onPress={() => void toggle(item)} style={[styles.toggleRow, item.isFtf && styles.toggleRowActive]}><Text style={styles.rowTitle}>{item.cache.gcCode} - {item.cache.name}</Text><Text style={styles.muted}>{item.isFtf ? "Marked FTF" : "Tap to mark"} - {dateText(item.foundAt)}</Text></Pressable>
+        <Pressable onPress={() => void toggle(item)} style={[styles.toggleRow, item.isFtf && styles.toggleRowActive]}><Text style={styles.rowTitle}>{item.cache.gcCode} - {item.cache.name}</Text><Text style={styles.muted}>{item.isFtf ? "Marked FTF" : "Tap to mark"} - {dateText(item.foundAt)}{hasDtData(item.cache) ? ` · D/T ${formatShortDt(item.cache.difficulty, item.cache.terrain)}` : ""}{item.cache?.size ? ` · ${item.cache.size}` : ""}</Text></Pressable>
       )}
       renderSectionFooter={({ section }) => section.kind === "results" ? (
         section.data.length > 0 ? null : <Text style={styles.virtualEmpty}>No FTF rows yet.</Text>
@@ -2130,6 +2167,182 @@ function ImportsScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: strin
     return () => clearInterval(interval);
   }, [data.imports]);
   return <><PageTitle eyebrow="Background jobs" title="Import history" /><PrimaryButton label="Refresh" onPress={refresh} /><Panel title="Imports"><ImportRows imports={data.imports} /></Panel><LoadState loading={loading} error={error} /></>;
+}
+
+function ChallengesScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
+  const [checkers, setCheckers] = useState<ChallengeChecker[]>([]);
+  const [accountUsername, setAccountUsername] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [results, setResults] = useState<Record<string, ChallengeResult>>({});
+  const [query, setQuery] = useState("");
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [batching, setBatching] = useState(false);
+  const [batchProgress, setBatchProgress] = useState<{ done: number; total: number } | null>(null);
+
+  async function load() {
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await apiFetch<{ checkers: ChallengeChecker[]; username: string }>(apiBaseUrl, "/challenge-checkers", token);
+      setCheckers(data.checkers);
+      setAccountUsername(data.username);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not load challenge checkers");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void load();
+  }, [apiBaseUrl, token]);
+
+  async function run(checker: ChallengeChecker) {
+    setBusyId(checker.id);
+    setError(null);
+    try {
+      const result = await apiFetch<ChallengeResult>(apiBaseUrl, `/challenge-checkers/${encodeURIComponent(checker.id)}/run`, token, { method: "POST" });
+      setResults((current) => ({ ...current, [checker.id]: result }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : `Could not run ${checker.gcCode ?? checker.name}`);
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function runAll(targets: ChallengeChecker[]) {
+    if (!targets.length || batching || busyId) return;
+    setBatching(true);
+    setError(null);
+    setBatchProgress({ done: 0, total: targets.length });
+    let completed = 0;
+    const failures: string[] = [];
+    for (const checker of targets) {
+      try {
+        const result = await apiFetch<ChallengeResult>(apiBaseUrl, `/challenge-checkers/${encodeURIComponent(checker.id)}/run`, token, { method: "POST" });
+        setResults((current) => ({ ...current, [checker.id]: result }));
+      } catch {
+        failures.push(checker.gcCode ?? checker.name);
+      } finally {
+        completed += 1;
+        setBatchProgress({ done: completed, total: targets.length });
+      }
+    }
+    if (failures.length) setError(`Could not run ${failures.length} checker${failures.length === 1 ? "" : "s"}: ${failures.join(", ")}`);
+    setBatching(false);
+    setBatchProgress(null);
+  }
+
+  async function togglePublish(checker: ChallengeChecker) {
+    setBusyId(checker.id);
+    setError(null);
+    try {
+      const data = await apiFetch<{ checker: ChallengeChecker }>(apiBaseUrl, `/challenge-checkers/${encodeURIComponent(checker.id)}/publish`, token, {
+        method: "PATCH",
+        body: JSON.stringify({ published: !checker.publishedAt })
+      });
+      setCheckers((current) => current.map((item) => item.id === checker.id ? data.checker : item));
+      setNotice(data.checker.publishedAt ? "Published. Share the public link as proof." : "Unpublished. The public link no longer works.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not update sharing");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function copyPublicLink(checker: ChallengeChecker) {
+    if (!checker.gcCode) return;
+    const url = publicChallengeUrl(apiBaseUrl, accountUsername, checker.gcCode);
+    const ok = await Clipboard.setStringAsync(url).then(() => true).catch(() => false);
+    setNotice(ok ? "Public link copied. Paste it in your log to prove the result." : url);
+  }
+
+  function openPublicLink(checker: ChallengeChecker) {
+    if (!checker.gcCode) return;
+    void Linking.openURL(publicChallengeUrl(apiBaseUrl, accountUsername, checker.gcCode));
+  }
+
+  async function copyProof(checkerId: string) {
+    const result = results[checkerId];
+    if (!result) return;
+    const ok = await Clipboard.setStringAsync(result.proofText).then(() => true).catch(() => false);
+    setNotice(ok ? "Proof text copied. Paste it in your log." : "Could not copy automatically.");
+  }
+
+  const normalizedQuery = query.trim().toLowerCase();
+  const visible = normalizedQuery
+    ? checkers.filter((checker) => [checker.gcCode, checker.name, checker.description].some((value) => value?.toLowerCase().includes(normalizedQuery)))
+    : checkers;
+  const qualified = Object.values(results).filter((result: ChallengeResult) => result.passed).length;
+  const published = checkers.filter((checker) => checker.publishedAt).length;
+  const busy = busyId !== null || batching;
+
+  return (
+    <>
+      <PageTitle eyebrow="Proof from your own data" title="Challenges" />
+      <Text style={styles.muted}>Check-only on mobile. Create and edit checkers on the website, then run them here against your imported finds.</Text>
+      <StatGrid rows={[["Checkers", checkers.length], ["Qualified", qualified], ["Published", published], ["With result", Object.keys(results).length]]} />
+      <Panel title="Find a checker" subtitle={checkers.length ? `Showing ${visible.length} of ${checkers.length}` : "Checkers you save on the website appear here."}>
+        <Field label="Search" value={query} onChangeText={setQuery} autoCapitalize="none" placeholder="GC code or name" />
+        <View style={styles.actionRow}>
+          <View style={styles.flex}><SecondaryButton label="Refresh" onPress={() => void load()} /></View>
+          <View style={styles.flex}><SecondaryButton label={batchProgress ? `Running ${batchProgress.done}/${batchProgress.total}…` : `Run all (${checkers.length})`} onPress={() => void runAll(checkers)} /></View>
+        </View>
+        {batchProgress ? <Text style={styles.muted}>Running {batchProgress.done} of {batchProgress.total}…</Text> : null}
+      </Panel>
+      {notice ? <Text style={styles.note}>{notice}</Text> : null}
+      {visible.map((checker) => {
+        const result = results[checker.id];
+        const isBusy = busyId === checker.id;
+        const isPublished = Boolean(checker.publishedAt);
+        return (
+          <View key={checker.id} style={styles.panel}>
+            <Text style={styles.eyebrow}>{checker.gcCode || "Unlinked checker"}</Text>
+            <Text style={styles.panelTitle}>{checker.name}</Text>
+            {checker.description ? <Text style={styles.muted}>{checker.description}</Text> : null}
+            <View style={styles.challengeStatusRow}>
+              <Text style={[styles.statusPill, result?.passed && styles.statusPillComplete, result && !result.passed && styles.statusPillFailed]}>
+                {result ? (result.passed ? "QUALIFIED" : "NOT YET") : "NOT RUN"}
+              </Text>
+              {isPublished ? <Text style={styles.muted}>Published</Text> : null}
+            </View>
+            <PrimaryButton label={isBusy ? "Running…" : result ? "Run again" : "Run checker"} onPress={() => { if (!busy) void run(checker); }} />
+            <View style={styles.actionRow}>
+              <View style={styles.flex}><SecondaryButton label={isPublished ? "Unpublish" : "Publish result"} onPress={() => { if (!busy) void togglePublish(checker); }} /></View>
+              {isPublished && checker.gcCode ? <View style={styles.flex}><SecondaryButton label="Copy public link" onPress={() => void copyPublicLink(checker)} /></View> : null}
+            </View>
+            {isPublished && checker.gcCode ? <SecondaryButton label="Open public result" onPress={() => openPublicLink(checker)} /> : null}
+            {result ? (
+              <View style={styles.challengeResult}>
+                {result.rules.map((rule, index) => (
+                  <View key={index} style={styles.challengeRule}>
+                    <Text style={styles.rowTitle}>{rule.passed ? "✓ " : "× "}{rule.label}</Text>
+                    <Text style={styles.muted}>{rule.current.toLocaleString()} / {rule.required.toLocaleString()}</Text>
+                    <Text style={styles.muted}>{rule.detail}</Text>
+                    {rule.evidence.slice(0, 5).map((row, rowIndex) => (
+                      <Pressable key={`${row.gcCode}-${row.date}-${rowIndex}`} onPress={() => void Linking.openURL(`https://coord.info/${row.gcCode}`)}>
+                        <Text style={styles.linkText}>{row.date} · {row.gcCode} · {row.name}</Text>
+                      </Pressable>
+                    ))}
+                    {rule.evidence.length > 5 ? <Text style={styles.muted}>+ {rule.evidence.length - 5} more on the website result</Text> : null}
+                  </View>
+                ))}
+                <Text style={styles.sectionLabel}>Proof for your log</Text>
+                <Text selectable style={styles.proofBox}>{result.proofText}</Text>
+                <SecondaryButton label="Copy proof" onPress={() => void copyProof(checker.id)} />
+                <Text style={styles.muted}>Checked {dateText(result.checkedAt)}{result.dataUpdatedAt ? ` · data updated ${dateText(result.dataUpdatedAt)}` : ""}</Text>
+              </View>
+            ) : null}
+          </View>
+        );
+      })}
+      {!loading && !checkers.length ? <Text style={styles.note}>No saved checkers yet. Create one on the website and it will appear here for checking.</Text> : null}
+      {!loading && checkers.length > 0 && !visible.length ? <Text style={styles.note}>No challenge caches match “{query}”.</Text> : null}
+      <LoadState loading={loading} error={error} />
+    </>
+  );
 }
 
 function ProfileScreen({ apiBaseUrl, token, onLogout }: { apiBaseUrl: string; token: string; onLogout: () => void }) {
@@ -3130,6 +3343,7 @@ function NativeMap({ points }: { points: CachePoint[] }) {
                 <Text style={styles.calloutTitle}>{point.gcCode}</Text>
                 <Text style={styles.calloutBody}>{point.name}</Text>
                 <Text style={styles.calloutMeta}>{point.isOwnHide ? "Own hide" : point.cacheType ?? "Unknown"}</Text>
+                {hasDtData(point) ? <Text style={styles.calloutMeta}>D/T {formatShortDt(point.difficulty, point.terrain)}{point.size ? ` · ${point.size}` : ""}</Text> : null}
               </View>
             </Callout>
           </Marker>
@@ -3305,7 +3519,7 @@ function CacheRow({ point }: { point: CachePoint }) {
   return (
     <Pressable onPress={() => Linking.openURL(`https://coord.info/${point.gcCode}`)} style={styles.cacheRow}>
       <Text style={[styles.rowTitle, { color: getCacheTypeColor(point.cacheType, point.isOwnHide) }]}>{point.gcCode} - {point.name}</Text>
-      <Text style={styles.muted}>{point.isOwnHide ? "Own hide - " : ""}{point.cacheType ?? "Unknown"} - {point.latitude}, {point.longitude}</Text>
+      <Text style={styles.muted}>{point.isOwnHide ? "Own hide - " : ""}{point.cacheType ?? "Unknown"}{hasDtData(point) ? ` · D/T ${formatShortDt(point.difficulty, point.terrain)}` : ""} - {point.latitude}, {point.longitude}</Text>
     </Pressable>
   );
 }
@@ -3764,5 +3978,9 @@ const styles = StyleSheet.create({
   badgeCellCurrent: { backgroundColor: "#f3b34d" },
   danger: { color: "#ffb4a8", fontWeight: "900" },
   loader: { padding: 14 },
-  flex: { flex: 1 }
+  flex: { flex: 1 },
+  challengeStatusRow: { flexDirection: "row", alignItems: "center", gap: 10, marginTop: 8 },
+  challengeResult: { gap: 10, borderTopWidth: 1, borderColor: "#1b3729", paddingTop: 12, marginTop: 4 },
+  challengeRule: { gap: 3, borderWidth: 1, borderColor: "#233f32", borderRadius: 12, backgroundColor: "#0b1912", padding: 12 },
+  proofBox: { color: "#edf7ef", backgroundColor: "#0b1912", borderWidth: 1, borderColor: "#233f32", borderRadius: 12, padding: 12, fontSize: 13, lineHeight: 19 }
 });

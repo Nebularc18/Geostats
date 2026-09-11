@@ -1685,7 +1685,7 @@ h2 {
 
 .ftf-stats-table {
   display: grid;
-  grid-template-columns: minmax(96px, 0.16fr) minmax(90px, 0.16fr) minmax(86px, 0.14fr) minmax(180px, 1fr) minmax(130px, 0.35fr);
+  grid-template-columns: minmax(96px, 0.16fr) minmax(90px, 0.16fr) minmax(86px, 0.14fr) minmax(180px, 1fr) minmax(130px, 0.35fr) minmax(64px, 0.12fr);
   gap: 0;
   overflow: hidden;
   border: 1px solid var(--line);
@@ -1708,6 +1708,11 @@ h2 {
 .ftf-stats-row > * {
   padding: 12px;
   border-top: 1px solid var(--line);
+}
+
+.ftf-dt {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .ftf-first-table {
@@ -4251,7 +4256,8 @@ select:focus {
   font-variant-numeric: tabular-nums;
 }
 
-.maplibregl-popup-content {
+.maplibre-panel .maplibregl-popup-content {
+  border: 1px solid var(--line);
   border-radius: 8px;
   color: var(--ink);
   background: var(--panel-strong);
@@ -4259,9 +4265,53 @@ select:focus {
   font-family: Georgia, "Times New Roman", serif;
 }
 
-.maplibregl-popup-tip {
+.maplibre-panel div.maplibregl-popup-tip {
   border-top-color: var(--panel-strong);
+  border-right-color: var(--panel-strong);
   border-bottom-color: var(--panel-strong);
+  border-left-color: var(--panel-strong);
+}
+
+.maplibre-panel .maplibregl-popup-close-button {
+  color: var(--muted);
+  font-size: 1rem;
+}
+
+.maplibre-panel .maplibregl-popup-close-button:hover {
+  color: var(--ink);
+  background-color: rgba(237, 244, 232, 0.08);
+}
+
+.cache-popup {
+  display: grid;
+  min-width: 170px;
+  max-width: 240px;
+  gap: 4px;
+}
+
+.cache-popup-code {
+  color: var(--ink);
+  font-size: 0.88rem;
+}
+
+.cache-popup-name {
+  color: var(--ink);
+  font-size: 0.78rem;
+  line-height: 1.3;
+}
+
+.cache-popup-type,
+.cache-popup-location {
+  color: var(--muted);
+  font-size: 0.7rem;
+  line-height: 1.35;
+}
+
+.cache-popup-details {
+  color: var(--green);
+  font-size: 0.78rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
 }
 
 .dt-matrix-wrap {
@@ -7227,7 +7277,7 @@ select:focus {
   }
 
   .ftf-stats-table {
-    grid-template-columns: minmax(82px, 0.25fr) minmax(76px, 0.2fr) minmax(76px, 0.2fr) minmax(160px, 1fr);
+    grid-template-columns: minmax(82px, 0.25fr) minmax(76px, 0.2fr) minmax(76px, 0.2fr) minmax(140px, 1fr) minmax(56px, 0.18fr);
     overflow-x: auto;
   }
 

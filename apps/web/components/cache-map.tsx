@@ -172,19 +172,25 @@ export function CacheMap({ points }: { points: CacheMapPoint[] }) {
       }
 
       const popupContent = document.createElement("div");
+      popupContent.className = "cache-popup";
       const code = document.createElement("strong");
+      code.className = "cache-popup-code";
       code.textContent = String(feature.properties.gcCode ?? "");
       const name = document.createElement("div");
+      name.className = "cache-popup-name";
       name.textContent = String(feature.properties.name ?? "");
       const type = document.createElement("small");
+      type.className = "cache-popup-type";
       type.textContent =
         feature.properties.isOwnHide === true ? `Own hide - ${String(feature.properties.cacheType ?? "Unknown")}` : String(feature.properties.cacheType ?? "Unknown");
       const details = document.createElement("div");
+      details.className = "cache-popup-details";
       const difficulty = feature.properties.difficulty;
       const terrain = feature.properties.terrain;
       const size = String(feature.properties.size ?? "Unknown");
       details.textContent = `D ${difficulty ?? "?"} / T ${terrain ?? "?"} - ${size}`;
       const location = document.createElement("small");
+      location.className = "cache-popup-location";
       location.textContent = String(feature.properties.location ?? "");
       popupContent.append(code, name, type, details);
       if (location.textContent) {

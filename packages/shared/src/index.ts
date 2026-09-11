@@ -100,3 +100,10 @@ export function parseCoordinate(value: string): ParsedCoordinate | null {
 }
 
 export { parseCsvRows } from "./csv";
+export {
+  cacheTypeIdentity,
+  cacheTypeLabel,
+  cacheTypeOptions,
+  canonicalCacheTypeName,
+  type CacheTypeOption
+} from "./cache-types";

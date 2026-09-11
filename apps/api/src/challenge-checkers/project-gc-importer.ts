@@ -1196,7 +1196,6 @@ const CALENDAR_FILTER_KEYS = new Set([...FILTER_KEYS].filter((key) =>
 const CALENDAR_META_KEYS = new Set(["limit", "needed", "leapday", "filter", "debug", "brief"]);
 const CALENDAR_UNSUPPORTED_KEYS: Record<string, string> = {
   filters: "Calendar checkers use a single 'filter' object, not a 'filters' list",
-  type: "Use 'types' instead of 'type' for calendar checkers",
   years: "Only single-year calendars are supported",
   placed: "Hidden-date ('placed') calendars are not supported",
   nooftypes: "Calendars counting cache types per day are not supported",
@@ -1214,6 +1213,17 @@ function parseCalendarConfig(configTextValue: unknown): { minimum: number; perDa
     throw new BadRequestException("Project-GC tag config must be valid JSON");
   }
   const config = objectValue(parsed, "Project-GC tag config");
+  // The official calendar script accepts the singular `type` alias and merges
+  // it into `types` in CleanupConfig. Translate it the same way so tag configs
+  // using `type` import instead of failing.
+  if (config.type !== undefined) {
+    const singularTypes = config.type === undefined || config.type === null || config.type === "" ? [] : Array.isArray(config.type) ? config.type : [config.type];
+    const pluralTypes = config.types === undefined || config.types === null || config.types === "" ? [] : Array.isArray(config.types) ? config.types : [config.types];
+    const mergedTypes = [...pluralTypes, ...singularTypes];
+    if (mergedTypes.length) config.types = mergedTypes;
+    else delete config.types;
+    delete config.type;
+  }
   for (const key of Object.keys(config)) {
     if (CALENDAR_FILTER_KEYS.has(key) || CALENDAR_META_KEYS.has(key)) continue;
     if (key === "years" && Number(config[key]) === 1) continue;
@@ -1228,6 +1238,7 @@ function parseCalendarConfig(configTextValue: unknown): { minimum: number; perDa
   if (config.leapday !== undefined && typeof config.leapday !== "string") throw new BadRequestException("Project-GC calendar leapday must be \"allow\" or omitted");
   const allowLeapDaySkip = config.leapday === "allow";
   const singular = config.filter === undefined ? {} : objectValue(config.filter, "Project-GC filter");
+  if ("type" in singular) throw new BadRequestException("Use 'types' instead of 'type' for calendar checkers");
   for (const key of Object.keys(singular)) {
     if (!CALENDAR_FILTER_KEYS.has(key)) throw new BadRequestException(`Project-GC filter option '${key}' is not supported`);
   }
@@ -1318,6 +1329,10 @@ function validateCalendarConfigWrites(source: string, original: string, configKe
   // itself; anything else would let the script count something different
   // than the imported rule. Leap-day/placement literals are checked against
   // the original text because masking blanks string contents.
+  // The official CleanupConfig also merges the singular `type` alias into
+  // `types` (initializing `types` and clearing `type`); allow those writes
+  // when the tag config actually uses `type`, matching the translation above.
+  const allowsTypeNormalization = configKeys.has("type");
   for (const assignment of memberAssignmentSites(source)) {
     if (assignment.name !== "conf" && assignment.name !== "config") continue;
     const field = memberField(assignment.member);
@@ -1330,6 +1345,8 @@ function validateCalendarConfigWrites(source: string, original: string, configKe
       (field === "labs" && (rhs === "true" || rhs === "false"));
     if (selfTonumber || defaultLiteral) continue;
     if (field === "leapday" || field === "placed") continue;
+    if (allowsTypeNormalization && field === "types" && rhs === "{}") continue;
+    if (allowsTypeNormalization && field === "type" && rhs === "nil") continue;
     // Clearing a key the tag config does not set (and that has no translated
     // default) changes nothing; clearing anything else would diverge from
     // the imported rule.

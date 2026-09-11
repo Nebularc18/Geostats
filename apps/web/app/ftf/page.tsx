@@ -7,6 +7,7 @@ import { CountBarChart } from "../../components/charts";
 import { DifficultyTerrainGrid } from "../../components/difficulty-terrain-grid";
 import { StatCard } from "../../components/stat-card";
 import { apiFetch, getStatsSummary } from "../../lib/api";
+import { formatShortDt, ftfRowsToMapPoints } from "../../lib/ftf-map-points";
 
 type CountBucket = { key: string; count: number };
 type PercentBucket = CountBucket & { percent: number };
@@ -100,6 +101,9 @@ type FindRow = {
     gcCode: string;
     name: string;
     cacheType: string | null;
+    difficulty: number | null;
+    terrain: number | null;
+    size: string | null;
     country: string | null;
     region: string | null;
   };
@@ -223,17 +227,7 @@ function FtfSummaryPanel({ stats }: { stats: FtfStats | null }) {
 }
 
 function FtfMapPanel({ rows }: { rows: FtfRow[] }) {
-  const points: CacheMapPoint[] = rows
-    .filter((row) => row.latitude != null && row.longitude != null)
-    .map((row) => ({
-      id: `${row.gcCode}-${row.date}`,
-      gcCode: row.gcCode,
-      name: row.name,
-      cacheType: row.cacheType,
-      latitude: row.latitude!,
-      longitude: row.longitude!,
-      foundAt: row.dateTime
-    }));
+  const points: CacheMapPoint[] = ftfRowsToMapPoints(rows);
 
   return (
     <section className="panel">
@@ -417,7 +411,7 @@ function WayTo81Table({ entries }: { entries: FtfWayTo81Entry[] }) {
           </div>
         ))}
       </div>
-      <p className="ftf-table-note">{entries.length} Diff/Terr combinations FTFed, out of 81.</p>
+      <p className="ftf-table-note">{entries.length} D/T combinations FTFed, out of 81.</p>
     </section>
   );
 }
@@ -432,6 +426,7 @@ function FtfList({ rows }: { rows: FtfRow[] }) {
         <span>GC Code</span>
         <span>Cache</span>
         <span>Type</span>
+        <span>D/T</span>
         {rows.map((row) => (
           <div className="ftf-stats-row" key={`${row.gcCode}-${row.dateTime}`}>
             <span>{formatDateTime(row.dateTime)}</span>
@@ -441,6 +436,7 @@ function FtfList({ rows }: { rows: FtfRow[] }) {
             </a>
             <strong>{row.name}</strong>
             <span>{row.cacheType ?? "Unknown"}</span>
+            <span className="ftf-dt">{formatShortDt(row.difficulty, row.terrain)}</span>
           </div>
         ))}
       </div>
@@ -493,6 +489,8 @@ function FindPicker({
               </strong>
               <small>
                 {formatDateTime(find.foundAt)} - {find.cache.cacheType ?? "Unknown"}
+                {` · D/T ${formatShortDt(find.cache.difficulty, find.cache.terrain)}`}
+                {find.cache.size ? ` · ${find.cache.size}` : ""}
                 {find.cache.region ? ` - ${find.cache.region}` : ""}
               </small>
             </span>
