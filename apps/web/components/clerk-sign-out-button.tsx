@@ -2,8 +2,9 @@
 
 import { useClerk } from "@clerk/nextjs";
 import { useRouter } from "next/navigation";
+import { LogOut } from "lucide-react";
 
-export function ClerkSignOutButton({ onLocalLogout }: { onLocalLogout: () => Promise<void> }) {
+export function ClerkSignOutButton({ collapsed = false, onLocalLogout }: { collapsed?: boolean; onLocalLogout: () => Promise<void> }) {
   const { signOut } = useClerk();
   const router = useRouter();
 
@@ -17,8 +18,9 @@ export function ClerkSignOutButton({ onLocalLogout }: { onLocalLogout: () => Pro
   }
 
   return (
-    <button className="ghost-button" type="button" onClick={() => void signOutEverywhere()}>
-      Sign out
+    <button className="ghost-button" type="button" onClick={() => void signOutEverywhere()} aria-label="Sign out" title={collapsed ? "Sign out" : undefined}>
+      <LogOut size={18} aria-hidden="true" />
+      <span className="nav-label">Sign out</span>
     </button>
   );
 }

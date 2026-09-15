@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { BarChart3, BookOpen, Code2, Database, Flag, Footprints, Globe2, Home, Map, Navigation, Puzzle, Settings, Shield, ShieldCheck, Trophy, Upload, Users } from "lucide-react";
+import { BarChart3, BookOpen, Code2, Database, Flag, Footprints, Globe2, Home, LogOut, Map, Navigation, PanelLeftClose, PanelLeftOpen, Puzzle, Settings, Shield, ShieldCheck, Trophy, Upload, Users } from "lucide-react";
 import { API_URL, apiFetch, invalidateStatsSummaryCache, setStatsSummaryAccount } from "../lib/api";
 import { ClerkSignOutButton } from "./clerk-sign-out-button";
 
@@ -37,6 +37,7 @@ let hasCompletedProfileCheck = false;
 const DEV_AUTO_LOGIN = process.env.NEXT_PUBLIC_DEV_AUTO_LOGIN === "true";
 const DEV_OFFLINE = process.env.NODE_ENV === "development" && process.env.NEXT_PUBLIC_DEV_OFFLINE === "true";
 const DEV_AUTO_LOGIN_ATTEMPT_KEY = "geostats_dev_auto_login_attempted";
+const SIDEBAR_COLLAPSED_STORAGE_KEY = "geostats_sidebar_collapsed";
 const CONFIGURED_AUTH_MODE = process.env.NEXT_PUBLIC_AUTH_MODE?.trim();
 const CLERK_ENABLED = Boolean(process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY) && CONFIGURED_AUTH_MODE !== "password" && CONFIGURED_AUTH_MODE !== "dev";
 
@@ -45,6 +46,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const [profileChecked, setProfileChecked] = useState(hasCompletedProfileCheck || DEV_OFFLINE);
   const [adminAccess, setAdminAccess] = useState(DEV_OFFLINE);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+
+  useEffect(() => {
+    setSidebarCollapsed(window.localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === "true");
+  }, []);
 
   useEffect(() => {
     if (DEV_OFFLINE) {
@@ -169,29 +175,48 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     router.push("/login");
   }
 
+  function toggleSidebar() {
+    const nextCollapsed = !sidebarCollapsed;
+    setSidebarCollapsed(nextCollapsed);
+    window.localStorage.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, String(nextCollapsed));
+  }
+
   return (
-    <div className="shell">
-      <aside className="sidebar">
-        <Link className="brand" href="/dashboard">
-          <img className="brand-mark" src="/geostats-icon.svg" alt="" aria-hidden="true" />
-          <span>
-            <strong>Geostats</strong>
-            <small>local first cache analytics</small>
-          </span>
-        </Link>
-        <nav>
+    <div className={`shell${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
+      <aside className="sidebar" aria-label="Main navigation">
+        <div className="sidebar-header">
+          <Link className="brand" href="/dashboard" aria-label="Geostats dashboard">
+            <img className="brand-mark" src="/geostats-icon.svg" alt="" aria-hidden="true" />
+            <span>
+              <strong>Geostats</strong>
+              <small>local first cache analytics</small>
+            </span>
+          </Link>
+          <button
+            className="sidebar-toggle"
+            type="button"
+            onClick={toggleSidebar}
+            aria-label={sidebarCollapsed ? "Expand navigation" : "Collapse navigation"}
+            aria-controls="primary-navigation"
+            aria-expanded={!sidebarCollapsed}
+            title={sidebarCollapsed ? "Expand navigation" : "Collapse navigation"}
+          >
+            {sidebarCollapsed ? <PanelLeftOpen size={18} aria-hidden="true" /> : <PanelLeftClose size={18} aria-hidden="true" />}
+          </button>
+        </div>
+        <nav id="primary-navigation" aria-label="Primary">
           {nav.filter((item) => !item.adminOnly || adminAccess).map((item) => {
             const Icon = item.icon;
             const active = pathname === item.href || (item.adminOnly && pathname.startsWith(`${item.href}/`));
             return (
-              <Link key={item.href} className={active ? "active" : ""} href={item.href}>
-                <Icon size={18} />
-                {item.label}
+              <Link key={item.href} className={active ? "active" : ""} href={item.href} aria-label={item.label} title={sidebarCollapsed ? item.label : undefined}>
+                <Icon size={18} aria-hidden="true" />
+                <span className="nav-label">{item.label}</span>
               </Link>
             );
           })}
         </nav>
-        {!DEV_OFFLINE && (CLERK_ENABLED ? <ClerkSignOutButton onLocalLogout={clearLocalSession} /> : <button className="ghost-button" type="button" onClick={() => void logout()}>Sign out</button>)}
+        {!DEV_OFFLINE && (CLERK_ENABLED ? <ClerkSignOutButton collapsed={sidebarCollapsed} onLocalLogout={clearLocalSession} /> : <button className="ghost-button" type="button" onClick={() => void logout()} aria-label="Sign out" title={sidebarCollapsed ? "Sign out" : undefined}><LogOut size={18} aria-hidden="true" /><span className="nav-label">Sign out</span></button>)}
         <p className="sidebar-attribution">Inspired by Project-GC</p>
       </aside>
       <main className="content">{profileChecked ? children : null}</main>
