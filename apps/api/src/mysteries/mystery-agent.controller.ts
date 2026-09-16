@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Delete, Get, Headers, NotFoundException, Param, Post } from "@nestjs/common";
+import { BadRequestException, Body, Controller, Delete, Get, Headers, NotFoundException, Param, Post, Put } from "@nestjs/common";
 import { Prisma } from "@geostats/db";
 import { randomUUID } from "node:crypto";
 import { CollectorTokenAuthService } from "../collector/collector-token-auth.service";
@@ -21,6 +21,23 @@ type AgentAttemptBody = {
 };
 
 const MAX_SNAPSHOT_BYTES = 256 * 1024;
+const MAX_NOTES_LENGTH = 100_000;
+
+function agentNotes(value: unknown) {
+  if (typeof value !== "string") throw new BadRequestException("notes must be text");
+  if (value.length > MAX_NOTES_LENGTH) {
+    throw new BadRequestException(`notes cannot exceed ${MAX_NOTES_LENGTH} characters`);
+  }
+  return value;
+}
+
+function agentNotesMode(value: unknown) {
+  if (value === undefined || value === null) return "replace" as const;
+  if (value !== "replace" && value !== "append") {
+    throw new BadRequestException('mode must be "replace" or "append"');
+  }
+  return value;
+}
 
 function gcCode(value: string) {
   const normalized = value.trim().toUpperCase();
@@ -240,5 +257,48 @@ export class MysteryAgentController {
     });
 
     return { ok: true, deleted: workspace.deleted, ...solverView(workspace.updated) };
+  }
+
+  @Put(":gcCode/notes")
+  async updateNotes(
+    @Headers("authorization") authorization: string | undefined,
+    @Param("gcCode") code: string,
+    @Body() body: unknown
+  ) {
+    const userId = await this.collectorTokenAuth.userId(authorization);
+    const normalizedCode = gcCode(code);
+    const payload = record(body);
+    const notes = agentNotes(payload.notes);
+    const mode = agentNotesMode(payload.mode);
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      await lockMystery(tx, userId, normalizedCode);
+      const existing = await tx.mysteryWorkspace.findUnique({
+        where: { ownerId_gcCode: { ownerId: userId, gcCode: normalizedCode } },
+        select: { id: true, clientId: true, data: true, snapshotRevision: true }
+      });
+      if (!existing) throw new NotFoundException("Mystery was not found in your synced workspace");
+
+      const mystery = record(existing.data);
+      const currentNotes = typeof mystery.notes === "string" ? mystery.notes : "";
+      const nextNotes = mode === "append"
+        ? !notes
+          ? currentNotes
+          : currentNotes
+            ? `${currentNotes}\n\n${notes}`
+            : notes
+        : notes;
+      const data = { ...mystery, notes: nextNotes } as Prisma.InputJsonObject;
+      if (Buffer.byteLength(JSON.stringify(data), "utf8") > MAX_SNAPSHOT_BYTES) {
+        throw new BadRequestException("Mystery data is too large");
+      }
+      return tx.mysteryWorkspace.update({
+        where: { id: existing.id },
+        data: { data, snapshotRevision: { increment: 1 } },
+        select: { clientId: true, data: true, snapshotRevision: true }
+      });
+    });
+
+    return { ok: true, ...solverView(updated) };
   }
 }
