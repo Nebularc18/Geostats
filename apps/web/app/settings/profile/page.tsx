@@ -41,6 +41,7 @@ function aiSolverInstructions(token: string) {
     "Read workspaces: GET /agent/mysteries",
     "Read one cache: GET /agent/mysteries/GC_CODE",
     "Record work: POST /agent/mysteries/GC_CODE/attempts",
+    "Delete work: DELETE /agent/mysteries/GC_CODE/attempts/ATTEMPT_ID",
     'JSON: {"kind":"approach","answer":"Try ROT13 on the title","state":"planned","source":"my-ai-job"}',
     "States: planned (not tried), wrong, correct, unchecked. Kinds: approach, keyword, coordinate."
   ].join("\n");

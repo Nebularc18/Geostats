@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Get, Headers, NotFoundException, Param, Post } from "@nestjs/common";
+import { BadRequestException, Body, Controller, Delete, Get, Headers, NotFoundException, Param, Post } from "@nestjs/common";
 import { Prisma } from "@geostats/db";
 import { randomUUID } from "node:crypto";
 import { CollectorTokenAuthService } from "../collector/collector-token-auth.service";
@@ -195,5 +195,50 @@ export class MysteryAgentController {
     });
 
     return { ok: true, created: workspace.created, attempt: workspace.attempt, ...solverView(workspace.updated) };
+  }
+
+  @Delete(":gcCode/attempts/:attemptId")
+  async deleteAttempt(
+    @Headers("authorization") authorization: string | undefined,
+    @Param("gcCode") code: string,
+    @Param("attemptId") attemptId: string
+  ) {
+    const userId = await this.collectorTokenAuth.userId(authorization);
+    const normalizedCode = gcCode(code);
+    const normalizedAttemptId = (attemptId ?? "").trim();
+    if (!normalizedAttemptId) throw new BadRequestException("An attempt id is required");
+
+    const workspace = await this.prisma.$transaction(async (tx) => {
+      await lockMystery(tx, userId, normalizedCode);
+      const existing = await tx.mysteryWorkspace.findUnique({
+        where: { ownerId_gcCode: { ownerId: userId, gcCode: normalizedCode } },
+        select: { id: true, clientId: true, data: true, snapshotRevision: true }
+      });
+      if (!existing) throw new NotFoundException("Mystery was not found in your synced workspace");
+
+      const mystery = record(existing.data);
+      const attempts = Array.isArray(mystery.attempts) ? mystery.attempts.map(record) : [];
+      const index = attempts.findIndex((attempt) => String(attempt.id ?? "") === normalizedAttemptId);
+      if (index < 0) throw new NotFoundException("Attempt was not found in this mystery");
+
+      const hadSolution = attempts.some(attemptRevealsSolution);
+      const [deleted] = attempts.splice(index, 1);
+
+      const hasSolution = attempts.some(attemptRevealsSolution);
+      const status = hasSolution
+        ? "solved"
+        : mystery.status === "solved" && hadSolution
+          ? "solving"
+          : mystery.status;
+      const data = { ...mystery, attempts, status } as Prisma.InputJsonObject;
+      const updated = await tx.mysteryWorkspace.update({
+        where: { id: existing.id },
+        data: { data, snapshotRevision: { increment: 1 } },
+        select: { clientId: true, data: true, snapshotRevision: true }
+      });
+      return { updated, deleted };
+    });
+
+    return { ok: true, deleted: workspace.deleted, ...solverView(workspace.updated) };
   }
 }
