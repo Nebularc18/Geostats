@@ -323,3 +323,93 @@ test("agent delete reports a missing attempt instead of silently succeeding", as
 
   await assert.rejects(controller.deleteAttempt("Bearer secret", "GC12345", "missing-id"), /Attempt was not found/);
 });
+
+test("agent replaces solution and field notes", async () => {
+  const original = {
+    id: "workspace-1",
+    clientId: "local-1",
+    snapshotRevision: 4,
+    data: { id: "local-1", gcCode: "GC12345", name: "Cipher", status: "solving", notes: "old notes", attempts: [] }
+  };
+  let updateInput: any;
+  const tx = {
+    $queryRaw: async () => [],
+    mysteryWorkspace: {
+      findUnique: async () => original,
+      update: async (input: any) => {
+        updateInput = input;
+        return { clientId: original.clientId, data: input.data.data, snapshotRevision: 5 };
+      }
+    }
+  };
+  const controller = new MysteryAgentController(
+    { $transaction: async (callback: any) => callback(tx) } as any,
+    { userId: async () => "user-1" } as any
+  );
+
+  const result = await controller.updateNotes("Bearer secret", "gc12345", { notes: "leta lågt" });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.mystery.notes, "leta lågt");
+  assert.equal(result.revision, 5);
+  assert.deepEqual(updateInput.data.snapshotRevision, { increment: 1 });
+});
+
+test("agent appends to existing notes without wiping them", async () => {
+  const original = {
+    id: "workspace-1",
+    clientId: "local-1",
+    snapshotRevision: 5,
+    data: { id: "local-1", gcCode: "GC12345", name: "Cipher", status: "solving", notes: "existing clue", attempts: [] }
+  };
+  let storedNotes: unknown;
+  const tx = {
+    $queryRaw: async () => [],
+    mysteryWorkspace: {
+      findUnique: async () => original,
+      update: async (input: any) => {
+        storedNotes = (input.data.data as any).notes;
+        return { clientId: original.clientId, data: input.data.data, snapshotRevision: 6 };
+      }
+    }
+  };
+  const controller = new MysteryAgentController(
+    { $transaction: async (callback: any) => callback(tx) } as any,
+    { userId: async () => "user-1" } as any
+  );
+
+  const result = await controller.updateNotes("Bearer secret", "GC12345", {
+    notes: "new finding",
+    mode: "append"
+  });
+
+  assert.equal(storedNotes, "existing clue\n\nnew finding");
+  assert.equal(result.mystery.notes, "existing clue\n\nnew finding");
+});
+
+test("agent notes reject oversized content", async () => {
+  const original = {
+    id: "workspace-1",
+    clientId: "local-1",
+    snapshotRevision: 5,
+    data: { id: "local-1", gcCode: "GC12345", name: "Cipher", status: "solving", notes: "", attempts: [] }
+  };
+  const tx = {
+    $queryRaw: async () => [],
+    mysteryWorkspace: {
+      findUnique: async () => original,
+      update: async () => {
+        throw new Error("update must not run for oversized notes");
+      }
+    }
+  };
+  const controller = new MysteryAgentController(
+    { $transaction: async (callback: any) => callback(tx) } as any,
+    { userId: async () => "user-1" } as any
+  );
+
+  await assert.rejects(
+    controller.updateNotes("Bearer secret", "GC12345", { notes: "x".repeat(100_001) }),
+    /cannot exceed/
+  );
+});

@@ -42,7 +42,9 @@ function aiSolverInstructions(token: string) {
     "Read one cache: GET /agent/mysteries/GC_CODE",
     "Record work: POST /agent/mysteries/GC_CODE/attempts",
     "Delete work: DELETE /agent/mysteries/GC_CODE/attempts/ATTEMPT_ID",
+    "Write notes: PUT /agent/mysteries/GC_CODE/notes",
     'JSON: {"kind":"approach","answer":"Try ROT13 on the title","state":"planned","source":"my-ai-job"}',
+    'Notes: {"notes":"finding..."} replaces, add "mode":"append" to keep existing notes.',
     "States: planned (not tried), wrong, correct, unchecked. Kinds: approach, keyword, coordinate."
   ].join("\n");
 }
