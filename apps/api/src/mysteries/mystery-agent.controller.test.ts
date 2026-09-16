@@ -183,3 +183,143 @@ test("agent preserves manually solved status when an unrelated attempt is added"
   assert.equal(result.mystery.status, "solved");
   assert.equal(result.notTried.length, 1);
 });
+
+test("agent deletes an attempt by id and increments the revision", async () => {
+  const first = {
+    id: "agent-first",
+    kind: "coordinate",
+    latitude: 59.4,
+    longitude: 18.3,
+    state: "wrong",
+    source: "my-ai-job",
+    createdAt: "2026-09-16T20:00:00.000Z"
+  };
+  const second = {
+    id: "agent-second",
+    kind: "keyword",
+    answer: "BLUEBIRD",
+    state: "wrong",
+    createdAt: "2026-09-16T20:36:00.000Z"
+  };
+  const original = {
+    id: "workspace-1",
+    clientId: "local-1",
+    snapshotRevision: 9,
+    data: { id: "local-1", gcCode: "GC12345", name: "Cipher", status: "solving", attempts: [first, second] }
+  };
+  let updateInput: any;
+  const tx = {
+    $queryRaw: async () => [],
+    mysteryWorkspace: {
+      findUnique: async () => original,
+      update: async (input: any) => {
+        updateInput = input;
+        return { clientId: original.clientId, data: input.data.data, snapshotRevision: 10 };
+      }
+    }
+  };
+  const controller = new MysteryAgentController(
+    { $transaction: async (callback: any) => callback(tx) } as any,
+    { userId: async () => "user-1" } as any
+  );
+
+  const result = await controller.deleteAttempt("Bearer secret", "GC12345", "agent-first");
+
+  assert.equal(result.ok, true);
+  assert.equal(result.deleted.id, "agent-first");
+  assert.equal(result.mystery.attempts.length, 1);
+  assert.equal(result.mystery.attempts[0].id, "agent-second");
+  assert.deepEqual(updateInput.data.snapshotRevision, { increment: 1 });
+  assert.equal(result.revision, 10);
+});
+
+test("agent delete downgrades solved status when the only solution is removed", async () => {
+  const solvingAttempt = {
+    id: "agent-solution",
+    kind: "coordinate",
+    latitude: 59.40582,
+    longitude: 18.3612,
+    state: "correct",
+    createdAt: "2026-01-01T00:00:00.000Z"
+  };
+  const original = {
+    id: "workspace-1",
+    clientId: "local-1",
+    snapshotRevision: 10,
+    data: { id: "local-1", gcCode: "GC12345", name: "Cipher", status: "solved", attempts: [solvingAttempt] }
+  };
+  const tx = {
+    $queryRaw: async () => [],
+    mysteryWorkspace: {
+      findUnique: async () => original,
+      update: async (input: any) => ({ clientId: original.clientId, data: input.data.data, snapshotRevision: 11 })
+    }
+  };
+  const controller = new MysteryAgentController(
+    { $transaction: async (callback: any) => callback(tx) } as any,
+    { userId: async () => "user-1" } as any
+  );
+
+  const result = await controller.deleteAttempt("Bearer secret", "GC12345", "agent-solution");
+
+  assert.equal(result.mystery.status, "solving");
+  assert.equal(result.mystery.attempts.length, 0);
+});
+
+test("agent delete keeps solved status while another solution remains", async () => {
+  const original = {
+    id: "workspace-1",
+    clientId: "local-1",
+    snapshotRevision: 11,
+    data: {
+      id: "local-1",
+      gcCode: "GC12345",
+      name: "Cipher",
+      status: "solved",
+      attempts: [
+        { id: "first", kind: "coordinate", latitude: 59.4, longitude: 18.3, state: "correct", createdAt: "2026-01-01T00:00:00.000Z" },
+        { id: "second", kind: "keyword", answer: "answer", finalLatitude: 59.5, finalLongitude: 18.4, state: "correct", createdAt: "2026-01-02T00:00:00.000Z" }
+      ]
+    }
+  };
+  const tx = {
+    $queryRaw: async () => [],
+    mysteryWorkspace: {
+      findUnique: async () => original,
+      update: async (input: any) => ({ clientId: original.clientId, data: input.data.data, snapshotRevision: 12 })
+    }
+  };
+  const controller = new MysteryAgentController(
+    { $transaction: async (callback: any) => callback(tx) } as any,
+    { userId: async () => "user-1" } as any
+  );
+
+  const result = await controller.deleteAttempt("Bearer secret", "GC12345", "first");
+
+  assert.equal(result.mystery.status, "solved");
+  assert.equal(result.mystery.attempts.length, 1);
+});
+
+test("agent delete reports a missing attempt instead of silently succeeding", async () => {
+  const original = {
+    id: "workspace-1",
+    clientId: "local-1",
+    snapshotRevision: 12,
+    data: { id: "local-1", gcCode: "GC12345", name: "Cipher", status: "solving", attempts: [] }
+  };
+  const tx = {
+    $queryRaw: async () => [],
+    mysteryWorkspace: {
+      findUnique: async () => original,
+      update: async () => {
+        throw new Error("update must not run for a missing attempt");
+      }
+    }
+  };
+  const controller = new MysteryAgentController(
+    { $transaction: async (callback: any) => callback(tx) } as any,
+    { userId: async () => "user-1" } as any
+  );
+
+  await assert.rejects(controller.deleteAttempt("Bearer secret", "GC12345", "missing-id"), /Attempt was not found/);
+});

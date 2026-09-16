@@ -171,6 +171,7 @@ An AI job on any computer can read and update the same Mystery workspace without
 - `GET /agent/mysteries` lists synchronized mysteries with notes, clues, tried entries, and not-yet-tried entries.
 - `GET /agent/mysteries/:gcCode` gets one solver context.
 - `POST /agent/mysteries/:gcCode/attempts` atomically creates or updates an entry.
+- `DELETE /agent/mysteries/:gcCode/attempts/:attemptId` deletes one entry by its id (listed by the GET endpoints).
 
 Example body:
 
