@@ -4,6 +4,7 @@ import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { AppShell } from "../../components/app-shell";
 import { TrackableMap, type TrackableMapPoint } from "../../components/trackable-map";
 import { apiFetch } from "../../lib/api";
+import { matchesJourneySearch } from "../../lib/journey-search";
 
 const STATES = ["OWNED", "DISCOVERED", "RETRIEVED", "DROPPED", "VISITED", "MISSING"] as const;
 type TrackableState = (typeof STATES)[number];
@@ -118,6 +119,15 @@ export default function TrackablesPage() {
   const [selectedMapTrackable, setSelectedMapTrackable] = useState<string>("");
   const [mapCacheQuery, setMapCacheQuery] = useState("");
   const [focusedMapPointId, setFocusedMapPointId] = useState<string | null>(null);
+  const [showFullRoute, setShowFullRoute] = useState(true);
+  useEffect(() => {
+    try { setShowFullRoute(localStorage.getItem("geostats.journey.showFullRoute") !== "false"); } catch { /* Storage can be disabled. */ }
+  }, []);
+
+  function toggleFullRoute(visible: boolean) {
+    setShowFullRoute(visible);
+    try { localStorage.setItem("geostats.journey.showFullRoute", String(visible)); } catch { /* Keep the control usable without storage. */ }
+  }
   const [stopListStart, setStopListStart] = useState(0);
   const mapSelectionUserChanged = useRef(false);
   const [importBusy, setImportBusy] = useState(false);
@@ -297,14 +307,15 @@ export default function TrackablesPage() {
     [visibleMapPoints]
   );
   const mapCacheMatches = useMemo(() => {
-    const needle = mapCacheQuery.trim().toLocaleLowerCase();
-    if (!needle) return visibleMapPoints;
-    return visibleMapPoints.filter((point) => [point.gcCode, point.cacheName, point.locationName].some((value) => value?.toLocaleLowerCase().includes(needle)));
+    if (!mapCacheQuery.trim()) return visibleMapPoints;
+    return visibleMapPoints.filter((point) => matchesJourneySearch(point, mapCacheQuery));
   }, [mapCacheQuery, visibleMapPoints]);
   const stopListSource = mapCacheQuery.trim() ? mapCacheMatches : visibleMapPoints;
   const highlightedMapPointIds = useMemo(() => mapCacheQuery.trim() ? mapCacheMatches.map((point) => point.id) : [], [mapCacheMatches, mapCacheQuery]);
   const stopListPoints = stopListSource.slice(stopListStart, stopListStart + STOP_PAGE_SIZE);
   const stopListEnd = Math.min(stopListStart + STOP_PAGE_SIZE, stopListSource.length);
+  const focusedIndex = visibleMapPoints.findIndex((point) => point.id === focusedMapPointId);
+  const focusedStop = visibleMapPoints[focusedIndex];
 
   function focusMapPoint(point: TrackableMapPoint) {
     const index = stopListSource.findIndex((candidate) => candidate.id === point.id);
@@ -368,21 +379,30 @@ export default function TrackablesPage() {
 
       <section className="map-stage trackable-map-stage">
         <div className="map-toolbar trackable-map-toolbar">
-          <div className="trackable-map-summary"><span className="trackable-map-kicker">Journey map</span><strong>{mapLoading ? "Loading movement…" : `${visibleMapPoints.length} stop${visibleMapPoints.length === 1 ? "" : "s"}`}</strong>{mapCacheQuery.trim() ? <small>{mapCacheMatches.length} cache match{mapCacheMatches.length === 1 ? "" : "es"}</small> : null}</div>
-          <label className="trackable-map-search"><span>Find a cache</span><input aria-label="Search journey caches by GC code or name" type="search" value={mapCacheQuery} onChange={(event) => setMapCacheQuery(event.target.value)} placeholder="GC code or cache name" /></label>
+          <div className="trackable-map-summary"><span className="trackable-map-kicker">Journey map</span><strong>{mapLoading ? "Loading movement…" : `${visibleMapPoints.length.toLocaleString()} stop${visibleMapPoints.length === 1 ? "" : "s"}`}</strong>{mapCacheQuery.trim() ? <small>{mapCacheMatches.length} matching stop{mapCacheMatches.length === 1 ? "" : "s"} · Enter to go</small> : null}</div>
+          <label className="trackable-map-search"><span>Find a stop</span><input aria-label="Search journey by stop number, GC code or name" type="search" value={mapCacheQuery} onChange={(event) => setMapCacheQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && mapCacheQuery.trim() && mapCacheMatches[0]) { event.preventDefault(); focusMapPoint(mapCacheMatches[0]); } }} placeholder="GC code, cache name or stop number" /></label>
           <label className="trackable-map-filter"><span>Trackable</span><select value={selectedMapTrackable} onChange={(event) => { mapSelectionUserChanged.current = true; setSelectedMapTrackable(event.target.value); }}><option value="" disabled>Choose a trackable</option>{trackables.map((trackable) => <option key={trackable.id} value={trackable.id}>{trackable.trackingCode} · {trackable.name}</option>)}</select></label>
-          <p className="trackable-map-hint">Clusters group nearby stops. Search narrows the stop list and highlights matches; the full route stays visible.</p>
+          <details className="trackable-map-help"><summary aria-label="About the journey map">?</summary><p>Each badge is a stop number in the journey. Badges can overlap; zoom in to separate nearby places, or choose a stop from the list. Use Show full route to show or hide all connections.</p></details>
+        </div>
+        <div className="journey-explorer">
+          <div className="journey-explorer-details" aria-live="polite">
+            {focusedStop ? <><small>Stop {focusedStop.sequence.toLocaleString()} of {focusedStop.sequenceTotal.toLocaleString()}</small><strong>{stopTitle(focusedStop)}</strong><span>{stopMetaLabel(focusedStop)}</span></> : <><strong>Explore visited places</strong><span>Select a numbered badge or a stop below to follow its journey.</span></>}
+          </div>
+          <div className="journey-explorer-actions">
+            {focusedStop ? <><button type="button" className="secondary-button" disabled={focusedIndex <= 0} onClick={() => focusMapPoint(visibleMapPoints[focusedIndex - 1]!)}>Previous stop</button><button type="button" className="secondary-button" disabled={focusedIndex >= visibleMapPoints.length - 1} onClick={() => focusMapPoint(visibleMapPoints[focusedIndex + 1]!)}>Next stop</button><button type="button" className="secondary-button" onClick={() => setFocusedMapPointId(null)}>All places</button></> : <button type="button" className="secondary-button" disabled={!visibleMapPoints.length} onClick={() => focusMapPoint(visibleMapPoints[0]!)}>Follow journey</button>}
+            <label className="journey-route-toggle"><input type="checkbox" checked={showFullRoute} onChange={(event) => toggleFullRoute(event.target.checked)} />Show full route</label>
+          </div>
         </div>
         {mapTruncated ? <p className="trackable-import-warning trackable-map-warning" role="status"><strong>Map history is limited.</strong> Showing the newest 20,000 of {mapTotal.toLocaleString()} movement points for performance. The full history remains in your logbook export.</p> : null}
         <div className="trackable-map-canvas">
-          <TrackableMap points={visibleMapPoints} focusPointId={focusedMapPointId} highlightPointIds={highlightedMapPointIds} onPointSelect={handleMapPointSelect} />
-          <div className="trackable-map-legend" aria-label="Journey map legend"><span><b className="trackable-legend-swatch start">S</b>Start</span><span><b className="trackable-legend-swatch end">E</b>End</span><span><b className="trackable-legend-swatch stop">#</b>Stop number</span><span><b className="trackable-legend-swatch route" />Journey progress</span></div>
+          <TrackableMap points={visibleMapPoints} focusPointId={focusedMapPointId} highlightPointIds={highlightedMapPointIds} onPointSelect={handleMapPointSelect} showFullRoute={showFullRoute} />
+          <div className="trackable-map-legend" aria-label="Journey map legend"><span><b className="trackable-legend-swatch number">12</b>Stop number</span>{showFullRoute ? <span><b className="trackable-legend-swatch route" />Full route</span> : null}{focusedStop ? <><span><b className="trackable-legend-swatch previous" />Previous</span><span><b className="trackable-legend-swatch selected" />Selected</span><span><b className="trackable-legend-swatch next" />Next</span></> : null}</div>
         </div>
         {mapUnmapped > 0 ? <p className="map-footnote">{mapUnmapped} imported movement{mapUnmapped === 1 ? " has" : "s have"} no cache coordinates. Import a GSAK cache GPX/ZIP or Geocaching cache export, then import this journey again. <a href="/upload#travel-cache-import">Open cache import</a></p> : null}
         {missingCacheNameCodes.length > 0 ? <p className="trackable-import-warning trackable-map-warning" role="status"><strong>Cache names missing.</strong> {missingCacheNameCodes.length} journey stop{missingCacheNameCodes.length === 1 ? " has" : "s have"} coordinates but no cache name in your archive. Import the matching caches from GSAK as GPX/ZIP, or upload a Geocaching cache export. <span>Missing names: {missingCacheNameCodes.slice(0, 8).join(", ")}{missingCacheNameCodes.length > 8 ? "…" : ""}</span> <a href="/upload#travel-cache-import">Open cache import</a></p> : null}
         {visibleMapPoints.length > 0 ? <div className="trackable-stop-panel">
           <div className="trackable-stop-heading">
-            <div><h3>Journey stops</h3><p className="muted">{mapCacheQuery.trim() ? `${mapCacheMatches.length} matching cache${mapCacheMatches.length === 1 ? "" : "s"} · ` : ""}Select a stop to center the map and open its details.</p></div>
+            <div><h3>Journey stops</h3><p className="muted">{mapCacheQuery.trim() ? `${mapCacheMatches.length} matching stop${mapCacheMatches.length === 1 ? "" : "s"} · ` : ""}Select a stop to center the map and open its details.</p></div>
             <div className="trackable-stop-nav">
               <span>{stopListSource.length > 0 ? `Stops ${stopListStart + 1}–${stopListEnd} of ${stopListSource.length}` : "No matching stops"}</span>
               <button className="secondary-button" type="button" disabled={stopListStart === 0 || stopListSource.length === 0} onClick={() => setStopListStart(Math.max(0, stopListStart - STOP_PAGE_SIZE))}>Previous</button>
@@ -396,7 +416,7 @@ export default function TrackablesPage() {
                 <span className="trackable-stop-copy"><strong>{stopTitle(point)}</strong><small>{stopMetaLabel(point)}</small></span>
               </button>
             </li>)}
-          </ol> : <div className="trackable-stop-empty"><strong>No cache matches</strong><p>Try a different GC code or cache name.</p><button className="secondary-button" type="button" onClick={() => setMapCacheQuery("")}>Clear search</button></div>}
+          </ol> : <div className="trackable-stop-empty"><strong>No matching stops</strong><p>Try a stop number, GC code or cache name.</p><button className="secondary-button" type="button" onClick={() => setMapCacheQuery("")}>Clear search</button></div>}
         </div> : null}
       </section>
 
