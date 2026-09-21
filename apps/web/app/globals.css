@@ -4785,8 +4785,9 @@ select:focus {
 .mystery-workspace {
   display: grid;
   grid-template-columns: minmax(280px, 335px) minmax(0, 1fr);
+  align-items: start;
   min-height: 720px;
-  overflow: hidden;
+  overflow: clip;
   border: 1px solid var(--line);
   border-radius: 10px;
   background: rgba(13, 18, 15, 0.72);
@@ -4794,7 +4795,13 @@ select:focus {
 }
 
 .mystery-list-panel {
+  position: sticky;
+  top: 16px;
+  display: flex;
+  flex-direction: column;
   min-width: 0;
+  min-height: 0;
+  max-height: calc(100vh - 32px);
   padding: 16px;
   border-right: 1px solid var(--line);
   background: rgba(21, 29, 23, 0.68);
@@ -4898,8 +4905,10 @@ select:focus {
 
 .mystery-cache-list {
   display: grid;
+  flex: 1;
+  align-content: start;
   gap: 16px;
-  max-height: 660px;
+  min-height: 0;
   margin-top: 16px;
   overflow-y: auto;
 }
@@ -5394,6 +5403,7 @@ select:focus {
 .attempt-result-groups {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
   gap: 8px;
 }
 
@@ -5442,9 +5452,6 @@ select:focus {
   grid-template-columns: minmax(0, 1fr);
   align-content: start;
   gap: 5px;
-  max-height: 28rem;
-  overflow-y: auto;
-  scrollbar-gutter: stable;
 }
 
 .attempt-result-group > div:last-child > span {
@@ -5529,11 +5536,6 @@ select:focus {
 .attempt-list {
   display: grid;
   gap: 7px;
-  max-height: 42rem;
-  padding-right: 4px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  scrollbar-gutter: stable;
 }
 
 .attempt-row {
@@ -7230,12 +7232,15 @@ select:focus {
   }
 
   .mystery-list-panel {
+    position: static;
+    max-height: none;
     border-right: 0;
     border-bottom: 1px solid var(--line);
   }
 
   .mystery-cache-list {
     max-height: 310px;
+    overflow-y: auto;
   }
 
   .mystery-detail {
