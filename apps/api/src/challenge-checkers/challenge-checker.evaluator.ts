@@ -50,6 +50,26 @@ export type MonthlyAttributeRule = {
   excludeSelf: boolean;
 };
 
+export type BirthdayRule = {
+  type: "BIRTHDAY";
+  minimumCaches: number;
+  minAge: number;
+  maxAge: number;
+  minimumTotalAge: number;
+  minimumDifferentAges: number;
+  uniqueDates: boolean;
+  filters: ProjectGcFindFilter[];
+  filterLabel: string;
+};
+
+export type AlphabetRule = {
+  type: "ALPHABET";
+  letters: string[];
+  field: "cache_name" | "county";
+  filters: ProjectGcFindFilter[];
+  filterLabel: string;
+};
+
 export type ChallengeRule =
   | { type: "TOTAL_FINDS"; minimum: number }
   | { type: "CACHE_TYPE"; cacheTypeId: string; cacheTypeLabel: string; minimum: number }
@@ -68,7 +88,9 @@ export type ChallengeRule =
   | ProjectGcNumberRule
   | CalendarFillRule
   | DistinctTypesRule
-  | MonthlyAttributeRule;
+  | MonthlyAttributeRule
+  | BirthdayRule
+  | AlphabetRule;
 
 export type CheckerFind = {
   foundAt: Date;
@@ -354,6 +376,87 @@ export function evaluateChallenge(rules: ChallengeRule[], finds: CheckerFind[], 
         detail: passed
           ? `${current.toLocaleString()} achieved; ${rule.overallMinimum.toLocaleString()} required.`
           : `${current.toLocaleString()} achieved; ${Math.max(rule.overallMinimum - current, 0).toLocaleString()} more needed.${missing.length ? ` Missing: ${missing.join(", ")}.` : ""}`,
+        evidence: matchingFinds.slice(0, MAX_EVIDENCE_ROWS).map((find) => ({
+          date: loggedEvidenceDate(find),
+          gcCode: find.cache.gcCode,
+          name: find.cache.name
+        })),
+        evidenceLimited: matchingFinds.length > MAX_EVIDENCE_ROWS
+      };
+    } else if (rule.type === "BIRTHDAY") {
+      // Birthday caches: hidden and found on the same month/day, in
+      // different years. Age is found-year minus hidden-year, mirroring the
+      // string.sub(date, 1, 4) arithmetic of the Project-GC scripts.
+      const eligible = finds.filter((find) => rule.filters.some((filter) => projectGcFilterMatches(filter, find)));
+      const bestByDate = new Map<string, { find: CheckerFind; age: number }>();
+      const rows: Array<{ find: CheckerFind; age: number }> = [];
+      for (const find of eligible) {
+        if (!find.cache.hiddenDate) continue;
+        if (find.cache.hiddenDate.toISOString().slice(5, 10) !== find.foundDate.toISOString().slice(5, 10)) continue;
+        const age = find.foundDate.getUTCFullYear() - find.cache.hiddenDate.getUTCFullYear();
+        if (age < rule.minAge || age > rule.maxAge) continue;
+        if (rule.uniqueDates) {
+          const kept = bestByDate.get(find.foundDate.toISOString().slice(5, 10));
+          if (!kept || age > kept.age) bestByDate.set(find.foundDate.toISOString().slice(5, 10), { find, age });
+        } else {
+          rows.push({ find, age });
+        }
+      }
+      const qualified = rule.uniqueDates ? [...bestByDate.values()] : rows;
+      const ages = new Map<number, number>();
+      for (const entry of qualified) ages.set(entry.age, (ages.get(entry.age) ?? 0) + 1);
+      const totalAge = qualified.reduce((sum, entry) => sum + entry.age, 0);
+      current = qualified.length;
+      matchingFinds = qualified.map((entry) => entry.find);
+      label = `Birthday finds (${rule.filterLabel})`;
+      const passed = totalAge >= rule.minimumTotalAge && current >= rule.minimumCaches && ages.size >= rule.minimumDifferentAges;
+      const detail = passed
+        ? `${current.toLocaleString()} birthday finds with a total age of ${totalAge.toLocaleString()} across ${ages.size.toLocaleString()} different ages.`
+        : current < rule.minimumCaches
+          ? `Only ${current.toLocaleString()} of the ${rule.minimumCaches.toLocaleString()} birthday finds required.`
+          : ages.size < rule.minimumDifferentAges
+            ? `Only ${ages.size.toLocaleString()} different ages, but ${rule.minimumDifferentAges.toLocaleString()} required.`
+            : `The total age of the birthday finds is only ${totalAge.toLocaleString()}, but at least ${rule.minimumTotalAge.toLocaleString()} is required.`;
+      return {
+        rule,
+        passed,
+        current,
+        required: rule.minimumCaches,
+        label,
+        detail,
+        evidence: matchingFinds.slice(0, MAX_EVIDENCE_ROWS).map((find) => ({
+          date: loggedEvidenceDate(find),
+          gcCode: find.cache.gcCode,
+          name: find.cache.name
+        })),
+        evidenceLimited: matchingFinds.length > MAX_EVIDENCE_ROWS
+      };
+    } else if (rule.type === "ALPHABET") {
+      // Alphabet grids: the first letter (Unicode-aware, uppercased) of the
+      // source field fills its slot, first find wins, mirroring the
+      // utf8_sub(key, 1, 1) + UTF8ToUpper idiom of the Project-GC scripts.
+      const eligible = finds.filter((find) => rule.filters.some((filter) => projectGcFilterMatches(filter, find)));
+      const filled = new Map<string, CheckerFind>();
+      for (const find of eligible) {
+        const raw = rule.field === "county" ? find.cache.county : find.cache.name;
+        const first = raw?.trim() ? Array.from(raw.trim())[0]!.toLocaleUpperCase() : null;
+        if (!first || filled.has(first)) continue;
+        filled.set(first, find);
+      }
+      current = rule.letters.filter((letter) => filled.has(letter)).length;
+      matchingFinds = rule.letters.flatMap((letter) => filled.get(letter) ? [filled.get(letter)!] : []);
+      label = `Alphabet letters (${rule.filterLabel})`;
+      const missing = rule.letters.filter((letter) => !filled.has(letter));
+      const passed = missing.length === 0;
+      return {
+        rule,
+        passed,
+        current,
+        required: rule.letters.length,
+        label,
+        detail: passed
+          ? `All ${rule.letters.length.toLocaleString()} letters covered.`
+          : `${current.toLocaleString()} of ${rule.letters.length.toLocaleString()} letters covered. Missing: ${missing.join(", ")}.`,
         evidence: matchingFinds.slice(0, MAX_EVIDENCE_ROWS).map((find) => ({
           date: loggedEvidenceDate(find),
           gcCode: find.cache.gcCode,

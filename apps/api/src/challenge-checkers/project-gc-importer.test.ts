@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { importProjectGcCalendarScript, importProjectGcMatrixScript, importProjectGcMonthlyScript, importProjectGcNumberScript, isProjectGcMonthlyScript } from "./project-gc-importer";
+import { importProjectGcAlphabetScript, importProjectGcBirthdayScript, importProjectGcCalendarScript, importProjectGcMatrixScript, importProjectGcMonthlyScript, importProjectGcNumberScript, isProjectGcMonthlyScript } from "./project-gc-importer";
 
 const numberScript = `
 local args={...}
@@ -857,4 +857,166 @@ test("rejects monthly scripts that diverge from the tag config", () => {
   assert.throws(() => importProjectGcMonthlyScript(monthlyScript.replace("ok_number < conf.min", "ok_number <= conf.min"), config), /qualifying count/);
   assert.throws(() => importProjectGcMonthlyScript(monthlyScript.replace("function testfilter_and", "function testfilter_xor"), config), /count matching finds/);
   assert.throws(() => importProjectGcMonthlyScript(monthlyScript.replace("test.min and test.number < test.min", "test.number < test.min"), config), /count matching finds/);
+});
+
+const birthdayScript = `
+local args={...}
+local conf = args[1].config
+local profileId = args[1].profileId
+local filter = {}
+filter.country = conf.country
+filter.types = conf.types
+filter.minVisitDate = conf.minVisitDate
+filter.maxVisitDate = conf.maxVisitDate
+local mincaches = 1
+if conf.mincaches ~= nil and tonumber(conf.mincaches) > 0 then mincaches = tonumber(conf.mincaches) end
+local minage = 1
+if conf.minage ~= nil and tonumber(conf.minage) >= 0 then minage = tonumber(conf.minage) end
+local maxage = 999
+if conf.maxage ~= nil and tonumber(conf.maxage) >= 0 then maxage = tonumber(conf.maxage) end
+local mintotal = 1
+if conf.mintotal ~= nil and tonumber(conf.mintotal) > 0 then mintotal = tonumber(conf.mintotal) end
+local mindifferentages = 1
+if conf.mindifferentages ~= nil and tonumber(conf.mindifferentages) > 0 then mindifferentages = tonumber(conf.mindifferentages) end
+local myFinds = PGC.GetFinds(profileId, { fields = { 'gccode', 'hidden', 'visitdate' }, filter = filter, order = 'OLDESTFIRST' })
+local cachesfound = 0
+local totalage = 0
+local differentages = 0
+local countsperage = {}
+for _, v in ipairs(myFinds) do
+  if string.sub(v.hidden, 6) == string.sub(v.visitdate, 6) then
+    local age = tonumber(string.sub(v.visitdate, 1, 4)) - tonumber(string.sub(v.hidden, 1, 4))
+    if age >= minage and age <= maxage then
+      cachesfound = cachesfound + 1
+      totalage = totalage + age
+      if countsperage[age] == nil then differentages = differentages + 1 end
+      countsperage[age] = (countsperage[age] or 0) + 1
+    end
+  end
+end
+local meets = (totalage >= mintotal) and (cachesfound >= mincaches) and (differentages >= mindifferentages)
+return { ok = meets, log = "", html = "" }
+`;
+
+test("imports a birthday checker with tag totals", () => {
+  const imported = importProjectGcBirthdayScript(birthdayScript, JSON.stringify({
+    mincaches: 5, minage: 1, maxage: 10, mintotal: 20, mindifferentages: 3, uniquedates: "YES", country: "Sweden"
+  }));
+  assert.equal(imported.rules[0]!.type, "BIRTHDAY");
+  assert.equal(imported.rules[0]!.minimumCaches, 5);
+  assert.equal(imported.rules[0]!.uniqueDates, true);
+  assert.deepEqual(imported.rules[0]!.filters[0]!.countries, ["Sweden"]);
+  assert.match(imported.summary, /5 birthday finds/);
+});
+
+test("rejects birthday scripts that diverge from the tag totals", () => {
+  const config = JSON.stringify({ mincaches: 5, mintotal: 20, mindifferentages: 3 });
+  assert.throws(() => importProjectGcBirthdayScript(birthdayScript.replace("filter = filter,", "filter = other,"), config), /tag config/);
+  assert.throws(() => importProjectGcBirthdayScript(birthdayScript.replace("local meets = (totalage >= mintotal)", "local meets = totalage >= 100"), config), /tag totals/);
+  assert.throws(() => importProjectGcBirthdayScript(birthdayScript.replace("return { ok = meets,", "return { ok = meets and conf.brief,"), config), /pass verdict once/);
+  assert.throws(() => importProjectGcBirthdayScript(birthdayScript.replace("filter.types = conf.types", "filter.types = { 'Traditional Cache' }"), config), /tag config/);
+  assert.throws(() => importProjectGcBirthdayScript(birthdayScript.replace("for _, v in ipairs(myFinds) do", "table.remove(myFinds, 1)\nfor _, v in ipairs(myFinds) do"), config), /must not change/);
+  assert.throws(() => importProjectGcBirthdayScript(birthdayScript + "\nlocal hides = PGC.GetHides(profileId, {})", config), /must not call PGC.GetHides/);
+});
+
+test("rejects birthday configs outside the supported pattern", () => {
+  assert.throws(() => importProjectGcBirthdayScript(birthdayScript, '{"mincaches":0}'), /whole number/);
+  assert.throws(() => importProjectGcBirthdayScript(birthdayScript, '{"minage":5,"maxage":2}'), /maxage.*minage/);
+  assert.throws(() => importProjectGcBirthdayScript(birthdayScript, '{"uniquedates":"maybe"}'), /YES or NO/);
+  assert.throws(() => importProjectGcBirthdayScript(birthdayScript, '{"radius":10}'), /not supported for birthday/);
+});
+
+const alphabetScript = `
+local args={...}
+conf = args[1].config
+local country=conf.country
+local region=conf.region
+local type=conf.type
+local after=conf.after
+local alphafield=conf.alphafield
+if (alphafield==nil) then alphafield='cache_name' end
+profileName = args[1]['profileName']
+profileId = PGC.ProfileName2Id(profileName)
+local multiple=conf.multiple
+local filter={}
+if (type~=nil) then filter['types']={type} end
+if type==nil then filter['types']=conf.types end
+if (country~=nil) then filter['country']=country end
+if (after~=nil) then filter['minVisitDate']=after end
+if (region~=nil) then filter['region']=region end
+filter['maxHiddenDate']=conf.maxHiddenDate
+local currentLetters = { }
+function utf8_sub(s,i,j) return string.sub(s,i,j) end
+function utf8_len(s) return string.len(s) end
+function GetCacheValue(cache, key)
+  local k=""
+  if key==nil then k=cache['cache_name'] end
+  return k
+end
+function get_and_check()
+  myFinds = PGC.GetFinds( profileId, {filter=filter, fields = {'gccode', 'cache_name','visitdate'}, order = 'OLDESTFIRST' } )
+  for _,v in ipairs(myFinds) do
+    if (type==nil or v['type'] == type) then
+      v['key']=GetCacheValue(v,alphafield)
+      local k=v['key']
+      if k ~= nil and k~=false then k=utf8_sub(k,1,1) k=PGC.UTF8ToUpper(k) end
+      if k~= nil then if(currentLetters[k]==nil) then currentLetters[k]=v end end
+    end
+  end
+end
+if (multiple~=nil)then
+for _,mul in ipairs(multiple) do
+  filter['county']=mul
+  get_and_check()
+end
+else
+  get_and_check()
+end
+local madeIt=true
+local Alog=""
+local alpha=conf.alpha
+local letters={"A","B","C"}
+if alpha=="eng" then letters={"A","B","C","D","E","F","G","H","I","J","K","L","M","N","O","P","Q","R","S","T","U","V","W","X","Y","Z"} end
+if conf.alphabet~= nil then
+  letters={}
+  for i=1,utf8_len(conf.alphabet),1 do table.insert(letters,utf8_sub(conf.alphabet,i,i)) end
+end
+for _,i in ipairs(letters) do
+  iV=currentLetters[i]
+  if(iV~=nil) then Alog = Alog .. i ..': ok\n'
+  else Alog = Alog.. i ..": Missing\n" madeIt=false end
+end
+return { ok = madeIt, log = Alog, html = "" }
+`;
+
+test("imports an alphabet checker with tag letters", () => {
+  const imported = importProjectGcAlphabetScript(alphabetScript, JSON.stringify({ region: "Blekinge", alphabet: "ABC" }));
+  assert.equal(imported.rules[0]!.type, "ALPHABET");
+  assert.deepEqual(imported.rules[0]!.letters, ["A", "B", "C"]);
+  assert.equal(imported.rules[0]!.field, "cache_name");
+  assert.deepEqual(imported.rules[0]!.filters[0]!.regions, ["Blekinge"]);
+  assert.match(imported.summary, /Alphabet 3 letters/);
+});
+
+test("imports an alphabet checker with a preset grid", () => {
+  const imported = importProjectGcAlphabetScript(alphabetScript, JSON.stringify({ alpha: "eng" }));
+  assert.deepEqual(imported.rules[0]!.letters, ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z"]);
+});
+
+test("rejects alphabet scripts that diverge from the tag grid", () => {
+  const config = JSON.stringify({ region: "Blekinge", alphabet: "ABC" });
+  assert.throws(() => importProjectGcAlphabetScript(alphabetScript.replace("filter=filter,", "filter=other,"), config), /tag config/);
+  assert.throws(() => importProjectGcAlphabetScript(alphabetScript.replace("v['key']=GetCacheValue(v,alphafield)", "v['key']=v['cache_name']"), config), /must not rewrite/);
+  assert.throws(() => importProjectGcAlphabetScript(alphabetScript.replace("for _,v in ipairs(myFinds) do", "table.remove(myFinds, 1)\nfor _,v in ipairs(myFinds) do"), config), /must not change/);
+  assert.throws(() => importProjectGcAlphabetScript(alphabetScript.replace("return { ok = madeIt,", "return { ok = madeIt and conf.brief,"), config), /pass verdict once/);
+  assert.throws(() => importProjectGcAlphabetScript(alphabetScript + "\nlocal h = PGC.GetHides(profileId, {})", config), /must not call PGC.GetHides/);
+});
+
+test("rejects alphabet configs outside the supported pattern", () => {
+  const base = JSON.stringify({ region: "Blekinge", alphabet: "ABC" });
+  assert.throws(() => importProjectGcAlphabetScript(alphabetScript, '{"region":"Blekinge","alphabet":"ABC","eqtest":"owner_name"}'), /eqtest/);
+  assert.throws(() => importProjectGcAlphabetScript(alphabetScript, '{"region":"Blekinge","alphabet":"ABC","multiple":["X"]}'), /multiple/);
+  assert.throws(() => importProjectGcAlphabetScript(alphabetScript, '{"region":"Blekinge","alphabet":"ABC","alphafield":"placed_by"}'), /only support/);
+  assert.throws(() => importProjectGcAlphabetScript(alphabetScript, '{"region":"Blekinge","alphabet":"ABC","limit":5}'), /not supported for alphabet/);
+  assert.throws(() => importProjectGcAlphabetScript(alphabetScript, '{}'), /tag's letter grid/);
 });
