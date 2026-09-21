@@ -6,7 +6,7 @@ import { PrismaService } from "../common/prisma.service";
 import { attributesFromRaw, ChallengeRule, evaluateChallenge, ProjectGcFindFilter, proofText, sameLocationText } from "./challenge-checker.evaluator";
 import { cacheTypeIdentity, cacheTypeOptions } from "./cache-type-catalog";
 import { BoundaryGeometry, GeographicBoundariesService, pointInBoundary } from "./geographic-boundaries";
-import { importProjectGcCalendarScript, importProjectGcMatrixScript, importProjectGcMonthlyScript, importProjectGcNumberScript, isProjectGcCalendarScript, isProjectGcMatrixScript, isProjectGcMonthlyScript, projectGcFilterLabel } from "./project-gc-importer";
+import { importProjectGcAlphabetScript, importProjectGcBirthdayScript, importProjectGcCalendarScript, importProjectGcMatrixScript, importProjectGcMonthlyScript, importProjectGcNumberScript, isProjectGcAlphabetScript, isProjectGcBirthdayScript, isProjectGcCalendarScript, isProjectGcMatrixScript, isProjectGcMonthlyScript, projectGcFilterLabel } from "./project-gc-importer";
 
 type CheckerInput = { name?: unknown; gcCode?: unknown; description?: unknown; rules?: unknown };
 
@@ -262,6 +262,12 @@ export class ChallengeCheckersService {
     }
     if (typeof input.script === "string" && isProjectGcMonthlyScript(input.script)) {
       return importProjectGcMonthlyScript(input.script, input.config);
+    }
+    if (typeof input.script === "string" && isProjectGcBirthdayScript(input.script)) {
+      return importProjectGcBirthdayScript(input.script, input.config);
+    }
+    if (typeof input.script === "string" && isProjectGcAlphabetScript(input.script)) {
+      return importProjectGcAlphabetScript(input.script, input.config);
     }
     return importProjectGcNumberScript(input.script, input.config);
   }

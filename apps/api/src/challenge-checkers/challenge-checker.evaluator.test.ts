@@ -278,3 +278,75 @@ test("counts attribute finds per calendar month with exclusions", () => {
   assert.match(result.rules[0]!.detail, /Missing: 02/);
   assert.equal(result.rules[0]!.evidence.length, 3);
 });
+
+test("counts birthday finds with total and distinct-age thresholds", () => {
+  const birthday = (gcCode: string, hidden: string, found: string) => ({
+    foundAt: new Date(`${found}T00:00:00Z`),
+    foundDate: new Date(`${found}T00:00:00Z`),
+    cache: {
+      gcCode, name: gcCode, cacheType: "Traditional Cache", difficulty: 1, terrain: 1,
+      country: null, region: null, county: null, hiddenDate: new Date(`${hidden}T00:00:00Z`)
+    }
+  });
+  const rule = {
+    type: "BIRTHDAY" as const,
+    minimumCaches: 2,
+    minAge: 1,
+    maxAge: 99,
+    minimumTotalAge: 10,
+    minimumDifferentAges: 2,
+    uniqueDates: false,
+    filters: [{}],
+    filterLabel: "all finds"
+  };
+  const passing = evaluateChallenge([rule], [
+    birthday("GC1", "2010-05-15", "2015-05-15"),
+    birthday("GC2", "2012-05-15", "2019-05-15"),
+    birthday("GC3", "2020-01-01", "2021-02-02")
+  ]);
+  assert.equal(passing.rules[0]!.current, 2);
+  assert.equal(passing.rules[0]!.passed, true);
+  assert.equal(passing.rules[0]!.evidence.length, 2);
+  const failing = evaluateChallenge([{ ...rule, minimumTotalAge: 50 }], [
+    birthday("GC1", "2010-05-15", "2015-05-15"),
+    birthday("GC2", "2012-05-15", "2019-05-15")
+  ]);
+  assert.equal(failing.rules[0]!.passed, false);
+  assert.match(failing.rules[0]!.detail, /total age.*only 12/);
+  const unique = evaluateChallenge([{ ...rule, uniqueDates: true, minimumCaches: 1, minimumTotalAge: 1, minimumDifferentAges: 1 }], [
+    birthday("GC1", "2010-05-15", "2015-05-15"),
+    birthday("GC2", "2010-05-15", "2019-05-15")
+  ]);
+  assert.equal(unique.rules[0]!.current, 1);
+  assert.equal(unique.rules[0]!.passed, true);
+});
+
+test("fills alphabet grids from first uppercased letters", () => {
+  const named = (gcCode: string, name: string, county: string | null = null) => ({
+    foundAt: new Date("2025-01-01T00:00:00Z"),
+    foundDate: new Date("2025-01-01T00:00:00Z"),
+    cache: {
+      gcCode, name, cacheType: "Traditional Cache", difficulty: 1, terrain: 1,
+      country: null, region: null, county
+    }
+  });
+  const rule = {
+    type: "ALPHABET" as const,
+    letters: ["A", "B", "C"],
+    field: "cache_name" as const,
+    filters: [{}],
+    filterLabel: "all finds"
+  };
+  const passing = evaluateChallenge([rule], [
+    named("GC1", "apple"),
+    named("GC2", "Banana"),
+    named("GC3", "apricot"),
+    named("GC4", "Cherry")
+  ]);
+  assert.equal(passing.rules[0]!.current, 3);
+  assert.equal(passing.rules[0]!.passed, true);
+  assert.deepEqual(passing.rules[0]!.evidence.map((row) => row.gcCode), ["GC1", "GC2", "GC4"]);
+  const failing = evaluateChallenge([rule], [named("GC1", "apple")]);
+  assert.equal(failing.rules[0]!.passed, false);
+  assert.match(failing.rules[0]!.detail, /Missing: B, C/);
+});

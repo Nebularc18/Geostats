@@ -1,7 +1,7 @@
 import { BadRequestException } from "@nestjs/common";
 import { cacheTypeIdentity, cacheTypeLabel } from "./cache-type-catalog";
 import { geocacheAttributeLabel } from "./geocache-attribute-catalog";
-import type { CalendarFillRule, DistinctTypesRule, MonthlyAttributeRule, ProjectGcFindFilter, ProjectGcNumberRule } from "./challenge-checker.evaluator";
+import type { AlphabetRule, BirthdayRule, CalendarFillRule, DistinctTypesRule, MonthlyAttributeRule, ProjectGcFindFilter, ProjectGcNumberRule } from "./challenge-checker.evaluator";
 
 const MAX_SCRIPT_LENGTH = 250_000;
 const MAX_CONFIG_LENGTH = 25_000;
@@ -626,7 +626,7 @@ function assignmentSites(source: string) {
 
 function memberAssignmentSites(source: string) {
   const assignments: Array<{ name: string; member: string; value: string; index: number }> = [];
-  const assignment = /\b([A-Za-z_]\w*)\s*(\.\s*[A-Za-z_]\w*|\[[^\]]*\])\s*=(?!=)\s*([^\n;]*)/g;
+  const assignment = /\b([A-Za-z_]\w*)((?:[ \t]*\.[ \t]*[A-Za-z_]\w*|[ \t]*\[[^\]\n]*\])+)[ \t]*=(?!=)[ \t]*([^\n;]*)/g;
   for (const match of source.matchAll(assignment)) assignments.push({ name: match[1]!, member: match[2]!.replace(/\s/g, ""), value: match[3]!.trim(), index: match.index ?? 0 });
   return assignments;
 }
@@ -647,7 +647,7 @@ function accumulatorIsPopulated(body: string, assignment: { name: string; member
     if (argumentsList.length < 2 || !sameTableReference(argumentsList[0]!, target)) continue;
     if (referencesAny(argumentsList[1]!, derived) || (argumentsList[2] !== undefined && referencesAny(argumentsList[2]!, derived))) return true;
   }
-  const nestedAssignment = new RegExp("\\b" + assignment.name + "\\s*" + assignment.member.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&") + "(?:\\s*(?:\\.\\s*[A-Za-z_]\\w*|\\[[^\\]]*\\]))\\s*=(?!=)\\s*([^\\n;]*)", "g");
+  const nestedAssignment = new RegExp("\\b" + assignment.name + "[ \\t]*" + assignment.member.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&") + "(?:[ \\t]*(?:\\.[ \\t]*[A-Za-z_]\\w*|\\[[^\\]\\n]*\\]))[ \\t]*=(?!=)[ \\t]*([^\\n;]*)", "g");
   return [...suffix.matchAll(nestedAssignment)].some((match) => referencesAny(match[1]!.trim(), derived));
 }
 
@@ -740,12 +740,40 @@ function validateExpandedFilter(source: string) {
       }
     }
   }
-  for (const assignment of memberAssignmentSites(definition.body)) {
+  const assignments = memberAssignmentSites(definition.body);
+  const approvedAccumulators = new Set<string>();
+  for (const assignment of assignments) {
+    if (!derived.has(assignment.name)) continue;
+    if (assignment.value === "{}" && (assignment.member === ".types" || assignment.member === ".excludeTypes" || assignment.member.startsWith("[")) && accumulatorIsPopulated(definition.body, assignment, derived)) {
+      approvedAccumulators.add(`${assignment.name}${assignment.member}`);
+    }
+  }
+  const isApprovedNestedWrite = (assignment: { name: string; member: string; value: string }) => {
+    // Dict-style set accumulation for the post-filtered excludeTypes (and, for
+    // symmetry, types): res.excludeTypes[key] = value populates an approved
+    // res.excludeTypes = {} accumulator. The key/value must each be derived
+    // (loop variables such as t) or a blanked string literal (group-expansion
+    // names such as Traditional Cache read as []/empty after masking).
+    for (const target of approvedAccumulators) {
+      const root = `${assignment.name}`;
+      if (!target.startsWith(root)) continue;
+      const targetMember = target.slice(root.length);
+      if (!targetMember || !(targetMember === ".types" || targetMember === ".excludeTypes")) continue;
+      if (assignment.member === targetMember) continue;
+      if (!(assignment.member.startsWith(`${targetMember}[`) && assignment.member.endsWith("]"))) continue;
+      const key = assignment.member.slice(targetMember.length + 1, -1).trim();
+      const keyOk = key === "" || referencesAny(key, derived) || /^-?\d+(\.\d+)?$/.test(key);
+      const valueOk = assignment.value === "" || referencesAny(assignment.value, derived);
+      if (keyOk && valueOk) return true;
+    }
+    return false;
+  };
+  for (const assignment of assignments) {
     if (!derived.has(assignment.name)) continue;
     const simpleValue = preservesMemberField(assignment.value, assignment.member, derived);
     const copiedValue = copiesDerivedValue(assignment.value, assignment.member, derived);
     const emptyAccumulator = assignment.value === "{}" && (assignment.member === ".types" || assignment.member === ".excludeTypes" || assignment.member.startsWith("[")) && accumulatorIsPopulated(definition.body, assignment, derived);
-    if (!simpleValue && !copiedValue && !emptyAccumulator) {
+    if (!simpleValue && !copiedValue && !emptyAccumulator && !isApprovedNestedWrite(assignment)) {
       throw new BadRequestException(`Project-GC expandFilter must preserve the input filter semantics (unsupported write to ${assignment.name}${assignment.member})`);
     }
   }
@@ -2183,6 +2211,248 @@ function blankTestBlocks(source: string) {
   return chars.join("");
 }
 
+export function isProjectGcBirthdayScript(scriptValue: unknown) {
+  if (typeof scriptValue !== "string" || !scriptValue.trim() || scriptValue.length > MAX_SCRIPT_LENGTH) return false;
+  const script = maskLua(scriptValue);
+  return /\.hidden\b/.test(script) && /\bvisitdate\b/.test(script) && !/\bfunction\s+c_(number|calendar)\s*\(/.test(script);
+}
+
+const BIRTHDAY_BUILDABLE_FIELDS = new Set([
+  "country", "region", "county", "minVisitDate", "maxVisitDate", "minHiddenDate", "maxHiddenDate",
+  "excludeTypes", "types", "sizes", "difficulties", "terrains"
+]);
+const BIRTHDAY_META_KEYS = new Set(["mincaches", "minage", "maxage", "mintotal", "mindifferentages", "uniquedates", "showall", "brief", "debug"]);
+const BIRTHDAY_ALLOWED_PGC_CALLS = new Set(["PGC.GetFinds", "PGC.print", "PGC.ProfileName2Id", "PGC.ProfileId2Name"]);
+
+function parseBirthdayConfig(configTextValue: unknown): {
+  minimumCaches: number; minAge: number; maxAge: number; minimumTotalAge: number;
+  minimumDifferentAges: number; uniqueDates: boolean; filters: ProjectGcFindFilter[]; filterLabel: string;
+} {
+  if (typeof configTextValue !== "string" || !configTextValue.trim()) throw new BadRequestException("Paste the Project-GC tag config as JSON");
+  if (configTextValue.length > MAX_CONFIG_LENGTH) throw new BadRequestException("Project-GC config is too large");
+  let parsed: unknown;
+  try { parsed = JSON.parse(configTextValue); } catch { throw new BadRequestException("Project-GC tag config must be valid JSON"); }
+  const config = objectValue(parsed, "Project-GC tag config");
+  for (const key of Object.keys(config)) {
+    if (!FILTER_KEYS.has(key) && !BIRTHDAY_META_KEYS.has(key)) {
+      throw new BadRequestException(`Project-GC config option '${key}' is not supported for birthday checkers`);
+    }
+  }
+  const integerOption = (key: string, fallback: number, minimum: number, maximum: number) => {
+    const raw = config[key];
+    if (raw === undefined || raw === null || raw === "") return fallback;
+    const value = Number(raw);
+    if (!Number.isInteger(value) || value < minimum || value > maximum) {
+      throw new BadRequestException(`Project-GC config '${key}' must be a whole number from ${minimum} to ${maximum}`);
+    }
+    return value;
+  };
+  const minimumCaches = integerOption("mincaches", 1, 1, 1_000_000);
+  const minAge = integerOption("minage", 1, 0, 999);
+  const maxAge = integerOption("maxage", 999, 0, 999);
+  const minimumTotalAge = integerOption("mintotal", 1, 1, 1_000_000_000);
+  const minimumDifferentAges = integerOption("mindifferentages", 1, 1, 366);
+  if (maxAge < minAge) throw new BadRequestException("Project-GC config 'maxage' must not be below 'minage'");
+  const uniqueRaw = config.uniquedates;
+  const uniqueDates = uniqueRaw === undefined || uniqueRaw === null || uniqueRaw === ""
+    ? false
+    : typeof uniqueRaw === "boolean"
+      ? uniqueRaw
+      : String(uniqueRaw).toLocaleLowerCase() === "yes" ? true
+        : String(uniqueRaw).toLocaleLowerCase() === "no" ? false
+          : (() => { throw new BadRequestException("Project-GC config 'uniquedates' must be YES or NO"); })();
+  const base = Object.fromEntries(Object.entries(config).filter(([key]) => FILTER_KEYS.has(key)));
+  const filters = [compactFilter(parseFilter(base))];
+  const filterLabel = projectGcFilterLabel(filters);
+  return { minimumCaches, minAge, maxAge, minimumTotalAge, minimumDifferentAges, uniqueDates, filters, filterLabel };
+}
+
+function birthdayRowSets(source: string, findsVar: string) {
+  // Rows travel under the finds binding, ipairs loop variables over row
+  // tables, and plain reads of rows. Display tables that merely collect rows
+  // (qualified) or row wrappers (bestPerBirthdate, sortedEntries) are tracked
+  // separately so their own bookkeeping writes stay legal while writes that
+  // could reach a fetched row stay forbidden.
+  const rows = new Set([findsVar]);
+  const direct: string[] = [];
+  const wrapped: string[] = [];
+  let changed = true;
+  while (changed) {
+    changed = false;
+    const rowPattern = [...rows].map((alias) => "\\b" + alias + "\\b").join("|");
+    for (const match of source.matchAll(/\bfor\s+(?:([A-Za-z_]\w*)\s*,\s*)?([A-Za-z_]\w*)\s+in\s+ipairs\s*\(\s*([A-Za-z_]\w*)\s*\)\s+do\b/g)) {
+      const collection = match[3]!;
+      const names = [match[1], match[2]].filter((name): name is string => Boolean(name) && name !== "_");
+      if (rows.has(collection) || direct.includes(collection)) {
+        for (const name of names) if (!rows.has(name)) { rows.add(name); changed = true; }
+      } else if (wrapped.includes(collection)) {
+        for (const name of names) if (!wrapped.includes(name)) { wrapped.push(name); changed = true; }
+      }
+    }
+    for (const assignment of assignmentSites(source)) {
+      const read = assignment.value.match(/^([A-Za-z_]\w*)\s*(?:\.\s*[A-Za-z_]\w*|\[[^\]\n]*\])?$/);
+      if (read && rows.has(read[1]!) && !rows.has(assignment.name)) { rows.add(assignment.name); changed = true; }
+    }
+    for (const call of callSites(source)) {
+      if (call.name !== "table.insert") continue;
+      const args = topLevelArguments(call.argumentsText);
+      if (args.length < 2 || !new RegExp(rowPattern).test(args[1]!)) continue;
+      const target = args[0]!.match(/^([A-Za-z_]\w*)$/)?.[1];
+      if (!target || rows.has(target) || direct.includes(target) || wrapped.includes(target)) continue;
+      if (rows.has(args[1]!.trim())) direct.push(target);
+      else wrapped.push(target);
+      changed = true;
+    }
+  }
+  for (const match of source.matchAll(/\bfor\s+(?:([A-Za-z_]\w*)\s*,\s*)?([A-Za-z_]\w*)\s+in\s+pairs\s*\(\s*([A-Za-z_]\w*)\s*\)\s+do\b/g)) {
+    if (!wrapped.includes(match[3]!)) continue;
+    for (const name of [match[1], match[2]]) {
+      if (name && name !== "_" && !wrapped.includes(name)) wrapped.push(name);
+    }
+  }
+  return { rows, direct, wrapped };
+}
+
+function validateBirthdayFilter(source: string, filterVar: string) {
+  if (configAliases(source).has(filterVar)) return;
+  const inits = [...source.matchAll(new RegExp(`(?:^|[;\\n])\\s*local\\s+${filterVar}\\s*=\\s*\\{\\s*\\}`, "g"))];
+  if (inits.length !== 1) throw new BadRequestException("Project-GC birthday checkers must build their filter from the tag config");
+  for (const assignment of memberAssignmentSites(source)) {
+    if (assignment.name !== filterVar) continue;
+    const field = memberField(assignment.member);
+    if (!field || !BIRTHDAY_BUILDABLE_FIELDS.has(field)) {
+      throw new BadRequestException("Project-GC birthday checkers must build their filter from the tag config");
+    }
+    if (!new RegExp(`^(?:conf|config)\\s*\\.\\s*${field}$`).test(assignment.value)) {
+      throw new BadRequestException("Project-GC birthday checkers must build their filter from the tag config");
+    }
+  }
+  if (new RegExp(`\\b${filterVar}\\s*\\[`).test(source)) {
+    throw new BadRequestException("Project-GC birthday checkers must build their filter from the tag config");
+  }
+}
+
+function validateBirthdayCondition(source: string, original: string) {
+  for (const match of source.matchAll(/\bPGC\s*\.\s*([A-Za-z_]\w*)\s*\(/g)) {
+    if (!BIRTHDAY_ALLOWED_PGC_CALLS.has(`PGC.${match[1]}`)) {
+      throw new BadRequestException(`Project-GC birthday checkers must not call PGC.${match[1]}`);
+    }
+  }
+  const bindings = assignmentSites(source).filter((assignment) =>
+    (assignment.name === "finds" || assignment.name === "myFinds") && /^PGC\.GetFinds\s*\(/.test(assignment.value));
+  if (bindings.length !== 1) throw new BadRequestException("Project-GC birthday checkers must fetch finds with a single PGC.GetFinds call");
+  const findsVar = bindings[0]!.name;
+  const callOpen = source.indexOf("PGC.GetFinds");
+  const optionsText = balancedCallArguments(source, source.indexOf("(", callOpen));
+  if (optionsText === null) throw new BadRequestException("Project-GC GetFinds call has unbalanced arguments");
+  const callArgs = topLevelArguments(optionsText);
+  if (callArgs.length < 2) throw new BadRequestException("Project-GC GetFinds must pass a profile and an options table");
+  if (/^\s*\d/.test(callArgs[0]!)) throw new BadRequestException("Project-GC GetFinds must count the user's own finds");
+  if (!/\b(profileId|profileName|args)\b/.test(callArgs[0]!)) {
+    throw new BadRequestException("Project-GC GetFinds must count the user's own finds");
+  }
+  const options = callArgs[1]!;
+  const optionKeys = [...options.matchAll(/\b([A-Za-z_]\w*)\s*=/g)].map((match) => match[1]!);
+  if (optionKeys.some((key) => !["fields", "filter", "order", "includeLabCaches"].includes(key))) {
+    throw new BadRequestException("Project-GC birthday checkers use an unsupported find option");
+  }
+  if (/includeLabCaches\s*=\s*true\b/.test(options)) {
+    throw new BadRequestException("Lab caches are not part of imported find data");
+  }
+  const filterVar = options.match(/(?:^|[,{])\s*filter\s*=\s*([A-Za-z_]\w*)/)?.[1];
+  if (!filterVar) throw new BadRequestException("Project-GC GetFinds must use the tag config as its filter");
+  validateBirthdayFilter(source, filterVar);
+  const fieldsBlock = original.match(/fields\s*=\s*\{([^}]*)\}/)?.[1] ?? "";
+  for (const field of ["gccode", "hidden", "visitdate"]) {
+    if (!new RegExp(`['"]${field}['"]`).test(fieldsBlock)) {
+      throw new BadRequestException(`Project-GC birthday checkers must fetch the '${field}' field`);
+    }
+  }
+  const { rows, direct, wrapped } = birthdayRowSets(source, findsVar);
+  const rowPattern = [...rows].map((alias) => "\\b" + alias + "\\b").join("|");
+  const wrapperPattern = [...wrapped, ...direct].map((alias) => "\\b" + alias + "\\b").join("|");
+  const segments = (member: string) => member.match(/(\.[A-Za-z_]\w*|\[[^\]\n]*\])/g)?.length ?? 0;
+  for (const assignment of memberAssignmentSites(source)) {
+    if (assignment.name === filterVar) continue;
+    if (rowPattern && new RegExp(`^(?:${rowPattern})$`).test(assignment.name)) {
+      throw new BadRequestException("Project-GC birthday checkers must not rewrite their fetched finds");
+    }
+    if (new RegExp(`^(?:${wrapperPattern})$`).test(assignment.name) && segments(assignment.member) > 1) {
+      throw new BadRequestException("Project-GC birthday checkers must not rewrite their fetched finds");
+    }
+  }
+  for (const call of callSites(source)) {
+    if (CONTROL_CALLS.has(call.name)) continue;
+    const args = topLevelArguments(call.argumentsText);
+    const touchesRows = rowPattern && args.some((argument) => new RegExp(rowPattern).test(argument));
+    const touchesWrappers = wrapperPattern && args.some((argument) => new RegExp(wrapperPattern).test(argument));
+    if (call.name === "table.insert" || call.name === "table.sort" || call.name === "table.concat") {
+      if (args.length && rowPattern && new RegExp(`^(?:${rowPattern})$`).test(args[0]!.replace(/\s/g, ""))) {
+        throw new BadRequestException("Project-GC birthday checkers must not change their fetched finds");
+      }
+      for (const argument of args.slice(1)) {
+        if (/\bfunction\b/.test(argument) && /=(?!=)/.test(argument)) {
+          throw new BadRequestException("Project-GC birthday checkers must not change their fetched finds");
+        }
+      }
+      continue;
+    }
+    if (call.name === "table.remove") {
+      throw new BadRequestException("Project-GC birthday checkers must not change their fetched finds");
+    }
+    // Calls without fetched-find arguments cannot change the count (other
+    // PGC data sources are already rejected above); only row-touching calls
+    // need allowlisting, mirroring the monthly checker posture.
+    if (!touchesRows && !touchesWrappers) continue;
+    if (READ_ONLY_CALLS.has(call.name) || /^(?:string|math)\s*\.\s*[A-Za-z_]\w*$/.test(call.name)) continue;
+    if (/^PGC\s*\.\s*(?:print|ProfileName2Id|ProfileId2Name)$/.test(call.name)) continue;
+    const definition = functionDefinition(source, call.name);
+    if (!definition) throw new BadRequestException("Project-GC birthday checkers must not pass their fetched finds to mutating helpers");
+    const parameters = definition.parameters;
+    const bad = args.some((argument, index) => {
+      if (rowPattern && !new RegExp(rowPattern).test(argument) && wrapperPattern && !new RegExp(wrapperPattern).test(argument)) return false;
+      const parameter = parameters[index];
+      return !parameter || functionMutatesParameter(source, call.name, parameter);
+    });
+    if (bad) throw new BadRequestException("Project-GC birthday checkers must not pass their fetched finds to mutating helpers");
+  }
+  // Counting core: a hidden month/day is compared to the visit month/day, the
+  // cache age is the visit year minus the hidden year, ages gate on the tag
+  // min/max, and the verdict conjoins the three tag totals.
+  const hiddenDay = "string\\.sub\\s*\\(\\s*[A-Za-z_]+\\.hidden\\s*,\\s*6\\s*\\)";
+  const visitDay = "string\\.sub\\s*\\(\\s*[A-Za-z_]+\\.visitdate\\s*,\\s*6\\s*\\)";
+  const directMatch = new RegExp(`${hiddenDay}\\s*==\\s*${visitDay}|${visitDay}\\s*==\\s*${hiddenDay}`).test(source);
+  const viaVariable = [...source.matchAll(new RegExp(`(?:local\\s+)?([A-Za-z_]\\w*)\\s*=\\s*${hiddenDay}`, "g"))]
+    .some((match) => new RegExp(`\\b${match[1]}\\s*==\\s*${visitDay}|${visitDay}\\s*==\\s*\\b${match[1]}\\b`).test(source));
+  if (!directMatch && !viaVariable) {
+    throw new BadRequestException("Project-GC birthday checkers must match hidden and visit month/day");
+  }
+  if (!/tonumber\s*\(\s*string\.sub\s*\(\s*[A-Za-z_]+\.visitdate\s*,\s*1\s*,\s*4\s*\)\s*\)\s*-\s*tonumber\s*\(\s*string\.sub\s*\(\s*[A-Za-z_]+\.hidden/.test(source)) {
+    throw new BadRequestException("Project-GC birthday checkers must count whole-year cache ages");
+  }
+  if (!/\bage\s*>=\s*minage\b/.test(source) || !/\bage\s*<=\s*maxage\b/.test(source)) {
+    throw new BadRequestException("Project-GC birthday checkers must gate ages on the tag range");
+  }
+  for (const key of ["conf.mincaches", "conf.mintotal", "conf.mindifferentages", "conf.minage", "conf.maxage"]) {
+    if (!source.includes(key) && !source.includes(key.replace("conf.", "config."))) {
+      throw new BadRequestException("Project-GC birthday checkers must read their totals from the tag config");
+    }
+  }
+  const verdictAssignments = [...source.matchAll(/(?:^|[;\n])\s*(?:local\s+)?([A-Za-z_]\w*)\s*=\s*([^\n;]*)/g)]
+    .map((match) => ({ name: match[1]!, value: match[2]!.trim().replace(/\bend\s*$/, "").trim() }));
+  const verdictName = verdictAssignments.find((assignment) => {
+    const parts = assignment.value.split(/\s+and\s+/).map((part) => part.replace(/[\s()]/g, ""));
+    return parts.length === 3 && new Set(parts).size === 3 &&
+      parts.includes("totalage>=mintotal") && parts.includes("cachesfound>=mincaches") && parts.includes("differentages>=mindifferentages");
+  })?.name;
+  if (!verdictName) throw new BadRequestException("Project-GC birthday checkers must pass on their tag totals");
+  const topLevel = blankNamedFunctionBodies(source);
+  const returns = [...topLevel.matchAll(/\breturn\s*\{([^}]*)\}/g)];
+  if (returns.length !== 1 || !new RegExp(`\\bok\\s*=\\s*${verdictName}\\s*[,}]`).test(`${returns[0]![1]!}}`)) {
+    throw new BadRequestException("Project-GC birthday checkers must return their pass verdict once");
+  }
+}
+
 export function importProjectGcMonthlyScript(scriptValue: unknown, configTextValue: unknown): { rules: MonthlyAttributeRule[]; summary: string } {
   if (typeof scriptValue !== "string" || !scriptValue.trim()) throw new BadRequestException("Paste a Project-GC Lua script");
   if (scriptValue.length > MAX_SCRIPT_LENGTH) throw new BadRequestException("Lua script is too large");
@@ -2199,4 +2469,366 @@ export function importProjectGcMonthlyScript(scriptValue: unknown, configTextVal
   validateParseBudgets(script);
   validateMonthlyCondition(script);
   return { rules: [{ type: "MONTHLY_ATTRIBUTE", months: parsed.months, overallMinimum: parsed.overallMinimum, attributeId: parsed.attributeId, attributeLabel: parsed.attributeLabel, filters: parsed.filters, filterLabel: parsed.filterLabel, excludedGcCodes: parsed.excludedGcCodes, excludeSelf: rawConfig.exclude === undefined }], summary: `${parsed.overallMinimum} months of ${parsed.attributeLabel}, ${parsed.filterLabel}` };
+}
+
+export function isProjectGcAlphabetScript(scriptValue: unknown) {
+  if (typeof scriptValue !== "string" || !scriptValue.trim() || scriptValue.length > MAX_SCRIPT_LENGTH) return false;
+  const script = maskLua(scriptValue);
+  if (/\bfunction\s+c_(number|calendar)\s*\(/.test(script)) return false;
+  if (!/\bPGC\.GetFinds\s*\(/.test(script)) return false;
+  return /(['"])[A-ZÅÄÖ0-9]\1\s*,\s*(['"])[A-ZÅÄÖ0-9]\2/.test(scriptValue);
+}
+
+const ALPHABET_FILTER_KEYS = new Set(["country", "region", "county", "maxHiddenDate"]);
+const ALPHABET_CUSTOM_KEYS = new Set(["type", "after"]);
+const ALPHABET_META_KEYS = new Set(["alphafield", "alpha", "alphabet", "brief", "debug"]);
+const ALPHABET_FALSY_KEYS = new Set(["ignore_non_alpha", "ignore_non_alphanum", "remove_space", "ignore_articles"]);
+const ALPHABET_REJECTED_KEYS: Record<string, string> = {
+  eqtest: "Second-field matching (eqtest) is not supported for alphabet checkers",
+  multiple: "Multi-round fetching (multiple) is not supported for alphabet checkers",
+  multtype: "Multi-round fetching (multtype) is not supported for alphabet checkers",
+  regions: "The 'regions' option is not supported for alphabet checkers",
+  region1: "The 'region1' option is not supported for alphabet checkers",
+  subChecker: "Partial checkers (subChecker) are not supported for alphabet checkers",
+  types: "Use 'type' instead of 'types' for alphabet checkers",
+  minVisitDate: "Use 'after' instead of 'minVisitDate' for alphabet checkers"
+};
+const ALPHABET_ALLOWED_PGC_CALLS = new Set(["PGC.GetFinds", "PGC.print", "PGC.ProfileName2Id", "PGC.ProfileId2Name", "PGC.UTF8ToUpper", "PGC.UTF8ToLower"]);
+const ALPHABET_LETTER_PRESETS: Record<string, string[]> = {
+  eng: ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z"],
+  eng_alpha_num: ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z", "1", "2", "3", "4", "5", "6", "9", "8", "9", "0"],
+  sv_alpha_num: ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z", "Å", "Ä", "Ö", "1", "2", "3", "4", "5", "6", "9", "8", "9", "0"]
+};
+const ALPHABET_DEFAULT_LETTERS = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z", "Å", "Ä", "Ö"];
+
+function parseAlphabetConfig(configTextValue: unknown): {
+  letters: string[]; field: "cache_name" | "county"; filters: ProjectGcFindFilter[]; filterLabel: string;
+  hasCustomAlphabet: boolean; alpha: string | undefined;
+} {
+  if (typeof configTextValue !== "string" || !configTextValue.trim()) throw new BadRequestException("Paste the Project-GC tag config as JSON");
+  if (configTextValue.length > MAX_CONFIG_LENGTH) throw new BadRequestException("Project-GC config is too large");
+  let parsed: unknown;
+  try { parsed = JSON.parse(configTextValue); } catch { throw new BadRequestException("Project-GC tag config must be valid JSON"); }
+  const config = objectValue(parsed, "Project-GC tag config");
+  for (const key of Object.keys(config)) {
+    if (ALPHABET_FILTER_KEYS.has(key) || ALPHABET_CUSTOM_KEYS.has(key) || ALPHABET_META_KEYS.has(key)) continue;
+    if (ALPHABET_FALSY_KEYS.has(key)) {
+      if (config[key]) throw new BadRequestException(`Project-GC config '${key}' is not supported for alphabet checkers`);
+      continue;
+    }
+    if (ALPHABET_REJECTED_KEYS[key]) throw new BadRequestException(ALPHABET_REJECTED_KEYS[key]);
+    throw new BadRequestException(`Project-GC config option '${key}' is not supported for alphabet checkers`);
+  }
+  const fieldRaw = config.alphafield;
+  const field = fieldRaw === undefined || fieldRaw === null || fieldRaw === "" ? "cache_name" : String(fieldRaw);
+  if (field !== "cache_name" && field !== "county") {
+    throw new BadRequestException("Project-GC alphabet checkers only support the 'cache_name' and 'county' fields");
+  }
+  if (config.type !== undefined && config.type !== null && config.type !== "") {
+    if (typeof config.type !== "string" || !config.type.trim()) {
+      throw new BadRequestException("Project-GC config 'type' must be a single cache type");
+    }
+  }
+  const after = config.after === undefined || config.after === null || config.after === "" ? undefined : date(config.after, "after");
+  const alpha = config.alpha === undefined || config.alpha === null || config.alpha === "" ? undefined : String(config.alpha);
+  if (alpha !== undefined && !ALPHABET_LETTER_PRESETS[alpha]) {
+    throw new BadRequestException("Project-GC alphabet checkers support the 'eng', 'eng_alpha_num' and 'sv_alpha_num' alphabets");
+  }
+  let letters: string[];
+  const hasCustomAlphabet = config.alphabet !== undefined && config.alphabet !== null && config.alphabet !== "";
+  if (hasCustomAlphabet) {
+    if (typeof config.alphabet !== "string") throw new BadRequestException("Project-GC config 'alphabet' must be a string of letters");
+    letters = Array.from(config.alphabet);
+    if (!letters.length || letters.length > 100) throw new BadRequestException("Project-GC config 'alphabet' must hold 1 to 100 letters");
+  } else {
+    letters = alpha === undefined ? [...ALPHABET_DEFAULT_LETTERS] : [...ALPHABET_LETTER_PRESETS[alpha]!];
+  }
+  const base: Record<string, unknown> = {};
+  for (const key of ["country", "region", "county", "maxHiddenDate"]) {
+    if (config[key] !== undefined) base[key] = config[key];
+  }
+  if (config.type !== undefined && config.type !== null && config.type !== "") base.types = [config.type];
+  if (after !== undefined) base.minVisitDate = after;
+  const filters = [compactFilter(parseFilter(base))];
+  return { letters, field, filters, filterLabel: projectGcFilterLabel(filters), hasCustomAlphabet, alpha };
+}
+
+function blankMultipleBranch(source: string): string {
+  // Tags accepted here never carry `multiple`, so the multi-round branch can
+  // never execute. Blank its body (keeping positions) so the filter and call
+  // scans only see the single-round code. Anything unmatched fails closed.
+  const lines = source.split("\n");
+  const offsets: number[] = [];
+  let cursor = 0;
+  for (const line of lines) {
+    offsets.push(cursor);
+    cursor += line.length + 1;
+  }
+  for (let index = 0; index < lines.length; index += 1) {
+    if (!/^\s*if\s+\(multiple\s*~=\s*nil\)\s*then\b/.test(lines[index]!)) continue;
+    const keepAt = luaBranchEnd(lines, offsets, index);
+    if (keepAt < 0) throw new BadRequestException("Project-GC alphabet checkers use an unsupported multi-round shape");
+    const chars = source.split("");
+    for (let blanked = offsets[index]! + lines[index]!.length + 1; blanked < keepAt; blanked += 1) {
+      if (chars[blanked] !== "\n" && chars[blanked] !== "\r") chars[blanked] = " ";
+    }
+    return chars.join("");
+  }
+  return source;
+}
+
+function helperPreservesRows(source: string, name: string, parameters: string[], stack = new Set<string>()): boolean {
+  // Row-safety for helpers called with fetched rows: the helper may read the
+  // row (and stash reads in its own locals) but must never write through a
+  // row-rooted reference nor run table mutations on one. Pure string helpers
+  // such as the utf8 routines pass trivially, including through nesting
+  // (utf8_sub delegates to utf8_len).
+  const key = `${name}:${[...parameters].sort().join(",")}`;
+  if (stack.has(key)) return false;
+  const definition = functionDefinition(source, name);
+  if (!definition) return false;
+  const nextStack = new Set(stack);
+  nextStack.add(key);
+  const aliases = new Set(parameters);
+  for (const assignment of assignmentSites(definition.body)) {
+    const read = assignment.value.match(/^([A-Za-z_]\w*)\s*(?:\.\s*[A-Za-z_]\w*|\[[^\]\n]*\])?$/);
+    if (read && aliases.has(read[1]!) && assignment.local && !aliases.has(assignment.name)) aliases.add(assignment.name);
+  }
+  for (const assignment of memberAssignmentSites(definition.body)) {
+    if (aliases.has(assignment.name)) return false;
+  }
+  const aliasPattern = [...aliases].map((alias) => "\\b" + alias + "\\b").join("|");
+  for (const call of callSites(definition.body)) {
+    if (CONTROL_CALLS.has(call.name) || READ_ONLY_CALLS.has(call.name)) continue;
+    if (/^(?:string|math)\s*\.\s*[A-Za-z_]\w*$/.test(call.name)) continue;
+    if (/^PGC\s*\.\s*(?:print|ProfileName2Id|ProfileId2Name|UTF8ToUpper|UTF8ToLower)$/.test(call.name)) continue;
+    if (!MUTATING_TABLE_CALLS.has(call.name)) {
+      const nested = functionDefinition(source, call.name);
+      if (!nested) return false;
+      const args = topLevelArguments(call.argumentsText);
+      for (const [index, argument] of args.entries()) {
+        if (!new RegExp(aliasPattern).test(argument)) continue;
+        const parameter = nested.parameters[index];
+        if (!parameter || !helperPreservesRows(source, call.name, [parameter], nextStack)) return false;
+      }
+      continue;
+    }
+    const args = topLevelArguments(call.argumentsText);
+    if (args.length && [...aliases].some((alias) => new RegExp(`^${alias}$`).test(args[0]!.replace(/\s/g, "")))) return false;
+  }
+  return true;
+}
+
+function validateAlphabetCondition(source: string, original: string, config: { field: "cache_name" | "county"; letters: string[]; hasCustomAlphabet: boolean; alpha: string | undefined }) {
+  for (const match of source.matchAll(/\bPGC\s*\.\s*([A-Za-z_]\w*)\s*\(/g)) {
+    if (!ALPHABET_ALLOWED_PGC_CALLS.has(`PGC.${match[1]}`)) {
+      throw new BadRequestException(`Project-GC alphabet checkers must not call PGC.${match[1]}`);
+    }
+  }
+  const bindings = assignmentSites(source).filter((assignment) =>
+    (assignment.name === "finds" || assignment.name === "myFinds") && /^PGC\.GetFinds\s*\(/.test(assignment.value));
+  if (bindings.length !== 1) throw new BadRequestException("Project-GC alphabet checkers must fetch finds with a single PGC.GetFinds call");
+  if (new Set(bindings.map((binding) => binding.name)).size !== 1) {
+    throw new BadRequestException("Project-GC alphabet checkers must fetch finds with a single PGC.GetFinds call");
+  }
+  const findsVar = bindings[0]!.name;
+  const callOpen = source.indexOf("PGC.GetFinds");
+  const optionsText = balancedCallArguments(source, source.indexOf("(", callOpen));
+  if (optionsText === null) throw new BadRequestException("Project-GC GetFinds call has unbalanced arguments");
+  const callArgs = topLevelArguments(optionsText);
+  if (callArgs.length < 2) throw new BadRequestException("Project-GC GetFinds must pass a profile and an options table");
+  if (/^\s*\d/.test(callArgs[0]!)) throw new BadRequestException("Project-GC GetFinds must count the user's own finds");
+  if (!/\b(profileId|profileName|args)\b/.test(callArgs[0]!)) {
+    throw new BadRequestException("Project-GC GetFinds must count the user's own finds");
+  }
+  const options = callArgs[1]!;
+  const optionKeys = [...options.matchAll(/\b([A-Za-z_]\w*)\s*=/g)].map((match) => match[1]!);
+  if (optionKeys.some((key) => !["fields", "filter", "order"].includes(key))) {
+    throw new BadRequestException("Project-GC alphabet checkers use an unsupported find option");
+  }
+  const filterVar = options.match(/(?:^|[,{])\s*filter\s*=\s*([A-Za-z_]\w*)/)?.[1];
+  if (!filterVar) throw new BadRequestException("Project-GC GetFinds must use the tag config as its filter");
+  const fieldsBlock = original.match(/fields\s*=\s*\{([^}]*)\}/)?.[1] ?? "";
+  for (const field of ["gccode", "visitdate", config.field === "county" ? "county" : "cache_name"]) {
+    if (!new RegExp(`['"]${field}['"]|\\balphafield\\b`).test(fieldsBlock)) {
+      throw new BadRequestException(`Project-GC alphabet checkers must fetch the '${field}' field`);
+    }
+  }
+  validateAlphabetFilter(source, filterVar);
+  const rowVars = new Set([findsVar]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const match of source.matchAll(/\bfor\s+(?:([A-Za-z_]\w*)\s*,\s*)?([A-Za-z_]\w*)\s+in\s+ipairs\s*\(\s*([A-Za-z_]\w*)\s*\)\s+do\b/g)) {
+      if (!rowVars.has(match[3]!)) continue;
+      for (const name of [match[1], match[2]]) {
+        if (name && name !== "_" && !rowVars.has(name)) { rowVars.add(name); changed = true; }
+      }
+    }
+    for (const assignment of assignmentSites(source)) {
+      const read = assignment.value.match(/^([A-Za-z_]\w*)\s*(?:\.\s*[A-Za-z_]\w*|\[[^\]\n]*\])?$/);
+      if (read && rowVars.has(read[1]!) && !rowVars.has(assignment.name)) { rowVars.add(assignment.name); changed = true; }
+    }
+  }
+  const rowPattern = [...rowVars].map((alias) => "\\b" + alias + "\\b").join("|");
+  for (const assignment of memberAssignmentSites(source)) {
+    if (!new RegExp(`^(?:${rowPattern})$`).test(assignment.name)) continue;
+    // The one sanctioned row write memoizes the display key computed from
+    // the row by a row-safe helper; our evaluator recomputes it from the
+    // stored field, so the memo cannot change the count.
+    const memoCall = assignment.member === ".key" ? assignment.value.match(/^([A-Za-z_]\w*)\s*\(\s*([A-Za-z_]\w*)\s*,/) : null;
+    const memoHelper = memoCall?.[1] ? functionDefinition(source, memoCall[1]) : null;
+    const memo = !!memoCall && !!memoHelper && memoHelper.parameters.length >= 1 &&
+      new RegExp(`^${assignment.name}$`).test(memoCall[2]!) &&
+      helperPreservesRows(source, memoCall[1]!, [memoHelper.parameters[0]!]);
+    if (!memo) {
+      throw new BadRequestException("Project-GC alphabet checkers must not rewrite their fetched finds");
+    }
+  }
+  for (const call of callSites(source)) {
+    if (CONTROL_CALLS.has(call.name)) continue;
+    const args = topLevelArguments(call.argumentsText);
+    const touchesRows = args.some((argument) => new RegExp(rowPattern).test(argument));
+    if (call.name === "table.insert" || call.name === "table.sort" || call.name === "table.concat") {
+      if (args.length && new RegExp(`^(?:${rowPattern})$`).test(args[0]!.replace(/\s/g, ""))) {
+        throw new BadRequestException("Project-GC alphabet checkers must not change their fetched finds");
+      }
+      for (const argument of args.slice(1)) {
+        if (/\bfunction\b/.test(argument) && /=(?!=)/.test(argument)) {
+          throw new BadRequestException("Project-GC alphabet checkers must not change their fetched finds");
+        }
+      }
+      continue;
+    }
+    if (call.name === "table.remove") {
+      throw new BadRequestException("Project-GC alphabet checkers must not change their fetched finds");
+    }
+    if (!touchesRows) continue;
+    if (READ_ONLY_CALLS.has(call.name) || /^(?:string|math)\s*\.\s*[A-Za-z_]\w*$/.test(call.name)) continue;
+    if (/^PGC\s*\.\s*(?:print|ProfileName2Id|ProfileId2Name|UTF8ToUpper|UTF8ToLower)$/.test(call.name)) continue;
+    const definition = functionDefinition(source, call.name);
+    if (!definition) throw new BadRequestException("Project-GC alphabet checkers must not pass their fetched finds to mutating helpers");
+    const bad = args.some((argument, index) => {
+      if (!new RegExp(rowPattern).test(argument)) return false;
+      const parameter = definition.parameters[index];
+      return !parameter || !helperPreservesRows(source, call.name, [parameter]);
+    });
+    if (bad) throw new BadRequestException("Project-GC alphabet checkers must not pass their fetched finds to mutating helpers");
+  }
+  // Counting core: a first-letter idiom fills the grid, and the verdict flag
+  // requires every grid letter. The grid itself is checked against the
+  // original text because masking blanks the letter literals.
+  if (!/utf8_sub\s*\(\s*[A-Za-z_]+\s*,\s*1\s*,\s*1\s*\)/.test(source) || !/PGC\.UTF8ToUpper\s*\(/.test(source)) {
+    throw new BadRequestException("Project-GC alphabet checkers must fill grid letters from uppercased first letters");
+  }
+  if (!/\bfor\s+\w+\s*,\s*\w+\s+in\s+ipairs\s*\(\s*letters\s*\)/.test(source) || !/\bcurrentLetters\s*\[/.test(source)) {
+    throw new BadRequestException("Project-GC alphabet checkers must fill one slot per grid letter");
+  }
+  const scriptLetters = config.hasCustomAlphabet
+    ? (/table\.insert\s*\(\s*letters\s*,\s*utf8_sub\s*\(\s*conf\.alphabet/.test(source) ? config.letters : null)
+    : [...original.matchAll(new RegExp(
+      config.alpha === undefined
+        ? "else\\s+letters\\s*=\\s*\\{([^}]*)\\}"
+        : `alpha\\s*==\\s*"${config.alpha}"\\s*then\\s+letters\\s*=\\s*\\{([^}]*)\\}`, "g"
+    ))].map((match) => [...match[1]!.matchAll(/"([^"]*)"|'([^']*)'/g)].map((cell) => cell[1] ?? cell[2]!))[0] ?? null;
+  if (!scriptLetters || scriptLetters.length !== config.letters.length || scriptLetters.some((letter, index) => letter !== config.letters[index])) {
+    throw new BadRequestException("Project-GC alphabet checkers must use the tag's letter grid");
+  }
+  if (!/\blocal\s+madeIt\s*=\s*true\b/.test(source) || !/\bmadeIt\s*=\s*false\b/.test(source)) {
+    throw new BadRequestException("Project-GC alphabet checkers must fail on the first missing letter");
+  }
+  const topLevel = blankNamedFunctionBodies(source);
+  const returns: string[] = [];
+  for (const match of topLevel.matchAll(/\breturn\s*\{/g)) {
+    let depth = 0;
+    let cursor = (match.index ?? 0) + match[0].length - 1;
+    for (; cursor < topLevel.length; cursor += 1) {
+      if (topLevel[cursor] === "{") depth += 1;
+      else if (topLevel[cursor] === "}") {
+        depth -= 1;
+        if (depth === 0) break;
+      }
+    }
+    returns.push(topLevel.slice((match.index ?? 0), cursor + 1));
+  }
+  const earlyEmpty = returns.find((statement) => /\bok\s*=\s*\{\s*\}/.test(statement));
+  if (earlyEmpty && !/conf_nr\s*==\s*0/.test(topLevel)) {
+    throw new BadRequestException("Project-GC alphabet checkers must return their pass verdict once");
+  }
+  const verdicts = returns.filter((statement) => /\bok\s*=\s*madeIt\s*[,}]/.test(statement));
+  if (verdicts.length !== 1 || returns.length > 2 || (returns.length === 2 && !earlyEmpty)) {
+    throw new BadRequestException("Project-GC alphabet checkers must return their pass verdict once");
+  }
+}
+
+function validateAlphabetFilter(source: string, filterVar: string) {
+  if (configAliases(source).has(filterVar)) return;
+  const inits = [...source.matchAll(new RegExp(`(?:^|[;\\n])\\s*local\\s+${filterVar}\\s*=\\s*\\{\\s*\\}`, "g"))];
+  if (inits.length !== 1) throw new BadRequestException("Project-GC alphabet checkers must build their filter from the tag config");
+  const traced = new Map<string, string>();
+  for (const match of source.matchAll(/(?:^|[;\n])\s*local\s+([A-Za-z_]\w*)\s*=\s*(conf|config)\.([A-Za-z_]\w*)/g)) {
+    if (!traced.has(match[1]!)) traced.set(match[1]!, match[3]!);
+  }
+  const sameField = (value: string, field: string) =>
+    new RegExp(`^(?:conf|config)\\s*\\.\\s*${field}$`).test(value) || traced.get(value) === field;
+  for (const assignment of memberAssignmentSites(source)) {
+    if (assignment.name !== filterVar) continue;
+    // Single-line conditionals (`if (type~=nil) then filter['types']={type} end`)
+    // leave a trailing `end` in the line-scoped value; strip exactly that.
+    const value = assignment.value.replace(/\s+end\s*$/, "");
+    const field = memberField(assignment.member);
+    if (field === "types" && /^\{\s*type\s*\}$/.test(value) && traced.get("type") === "type") continue;
+    if (!field || !["country", "region", "county", "minVisitDate", "maxHiddenDate", "types"].includes(field)) {
+      throw new BadRequestException("Project-GC alphabet checkers must build their filter from the tag config");
+    }
+    const expected = field === "minVisitDate" ? "after" : field;
+    if (field === "types") {
+      if (!(sameField(value, "types") || (/^\{\s*type\s*\}$/.test(value) && traced.get("type") === "type"))) {
+        throw new BadRequestException("Project-GC alphabet checkers must build their filter from the tag config");
+      }
+      continue;
+    }
+    if (!sameField(value, expected)) {
+      throw new BadRequestException("Project-GC alphabet checkers must build their filter from the tag config");
+    }
+  }
+  if (new RegExp(`\\b${filterVar}\\s*\\[`).test(source)) {
+    throw new BadRequestException("Project-GC alphabet checkers must build their filter from the tag config");
+  }
+}
+
+export function importProjectGcAlphabetScript(scriptValue: unknown, configTextValue: unknown): { rules: AlphabetRule[]; summary: string } {
+  if (typeof scriptValue !== "string" || !scriptValue.trim()) throw new BadRequestException("Paste a Project-GC Lua script");
+  if (scriptValue.length > MAX_SCRIPT_LENGTH) throw new BadRequestException("Lua script is too large");
+  const parsed = parseAlphabetConfig(configTextValue);
+  const script = blankMultipleBranch(maskLua(scriptValue));
+  validateParseBudgets(script);
+  validateAlphabetCondition(script, scriptValue, {
+    field: parsed.field,
+    letters: parsed.letters,
+    hasCustomAlphabet: parsed.hasCustomAlphabet,
+    alpha: parsed.alpha
+  });
+  return {
+    rules: [{ type: "ALPHABET", letters: parsed.letters, field: parsed.field, filters: parsed.filters, filterLabel: parsed.filterLabel }],
+    summary: `Alphabet ${parsed.letters.length.toLocaleString()} letters (${parsed.field === "county" ? "county names" : "cache names"}), ${parsed.filterLabel}`
+  };
+}
+
+export function importProjectGcBirthdayScript(scriptValue: unknown, configTextValue: unknown): { rules: BirthdayRule[]; summary: string } {
+  if (typeof scriptValue !== "string" || !scriptValue.trim()) throw new BadRequestException("Paste a Project-GC Lua script");
+  if (scriptValue.length > MAX_SCRIPT_LENGTH) throw new BadRequestException("Lua script is too large");
+  const script = maskLua(scriptValue);
+  validateParseBudgets(script);
+  validateBirthdayCondition(script, scriptValue);
+  const parsed = parseBirthdayConfig(configTextValue);
+  const ages = parsed.minAge === parsed.maxAge ? `age ${parsed.minAge}` : `ages ${parsed.minAge}-${parsed.maxAge}`;
+  return {
+    rules: [{
+      type: "BIRTHDAY", minimumCaches: parsed.minimumCaches, minAge: parsed.minAge, maxAge: parsed.maxAge,
+      minimumTotalAge: parsed.minimumTotalAge, minimumDifferentAges: parsed.minimumDifferentAges,
+      uniqueDates: parsed.uniqueDates, filters: parsed.filters, filterLabel: parsed.filterLabel
+    }],
+    summary: `${parsed.minimumCaches.toLocaleString()} birthday finds (${ages}, total ${parsed.minimumTotalAge.toLocaleString()}, ${parsed.minimumDifferentAges.toLocaleString()} ages), ${parsed.filterLabel}`
+  };
 }
