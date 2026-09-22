@@ -92,7 +92,8 @@ function parseRules(value: unknown): ChallengeRule[] {
       if (!Number.isFinite(rating) || rating < 1 || rating > 5 || rating * 2 !== Math.round(rating * 2)) {
         throw new BadRequestException("rating must be between 1 and 5 in half-point steps");
       }
-      return { type: rule.type, rating, minimum };
+      if (rule.type === "DIFFICULTY_RATING") return { type: "DIFFICULTY_RATING", rating, minimum };
+      return { type: "TERRAIN_RATING", rating, minimum };
     }
     if (rule.type === "FAVORITE_POINTS") {
       const minimumFavoritePoints = Number(rule.minimumFavoritePoints);
