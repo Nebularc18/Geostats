@@ -24,7 +24,8 @@ uploads
 tmp
 postgres-data
 redis-data
-minio-data
+garage-meta
+garage-data
 received-logs.csv
 .codex/
 security-scans/
