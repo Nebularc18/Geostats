@@ -172,7 +172,7 @@ An AI job on any computer can read and update the same Mystery workspace without
 - `GET /agent/mysteries/:gcCode` gets one solver context.
 - `POST /agent/mysteries/:gcCode/attempts` atomically creates or updates an entry.
 - `DELETE /agent/mysteries/:gcCode/attempts/:attemptId` deletes one entry by its id (listed by the GET endpoints).
-- `PUT /agent/mysteries/:gcCode/notes` writes the Solution & field notes box. Send `{"notes":"text"}` to replace it, or add `"mode":"append"` to append without wiping existing notes.
+- `PUT /agent/mysteries/:gcCode/notes` writes the Solution box and the Field notes box. Send `{"solution":"text"}` and/or `{"fieldNotes":"text"}` to replace them, or add `"mode":"append"` to append without wiping existing text (`{"notes":"text"}` still works as Solution for older clients).
 
 Example body:
 

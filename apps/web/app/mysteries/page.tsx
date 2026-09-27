@@ -79,6 +79,7 @@ type AppUser = {
 
 type MysterySyncConflicts = {
   notes?: { server: string; device: string };
+  fieldNotes?: { server: string; device: string };
   image?: { server: string | null; device: string | null };
 };
 
@@ -98,6 +99,7 @@ type MysteryCache = {
   publishedLatitude: number;
   publishedLongitude: number;
   notes: string;
+  fieldNotes: string;
   clues: string[];
   sharedWith: AppUser[];
   attempts: CoordinateAttempt[];
@@ -133,6 +135,7 @@ type MysterySyncMetadata = {
   revision: number;
   fingerprint: string;
   notesFingerprint?: string;
+  fieldNotesFingerprint?: string;
   imageFingerprint?: string;
 };
 
@@ -292,12 +295,18 @@ function mysteryFieldFingerprint(value: unknown) {
 
 function deviceMergeOptions(cache: MysteryCache, serverCache: MysteryCache, metadata: MysterySyncMetadata | undefined): MysteryCacheMergeOptions {
   const hasNotesBaseline = typeof metadata?.notesFingerprint === "string";
+  const hasFieldNotesBaseline = typeof metadata?.fieldNotesFingerprint === "string";
   const hasImageBaseline = typeof metadata?.imageFingerprint === "string";
   const localSnapshotChanged = !metadata || snapshotFingerprint(stableJsonStringify(shareableMystery(cache))) !== metadata.fingerprint;
   const notesDecision = fieldMergeDecision(
     mysteryFieldFingerprint(cache.notes),
     mysteryFieldFingerprint(serverCache.notes),
     metadata?.notesFingerprint
+  );
+  const fieldNotesDecision = fieldMergeDecision(
+    mysteryFieldFingerprint(cache.fieldNotes ?? ""),
+    mysteryFieldFingerprint(serverCache.fieldNotes ?? ""),
+    metadata?.fieldNotesFingerprint
   );
   const imageDecision = fieldMergeDecision(
     mysteryFieldFingerprint(cache.image),
@@ -308,8 +317,10 @@ function deviceMergeOptions(cache: MysteryCache, serverCache: MysteryCache, meta
     // Device-only edits apply directly. Concurrent and legacy-ambiguous edits
     // keep the server active while preserving the device value for review.
     preferIncomingNotes: notesDecision.preferIncoming,
+    preferIncomingFieldNotes: fieldNotesDecision.preferIncoming,
     preferIncomingImage: imageDecision.preferIncoming,
     preserveNotesConflict: notesDecision.preserveConflict || (!hasNotesBaseline && localSnapshotChanged),
+    preserveFieldNotesConflict: fieldNotesDecision.preserveConflict || (!hasFieldNotesBaseline && localSnapshotChanged),
     preserveImageConflict: imageDecision.preserveConflict || (!hasImageBaseline && localSnapshotChanged)
   };
 }
@@ -321,6 +332,8 @@ function verifiedStoredShares(caches: MysteryCache[], mergeOptions?: MysteryCach
     name: typeof cache.name === "string"
       ? cache.name.replace(/(?:\s*\(device edits\))+$/gi, "").trim()
       : "",
+    notes: typeof cache.notes === "string" ? cache.notes : "",
+    fieldNotes: typeof cache.fieldNotes === "string" ? cache.fieldNotes : "",
     area: normalizeMysteryArea(cache.area),
     county: normalizeMysteryArea(cache.county),
     country: normalizeMysteryArea(cache.country),
@@ -393,6 +406,7 @@ function importedMystery(value: BrowserImport): MysteryCache | null {
     publishedLatitude,
     publishedLongitude,
     notes: typeof value.notes === "string" ? value.notes : "",
+    fieldNotes: "",
     clues: [],
     sharedWith: [],
     attempts: []
@@ -587,6 +601,7 @@ export default function MysteriesPage() {
       revision,
       fingerprint: snapshotFingerprint(serialized),
       notesFingerprint: mysteryFieldFingerprint(snapshot.notes),
+      fieldNotesFingerprint: mysteryFieldFingerprint(snapshot.fieldNotes ?? ""),
       imageFingerprint: mysteryFieldFingerprint(snapshot.image)
     });
     persistSyncMetadata();
@@ -1211,7 +1226,7 @@ export default function MysteriesPage() {
     setCaches((current) => current.map((cache) => (cache.id === selected.id ? { ...cache, ...patch } : cache)));
   }
 
-  function resolveSyncConflict(field: "notes" | "image", useDevice: boolean) {
+  function resolveSyncConflict(field: "notes" | "fieldNotes" | "image", useDevice: boolean) {
     if (!selected?.syncConflicts || selected.sharedBy) return;
     if (!selected.syncConflicts[field]) return;
     const remaining = { ...selected.syncConflicts };
@@ -1221,6 +1236,7 @@ export default function MysteriesPage() {
     };
     if (useDevice) {
       if (field === "notes") patch.notes = selected.syncConflicts.notes!.device;
+      else if (field === "fieldNotes") patch.fieldNotes = selected.syncConflicts.fieldNotes!.device;
       else patch.image = selected.syncConflicts.image!.device ?? undefined;
     }
     updateSelected(patch);
@@ -1478,6 +1494,7 @@ export default function MysteriesPage() {
       publishedLatitude: published.latitude,
       publishedLongitude: published.longitude,
       notes: "",
+      fieldNotes: "",
       clues: [],
       sharedWith: [],
       attempts: []
@@ -1821,7 +1838,8 @@ export default function MysteriesPage() {
       selected.attempts.some((attempt) => attempt.state === "planned") ? `NOT TRIED YET\n${selected.attempts.filter((attempt) => attempt.state === "planned").map(lineForAttempt).join("\n")}` : "",
       unknown.length ? `RESULT UNKNOWN (${unknown.length})\n${unknown.map(lineForAttempt).join("\n")}` : "",
       selected.clues.length ? `CLUES\n${selected.clues.map((clue) => `- ${clue}`).join("\n")}` : "",
-      selected.notes.trim() ? `NOTES\n${selected.notes.trim()}` : "",
+      selected.notes.trim() ? `SOLUTION\n${selected.notes.trim()}` : "",
+      (selected.fieldNotes ?? "").trim() ? `FIELD NOTES\n${(selected.fieldNotes ?? "").trim()}` : "",
       hasAttempts
         ? "Suggest useful next attempts and explain why they are different from everything already tried."
         : "Suggest useful first attempts and explain the reasoning behind each one."
@@ -1940,7 +1958,8 @@ export default function MysteriesPage() {
 
             {selected.syncConflicts && <section className="mystery-sync-conflicts" aria-label="Offline edit conflicts">
               <div><AlertTriangle size={18} /><span><strong>Offline edits need review</strong><small>The server version is active. Restore your device edit or keep the server value.</small></span></div>
-              {selected.syncConflicts.notes && <div className="mystery-sync-conflict-row"><span><strong>Notes from this device</strong><small>{selected.syncConflicts.notes.device || "Notes were cleared on this device."}</small></span><button className="secondary-button" type="button" onClick={() => resolveSyncConflict("notes", true)}>Use device</button><button className="text-button" type="button" onClick={() => resolveSyncConflict("notes", false)}>Keep server</button></div>}
+              {selected.syncConflicts.notes && <div className="mystery-sync-conflict-row"><span><strong>Solution from this device</strong><small>{selected.syncConflicts.notes.device || "Solution was cleared on this device."}</small></span><button className="secondary-button" type="button" onClick={() => resolveSyncConflict("notes", true)}>Use device</button><button className="text-button" type="button" onClick={() => resolveSyncConflict("notes", false)}>Keep server</button></div>}
+              {selected.syncConflicts.fieldNotes && <div className="mystery-sync-conflict-row"><span><strong>Field notes from this device</strong><small>{selected.syncConflicts.fieldNotes.device || "Field notes were cleared on this device."}</small></span><button className="secondary-button" type="button" onClick={() => resolveSyncConflict("fieldNotes", true)}>Use device</button><button className="text-button" type="button" onClick={() => resolveSyncConflict("fieldNotes", false)}>Keep server</button></div>}
               {selected.syncConflicts.image && <div className="mystery-sync-conflict-row"><span><strong>Image from this device</strong><small>{selected.syncConflicts.image.device ? "A different image was saved on this device." : "The image was removed on this device."}</small></span><button className="secondary-button" type="button" onClick={() => resolveSyncConflict("image", true)}>Use device</button><button className="text-button" type="button" onClick={() => resolveSyncConflict("image", false)}>Keep server</button></div>}
             </section>}
 
@@ -2017,8 +2036,12 @@ export default function MysteriesPage() {
 
               <aside className="mystery-side-column">
                 <section className="mystery-section notes-section">
-                  <div className="section-heading"><div><p className="eyebrow">Working notes</p><h3>Solution & field notes</h3></div><div className="notes-heading-actions"><small>{serverSyncReady ? "Account sync on" : "Saved offline"}</small>{!selected.sharedBy && <button className={selected.geocachingNotesFingerprint === mysteryFieldFingerprint(selected.notes) ? "synced" : ""} type="button" onClick={() => syncNotes(selected)}><RefreshCw size={13} /> {selected.geocachingNotesFingerprint === mysteryFieldFingerprint(selected.notes) ? "Synced with GC" : "Sync with GC"}</button>}</div></div>
-                  <textarea value={selected.notes} onChange={(event) => updateSelected({ notes: event.target.value })} placeholder="Write down clues, calculations and things to bring…" />
+                  <div className="section-heading"><div><p className="eyebrow">Working notes</p><h3>Solution</h3></div><div className="notes-heading-actions"><small>{serverSyncReady ? "Account sync on" : "Saved offline"}</small>{!selected.sharedBy && <button className={selected.geocachingNotesFingerprint === mysteryFieldFingerprint(selected.notes) ? "synced" : ""} type="button" onClick={() => syncNotes(selected)}><RefreshCw size={13} /> {selected.geocachingNotesFingerprint === mysteryFieldFingerprint(selected.notes) ? "Synced with GC" : "Sync with GC"}</button>}</div></div>
+                  <textarea value={selected.notes} onChange={(event) => updateSelected({ notes: event.target.value })} placeholder="Write down clues and calculations…" aria-label="Solution notes" />
+                </section>
+                <section className="mystery-section notes-section">
+                  <div className="section-heading"><div><p className="eyebrow">In the field</p><h3>Field notes</h3></div><div className="notes-heading-actions"><small>{serverSyncReady ? "Account sync on" : "Saved offline"}</small></div></div>
+                  <textarea value={selected.fieldNotes ?? ""} onChange={(event) => updateSelected({ fieldNotes: event.target.value })} placeholder="Things to bring, parking, access…" aria-label="Field notes" />
                 </section>
                 <section className="mystery-section shared-section">
                   <div className="section-heading"><div><p className="eyebrow">Team</p><h3>Shared with</h3></div><Users size={18} /></div>
@@ -2146,7 +2169,7 @@ export default function MysteriesPage() {
               <p className="eyebrow">Permanent removal</p>
               <h2 id="delete-cache-title">Delete {cacheToDelete.gcCode}?</h2>
             </div>
-            <p id="delete-cache-description">This removes <strong>{cacheToDelete.name}</strong>, including its notes, clues, images and coordinate attempts. This cannot be undone.</p>
+            <p id="delete-cache-description">This removes <strong>{cacheToDelete.name}</strong>, including its solution, field notes, clues, images and coordinate attempts. This cannot be undone.</p>
             <div className="modal-actions"><button className="secondary-button" type="button" disabled={deletingCache} onClick={() => setCacheToDelete(null)}>Cancel</button><button className="primary-button danger-button" type="button" disabled={deletingCache} onClick={() => void deleteCache()}><Trash2 size={16} /> {deletingCache ? "Deleting…" : "Delete cache"}</button></div>
           </div>
         </div>

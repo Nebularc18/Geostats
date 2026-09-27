@@ -28,20 +28,24 @@ export type MergeableMysteryCache = {
   trip?: string;
   tripUpdatedAt?: string;
   notes: string;
+  fieldNotes?: string;
   clues: string[];
   sharedWith: Array<{ id: string }>;
   attempts: MergeableMysteryAttempt[];
   image?: string;
   syncConflicts?: {
     notes?: { server: string; device: string };
+    fieldNotes?: { server: string; device: string };
     image?: { server: string | null; device: string | null };
   };
 };
 
 export type MysteryCacheMergeOptions = {
   preferIncomingNotes?: boolean;
+  preferIncomingFieldNotes?: boolean;
   preferIncomingImage?: boolean;
   preserveNotesConflict?: boolean;
+  preserveFieldNotesConflict?: boolean;
   preserveImageConflict?: boolean;
 };
 
@@ -178,6 +182,11 @@ export function mergeMysteryCaches<T extends MergeableMysteryCache>(
   if (options.preserveNotesConflict && existing.notes !== incoming.notes) {
     syncConflicts.notes = { server: existing.notes, device: incoming.notes };
   }
+  const existingFieldNotes = existing.fieldNotes ?? "";
+  const incomingFieldNotes = incoming.fieldNotes ?? "";
+  if (options.preserveFieldNotesConflict && existingFieldNotes !== incomingFieldNotes) {
+    syncConflicts.fieldNotes = { server: existingFieldNotes, device: incomingFieldNotes };
+  }
   if (options.preserveImageConflict && existing.image !== incoming.image) {
     syncConflicts.image = { server: existing.image ?? null, device: incoming.image ?? null };
   }
@@ -194,6 +203,7 @@ export function mergeMysteryCaches<T extends MergeableMysteryCache>(
     trip: preferIncomingTrip ? incoming.trip : existing.trip,
     tripUpdatedAt: preferIncomingTrip ? incoming.tripUpdatedAt : existing.tripUpdatedAt,
     notes: options.preferIncomingNotes === false ? existing.notes : incoming.notes,
+    fieldNotes: options.preferIncomingFieldNotes === false ? existingFieldNotes : incomingFieldNotes,
     clues: [...new Set([...existing.clues, ...incoming.clues])],
     attempts: mergeMysteryAttempts([...existing.attempts, ...incoming.attempts]),
     sharedWith: [...sharedWith.values()],
