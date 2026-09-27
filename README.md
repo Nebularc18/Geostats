@@ -43,7 +43,7 @@ Pocket Query, and owner-log imports.
 - Shared types in `packages/shared`
 - Reusable statistics logic in `packages/stats`
 - GPX/ZIP parsing in `packages/gpx-parser`
-- PostgreSQL/PostGIS, Redis, and MinIO through Docker Compose
+- PostgreSQL/PostGIS, Redis, and Garage (S3-compatible) through Docker Compose
 
 ## Requirements
 
@@ -73,7 +73,7 @@ Replace the `replace-with-*` values in `.env`, then start the application:
 docker compose up --build
 ```
 
-Compose starts PostgreSQL, Redis, MinIO, the API, worker, and web app. It also
+Compose starts PostgreSQL, Redis, Garage, the API, worker, and web app. It also
 runs database migrations and creates the object-storage bucket. The web app is
 available at `http://localhost:3000` and the API at `http://localhost:3001`.
 
@@ -214,6 +214,28 @@ Cloudflare Tunnel runs on another trusted machine, set
 over the LAN, and restrict the configured web and API ports (3000 and 3001 by
 default) with the host firewall.
 
+### Upgrading from MinIO to Garage
+
+MinIO's community Docker images were discontinued upstream, so the stack now
+uses Garage (`dxflrs/garage:v2.4.1`, multi-arch `amd64`/`arm64`) for
+S3-compatible object storage. Existing deployments need a one-time update:
+
+1. Add the new variables to `.env` (or the Dockhand environment editor) and
+   remove `MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD`:
+   `GARAGE_RPC_SECRET`, `GARAGE_ADMIN_TOKEN`, `S3_ACCESS_KEY_ID`
+   (`GK` + 32 hex chars), `S3_SECRET_ACCESS_KEY` (64 hex chars).
+   `S3_ENDPOINT` becomes `http://garage:3900`. See `.env.example` for the
+   `openssl` commands that generate each value.
+2. Start the stack: `docker compose up -d`. Garage auto-creates the layout,
+   access key, and bucket on first boot — no manual init step.
+3. Optional cleanup: the old `minio-data` volume is orphaned and can be
+   removed (`docker volume rm <project>_minio-data`) once the new stack is
+   healthy.
+
+Note: objects stored in MinIO are not migrated. Completed imports already live
+in the database and are unaffected; only retrying a pre-migration *failed*
+import will miss its original file — re-upload it instead.
+
 ## Dockhand
 
 For Dockhand, use `docker-compose.dockhand.yml` as the Compose file and paste the environment values from `.env.dockhand.example` into Dockhand's environment editor.
@@ -231,10 +253,22 @@ Then replace all `change-this-*` secrets in the env file. Mark these as secrets 
 ```text
 POSTGRES_PASSWORD
 REDIS_PASSWORD
-MINIO_ROOT_PASSWORD
+GARAGE_RPC_SECRET
+GARAGE_ADMIN_TOKEN
+S3_ACCESS_KEY_ID
+S3_SECRET_ACCESS_KEY
 JWT_SECRET
 COLLECTOR_TOKEN_ENCRYPTION_KEY
 CLERK_SECRET_KEY
+```
+
+Generate the Garage/S3 values with:
+
+```bash
+openssl rand -hex 32         # GARAGE_RPC_SECRET
+openssl rand -base64 32      # GARAGE_ADMIN_TOKEN
+echo -n "GK$(openssl rand -hex 16)"  # S3_ACCESS_KEY_ID
+openssl rand -hex 32         # S3_SECRET_ACCESS_KEY
 ```
 
 For a Git-backed Dockhand stack that builds this repo, keep:
@@ -378,7 +412,7 @@ Two Pi-specific caveats:
 1. Sign in with the configured provider or register a local password account.
 2. Create a geocaching profile with your GC username and optional home coordinates.
 3. Upload a `.gpx` My Finds/My Hides file or a `.zip` Pocket Query.
-4. The API stores the original file in MinIO and queues a BullMQ import job.
+4. The API stores the original file in Garage (S3-compatible) and queues a BullMQ import job.
 5. The worker parses GPX data, upserts cache metadata, stores finds when found-log data is present, and recalculates stats.
 6. The web and mobile dashboards, statistics, import history, and maps read from
    the API.
@@ -493,7 +527,7 @@ builds do not create a release.
 - User-owned records are scoped through user or owner relations. Cache metadata
   is user-scoped by the `(user_id, gc_code)` pair.
 - Cache coordinates are stored as scalar latitude/longitude and as a PostGIS geography point.
-- Object storage uses S3-compatible environment variables so MinIO can be replaced with cloud S3 later.
+- Object storage uses S3-compatible environment variables (Garage by default in Compose) so it can be replaced with cloud S3 later.
 - The mobile app uses the same API contracts and shared packages as web.
 
 ## Work in progress
