@@ -82,6 +82,7 @@ type MysteryCache = {
   publishedLatitude: number;
   publishedLongitude: number;
   notes: string;
+  fieldNotes: string;
   clues: string[];
   image?: string;
   sharedWith: AppUser[];
@@ -475,6 +476,8 @@ async function readMysteries(apiBaseUrl: string, userId: string) {
       ...cache,
       area: cache.area ?? "",
       country: cache.country ?? "",
+      notes: typeof cache.notes === "string" ? cache.notes : "",
+      fieldNotes: typeof (cache as Partial<MysteryCache>).fieldNotes === "string" ? (cache as Partial<MysteryCache>).fieldNotes as string : "",
       clues: Array.isArray(cache.clues) ? cache.clues : [],
       attempts: Array.isArray(cache.attempts) ? cache.attempts : [],
       image: cache.sharedBy ? safeRecipientMysteryImage(cache.image) : cache.image,
@@ -2737,6 +2740,7 @@ function MysteriesScreen({ apiBaseUrl, token, userId, onRequestScrollTop }: { ap
       publishedLatitude: coordinate.latitude,
       publishedLongitude: coordinate.longitude,
       notes: "",
+      fieldNotes: "",
       clues: [],
       sharedWith: [],
       attempts: []
@@ -2830,7 +2834,7 @@ function MysteriesScreen({ apiBaseUrl, token, userId, onRequestScrollTop }: { ap
 
   function deleteSelected() {
     if (!selected || selected.sharedBy) return;
-    Alert.alert(`Delete ${selected.gcCode}?`, "Notes, clues, and coordinate attempts will be removed from your account and synced devices.", [
+    Alert.alert(`Delete ${selected.gcCode}?`, "Solution, field notes, clues, and coordinate attempts will be removed from your account and synced devices.", [
       { text: "Cancel", style: "cancel" },
       {
         text: "Delete", style: "destructive", onPress: async () => {
@@ -2900,7 +2904,8 @@ function MysteriesScreen({ apiBaseUrl, token, userId, onRequestScrollTop }: { ap
       <Panel title={`${selected.gcCode} · ${selected.name}`} subtitle={selected.sharedBy ? `Read-only shared workspace from ${selected.sharedBy.username}` : mysteryLocation(selected)}>
         <Segmented values={["solving", "solved", "planned"]} active={selected.status} disabled={Boolean(selected.sharedBy)} onPress={(value) => updateSelected({ status: value as MysteryStatus })} />
         <Field label="Trip / route" value={selected.trip ?? ""} editable={!selected.sharedBy} onChangeText={(value) => updateSelected({ trip: value })} />
-        <Field label="Notes" value={selected.notes} editable={!selected.sharedBy} multiline style={styles.textArea} onChangeText={(value) => updateSelected({ notes: value })} />
+        <Field label="Solution" value={selected.notes} editable={!selected.sharedBy} multiline style={styles.textArea} onChangeText={(value) => updateSelected({ notes: value })} />
+        <Field label="Field notes" value={selected.fieldNotes ?? ""} editable={!selected.sharedBy} multiline style={styles.textArea} onChangeText={(value) => updateSelected({ fieldNotes: value })} />
         <Text style={styles.sectionLabel}>Reference image</Text>
         {selected.image ? <Image source={{ uri: selected.image }} resizeMode="cover" style={styles.mysteryImage} /> : <Text style={styles.muted}>No image attached.</Text>}
         {!selected.sharedBy ? <View style={styles.actionRow}><View style={styles.flex}><SecondaryButton label="Choose image" onPress={attachImage} /></View>{selected.image ? <View style={styles.flex}><SecondaryButton label="Remove image" danger onPress={() => updateSelected({ image: undefined })} /></View> : null}</View> : null}

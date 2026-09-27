@@ -23,20 +23,31 @@ type AgentAttemptBody = {
 const MAX_SNAPSHOT_BYTES = 256 * 1024;
 const MAX_NOTES_LENGTH = 100_000;
 
-function agentNotes(value: unknown) {
-  if (typeof value !== "string") throw new BadRequestException("notes must be text");
+function agentNotes(value: unknown, name: string) {
+  if (typeof value !== "string") throw new BadRequestException(`${name} must be text`);
   if (value.length > MAX_NOTES_LENGTH) {
-    throw new BadRequestException(`notes cannot exceed ${MAX_NOTES_LENGTH} characters`);
+    throw new BadRequestException(`${name} cannot exceed ${MAX_NOTES_LENGTH} characters`);
   }
   return value;
 }
 
-function agentNotesMode(value: unknown) {
+function agentNotesMode(value: unknown, name: string) {
   if (value === undefined || value === null) return "replace" as const;
   if (value !== "replace" && value !== "append") {
-    throw new BadRequestException('mode must be "replace" or "append"');
+    throw new BadRequestException(`${name} must be "replace" or "append"`);
   }
   return value;
+}
+
+function agentOptionalNotes(value: unknown, name: string) {
+  if (value === undefined || value === null) return undefined;
+  return agentNotes(value, name);
+}
+
+function appendNotes(current: string, addition: string) {
+  if (!addition) return current;
+  if (!current) return addition;
+  return `${current}\n\n${addition}`;
 }
 
 function gcCode(value: string) {
@@ -119,6 +130,8 @@ function attemptRevealsSolution(attempt: Record<string, any>) {
 function solverView(workspace: { clientId: string; data: unknown; snapshotRevision: number }) {
   const mystery = record(workspace.data);
   const attempts = Array.isArray(mystery.attempts) ? mystery.attempts.map(record) : [];
+  const solution = typeof mystery.notes === "string" ? mystery.notes : "";
+  const fieldNotes = typeof mystery.fieldNotes === "string" ? mystery.fieldNotes : "";
   const safe = {
     id: workspace.clientId,
     gcCode: mystery.gcCode,
@@ -128,7 +141,9 @@ function solverView(workspace: { clientId: string; data: unknown; snapshotRevisi
     publishedLongitude: mystery.publishedLongitude,
     area: mystery.area,
     country: mystery.country,
-    notes: typeof mystery.notes === "string" ? mystery.notes : "",
+    notes: solution,
+    solution,
+    fieldNotes,
     clues: Array.isArray(mystery.clues) ? mystery.clues.filter((value): value is string => typeof value === "string") : [],
     attempts
   };
@@ -268,8 +283,18 @@ export class MysteryAgentController {
     const userId = await this.collectorTokenAuth.userId(authorization);
     const normalizedCode = gcCode(code);
     const payload = record(body);
-    const notes = agentNotes(payload.notes);
-    const mode = agentNotesMode(payload.mode);
+    // `notes` is the legacy alias for the Solution box. `solution` and
+    // `fieldNotes` address the two boxes separately.
+    const solutionInput = agentOptionalNotes(
+      payload.solution !== undefined ? payload.solution : payload.notes,
+      "solution"
+    );
+    const fieldNotesInput = agentOptionalNotes(payload.fieldNotes, "fieldNotes");
+    if (solutionInput === undefined && fieldNotesInput === undefined) {
+      throw new BadRequestException("Provide solution (or notes) and/or fieldNotes as text");
+    }
+    const solutionMode = agentNotesMode(payload.solutionMode ?? payload.mode, "solutionMode");
+    const fieldNotesMode = agentNotesMode(payload.fieldNotesMode ?? payload.mode, "fieldNotesMode");
 
     const updated = await this.prisma.$transaction(async (tx) => {
       await lockMystery(tx, userId, normalizedCode);
@@ -280,15 +305,19 @@ export class MysteryAgentController {
       if (!existing) throw new NotFoundException("Mystery was not found in your synced workspace");
 
       const mystery = record(existing.data);
-      const currentNotes = typeof mystery.notes === "string" ? mystery.notes : "";
-      const nextNotes = mode === "append"
-        ? !notes
-          ? currentNotes
-          : currentNotes
-            ? `${currentNotes}\n\n${notes}`
-            : notes
-        : notes;
-      const data = { ...mystery, notes: nextNotes } as Prisma.InputJsonObject;
+      const currentSolution = typeof mystery.notes === "string" ? mystery.notes : "";
+      const currentFieldNotes = typeof mystery.fieldNotes === "string" ? mystery.fieldNotes : "";
+      const nextSolution = solutionInput === undefined
+        ? currentSolution
+        : solutionMode === "append"
+          ? appendNotes(currentSolution, solutionInput)
+          : solutionInput;
+      const nextFieldNotes = fieldNotesInput === undefined
+        ? currentFieldNotes
+        : fieldNotesMode === "append"
+          ? appendNotes(currentFieldNotes, fieldNotesInput)
+          : fieldNotesInput;
+      const data = { ...mystery, notes: nextSolution, fieldNotes: nextFieldNotes } as Prisma.InputJsonObject;
       if (Buffer.byteLength(JSON.stringify(data), "utf8") > MAX_SNAPSHOT_BYTES) {
         throw new BadRequestException("Mystery data is too large");
       }

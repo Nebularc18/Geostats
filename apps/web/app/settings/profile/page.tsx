@@ -44,7 +44,9 @@ function aiSolverInstructions(token: string) {
     "Delete work: DELETE /agent/mysteries/GC_CODE/attempts/ATTEMPT_ID",
     "Write notes: PUT /agent/mysteries/GC_CODE/notes",
     'JSON: {"kind":"approach","answer":"Try ROT13 on the title","state":"planned","source":"my-ai-job"}',
-    'Notes: {"notes":"finding..."} replaces, add "mode":"append" to keep existing notes.',
+    'Solution: {"solution":"finding..."} replaces, add "mode":"append" to keep existing text ("notes" also works as solution).',
+    'Field notes: {"fieldNotes":"parking, gear..."} replaces, add "mode":"append" to keep existing text.',
+    "Both boxes can be written together: {\"solution\":\"...\",\"fieldNotes\":\"...\",\"mode\":\"append\"}.",
     "States: planned (not tried), wrong, correct, unchecked. Kinds: approach, keyword, coordinate."
   ].join("\n");
 }
