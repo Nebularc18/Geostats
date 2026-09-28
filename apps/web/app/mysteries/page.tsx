@@ -104,6 +104,9 @@ type MysteryCache = {
   sharedWith: AppUser[];
   attempts: CoordinateAttempt[];
   image?: string;
+  geocachingFieldNotesFingerprint?: string;
+  geocachingFieldNotesSyncedAt?: string;
+  geocachingFieldNoteConflict?: GeocachingNoteConflict & { syncedAt: string };
   geocachingNotesFingerprint?: string;
   geocachingNotesSyncedAt?: string;
   geocachingNoteConflict?: GeocachingNoteConflict & { syncedAt: string };
@@ -155,6 +158,7 @@ type BrowserImport = {
 
 type GeocachingSyncReceipt = {
   type?: unknown;
+  noteTarget?: unknown;
   cacheId?: unknown;
   attemptId?: unknown;
   gcCode?: unknown;
@@ -177,9 +181,10 @@ type GeocachingSyncPayload = {
   issuedAt: number;
 };
 
-type GeocachingNoteSyncPayload = {
+type GeocachingFieldNoteSyncPayload = {
   cacheId: string;
   gcCode: string;
+  noteTarget: "fieldNotes";
   notes: string;
   issuedAt: number;
 };
@@ -326,32 +331,40 @@ function deviceMergeOptions(cache: MysteryCache, serverCache: MysteryCache, meta
 }
 
 function verifiedStoredShares(caches: MysteryCache[], mergeOptions?: MysteryCacheMergeOptions) {
-  const normalized = caches.map((cache) => ({
-    ...cache,
-    gcCode: typeof cache.gcCode === "string" ? cache.gcCode.trim().toUpperCase() : "",
-    name: typeof cache.name === "string"
-      ? cache.name.replace(/(?:\s*\(device edits\))+$/gi, "").trim()
-      : "",
-    notes: typeof cache.notes === "string" ? cache.notes : "",
-    fieldNotes: typeof cache.fieldNotes === "string" ? cache.fieldNotes : "",
-    area: normalizeMysteryArea(cache.area),
-    county: normalizeMysteryArea(cache.county),
-    country: normalizeMysteryArea(cache.country),
-    region: normalizeMysteryArea(cache.region),
-    locality: normalizeMysteryArea(cache.locality),
-    locationHierarchy: Array.isArray(cache.locationHierarchy)
-      ? cache.locationHierarchy.map(normalizeMysteryArea).filter(Boolean)
-      : [],
-    clues: Array.isArray(cache.clues) ? cache.clues.filter((clue): clue is string => typeof clue === "string") : [],
-    attempts: Array.isArray(cache.attempts)
-      ? mergeMysteryAttempts(cache.attempts.map((attempt): CoordinateAttempt => ({
-          ...attempt,
-          state: attempt.state === "correct" || attempt.state === "wrong" || attempt.state === "planned" ? attempt.state : "unchecked"
-        })))
-      : [],
-    image: cache.sharedBy ? safeRecipientMysteryImage(cache.image) : cache.image,
-    sharedWith: Array.isArray(cache.sharedWith) ? cache.sharedWith.filter(isAppUser) : []
-  }));
+  const normalized = caches.map((cache) => {
+    const {
+      geocachingNotesFingerprint: _legacyGeocachingNotesFingerprint,
+      geocachingNotesSyncedAt: _legacyGeocachingNotesSyncedAt,
+      geocachingNoteConflict: _legacyGeocachingNoteConflict,
+      ...currentCache
+    } = cache;
+    return {
+      ...currentCache,
+      gcCode: typeof cache.gcCode === "string" ? cache.gcCode.trim().toUpperCase() : "",
+      name: typeof cache.name === "string"
+        ? cache.name.replace(/(?:\s*\(device edits\))+$/gi, "").trim()
+        : "",
+      notes: typeof cache.notes === "string" ? cache.notes : "",
+      fieldNotes: typeof cache.fieldNotes === "string" ? cache.fieldNotes : "",
+      area: normalizeMysteryArea(cache.area),
+      county: normalizeMysteryArea(cache.county),
+      country: normalizeMysteryArea(cache.country),
+      region: normalizeMysteryArea(cache.region),
+      locality: normalizeMysteryArea(cache.locality),
+      locationHierarchy: Array.isArray(cache.locationHierarchy)
+        ? cache.locationHierarchy.map(normalizeMysteryArea).filter(Boolean)
+        : [],
+      clues: Array.isArray(cache.clues) ? cache.clues.filter((clue): clue is string => typeof clue === "string") : [],
+      attempts: Array.isArray(cache.attempts)
+        ? mergeMysteryAttempts(cache.attempts.map((attempt): CoordinateAttempt => ({
+            ...attempt,
+            state: attempt.state === "correct" || attempt.state === "wrong" || attempt.state === "planned" ? attempt.state : "unchecked"
+          })))
+        : [],
+      image: cache.sharedBy ? safeRecipientMysteryImage(cache.image) : cache.image,
+      sharedWith: Array.isArray(cache.sharedWith) ? cache.sharedWith.filter(isAppUser) : []
+    };
+  });
 
   const merged = new Map<string, MysteryCache>();
   for (const cache of normalized) {
@@ -372,7 +385,14 @@ function verifiedStoredShares(caches: MysteryCache[], mergeOptions?: MysteryCach
 }
 
 function shareableMystery(cache: MysteryCache) {
-  const { sharedBy: _sharedBy, sharedWorkspaceId: _sharedWorkspaceId, syncConflicts: _syncConflicts, geocachingNoteConflict: _geocachingNoteConflict, ...mystery } = cache;
+  const {
+    sharedBy: _sharedBy,
+    sharedWorkspaceId: _sharedWorkspaceId,
+    syncConflicts: _syncConflicts,
+    geocachingNoteConflict: _legacyGeocachingNoteConflict,
+    geocachingFieldNoteConflict: _geocachingFieldNoteConflict,
+    ...mystery
+  } = cache;
   return mystery;
 }
 
@@ -419,27 +439,28 @@ function applyGeocachingSyncReceipt(caches: MysteryCache[], value: GeocachingSyn
   const gcCode = typeof value.gcCode === "string" ? value.gcCode.toUpperCase() : "";
   const syncedAt = typeof value.syncedAt === "string" && Number.isFinite(Date.parse(value.syncedAt)) ? value.syncedAt : "";
   if (value.type === "notes") {
+    if (value.noteTarget !== "fieldNotes") return { caches, applied: false, conflicted: false };
     const notes = typeof value.notes === "string" ? value.notes : null;
     const geostatsNotes = typeof value.geostatsNotes === "string" ? value.geostatsNotes : null;
     let applied = false;
     let conflicted = false;
     const next = caches.map((cache) => {
       if (cache.id !== cacheId || cache.gcCode.toUpperCase() !== gcCode || notes === null || geostatsNotes === null || !syncedAt) return cache;
-      const reconciliation = reconcileGeocachingNoteReceipt(cache.notes, geostatsNotes, notes);
+      const reconciliation = reconcileGeocachingNoteReceipt(cache.fieldNotes ?? "", geostatsNotes, notes);
       if (reconciliation.conflict) {
         conflicted = true;
         return {
           ...cache,
-          geocachingNoteConflict: { ...reconciliation.conflict, syncedAt }
+          geocachingFieldNoteConflict: { ...reconciliation.conflict, syncedAt }
         };
       }
       applied = true;
       return {
         ...cache,
-        notes: reconciliation.notes,
-        geocachingNotesFingerprint: mysteryFieldFingerprint(notes),
-        geocachingNotesSyncedAt: syncedAt,
-        geocachingNoteConflict: undefined
+        fieldNotes: reconciliation.notes,
+        geocachingFieldNotesFingerprint: mysteryFieldFingerprint(notes),
+        geocachingFieldNotesSyncedAt: syncedAt,
+        geocachingFieldNoteConflict: undefined
       };
     });
     return { caches: next, applied, conflicted };
@@ -714,8 +735,8 @@ export default function MysteriesPage() {
         const receipt = JSON.parse(encodedSyncReceipt) as GeocachingSyncReceipt;
         if (typeof receipt.cacheId === "string") setSelectedId(receipt.cacheId);
         setNotice(result.conflicted
-          ? "Notes changed during sync. Review both versions."
-          : result.applied ? receipt.type === "notes" ? "Personal cache notes synced" : "Confirmed as synced to Geocaching" : "Could not match the Geocaching sync receipt");
+          ? "Field note changed during sync. Review both versions."
+          : result.applied ? receipt.type === "notes" ? "Field note synced to Geocaching" : "Confirmed as synced to Geocaching" : "Could not match the Geocaching sync receipt");
       } catch {
         setNotice("Could not read the Geocaching sync receipt");
       }
@@ -809,7 +830,7 @@ export default function MysteriesPage() {
             setCaches((current) => verifiedStoredShares(current.map((item) => {
               if (item.id !== cache.id) return item;
               const merged = verifiedStoredShares([authoritative, item], deviceMergeOptions(item, authoritative, baseMetadata))[0];
-              return { ...merged, id: authoritative.id, sharedWith: authoritative.sharedWith, geocachingNoteConflict: item.geocachingNoteConflict };
+              return { ...merged, id: authoritative.id, sharedWith: authoritative.sharedWith, geocachingFieldNoteConflict: item.geocachingFieldNoteConflict };
             })));
             setNotice(`Merged offline and server changes for ${cache.gcCode}.`);
           }
@@ -909,7 +930,7 @@ export default function MysteriesPage() {
               serverCache,
               { ...currentCache, id: serverCache.id, sharedWith: serverCache.sharedWith }
             ], mergeOptions)[0];
-            return { ...merged, id: serverCache.id, sharedWith: serverCache.sharedWith, geocachingNoteConflict: currentCache.geocachingNoteConflict };
+            return { ...merged, id: serverCache.id, sharedWith: serverCache.sharedWith, geocachingFieldNoteConflict: currentCache.geocachingFieldNoteConflict };
           }
           const currentSerialized = stableJsonStringify(shareableMystery(currentCache));
           const requestSerialized = ownedAtRequest.get(serverCache.id);
@@ -924,10 +945,10 @@ export default function MysteriesPage() {
           if (localChanged || changedDuringRequest) {
             mergedConflictCount += 1;
             const merged = verifiedStoredShares([serverCache, currentCache], mergeOptions)[0];
-            return { ...merged, id: serverCache.id, sharedWith: serverCache.sharedWith, geocachingNoteConflict: currentCache.geocachingNoteConflict };
+            return { ...merged, id: serverCache.id, sharedWith: serverCache.sharedWith, geocachingFieldNoteConflict: currentCache.geocachingFieldNoteConflict };
           }
-          return currentCache.geocachingNoteConflict
-            ? { ...serverCache, geocachingNoteConflict: currentCache.geocachingNoteConflict }
+          return currentCache.geocachingFieldNoteConflict
+            ? { ...serverCache, geocachingFieldNoteConflict: currentCache.geocachingFieldNoteConflict }
             : serverCache;
         });
         ownedEntries.forEach(({ cache, revision, serialized }) => rememberServerSnapshot(cache.id, revision, serialized));
@@ -1090,10 +1111,13 @@ export default function MysteriesPage() {
       root.removeAttribute("data-geostats-sync-receipt");
       try {
         const receipt = JSON.parse(rawReceipt) as GeocachingSyncReceipt;
-        setCaches((current) => applyGeocachingSyncReceipt(current, receipt).caches);
+        const result = applyGeocachingSyncReceipt(latestCaches.current, receipt);
+        setCaches(result.caches);
         if (typeof receipt.cacheId === "string") setSelectedId(receipt.cacheId);
         setNotice(receipt.type === "notes"
-          ? "Note sync finished. Any newer Geostats edit was kept for review."
+          ? result.conflicted
+            ? "Field note changed during sync. Review both versions."
+            : result.applied ? "Field note synced to Geocaching" : "Ignored an outdated field note receipt."
           : "Confirmed as synced to Geocaching");
       } catch {
         setNotice("Could not read the Geocaching sync receipt");
@@ -1199,9 +1223,9 @@ export default function MysteriesPage() {
     const solved = finalCoordinate(cache);
     return solved && !solved.attempt.geocachingSyncedAt ? [{ cache, ...solved }] : [];
   }), [caches]);
-  const selectedNotesNeedSync = Boolean(
+  const selectedFieldNotesNeedSync = Boolean(
     selected && !selected.sharedBy &&
-    selected.geocachingNotesFingerprint !== mysteryFieldFingerprint(selected.notes)
+    selected.geocachingFieldNotesFingerprint !== mysteryFieldFingerprint(selected.fieldNotes ?? "")
   );
   const filteredCaches = useMemo(() => {
     const normalized = query.trim().toLowerCase();
@@ -1243,25 +1267,24 @@ export default function MysteriesPage() {
     setNotice(useDevice ? `Restored offline ${field}.` : `Kept server ${field}.`);
   }
 
-  function resolveGeocachingNoteConflict(useGeocaching: boolean) {
-    if (!selected?.geocachingNoteConflict || selected.sharedBy) return;
-    const conflict = selected.geocachingNoteConflict;
-    const choice = chooseGeocachingNoteConflict(selected.notes, conflict, useGeocaching);
+  function resolveGeocachingFieldNoteConflict(useGeocaching: boolean) {
+    if (!selected?.geocachingFieldNoteConflict || selected.sharedBy) return;
+    const conflict = selected.geocachingFieldNoteConflict;
+    const choice = chooseGeocachingNoteConflict(selected.fieldNotes ?? "", conflict, useGeocaching);
     if (choice.outcome === "stale") {
       updateSelected({
-        notes: choice.notes,
-        geocachingNoteConflict: { ...choice.conflict, syncedAt: conflict.syncedAt }
+        geocachingFieldNoteConflict: { ...choice.conflict, syncedAt: conflict.syncedAt }
       });
-      setNotice("The Geostats note changed again. Review the latest edit before replacing it.");
+      setNotice("The Geostats field note changed again. Review the latest edit before replacing it.");
       return;
     }
     updateSelected(choice.outcome === "geocaching" ? {
-      notes: choice.notes,
-      geocachingNotesFingerprint: mysteryFieldFingerprint(choice.notes),
-      geocachingNotesSyncedAt: conflict.syncedAt,
-      geocachingNoteConflict: undefined
-    } : { geocachingNoteConflict: undefined });
-    setNotice(choice.outcome === "geocaching" ? "Using the Geocaching note." : "Kept the newer Geostats note.");
+      fieldNotes: choice.notes,
+      geocachingFieldNotesFingerprint: mysteryFieldFingerprint(choice.notes),
+      geocachingFieldNotesSyncedAt: conflict.syncedAt,
+      geocachingFieldNoteConflict: undefined
+    } : { geocachingFieldNoteConflict: undefined });
+    setNotice(choice.outcome === "geocaching" ? "Using the Geocaching field note." : "Kept the newer Geostats field note.");
   }
 
   function rememberDeletedCache(cacheId: string) {
@@ -1433,12 +1456,13 @@ export default function MysteriesPage() {
     if (solved) syncAttempts([{ cache, ...solved }]);
   }
 
-  function syncNotes(cache: MysteryCache) {
+  function syncFieldNotes(cache: MysteryCache) {
     if (cache.sharedBy) return;
-    const payload: GeocachingNoteSyncPayload = {
+    const payload: GeocachingFieldNoteSyncPayload = {
       cacheId: cache.id,
       gcCode: cache.gcCode,
-      notes: cache.notes,
+      noteTarget: "fieldNotes",
+      notes: cache.fieldNotes ?? "",
       issuedAt: Date.now()
     };
     const request = JSON.stringify(payload);
@@ -1456,7 +1480,7 @@ export default function MysteriesPage() {
       cleanup();
       const target = `https://coord.info/${encodeURIComponent(payload.gcCode)}#geostats-note-sync=${encodeURIComponent(request)}`;
       window.open(target, "_blank", "noopener,noreferrer");
-      setNotice("Geocaching opened. Choose which note to keep there.");
+      setNotice("Geocaching opened. Choose which field note to keep there.");
     };
     document.addEventListener("geostats-note-sync-ready", handleReady);
     root.setAttribute("data-geostats-note-sync-request", request);
@@ -1471,8 +1495,8 @@ export default function MysteriesPage() {
 
   function syncFromHeader() {
     if (syncableCaches.length) syncAttempts(syncableCaches);
-    if (selectedNotesNeedSync && selected) syncNotes(selected);
-    if (!syncableCaches.length && !selectedNotesNeedSync) setNotice("Everything is already synced with Geocaching");
+    if (selectedFieldNotesNeedSync && selected) syncFieldNotes(selected);
+    if (!syncableCaches.length && !selectedFieldNotesNeedSync) setNotice("Everything is already synced with Geocaching");
   }
 
   function addCache(event: FormEvent<HTMLFormElement>) {
@@ -1895,7 +1919,7 @@ export default function MysteriesPage() {
         </div>
         <div className="mystery-header-actions">
           <span className="offline-pill"><WifiOff size={14} /> Available offline</span>
-          <button className="secondary-button" type="button" disabled={!syncableCaches.length && !selectedNotesNeedSync} onClick={syncFromHeader}><ExternalLink size={17} /> Sync solved{syncableCaches.length ? ` (${syncableCaches.length})` : ""}</button>
+          <button className="secondary-button" type="button" disabled={!syncableCaches.length && !selectedFieldNotesNeedSync} onClick={syncFromHeader}><ExternalLink size={17} /> Sync solved{syncableCaches.length ? ` (${syncableCaches.length})` : ""}</button>
           <button className="secondary-button" type="button" onClick={() => setShowBrowserImport(true)}><Import size={17} /> Browser import</button>
           <button className="secondary-button" type="button" onClick={exportGpx}><Download size={17} /> Export GPX</button>
           <button className="secondary-button" type="button" onClick={openSharingSettings}><Settings2 size={17} /> Sharing settings</button>
@@ -1963,9 +1987,9 @@ export default function MysteriesPage() {
               {selected.syncConflicts.image && <div className="mystery-sync-conflict-row"><span><strong>Image from this device</strong><small>{selected.syncConflicts.image.device ? "A different image was saved on this device." : "The image was removed on this device."}</small></span><button className="secondary-button" type="button" onClick={() => resolveSyncConflict("image", true)}>Use device</button><button className="text-button" type="button" onClick={() => resolveSyncConflict("image", false)}>Keep server</button></div>}
             </section>}
 
-            {selected.geocachingNoteConflict && <section className="mystery-sync-conflicts" aria-label="Geocaching note conflict">
-              <div><AlertTriangle size={18} /><span><strong>Geocaching note needs review</strong><small>Your Geostats note changed while the sync tab was open, so the newer edit was kept.</small></span></div>
-              <div className="mystery-sync-conflict-row"><span><strong>Note returned by Geocaching</strong><small>{selected.geocachingNoteConflict.geocaching || "The Geocaching note is empty."}</small></span><button className="secondary-button" type="button" onClick={() => resolveGeocachingNoteConflict(true)}>Use Geocaching</button><button className="text-button" type="button" onClick={() => resolveGeocachingNoteConflict(false)}>Keep Geostats</button></div>
+            {selected.geocachingFieldNoteConflict && <section className="mystery-sync-conflicts" aria-label="Geocaching field note conflict">
+              <div><AlertTriangle size={18} /><span><strong>Geocaching field note needs review</strong><small>Your Geostats field note changed while the sync tab was open, so the newer edit was kept.</small></span></div>
+              <div className="mystery-sync-conflict-row"><span><strong>Field note returned by Geocaching</strong><small>{selected.geocachingFieldNoteConflict.geocaching || "The Geocaching note is empty."}</small></span><button className="secondary-button" type="button" onClick={() => resolveGeocachingFieldNoteConflict(true)}>Use Geocaching</button><button className="text-button" type="button" onClick={() => resolveGeocachingFieldNoteConflict(false)}>Keep Geostats</button></div>
             </section>}
 
             <div className="clue-strip">
@@ -2036,11 +2060,11 @@ export default function MysteriesPage() {
 
               <aside className="mystery-side-column">
                 <section className="mystery-section notes-section">
-                  <div className="section-heading"><div><p className="eyebrow">Working notes</p><h3>Solution</h3></div><div className="notes-heading-actions"><small>{serverSyncReady ? "Account sync on" : "Saved offline"}</small>{!selected.sharedBy && <button className={selected.geocachingNotesFingerprint === mysteryFieldFingerprint(selected.notes) ? "synced" : ""} type="button" onClick={() => syncNotes(selected)}><RefreshCw size={13} /> {selected.geocachingNotesFingerprint === mysteryFieldFingerprint(selected.notes) ? "Synced with GC" : "Sync with GC"}</button>}</div></div>
+                  <div className="section-heading"><div><p className="eyebrow">Working notes</p><h3>Solution</h3></div><div className="notes-heading-actions"><small>{serverSyncReady ? "Account sync on" : "Saved offline"}</small></div></div>
                   <textarea value={selected.notes} onChange={(event) => updateSelected({ notes: event.target.value })} placeholder="Write down clues and calculations…" aria-label="Solution notes" />
                 </section>
                 <section className="mystery-section notes-section">
-                  <div className="section-heading"><div><p className="eyebrow">In the field</p><h3>Field notes</h3></div><div className="notes-heading-actions"><small>{serverSyncReady ? "Account sync on" : "Saved offline"}</small></div></div>
+                  <div className="section-heading"><div><p className="eyebrow">In the field</p><h3>Field notes</h3></div><div className="notes-heading-actions"><small>{serverSyncReady ? "Account sync on" : "Saved offline"}</small>{!selected.sharedBy && <button className={selected.geocachingFieldNotesFingerprint === mysteryFieldFingerprint(selected.fieldNotes ?? "") ? "synced" : ""} type="button" onClick={() => syncFieldNotes(selected)}><RefreshCw size={13} /> {selected.geocachingFieldNotesFingerprint === mysteryFieldFingerprint(selected.fieldNotes ?? "") ? "Field note synced" : "Sync field note"}</button>}</div></div>
                   <textarea value={selected.fieldNotes ?? ""} onChange={(event) => updateSelected({ fieldNotes: event.target.value })} placeholder="Things to bring, parking, access…" aria-label="Field notes" />
                 </section>
                 <section className="mystery-section shared-section">
