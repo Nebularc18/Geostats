@@ -4,7 +4,7 @@ import { locationFromCachePageMetadata } from "./mystery-area.ts";
 import { locationFromPageSources } from "./mystery-page-location.ts";
 import { personalCacheNoteEditorFromPage, personalCacheNoteFromPage } from "./mystery-personal-note.ts";
 
-export const MYSTERY_USERSCRIPT_VERSION = "2.7.0";
+export const MYSTERY_USERSCRIPT_VERSION = "2.8.0";
 
 export function userscript(appOrigin: string) {
   return `// ==UserScript==
@@ -82,6 +82,7 @@ export function userscript(appOrigin: string) {
         const valid = value &&
           typeof value.cacheId === "string" &&
           /^GC[A-Z0-9]+$/i.test(value.gcCode || "") &&
+          value.noteTarget === "fieldNotes" &&
           typeof value.notes === "string" &&
           value.notes.length <= 100000 &&
           Number.isFinite(value.issuedAt);
@@ -171,6 +172,7 @@ export function userscript(appOrigin: string) {
         !pending ||
         typeof value.cacheId !== "string" ||
         typeof value.gcCode !== "string" ||
+        value.noteTarget !== "fieldNotes" ||
         value.gcCode.toUpperCase() !== pageCode ||
         typeof value.notes !== "string" ||
         value.notes.length > 100000 ||
@@ -179,6 +181,7 @@ export function userscript(appOrigin: string) {
         Date.now() - value.issuedAt < -30000 ||
         pending.cacheId !== value.cacheId ||
         pending.gcCode !== value.gcCode ||
+        pending.noteTarget !== value.noteTarget ||
         pending.notes !== value.notes ||
         pending.issuedAt !== value.issuedAt
       ) return null;
@@ -407,7 +410,7 @@ export function userscript(appOrigin: string) {
     if (instructions) instructions.textContent = message;
     if (useGeostats) {
       useGeostats.disabled = state === "loading";
-      useGeostats.textContent = state === "editor" ? "Save on Geocaching" : "Use Geostats note";
+      useGeostats.textContent = state === "editor" ? "Save on Geocaching" : "Use Geostats field note";
     }
   }
 
@@ -495,6 +498,7 @@ export function userscript(appOrigin: string) {
     noteReceiptReturned = true;
     const receipt = {
       type: "notes",
+      noteTarget: noteSyncPayload.noteTarget,
       cacheId: noteSyncPayload.cacheId,
       gcCode: noteSyncPayload.gcCode,
       notes,
@@ -504,7 +508,7 @@ export function userscript(appOrigin: string) {
     };
     GM_setValue(NOTE_SYNC_RECEIPT_PREFIX + noteSyncPayload.cacheId, JSON.stringify(receipt));
     GM_deleteValue(PENDING_NOTE_SYNC_KEY);
-    setNoteSyncPanelState("Notes synced. Returning to Geostats…", "success");
+    setNoteSyncPanelState("Field note synced to Geocaching. Returning to Geostats…", "success");
     toast("Personal cache note synced", false);
     window.setTimeout(() => window.close(), 700);
   }
@@ -548,7 +552,7 @@ export function userscript(appOrigin: string) {
     title.style.marginBottom = "10px";
     const comparison = document.createElement("div");
     Object.assign(comparison.style, { display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px" });
-    [["Geostats", noteSyncPayload.notes], ["Geocaching", current.note]].forEach(([label, value]) => {
+    [["Geostats field note", noteSyncPayload.notes], ["Geocaching personal cache note", current.note]].forEach(([label, value]) => {
       const box = document.createElement("div");
       const heading = document.createElement("small");
       heading.textContent = label;
@@ -561,20 +565,20 @@ export function userscript(appOrigin: string) {
     });
     const instructions = document.createElement("span");
     instructions.id = "geostats-note-sync-instructions";
-    instructions.textContent = current.available ? "Choose which note to keep." : "Personal cache notes require a signed-in Premium Geocaching account.";
+    instructions.textContent = current.available ? "Choose which personal cache note to keep on Geocaching." : "Personal cache notes require a signed-in Premium Geocaching account.";
     Object.assign(instructions.style, { display: "block", marginTop: "10px", color: "#d5ddd7", fontSize: "12px" });
     const actions = document.createElement("div");
     Object.assign(actions.style, { display: "flex", flexWrap: "wrap", gap: "8px", marginTop: "12px" });
     const useGeostats = document.createElement("button");
     useGeostats.id = "geostats-note-use-geostats";
     useGeostats.type = "button";
-    useGeostats.textContent = "Use Geostats note";
+    useGeostats.textContent = "Use Geostats field note";
     useGeostats.disabled = !current.available;
     useGeostats.addEventListener("click", () => void useGeostatsPersonalNote());
     Object.assign(useGeostats.style, { flex: "1", padding: "8px 10px", border: "0", borderRadius: "6px", color: "#07110b", background: "#5fbf85", cursor: current.available ? "pointer" : "not-allowed", fontWeight: "700" });
     const useGeocaching = document.createElement("button");
     useGeocaching.type = "button";
-    useGeocaching.textContent = "Use Geocaching note";
+    useGeocaching.textContent = "Use Geocaching personal cache note";
     useGeocaching.disabled = !current.available;
     useGeocaching.addEventListener("click", () => returnNoteSyncReceipt("from-geocaching", current.note));
     Object.assign(useGeocaching.style, { flex: "1", padding: "8px 10px", border: "1px solid #557363", borderRadius: "6px", color: "white", background: "transparent", cursor: current.available ? "pointer" : "not-allowed", fontWeight: "700" });
@@ -582,7 +586,7 @@ export function userscript(appOrigin: string) {
     panel.append(title, comparison, instructions, actions);
     document.body.appendChild(panel);
     if (current.available && current.note === noteSyncPayload.notes) {
-      setNoteSyncPanelState("The notes already match. Returning to Geostats…", "success");
+      setNoteSyncPanelState("The field note already matches. Returning to Geostats…", "success");
       window.setTimeout(() => returnNoteSyncReceipt("matched", current.note), 500);
     }
   }

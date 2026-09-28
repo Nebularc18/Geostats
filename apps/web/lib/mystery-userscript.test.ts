@@ -100,6 +100,7 @@ test("note requests preserve content and reject oversized notes", () => {
   const request = {
     cacheId: "cache-1",
     gcCode: "GC123",
+    noteTarget: "fieldNotes",
     notes: "Clue one\nClue two",
     issuedAt: 12345,
   };
