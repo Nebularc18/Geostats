@@ -27,6 +27,7 @@ export type MergeableMysteryCache = {
   status: "solving" | "solved" | "planned";
   trip?: string;
   tripUpdatedAt?: string;
+  addedAt?: string;
   notes: string;
   fieldNotes?: string;
   clues: string[];
@@ -178,6 +179,11 @@ export function mergeMysteryCaches<T extends MergeableMysteryCache>(
   const preferIncomingTrip = Number.isFinite(incomingTripTime)
     ? !Number.isFinite(existingTripTime) || incomingTripTime >= existingTripTime
     : !Number.isFinite(existingTripTime) && Boolean(incoming.trip?.trim()) && !existing.trip?.trim();
+  const existingAddedAt = Date.parse(existing.addedAt ?? "");
+  const incomingAddedAt = Date.parse(incoming.addedAt ?? "");
+  const addedAt = Number.isFinite(existingAddedAt) && Number.isFinite(incomingAddedAt)
+    ? (existingAddedAt <= incomingAddedAt ? existing.addedAt : incoming.addedAt)
+    : existing.addedAt ?? incoming.addedAt;
   const syncConflicts = { ...existing.syncConflicts, ...incoming.syncConflicts };
   if (options.preserveNotesConflict && existing.notes !== incoming.notes) {
     syncConflicts.notes = { server: existing.notes, device: incoming.notes };
@@ -192,6 +198,7 @@ export function mergeMysteryCaches<T extends MergeableMysteryCache>(
   }
   return {
     ...existing,
+    addedAt,
     name: existing.name || incoming.name,
     area: existing.area || incoming.area,
     county: existing.county || incoming.county,

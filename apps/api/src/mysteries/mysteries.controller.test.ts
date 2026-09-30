@@ -84,9 +84,11 @@ test("shared returns the granted snapshot through the recipient lookup", async (
   const prisma = {
     mysteryShare: {
       findMany: async () => [{
+        createdAt: new Date("2026-03-01T00:00:00.000Z"),
         mystery: {
           id: "workspace-1",
           data: mystery,
+          createdAt: new Date("2026-01-15T00:00:00.000Z"),
           owner: { id: owner.id, username: owner.username },
           shares: [{ recipient }],
           sharingExclusions: []
@@ -103,6 +105,7 @@ test("shared returns the granted snapshot through the recipient lookup", async (
     workspaceId: "workspace-1",
     mystery,
     owner: { id: owner.id, username: owner.username },
+    addedAt: "2026-03-01T00:00:00.000Z",
     sharedWith: [recipient]
   }]);
 });
@@ -187,6 +190,7 @@ test("owned returns every server-backed mystery, including unshared mysteries", 
           clientId: unsharedMystery.id,
           data: unsharedMystery,
           snapshotRevision: 3,
+          createdAt: new Date("2026-01-01T00:00:00.000Z"),
           shares: [],
           sharingExclusions: []
         },
@@ -194,6 +198,7 @@ test("owned returns every server-backed mystery, including unshared mysteries", 
           clientId: mystery.id,
           data: mystery,
           snapshotRevision: 4,
+          createdAt: new Date("2026-02-01T00:00:00.000Z"),
           shares: [{ recipient }],
           sharingExclusions: []
         }
@@ -210,8 +215,8 @@ test("owned returns every server-backed mystery, including unshared mysteries", 
 
   assert.deepEqual(result, {
     mysteries: [
-      { clientId: unsharedMystery.id, mystery: unsharedMystery, revision: 3, sharedWith: [] },
-      { clientId: mystery.id, mystery, revision: 4, sharedWith: [recipient] }
+      { clientId: unsharedMystery.id, mystery: unsharedMystery, revision: 3, createdAt: "2026-01-01T00:00:00.000Z", sharedWith: [] },
+      { clientId: mystery.id, mystery, revision: 4, createdAt: "2026-02-01T00:00:00.000Z", sharedWith: [recipient] }
     ],
     deletedClientIds: ["deleted-local-1"]
   });
@@ -267,6 +272,7 @@ test("shared grants matching automatic access without per-Mystery rows", async (
       findMany: async () => [{
         id: "workspace-automatic",
         data: automaticMystery,
+        createdAt: new Date("2026-01-15T00:00:00.000Z"),
         owner: { id: owner.id, username: owner.username },
         shares: [],
         sharingExclusions: []
@@ -289,6 +295,7 @@ test("shared grants matching automatic access without per-Mystery rows", async (
     workspaceId: "workspace-automatic",
     mystery: automaticMystery,
     owner: { id: owner.id, username: owner.username },
+    addedAt: "2026-01-15T00:00:00.000Z",
     sharedWith: [recipient]
   }]);
 });

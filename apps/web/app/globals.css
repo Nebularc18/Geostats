@@ -4864,6 +4864,32 @@ select:focus {
   background: rgba(95, 191, 133, 0.12);
 }
 
+.mystery-sort-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 4px;
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.mystery-sort-row select {
+  width: 100%;
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--ink);
+  background: rgba(8, 13, 10, 0.62);
+  font-size: 0.75rem;
+  font-weight: 400;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
 .travel-toggle {
   display: grid;
   grid-template-columns: auto 1fr auto;

@@ -129,6 +129,7 @@ export class MysteriesController {
           clientId: true,
           data: true,
           snapshotRevision: true,
+          createdAt: true,
           shares: {
             select: { recipient: { select: { id: true, username: true } } },
             orderBy: { createdAt: "asc" }
@@ -155,6 +156,7 @@ export class MysteriesController {
         clientId: mystery.clientId,
         mystery: mystery.data,
         revision: mystery.snapshotRevision,
+        createdAt: mystery.createdAt instanceof Date ? mystery.createdAt.toISOString() : undefined,
         sharedWith: effectiveRecipients(
           mystery.data,
           mystery.shares.map(({ recipient }) => recipient),
@@ -255,7 +257,11 @@ export class MysteriesController {
       orderBy: { createdAt: "asc" }
     }) : [];
     const workspaces = new Map<string, (typeof preferenceMysteries)[number]>();
-    grants.forEach(({ mystery }) => workspaces.set(mystery.id, mystery));
+    const sharedAtByWorkspace = new Map<string, string>();
+    grants.forEach(({ mystery, createdAt }) => {
+      workspaces.set(mystery.id, mystery);
+      if (createdAt instanceof Date) sharedAtByWorkspace.set(mystery.id, createdAt.toISOString());
+    });
     preferenceMysteries.forEach((mystery) => {
       const status = mysteryStatus(mystery.data);
       const visible = status && allPreferences.some((preference) =>
@@ -272,6 +278,7 @@ export class MysteriesController {
         workspaceId: mystery.id,
         mystery: recipientMysteryData(mystery.data),
         owner: mystery.owner,
+        addedAt: sharedAtByWorkspace.get(mystery.id) ?? (mystery.createdAt instanceof Date ? mystery.createdAt.toISOString() : undefined),
         sharedWith: effectiveRecipients(
           mystery.data,
           mystery.shares.map(({ recipient }) => recipient),

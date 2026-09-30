@@ -310,6 +310,27 @@ test("keeps independent server notes and image when those device fields are unch
   assert.deepEqual(merged.clues, ["offline device edit"]);
 });
 
+test("keeps the earliest added date when devices reconnect", () => {
+  const server: MergeableMysteryCache = {
+    id: "server-cache-id",
+    gcCode: "GC1234",
+    name: "Mystery",
+    area: "",
+    country: "Sweden",
+    status: "solving",
+    addedAt: "2026-02-01T00:00:00.000Z",
+    notes: "",
+    clues: [],
+    sharedWith: [],
+    attempts: []
+  };
+  const device = { ...server, addedAt: "2026-01-01T00:00:00.000Z" };
+
+  assert.equal(mergeMysteryCaches(server, device).addedAt, "2026-01-01T00:00:00.000Z");
+  assert.equal(mergeMysteryCaches(device, server).addedAt, "2026-01-01T00:00:00.000Z");
+  assert.equal(mergeMysteryCaches(server, { ...server, addedAt: undefined }).addedAt, "2026-02-01T00:00:00.000Z");
+});
+
 test("preserves ambiguous legacy device fields without overwriting the server", () => {
   const server: MergeableMysteryCache = {
     id: "server-cache-id",
