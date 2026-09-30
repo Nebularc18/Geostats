@@ -83,6 +83,54 @@ type MysterySyncConflicts = {
   image?: { server: string | null; device: string | null };
 };
 
+type MysteryListSort = "added-desc" | "added-asc" | "name-asc" | "name-desc";
+
+const MYSTERY_LIST_SORTS: Array<{ value: MysteryListSort; label: string }> = [
+  { value: "added-desc", label: "Date added: newest first" },
+  { value: "added-asc", label: "Date added: oldest first" },
+  { value: "name-asc", label: "Name: A–Z" },
+  { value: "name-desc", label: "Name: Z–A" }
+];
+
+const MYSTERY_LIST_SORT_STORAGE_KEY = "geostats:mysteries:list-sort";
+
+function normalizeAddedAt(value: unknown) {
+  if (typeof value !== "string" || !value) return undefined;
+  const time = Date.parse(value);
+  return Number.isFinite(time) ? new Date(time).toISOString() : undefined;
+}
+
+function cacheAddedTime(cache: Pick<MysteryCache, "addedAt">) {
+  const time = Date.parse(cache.addedAt ?? "");
+  return Number.isFinite(time) ? time : 0;
+}
+
+function earliestAddedAt(first: string | undefined, second: string | undefined) {
+  const firstTime = first ? Date.parse(first) : Number.NaN;
+  const secondTime = second ? Date.parse(second) : Number.NaN;
+  if (Number.isFinite(firstTime) && Number.isFinite(secondTime)) {
+    return firstTime <= secondTime ? first : second;
+  }
+  return first ?? second;
+}
+
+function compareMysteryCaches(sort: MysteryListSort) {
+  return (a: MysteryCache, b: MysteryCache, indexA: number, indexB: number) => {
+    if (sort === "name-asc" || sort === "name-desc") {
+      const direction = sort === "name-asc" ? 1 : -1;
+      const nameComparison = a.name.localeCompare(b.name, undefined, { sensitivity: "base", numeric: true });
+      if (nameComparison !== 0) return direction * nameComparison;
+      const codeComparison = a.gcCode.localeCompare(b.gcCode);
+      if (codeComparison !== 0) return direction * codeComparison;
+      return direction * (indexA - indexB);
+    }
+    const direction = sort === "added-desc" ? -1 : 1;
+    const timeDifference = cacheAddedTime(a) - cacheAddedTime(b);
+    if (timeDifference !== 0) return direction * timeDifference;
+    return direction * (indexA - indexB);
+  };
+}
+
 type MysteryCache = {
   id: string;
   gcCode: string;
@@ -96,6 +144,7 @@ type MysteryCache = {
   status: MysteryStatus;
   trip?: string;
   tripUpdatedAt?: string;
+  addedAt?: string;
   publishedLatitude: number;
   publishedLongitude: number;
   notes: string;
@@ -120,6 +169,7 @@ type SharedMysteryGrant = {
   mystery: MysteryCache;
   owner: AppUser;
   sharedWith: AppUser[];
+  addedAt?: string;
 };
 
 type OwnedMysterySnapshot = {
@@ -127,6 +177,7 @@ type OwnedMysterySnapshot = {
   mystery: MysteryCache;
   revision: number;
   sharedWith: AppUser[];
+  createdAt?: string;
 };
 
 type MysterySharingPreference = {
@@ -362,6 +413,7 @@ function verifiedStoredShares(caches: MysteryCache[], mergeOptions?: MysteryCach
           })))
         : [],
       image: cache.sharedBy ? safeRecipientMysteryImage(cache.image) : cache.image,
+      addedAt: normalizeAddedAt(cache.addedAt),
       sharedWith: Array.isArray(cache.sharedWith) ? cache.sharedWith.filter(isAppUser) : []
     };
   });
@@ -379,7 +431,8 @@ function verifiedStoredShares(caches: MysteryCache[], mergeOptions?: MysteryCach
       continue;
     }
 
-    merged.set(key, mergeMysteryCaches(existing, cache, mergeOptions));
+    const next = mergeMysteryCaches(existing, cache, mergeOptions);
+    merged.set(key, { ...next, addedAt: earliestAddedAt(existing.addedAt, cache.addedAt) });
   }
   return [...merged.values()];
 }
@@ -423,6 +476,7 @@ function importedMystery(value: BrowserImport): MysteryCache | null {
     locality,
     locationHierarchy,
     status: "solving",
+    addedAt: new Date().toISOString(),
     publishedLatitude,
     publishedLongitude,
     notes: typeof value.notes === "string" ? value.notes : "",
@@ -518,6 +572,13 @@ export default function MysteriesPage() {
   const [storageKeys, setStorageKeys] = useState<MysteryStorageKeys | null>(null);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<"all" | MysteryStatus>("all");
+  const [listSort, setListSort] = useState<MysteryListSort>(() => {
+    if (typeof window === "undefined") return "added-desc";
+    const stored = window.localStorage.getItem(MYSTERY_LIST_SORT_STORAGE_KEY);
+    return stored === "added-asc" || stored === "added-desc" || stored === "name-asc" || stored === "name-desc"
+      ? stored
+      : "added-desc";
+  });
   const [attemptType, setAttemptType] = useState<AttemptKind>("coordinate");
   const [coordinate, setCoordinate] = useState("");
   const [coordinateState, setCoordinateState] = useState<CheckState>("wrong");
@@ -553,6 +614,14 @@ export default function MysteriesPage() {
   const imageLoadAttempt = useRef(0);
 
   latestCaches.current = caches;
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(MYSTERY_LIST_SORT_STORAGE_KEY, listSort);
+    } catch {
+      // Sorting still works for this session when storage is unavailable.
+    }
+  }, [listSort]);
 
   useEffect(() => {
     let active = true;
@@ -870,25 +939,36 @@ export default function MysteriesPage() {
     void apiFetch<{ mysteries: SharedMysteryGrant[] }>("/mysteries/shared")
       .then(({ mysteries }) => {
         if (!active) return;
-        const sharedCaches = mysteries.flatMap((grant) => {
-          if (!grant?.mystery || !isAppUser(grant.owner) || typeof grant.workspaceId !== "string") return [];
-          return [{
-            ...grant.mystery,
-            area: normalizeMysteryArea(grant.mystery.area),
-            county: normalizeMysteryArea(grant.mystery.county),
-            country: normalizeMysteryArea(grant.mystery.country),
-            region: normalizeMysteryArea(grant.mystery.region),
-            locality: normalizeMysteryArea(grant.mystery.locality),
-            locationHierarchy: Array.isArray(grant.mystery.locationHierarchy)
-              ? grant.mystery.locationHierarchy.map(normalizeMysteryArea).filter(Boolean)
-              : [],
-            id: `shared:${grant.workspaceId}`,
-            sharedWith: Array.isArray(grant.sharedWith) ? grant.sharedWith.filter(isAppUser) : [],
-            sharedBy: grant.owner,
-            sharedWorkspaceId: grant.workspaceId
-          }];
+        setCaches((current) => {
+          const currentSharedById = new Map(
+            current.filter((cache) => cache.sharedWorkspaceId).map((cache) => [cache.id, cache])
+          );
+          const sharedCaches = mysteries.flatMap((grant) => {
+            if (!grant?.mystery || !isAppUser(grant.owner) || typeof grant.workspaceId !== "string") return [];
+            const sharedId = `shared:${grant.workspaceId}`;
+            const addedAt = normalizeAddedAt(grant.addedAt)
+              ?? normalizeAddedAt(grant.mystery.addedAt)
+              ?? currentSharedById.get(sharedId)?.addedAt
+              ?? new Date().toISOString();
+            return [{
+              ...grant.mystery,
+              area: normalizeMysteryArea(grant.mystery.area),
+              county: normalizeMysteryArea(grant.mystery.county),
+              country: normalizeMysteryArea(grant.mystery.country),
+              region: normalizeMysteryArea(grant.mystery.region),
+              locality: normalizeMysteryArea(grant.mystery.locality),
+              locationHierarchy: Array.isArray(grant.mystery.locationHierarchy)
+                ? grant.mystery.locationHierarchy.map(normalizeMysteryArea).filter(Boolean)
+                : [],
+              id: sharedId,
+              addedAt,
+              sharedWith: Array.isArray(grant.sharedWith) ? grant.sharedWith.filter(isAppUser) : [],
+              sharedBy: grant.owner,
+              sharedWorkspaceId: grant.workspaceId
+            }];
+          });
+          return [...current.filter((cache) => !cache.sharedWorkspaceId), ...sharedCaches];
         });
-        setCaches((current) => [...current.filter((cache) => !cache.sharedWorkspaceId), ...sharedCaches]);
       })
       .catch(() => {
         // Keep the last locally cached shared snapshot while offline.
@@ -900,11 +980,12 @@ export default function MysteriesPage() {
           ? deletedClientIds.filter((cacheId): cacheId is string => typeof cacheId === "string" && cacheId.length > 0)
           : [];
         serverDeletedIds.forEach(rememberDeletedCache);
-        const ownedEntries = mysteries.flatMap(({ clientId, mystery, revision, sharedWith }) => {
+        const ownedEntries = mysteries.flatMap(({ clientId, mystery, revision, sharedWith, createdAt }) => {
           if (!mystery || typeof mystery !== "object" || mystery.id !== clientId || deletedCacheIds.current.has(clientId)) return [];
           const cache = verifiedStoredShares([{
             ...mystery,
             id: clientId,
+            addedAt: normalizeAddedAt(mystery.addedAt) ?? normalizeAddedAt(createdAt),
             sharedWith: Array.isArray(sharedWith) ? sharedWith.filter(isAppUser) : []
           }])[0];
           const serialized = stableJsonStringify(shareableMystery(cache));
@@ -941,7 +1022,9 @@ export default function MysteriesPage() {
             ? revision !== metadata.revision
             : requestSerialized !== undefined && requestSerialized !== serverSerialized;
           const changedDuringRequest = requestSerialized !== undefined && currentSerialized !== requestSerialized;
-          if ((localChanged || changedDuringRequest) && !serverChanged) return currentCache;
+          if ((localChanged || changedDuringRequest) && !serverChanged) {
+            return currentCache.addedAt ? currentCache : { ...currentCache, addedAt: serverCache.addedAt };
+          }
           if (localChanged || changedDuringRequest) {
             mergedConflictCount += 1;
             const merged = verifiedStoredShares([serverCache, currentCache], mergeOptions)[0];
@@ -952,12 +1035,14 @@ export default function MysteriesPage() {
             : serverCache;
         });
         ownedEntries.forEach(({ cache, revision, serialized }) => rememberServerSnapshot(cache.id, revision, serialized));
-        const localOnly = current.filter((cache) =>
-          !cache.sharedBy &&
-          !serverIds.has(cache.id) &&
-          !serverGcCodes.has(cache.gcCode.trim().toUpperCase()) &&
-          !deletedCacheIds.current.has(cache.id)
-        );
+        const localOnly = current
+          .filter((cache) =>
+            !cache.sharedBy &&
+            !serverIds.has(cache.id) &&
+            !serverGcCodes.has(cache.gcCode.trim().toUpperCase()) &&
+            !deletedCacheIds.current.has(cache.id)
+          )
+          .map((cache) => cache.addedAt ? cache : { ...cache, addedAt: new Date().toISOString() });
         const receivedShares = current.filter((cache) =>
           cache.sharedBy && !deletedCacheIds.current.has(cache.id)
         );
@@ -1229,21 +1314,26 @@ export default function MysteriesPage() {
   );
   const filteredCaches = useMemo(() => {
     const normalized = query.trim().toLowerCase();
-    return caches.filter((cache) => {
-      const matchesFilter = filter === "all" || cache.status === filter;
-      const matchesQuery = !normalized || [
-        cache.gcCode,
-        cache.name,
-        cache.area,
-        cache.county,
-        cache.country,
-        cache.region,
-        cache.locality,
-        ...(cache.locationHierarchy ?? [])
-      ].filter(Boolean).join(" ").toLowerCase().includes(normalized);
-      return matchesFilter && matchesQuery;
-    });
-  }, [caches, filter, query]);
+    const compare = compareMysteryCaches(listSort);
+    return caches
+      .map((cache, index) => ({ cache, index }))
+      .filter(({ cache }) => {
+        const matchesFilter = filter === "all" || cache.status === filter;
+        const matchesQuery = !normalized || [
+          cache.gcCode,
+          cache.name,
+          cache.area,
+          cache.county,
+          cache.country,
+          cache.region,
+          cache.locality,
+          ...(cache.locationHierarchy ?? [])
+        ].filter(Boolean).join(" ").toLowerCase().includes(normalized);
+        return matchesFilter && matchesQuery;
+      })
+      .sort((a, b) => compare(a.cache, b.cache, a.index, b.index))
+      .map(({ cache }) => cache);
+  }, [caches, filter, listSort, query]);
 
   function updateSelected(patch: Partial<MysteryCache>) {
     if (!selected || selected.sharedBy) return;
@@ -1515,6 +1605,7 @@ export default function MysteriesPage() {
       locality: String(data.get("locality") ?? "").trim(),
       locationHierarchy: [],
       status: "solving",
+      addedAt: new Date().toISOString(),
       publishedLatitude: published.latitude,
       publishedLongitude: published.longitude,
       notes: "",
@@ -1944,6 +2035,14 @@ export default function MysteriesPage() {
               <button className={filter === value ? "active" : ""} key={value} onClick={() => setFilter(value)} type="button">{value}</button>
             ))}
           </div>
+          <label className="mystery-sort-row">
+            <span>Sort</span>
+            <select value={listSort} onChange={(event) => setListSort(event.target.value as MysteryListSort)} aria-label="Sort mysteries">
+              {MYSTERY_LIST_SORTS.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+          </label>
           <div className="mystery-cache-list">
               <div className="mystery-cache-group">
                 <p>Mystery caches<span>{filteredCaches.length}</span></p>
