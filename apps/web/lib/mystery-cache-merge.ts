@@ -174,6 +174,13 @@ export function mergeMysteryCaches<T extends MergeableMysteryCache>(
 ): T {
   const sharedWith = new Map([...existing.sharedWith, ...incoming.sharedWith].map((user) => [user.id, user]));
   const statusRank = { solving: 0, planned: 1, solved: 2, archived: 3 } as const;
+  // Archiving is an explicit user action, and so is unarchiving. When either
+  // side is archived the device copy (incoming) wins, so an unarchive can
+  // never be silently undone by reconciliation. Non-archived conflicts keep
+  // the rank order so solved progress is still preserved.
+  const mergedStatus = existing.status === "archived" || incoming.status === "archived"
+    ? incoming.status
+    : statusRank[incoming.status] > statusRank[existing.status] ? incoming.status : existing.status;
   const existingTripTime = Date.parse(existing.tripUpdatedAt ?? "");
   const incomingTripTime = Date.parse(incoming.tripUpdatedAt ?? "");
   const preferIncomingTrip = Number.isFinite(incomingTripTime)
@@ -206,7 +213,7 @@ export function mergeMysteryCaches<T extends MergeableMysteryCache>(
     region: existing.region || incoming.region,
     locality: existing.locality || incoming.locality,
     locationHierarchy: existing.locationHierarchy?.length ? existing.locationHierarchy : incoming.locationHierarchy,
-    status: statusRank[incoming.status] > statusRank[existing.status] ? incoming.status : existing.status,
+    status: mergedStatus,
     trip: preferIncomingTrip ? incoming.trip : existing.trip,
     tripUpdatedAt: preferIncomingTrip ? incoming.tripUpdatedAt : existing.tripUpdatedAt,
     notes: options.preferIncomingNotes === false ? existing.notes : incoming.notes,
