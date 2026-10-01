@@ -100,6 +100,12 @@ function normalizeAddedAt(value: unknown) {
   return Number.isFinite(time) ? new Date(time).toISOString() : undefined;
 }
 
+function normalizeStatusUpdatedAt(value: unknown) {
+  if (typeof value !== "string" || !value) return undefined;
+  const time = Date.parse(value);
+  return Number.isFinite(time) ? new Date(time).toISOString() : undefined;
+}
+
 function cacheAddedTime(cache: Pick<MysteryCache, "addedAt">) {
   const time = Date.parse(cache.addedAt ?? "");
   return Number.isFinite(time) ? time : 0;
@@ -142,6 +148,7 @@ type MysteryCache = {
   locality?: string;
   locationHierarchy?: string[];
   status: MysteryStatus;
+  statusUpdatedAt?: string;
   trip?: string;
   tripUpdatedAt?: string;
   addedAt?: string;
@@ -396,6 +403,7 @@ function verifiedStoredShares(caches: MysteryCache[], mergeOptions?: MysteryCach
         ? cache.name.replace(/(?:\s*\(device edits\))+$/gi, "").trim()
         : "",
       status: cache.status === "solving" || cache.status === "solved" || cache.status === "planned" || cache.status === "archived" ? cache.status : "solving",
+      statusUpdatedAt: normalizeStatusUpdatedAt(cache.statusUpdatedAt),
       notes: typeof cache.notes === "string" ? cache.notes : "",
       fieldNotes: typeof cache.fieldNotes === "string" ? cache.fieldNotes : "",
       area: normalizeMysteryArea(cache.area),
@@ -466,6 +474,7 @@ function importedMystery(value: BrowserImport): MysteryCache | null {
   if (!/^GC[A-Z0-9]+$/.test(gcCode) || !name || !Number.isFinite(publishedLatitude) || !Number.isFinite(publishedLongitude) || Math.abs(publishedLatitude) > 90 || Math.abs(publishedLongitude) > 180) {
     return null;
   }
+  const now = new Date().toISOString();
   return {
     id: newId(),
     gcCode,
@@ -477,7 +486,8 @@ function importedMystery(value: BrowserImport): MysteryCache | null {
     locality,
     locationHierarchy,
     status: "solving",
-    addedAt: new Date().toISOString(),
+    statusUpdatedAt: now,
+    addedAt: now,
     publishedLatitude,
     publishedLongitude,
     notes: typeof value.notes === "string" ? value.notes : "",
@@ -1467,9 +1477,11 @@ export default function MysteriesPage() {
       createdAt: new Date().toISOString()
     };
     const solved = Boolean(solvedCoordinateForAttempt(nextAttempt));
+    const nextStatus = solved && selected.status !== "archived" ? "solved" : selected.status;
     updateSelected({
       attempts: [nextAttempt, ...selected.attempts],
-      status: solved && selected.status !== "archived" ? "solved" : selected.status
+      status: nextStatus,
+      ...(nextStatus !== selected.status ? { statusUpdatedAt: new Date().toISOString() } : {})
     });
     setCoordinate("");
     setFinalCoordinateText("");
@@ -1480,9 +1492,11 @@ export default function MysteriesPage() {
   function deleteAttempt(attemptId: string) {
     if (!selected) return;
     const remainingAttempts = selected.attempts.filter((attempt) => attempt.id !== attemptId);
+    const nextStatus = selected.status === "solved" && !remainingAttempts.some((attempt) => solvedCoordinateForAttempt(attempt)) ? "solving" : selected.status;
     updateSelected({
       attempts: remainingAttempts,
-      status: selected.status === "solved" && !remainingAttempts.some((attempt) => solvedCoordinateForAttempt(attempt)) ? "solving" : selected.status
+      status: nextStatus,
+      ...(nextStatus !== selected.status ? { statusUpdatedAt: new Date().toISOString() } : {})
     });
   }
 
@@ -1606,6 +1620,7 @@ export default function MysteriesPage() {
       locality: String(data.get("locality") ?? "").trim(),
       locationHierarchy: [],
       status: "solving",
+      statusUpdatedAt: new Date().toISOString(),
       addedAt: new Date().toISOString(),
       publishedLatitude: published.latitude,
       publishedLongitude: published.longitude,
@@ -2083,7 +2098,10 @@ export default function MysteriesPage() {
 
             <div className="mystery-status-row">
               <label><span>Status</span>
-                <select value={selected.status} disabled={Boolean(selected.sharedBy)} onChange={(event) => updateSelected({ status: event.target.value as MysteryStatus })} aria-label="Mystery status">
+                <select value={selected.status} disabled={Boolean(selected.sharedBy)} onChange={(event) => {
+                  const status = event.target.value as MysteryStatus;
+                  updateSelected(status === selected.status ? { status } : { status, statusUpdatedAt: new Date().toISOString() });
+                }} aria-label="Mystery status">
                   <option value="solving">Solving</option>
                   <option value="solved">Solved</option>
                   <option value="planned">Planned</option>

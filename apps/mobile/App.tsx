@@ -79,6 +79,7 @@ type MysteryCache = {
   locality?: string;
   trip?: string;
   status: MysteryStatus;
+  statusUpdatedAt?: string;
   publishedLatitude: number;
   publishedLongitude: number;
   notes: string;
@@ -477,6 +478,7 @@ async function readMysteries(apiBaseUrl: string, userId: string) {
       area: cache.area ?? "",
       country: cache.country ?? "",
       status: cache.status === "solving" || cache.status === "solved" || cache.status === "planned" || cache.status === "archived" ? cache.status : "solving",
+      statusUpdatedAt: typeof cache.statusUpdatedAt === "string" && Number.isFinite(Date.parse(cache.statusUpdatedAt)) ? cache.statusUpdatedAt : undefined,
       notes: typeof cache.notes === "string" ? cache.notes : "",
       fieldNotes: typeof (cache as Partial<MysteryCache>).fieldNotes === "string" ? (cache as Partial<MysteryCache>).fieldNotes as string : "",
       clues: Array.isArray(cache.clues) ? cache.clues : [],
@@ -2738,6 +2740,7 @@ function MysteriesScreen({ apiBaseUrl, token, userId, onRequestScrollTop }: { ap
       area: location.trim(),
       country: country.trim(),
       status: "solving",
+      statusUpdatedAt: new Date().toISOString(),
       publishedLatitude: coordinate.latitude,
       publishedLongitude: coordinate.longitude,
       notes: "",
@@ -2770,9 +2773,11 @@ function MysteriesScreen({ apiBaseUrl, token, userId, onRequestScrollTop }: { ap
       setNotice("Those coordinates are already in the attempt history.");
       return;
     }
+    const nextStatus = attemptState === "correct" && selected.status !== "archived" ? "solved" : selected.status;
     if (!updateSelected({
       attempts: [{ id: newId("attempt"), kind: "coordinate", ...coordinate, state: attemptState, createdAt: new Date().toISOString() }, ...selected.attempts],
-      status: attemptState === "correct" && selected.status !== "archived" ? "solved" : selected.status
+      status: nextStatus,
+      ...(nextStatus !== selected.status ? { statusUpdatedAt: new Date().toISOString() } : {})
     })) return;
     setAttemptText("");
     setNotice("Coordinate saved.");
@@ -2904,7 +2909,10 @@ function MysteriesScreen({ apiBaseUrl, token, userId, onRequestScrollTop }: { ap
       {detailOpen && selected ? <>
       <Pressable accessibilityRole="button" accessibilityLabel="Back to mystery list" onPress={showMysteryList} style={styles.mysteryBackButton}><Text style={styles.mysteryBackButtonText}>‹ Mystery list</Text></Pressable>
       <Panel title={`${selected.gcCode} · ${selected.name}`} subtitle={selected.sharedBy ? `Read-only shared workspace from ${selected.sharedBy.username}` : mysteryLocation(selected)}>
-        <Segmented values={["solving", "solved", "planned", "archived"]} active={selected.status} disabled={Boolean(selected.sharedBy)} onPress={(value) => updateSelected({ status: value as MysteryStatus })} />
+        <Segmented values={["solving", "solved", "planned", "archived"]} active={selected.status} disabled={Boolean(selected.sharedBy)} onPress={(value) => {
+          const status = value as MysteryStatus;
+          updateSelected(status === selected.status ? { status } : { status, statusUpdatedAt: new Date().toISOString() });
+        }} />
         <Field label="Trip / route" value={selected.trip ?? ""} editable={!selected.sharedBy} onChangeText={(value) => updateSelected({ trip: value })} />
         <Field label="Solution" value={selected.notes} editable={!selected.sharedBy} multiline style={styles.textArea} onChangeText={(value) => updateSelected({ notes: value })} />
         <Field label="Field notes" value={selected.fieldNotes ?? ""} editable={!selected.sharedBy} multiline style={styles.textArea} onChangeText={(value) => updateSelected({ fieldNotes: value })} />

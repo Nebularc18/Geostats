@@ -596,10 +596,14 @@ export default function TravelPage() {
   function deleteTrip(name: string) {
     if (!window.confirm(`Remove ${name}? Its caches will return to Unassigned.`)) return;
     const changedAt = new Date().toISOString();
+    // Archived caches are hidden here; deleting a (possibly reused) trip name
+    // must never strip their stored membership.
     const nextCaches = caches.map((cache) =>
-      normalizedTripName(cache.trip).toLocaleLowerCase() === name.toLocaleLowerCase()
-        ? { ...cache, trip: undefined, tripUpdatedAt: changedAt }
-        : cache
+      cache.status === "archived"
+        ? cache
+        : normalizedTripName(cache.trip).toLocaleLowerCase() === name.toLocaleLowerCase()
+          ? { ...cache, trip: undefined, tripUpdatedAt: changedAt }
+          : cache
     );
     saveAssignments(nextCaches, `${name} removed`);
   }

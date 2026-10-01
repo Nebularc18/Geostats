@@ -331,6 +331,51 @@ test("keeps the earliest added date when devices reconnect", () => {
   assert.equal(mergeMysteryCaches(server, { ...server, addedAt: undefined }).addedAt, "2026-02-01T00:00:00.000Z");
 });
 
+test("resolves archived status conflicts by recency so neither side is silently undone", () => {
+  const base: MergeableMysteryCache = {
+    id: "cache-1",
+    gcCode: "GC1234",
+    name: "Mystery",
+    area: "",
+    country: "Sweden",
+    status: "solving",
+    notes: "",
+    clues: [],
+    sharedWith: [],
+    attempts: []
+  };
+  const archivedAt = (statusUpdatedAt: string): MergeableMysteryCache => ({ ...base, status: "archived", statusUpdatedAt });
+  const solvingAt = (statusUpdatedAt: string): MergeableMysteryCache => ({ ...base, status: "solving", statusUpdatedAt });
+
+  // A newer unarchive wins over an older archive.
+  assert.equal(mergeMysteryCaches(archivedAt("2026-03-01T10:00:00.000Z"), solvingAt("2026-03-02T10:00:00.000Z")).status, "solving");
+  // A newer archive wins over an older unarchive.
+  assert.equal(mergeMysteryCaches(solvingAt("2026-03-01T10:00:00.000Z"), archivedAt("2026-03-02T10:00:00.000Z")).status, "archived");
+  // A stale offline edit without a newer stamp cannot undo an archive.
+  assert.equal(mergeMysteryCaches(archivedAt("2026-03-02T10:00:00.000Z"), solvingAt("2026-03-01T10:00:00.000Z")).status, "archived");
+  // The winning stamp travels with the merged status.
+  assert.equal(mergeMysteryCaches(archivedAt("2026-03-01T10:00:00.000Z"), solvingAt("2026-03-02T10:00:00.000Z")).statusUpdatedAt, "2026-03-02T10:00:00.000Z");
+});
+
+test("keeps rank order for status conflicts without timestamps", () => {
+  const base: MergeableMysteryCache = {
+    id: "cache-1",
+    gcCode: "GC1234",
+    name: "Mystery",
+    area: "",
+    country: "Sweden",
+    status: "solving",
+    notes: "",
+    clues: [],
+    sharedWith: [],
+    attempts: []
+  };
+
+  assert.equal(mergeMysteryCaches(base, { ...base, status: "solved" }).status, "solved");
+  assert.equal(mergeMysteryCaches({ ...base, status: "solved" }, base).status, "solved");
+  assert.equal(mergeMysteryCaches(base, { ...base, status: "archived" }).status, "archived");
+});
+
 test("preserves ambiguous legacy device fields without overwriting the server", () => {
   const server: MergeableMysteryCache = {
     id: "server-cache-id",
