@@ -24,7 +24,8 @@ export type MergeableMysteryCache = {
   region?: string;
   locality?: string;
   locationHierarchy?: string[];
-  status: "solving" | "solved" | "planned";
+  status: "solving" | "solved" | "planned" | "archived";
+  statusUpdatedAt?: string;
   trip?: string;
   tripUpdatedAt?: string;
   addedAt?: string;
@@ -173,7 +174,34 @@ export function mergeMysteryCaches<T extends MergeableMysteryCache>(
   options: MysteryCacheMergeOptions = {}
 ): T {
   const sharedWith = new Map([...existing.sharedWith, ...incoming.sharedWith].map((user) => [user.id, user]));
-  const statusRank = { solving: 0, planned: 1, solved: 2 } as const;
+  const statusRank = { solving: 0, planned: 1, solved: 2, archived: 3 } as const;
+  // Status conflicts resolve by recency: every explicit (un)archive stamps
+  // statusUpdatedAt, so the newest intent wins and neither an unarchive nor
+  // a stale offline edit can silently undo the other side's archive.
+  // Snapshots without a stamp predate this field and fall back to rank order.
+  const existingStatusTime = Date.parse(existing.statusUpdatedAt ?? "");
+  const incomingStatusTime = Date.parse(incoming.statusUpdatedAt ?? "");
+  const existingStatusStamped = Number.isFinite(existingStatusTime);
+  const incomingStatusStamped = Number.isFinite(incomingStatusTime);
+  let mergedStatus: T["status"];
+  let mergedStatusUpdatedAt: string | undefined;
+  if (existingStatusStamped && incomingStatusStamped) {
+    if (incomingStatusTime !== existingStatusTime) {
+      const incomingNewer = incomingStatusTime > existingStatusTime;
+      mergedStatus = incomingNewer ? incoming.status : existing.status;
+      mergedStatusUpdatedAt = incomingNewer ? incoming.statusUpdatedAt : existing.statusUpdatedAt;
+    } else {
+      mergedStatus = statusRank[incoming.status] > statusRank[existing.status] ? incoming.status : existing.status;
+      mergedStatusUpdatedAt = incoming.statusUpdatedAt ?? existing.statusUpdatedAt;
+    }
+  } else if (incomingStatusStamped || existingStatusStamped) {
+    const incomingWins = incomingStatusStamped;
+    mergedStatus = incomingWins ? incoming.status : existing.status;
+    mergedStatusUpdatedAt = incomingWins ? incoming.statusUpdatedAt : existing.statusUpdatedAt;
+  } else {
+    mergedStatus = statusRank[incoming.status] > statusRank[existing.status] ? incoming.status : existing.status;
+    mergedStatusUpdatedAt = undefined;
+  }
   const existingTripTime = Date.parse(existing.tripUpdatedAt ?? "");
   const incomingTripTime = Date.parse(incoming.tripUpdatedAt ?? "");
   const preferIncomingTrip = Number.isFinite(incomingTripTime)
@@ -199,6 +227,7 @@ export function mergeMysteryCaches<T extends MergeableMysteryCache>(
   return {
     ...existing,
     addedAt,
+    statusUpdatedAt: mergedStatusUpdatedAt,
     name: existing.name || incoming.name,
     area: existing.area || incoming.area,
     county: existing.county || incoming.county,
@@ -206,7 +235,7 @@ export function mergeMysteryCaches<T extends MergeableMysteryCache>(
     region: existing.region || incoming.region,
     locality: existing.locality || incoming.locality,
     locationHierarchy: existing.locationHierarchy?.length ? existing.locationHierarchy : incoming.locationHierarchy,
-    status: statusRank[incoming.status] > statusRank[existing.status] ? incoming.status : existing.status,
+    status: mergedStatus,
     trip: preferIncomingTrip ? incoming.trip : existing.trip,
     tripUpdatedAt: preferIncomingTrip ? incoming.tripUpdatedAt : existing.tripUpdatedAt,
     notes: options.preferIncomingNotes === false ? existing.notes : incoming.notes,

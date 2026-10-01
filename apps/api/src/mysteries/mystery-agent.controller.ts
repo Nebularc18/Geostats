@@ -213,8 +213,13 @@ export class MysteryAgentController {
       else attempts.push(attempt);
 
       const hasSolution = attempts.some(attemptRevealsSolution);
-      const status = hasSolution ? "solved" : mystery.status === "solved" && hadSolution ? "solving" : mystery.status;
-      const data = { ...mystery, attempts, status } as Prisma.InputJsonObject;
+      // An archived cache stays archived when new attempts land, matching the
+      // web and mobile clients. The solution is still recorded, so
+      // unarchiving resurfaces it; only an explicit unarchive changes status.
+      const status = mystery.status === "archived" ? "archived" : hasSolution ? "solved" : mystery.status === "solved" && hadSolution ? "solving" : mystery.status;
+      // Stamp explicit status changes so offline merge reconciliation can
+      // resolve conflicts by recency instead of silently undoing them.
+      const data = { ...mystery, attempts, status, ...(status !== mystery.status ? { statusUpdatedAt: new Date().toISOString() } : {}) } as Prisma.InputJsonObject;
       if (Buffer.byteLength(JSON.stringify(data), "utf8") > MAX_SNAPSHOT_BYTES) {
         throw new BadRequestException("Mystery data is too large");
       }
@@ -257,12 +262,14 @@ export class MysteryAgentController {
       const [deleted] = attempts.splice(index, 1);
 
       const hasSolution = attempts.some(attemptRevealsSolution);
-      const status = hasSolution
-        ? "solved"
-        : mystery.status === "solved" && hadSolution
-          ? "solving"
-          : mystery.status;
-      const data = { ...mystery, attempts, status } as Prisma.InputJsonObject;
+      const status = mystery.status === "archived"
+        ? "archived"
+        : hasSolution
+          ? "solved"
+          : mystery.status === "solved" && hadSolution
+            ? "solving"
+            : mystery.status;
+      const data = { ...mystery, attempts, status, ...(status !== mystery.status ? { statusUpdatedAt: new Date().toISOString() } : {}) } as Prisma.InputJsonObject;
       const updated = await tx.mysteryWorkspace.update({
         where: { id: existing.id },
         data: { data, snapshotRevision: { increment: 1 } },

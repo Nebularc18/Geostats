@@ -20,7 +20,7 @@ type SharingPreferenceBody = {
   statuses?: unknown;
 };
 
-const MYSTERY_STATUSES = ["solving", "solved", "planned"] as const;
+const MYSTERY_STATUSES = ["solving", "solved", "planned", "archived"] as const;
 type MysteryStatus = typeof MYSTERY_STATUSES[number];
 
 const MAX_MYSTERY_NAME_LENGTH = 300;

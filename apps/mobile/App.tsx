@@ -53,7 +53,7 @@ type ScratchLevel = "countries" | "regions" | "counties";
 type ScreenId = "dashboard" | "explore" | "upload" | "imports" | "stats" | "ftf" | "hides" | "milestones" | "map" | "mysteries" | "travel" | "trackables" | "scratch" | "challenges" | "profile";
 type Session = { token: string; user: { id: string; email: string; username: string } };
 type CheckState = "correct" | "wrong" | "unchecked";
-type MysteryStatus = "solving" | "solved" | "planned";
+type MysteryStatus = "solving" | "solved" | "planned" | "archived";
 type AttemptKind = "coordinate" | "keyword";
 type AppUser = { id: string; username: string };
 type CoordinateAttempt = {
@@ -79,6 +79,7 @@ type MysteryCache = {
   locality?: string;
   trip?: string;
   status: MysteryStatus;
+  statusUpdatedAt?: string;
   publishedLatitude: number;
   publishedLongitude: number;
   notes: string;
@@ -476,6 +477,8 @@ async function readMysteries(apiBaseUrl: string, userId: string) {
       ...cache,
       area: cache.area ?? "",
       country: cache.country ?? "",
+      status: cache.status === "solving" || cache.status === "solved" || cache.status === "planned" || cache.status === "archived" ? cache.status : "solving",
+      statusUpdatedAt: typeof cache.statusUpdatedAt === "string" && Number.isFinite(Date.parse(cache.statusUpdatedAt)) ? cache.statusUpdatedAt : undefined,
       notes: typeof cache.notes === "string" ? cache.notes : "",
       fieldNotes: typeof (cache as Partial<MysteryCache>).fieldNotes === "string" ? (cache as Partial<MysteryCache>).fieldNotes as string : "",
       clues: Array.isArray(cache.clues) ? cache.clues : [],
@@ -2737,6 +2740,7 @@ function MysteriesScreen({ apiBaseUrl, token, userId, onRequestScrollTop }: { ap
       area: location.trim(),
       country: country.trim(),
       status: "solving",
+      statusUpdatedAt: new Date().toISOString(),
       publishedLatitude: coordinate.latitude,
       publishedLongitude: coordinate.longitude,
       notes: "",
@@ -2769,9 +2773,11 @@ function MysteriesScreen({ apiBaseUrl, token, userId, onRequestScrollTop }: { ap
       setNotice("Those coordinates are already in the attempt history.");
       return;
     }
+    const nextStatus = attemptState === "correct" && selected.status !== "archived" ? "solved" : selected.status;
     if (!updateSelected({
       attempts: [{ id: newId("attempt"), kind: "coordinate", ...coordinate, state: attemptState, createdAt: new Date().toISOString() }, ...selected.attempts],
-      status: attemptState === "correct" ? "solved" : selected.status
+      status: nextStatus,
+      ...(nextStatus !== selected.status ? { statusUpdatedAt: new Date().toISOString() } : {})
     })) return;
     setAttemptText("");
     setNotice("Coordinate saved.");
@@ -2860,6 +2866,7 @@ function MysteriesScreen({ apiBaseUrl, token, userId, onRequestScrollTop }: { ap
   async function exportSolved() {
     try {
       const solved = caches.flatMap((cache) => {
+        if (cache.status === "archived") return [];
         const coordinate = finalCoordinate(cache);
         return coordinate ? [{ cache, coordinate }] : [];
       });
@@ -2876,7 +2883,7 @@ function MysteriesScreen({ apiBaseUrl, token, userId, onRequestScrollTop }: { ap
     <>
       {!detailOpen || !selected ? <>
       <PageTitle eyebrow="Offline solving workspace" title="Mysteries" />
-      <StatGrid rows={[["Caches", caches.length], ["Solved", caches.filter((cache) => cache.status === "solved").length], ["Planned", caches.filter((cache) => cache.status === "planned").length], ["Shared", caches.filter((cache) => cache.sharedBy || cache.sharedWith.length).length]]} />
+      <StatGrid rows={[["Caches", caches.length], ["Solved", caches.filter((cache) => cache.status === "solved").length], ["Planned", caches.filter((cache) => cache.status === "planned").length], ["Archived", caches.filter((cache) => cache.status === "archived").length], ["Shared", caches.filter((cache) => cache.sharedBy || cache.sharedWith.length).length]]} />
       <View style={styles.actionRow}>
         <View style={styles.flex}><PrimaryButton label={showAdd ? "Close add form" : "Add mystery"} onPress={() => setShowAdd((value) => !value)} /></View>
         <View style={styles.flex}><SecondaryButton label="Export solved GPX" onPress={exportSolved} /></View>
@@ -2891,7 +2898,7 @@ function MysteriesScreen({ apiBaseUrl, token, userId, onRequestScrollTop }: { ap
       </Panel> : null}
       <Panel title="Mystery list">
         <Field label="Search" value={query} onChangeText={setQuery} placeholder="Code, name, trip, or area" />
-        <Segmented values={["all", "solving", "solved", "planned"]} active={filter} onPress={(value) => setFilter(value as typeof filter)} />
+        <Segmented values={["all", "solving", "solved", "planned", "archived"]} active={filter} onPress={(value) => setFilter(value as typeof filter)} />
         {visible.map((cache) => {
           const isSelected = selected?.id === cache.id;
           return <Pressable accessibilityRole="button" accessibilityLabel={`Open ${cache.gcCode} ${cache.name}`} accessibilityState={{ selected: isSelected }} key={`${cache.sharedBy?.id ?? "own"}-${cache.id}`} onPress={() => showMystery(cache.id)} style={[styles.cacheRow, isSelected && styles.selectedRow]}><View style={styles.cacheRowHeading}><Text style={[styles.rowTitle, isSelected && styles.selectedRowTitle]}>{cache.gcCode} · {cache.name}</Text><Text style={styles.cacheRowAction}>Open ›</Text></View><Text style={[styles.muted, isSelected && styles.selectedRowMeta]}>{cache.status} · {mysteryLocation(cache) || "No location"}{cache.sharedBy ? ` · from ${cache.sharedBy.username}` : ""}</Text></Pressable>;
@@ -2902,7 +2909,10 @@ function MysteriesScreen({ apiBaseUrl, token, userId, onRequestScrollTop }: { ap
       {detailOpen && selected ? <>
       <Pressable accessibilityRole="button" accessibilityLabel="Back to mystery list" onPress={showMysteryList} style={styles.mysteryBackButton}><Text style={styles.mysteryBackButtonText}>‹ Mystery list</Text></Pressable>
       <Panel title={`${selected.gcCode} · ${selected.name}`} subtitle={selected.sharedBy ? `Read-only shared workspace from ${selected.sharedBy.username}` : mysteryLocation(selected)}>
-        <Segmented values={["solving", "solved", "planned"]} active={selected.status} disabled={Boolean(selected.sharedBy)} onPress={(value) => updateSelected({ status: value as MysteryStatus })} />
+        <Segmented values={["solving", "solved", "planned", "archived"]} active={selected.status} disabled={Boolean(selected.sharedBy)} onPress={(value) => {
+          const status = value as MysteryStatus;
+          updateSelected(status === selected.status ? { status } : { status, statusUpdatedAt: new Date().toISOString() });
+        }} />
         <Field label="Trip / route" value={selected.trip ?? ""} editable={!selected.sharedBy} onChangeText={(value) => updateSelected({ trip: value })} />
         <Field label="Solution" value={selected.notes} editable={!selected.sharedBy} multiline style={styles.textArea} onChangeText={(value) => updateSelected({ notes: value })} />
         <Field label="Field notes" value={selected.fieldNotes ?? ""} editable={!selected.sharedBy} multiline style={styles.textArea} onChangeText={(value) => updateSelected({ fieldNotes: value })} />
@@ -2963,6 +2973,7 @@ function TravelScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; token
     return () => { active = false; };
   }, [apiBaseUrl, userId]);
   const visible = caches.filter((cache) => {
+    if (cache.status === "archived") return false;
     const isReady = Boolean(finalCoordinate(cache));
     const matchesFilter = filter === "all" || (filter === "ready" ? isReady : !isReady);
     const normalized = query.trim().toLowerCase();
@@ -2973,8 +2984,8 @@ function TravelScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; token
     (result[key] ??= []).push(cache);
     return result;
   }, {});
-  const readyCount = caches.filter(finalCoordinate).length;
-  const tripCount = new Set(caches.map((cache) => cache.trip?.trim()).filter(Boolean)).size;
+  const readyCount = caches.filter((cache) => cache.status !== "archived" && finalCoordinate(cache)).length;
+  const tripCount = new Set(caches.filter((cache) => cache.status !== "archived").map((cache) => cache.trip?.trim()).filter(Boolean)).size;
 
   function changeSearchMode(value: string) {
     const mode = value as typeof searchMode;
@@ -3004,6 +3015,7 @@ function TravelScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; token
     setSearchError(null);
     try {
       const mysteryCaches = caches.flatMap((cache) => {
+        if (cache.status === "archived") return [];
         const coordinate = finalCoordinate(cache);
         return coordinate ? [{
           id: cache.id,

@@ -47,7 +47,7 @@ import {
 } from "../../lib/mystery-note-receipt";
 
 type CheckState = "correct" | "wrong" | "unchecked" | "planned";
-type MysteryStatus = "solving" | "solved" | "planned";
+type MysteryStatus = "solving" | "solved" | "planned" | "archived";
 type AttemptKind = "coordinate" | "keyword" | "approach";
 
 type CoordinateAttempt = {
@@ -100,6 +100,12 @@ function normalizeAddedAt(value: unknown) {
   return Number.isFinite(time) ? new Date(time).toISOString() : undefined;
 }
 
+function normalizeStatusUpdatedAt(value: unknown) {
+  if (typeof value !== "string" || !value) return undefined;
+  const time = Date.parse(value);
+  return Number.isFinite(time) ? new Date(time).toISOString() : undefined;
+}
+
 function cacheAddedTime(cache: Pick<MysteryCache, "addedAt">) {
   const time = Date.parse(cache.addedAt ?? "");
   return Number.isFinite(time) ? time : 0;
@@ -142,6 +148,7 @@ type MysteryCache = {
   locality?: string;
   locationHierarchy?: string[];
   status: MysteryStatus;
+  statusUpdatedAt?: string;
   trip?: string;
   tripUpdatedAt?: string;
   addedAt?: string;
@@ -395,6 +402,8 @@ function verifiedStoredShares(caches: MysteryCache[], mergeOptions?: MysteryCach
       name: typeof cache.name === "string"
         ? cache.name.replace(/(?:\s*\(device edits\))+$/gi, "").trim()
         : "",
+      status: cache.status === "solving" || cache.status === "solved" || cache.status === "planned" || cache.status === "archived" ? cache.status : "solving",
+      statusUpdatedAt: normalizeStatusUpdatedAt(cache.statusUpdatedAt),
       notes: typeof cache.notes === "string" ? cache.notes : "",
       fieldNotes: typeof cache.fieldNotes === "string" ? cache.fieldNotes : "",
       area: normalizeMysteryArea(cache.area),
@@ -465,6 +474,7 @@ function importedMystery(value: BrowserImport): MysteryCache | null {
   if (!/^GC[A-Z0-9]+$/.test(gcCode) || !name || !Number.isFinite(publishedLatitude) || !Number.isFinite(publishedLongitude) || Math.abs(publishedLatitude) > 90 || Math.abs(publishedLongitude) > 180) {
     return null;
   }
+  const now = new Date().toISOString();
   return {
     id: newId(),
     gcCode,
@@ -476,7 +486,8 @@ function importedMystery(value: BrowserImport): MysteryCache | null {
     locality,
     locationHierarchy,
     status: "solving",
-    addedAt: new Date().toISOString(),
+    statusUpdatedAt: now,
+    addedAt: now,
     publishedLatitude,
     publishedLongitude,
     notes: typeof value.notes === "string" ? value.notes : "",
@@ -1309,7 +1320,7 @@ export default function MysteriesPage() {
     return solved && !solved.attempt.geocachingSyncedAt ? [{ cache, ...solved }] : [];
   }), [caches]);
   const selectedFieldNotesNeedSync = Boolean(
-    selected && !selected.sharedBy &&
+    selected && !selected.sharedBy && selected.status !== "archived" &&
     selected.geocachingFieldNotesFingerprint !== mysteryFieldFingerprint(selected.fieldNotes ?? "")
   );
   const filteredCaches = useMemo(() => {
@@ -1466,9 +1477,11 @@ export default function MysteriesPage() {
       createdAt: new Date().toISOString()
     };
     const solved = Boolean(solvedCoordinateForAttempt(nextAttempt));
+    const nextStatus = solved && selected.status !== "archived" ? "solved" : selected.status;
     updateSelected({
       attempts: [nextAttempt, ...selected.attempts],
-      status: solved ? "solved" : selected.status
+      status: nextStatus,
+      ...(nextStatus !== selected.status ? { statusUpdatedAt: new Date().toISOString() } : {})
     });
     setCoordinate("");
     setFinalCoordinateText("");
@@ -1479,9 +1492,11 @@ export default function MysteriesPage() {
   function deleteAttempt(attemptId: string) {
     if (!selected) return;
     const remainingAttempts = selected.attempts.filter((attempt) => attempt.id !== attemptId);
+    const nextStatus = selected.status === "solved" && !remainingAttempts.some((attempt) => solvedCoordinateForAttempt(attempt)) ? "solving" : selected.status;
     updateSelected({
       attempts: remainingAttempts,
-      status: selected.status === "solved" && !remainingAttempts.some((attempt) => solvedCoordinateForAttempt(attempt)) ? "solving" : selected.status
+      status: nextStatus,
+      ...(nextStatus !== selected.status ? { statusUpdatedAt: new Date().toISOString() } : {})
     });
   }
 
@@ -1547,7 +1562,7 @@ export default function MysteriesPage() {
   }
 
   function syncFieldNotes(cache: MysteryCache) {
-    if (cache.sharedBy) return;
+    if (cache.sharedBy || cache.status === "archived") return;
     const payload: GeocachingFieldNoteSyncPayload = {
       cacheId: cache.id,
       gcCode: cache.gcCode,
@@ -1605,6 +1620,7 @@ export default function MysteriesPage() {
       locality: String(data.get("locality") ?? "").trim(),
       locationHierarchy: [],
       status: "solving",
+      statusUpdatedAt: new Date().toISOString(),
       addedAt: new Date().toISOString(),
       publishedLatitude: published.latitude,
       publishedLongitude: published.longitude,
@@ -1915,6 +1931,7 @@ export default function MysteriesPage() {
 
   function exportGpx() {
     const solved = caches.flatMap((cache) => {
+      if (cache.status === "archived") return [];
       const final = finalCoordinate(cache);
       return final ? [{ cache, final }] : [];
     });
@@ -1998,6 +2015,7 @@ export default function MysteriesPage() {
   }
 
   const solvedCount = caches.filter((cache) => cache.status === "solved").length;
+  const archivedCount = caches.filter((cache) => cache.status === "archived").length;
   const attemptCount = caches.reduce((sum, cache) => sum + cache.attempts.length, 0);
 
   return (
@@ -2022,6 +2040,7 @@ export default function MysteriesPage() {
         <div><span>In your workspace</span><strong>{caches.length}</strong><small>mystery caches</small></div>
         <div><span>Solved</span><strong>{solvedCount}</strong><small>{caches.length ? Math.round((solvedCount / caches.length) * 100) : 0}% complete</small></div>
         <div><span>Checker tries</span><strong>{attemptCount}</strong><small>keywords & coordinates</small></div>
+        <div><span>Archived</span><strong>{archivedCount}</strong><small>parked or gone</small></div>
       </section>
 
       <section className="mystery-workspace">
@@ -2031,7 +2050,7 @@ export default function MysteriesPage() {
             <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search code, name or location" aria-label="Search mysteries" />
           </div>
           <div className="mystery-filter-row">
-            {(["all", "solving", "solved", "planned"] as const).map((value) => (
+            {(["all", "solving", "solved", "planned", "archived"] as const).map((value) => (
               <button className={filter === value ? "active" : ""} key={value} onClick={() => setFilter(value)} type="button">{value}</button>
             ))}
           </div>
@@ -2075,6 +2094,21 @@ export default function MysteriesPage() {
                 {!selected.sharedBy && <button className="secondary-button" type="button" onClick={openImagePicker}><ImagePlus size={16} /> {selected.image ? "Change image" : "Add image"}</button>}
                 {!selected.sharedBy && <button className="secondary-button danger-button" type="button" onClick={() => setCacheToDelete(selected)}><Trash2 size={16} /> Delete</button>}
               </div>
+            </div>
+
+            <div className="mystery-status-row">
+              <label><span>Status</span>
+                <select value={selected.status} disabled={Boolean(selected.sharedBy)} onChange={(event) => {
+                  const status = event.target.value as MysteryStatus;
+                  updateSelected(status === selected.status ? { status } : { status, statusUpdatedAt: new Date().toISOString() });
+                }} aria-label="Mystery status">
+                  <option value="solving">Solving</option>
+                  <option value="solved">Solved</option>
+                  <option value="planned">Planned</option>
+                  <option value="archived">Archived</option>
+                </select>
+              </label>
+              {selected.status === "archived" && <small>Archived caches stay out of Travel, GPX export and Geocaching sync.</small>}
             </div>
 
             {selected.image && <div className="mystery-image"><img src={selected.image} alt={`Attached reference for ${selected.name}`} /><button type="button" onClick={() => updateSelected({ image: undefined })}><X size={15} /> Remove</button></div>}
@@ -2163,7 +2197,7 @@ export default function MysteriesPage() {
                   <textarea value={selected.notes} onChange={(event) => updateSelected({ notes: event.target.value })} placeholder="Write down clues and calculations…" aria-label="Solution notes" />
                 </section>
                 <section className="mystery-section notes-section">
-                  <div className="section-heading"><div><p className="eyebrow">In the field</p><h3>Field notes</h3></div><div className="notes-heading-actions"><small>{serverSyncReady ? "Account sync on" : "Saved offline"}</small>{!selected.sharedBy && <button className={selected.geocachingFieldNotesFingerprint === mysteryFieldFingerprint(selected.fieldNotes ?? "") ? "synced" : ""} type="button" onClick={() => syncFieldNotes(selected)}><RefreshCw size={13} /> {selected.geocachingFieldNotesFingerprint === mysteryFieldFingerprint(selected.fieldNotes ?? "") ? "Field note synced" : "Sync field note"}</button>}</div></div>
+                  <div className="section-heading"><div><p className="eyebrow">In the field</p><h3>Field notes</h3></div><div className="notes-heading-actions"><small>{serverSyncReady ? "Account sync on" : "Saved offline"}</small>{!selected.sharedBy && selected.status !== "archived" && <button className={selected.geocachingFieldNotesFingerprint === mysteryFieldFingerprint(selected.fieldNotes ?? "") ? "synced" : ""} type="button" onClick={() => syncFieldNotes(selected)}><RefreshCw size={13} /> {selected.geocachingFieldNotesFingerprint === mysteryFieldFingerprint(selected.fieldNotes ?? "") ? "Field note synced" : "Sync field note"}</button>}</div></div>
                   <textarea value={selected.fieldNotes ?? ""} onChange={(event) => updateSelected({ fieldNotes: event.target.value })} placeholder="Things to bring, parking, access…" aria-label="Field notes" />
                 </section>
                 <section className="mystery-section shared-section">
@@ -2259,7 +2293,7 @@ export default function MysteriesPage() {
                 <div className="sharing-preference" key={preference.recipient.id}>
                   <div className="sharing-preference-person"><span>{preference.recipient.username.charAt(0).toUpperCase()}</span><strong>{preference.recipient.username}</strong><button className="text-button" type="button" disabled={savingPreferenceId === preference.recipient.id} onClick={() => void removeSharingPreference(preference)}>Stop sharing</button></div>
                   <div className="sharing-statuses" aria-label={`Myst statuses shared with ${preference.recipient.username}`}>
-                    {(["solving", "solved", "planned"] as const).map((status) => {
+                    {(["solving", "solved", "planned", "archived"] as const).map((status) => {
                       const checked = preference.statuses.includes(status);
                       const nextStatuses = checked ? preference.statuses.filter((item) => item !== status) : [...preference.statuses, status];
                       return <label key={status}><input type="checkbox" checked={checked} disabled={Boolean(savingPreferenceId) || (checked && preference.statuses.length === 1)} onChange={() => void saveSharingPreference(preference.recipient, nextStatuses)} /><span>{status}</span></label>;
@@ -2276,7 +2310,7 @@ export default function MysteriesPage() {
               {userQuery.trim().length >= 2 && userSearchState === "idle" && !userResults.length && <small>No registered users found.</small>}
               {userResults.map((user) => {
                 const preference = sharingPreferences.find((item) => item.recipient.id === user.id);
-                return <button key={user.id} type="button" disabled={Boolean(preference) || Boolean(savingPreferenceId)} onClick={() => void saveSharingPreference(user, ["solving", "solved", "planned"])}><span>{user.username.charAt(0).toUpperCase()}</span><strong>{user.username}</strong><small>{preference ? "Already added" : savingPreferenceId === user.id ? "Adding…" : "Share all Mysts"}</small></button>;
+                return <button key={user.id} type="button" disabled={Boolean(preference) || Boolean(savingPreferenceId)} onClick={() => void saveSharingPreference(user, ["solving", "solved", "planned", "archived"])}><span>{user.username.charAt(0).toUpperCase()}</span><strong>{user.username}</strong><small>{preference ? "Already added" : savingPreferenceId === user.id ? "Adding…" : "Share all Mysts"}</small></button>;
               })}
             </div>
             <div className="modal-actions"><button className="secondary-button" type="button" onClick={() => setShowSharingSettings(false)}>Done</button></div>

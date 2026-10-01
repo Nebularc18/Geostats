@@ -28,7 +28,7 @@ type TravelCache = {
   locality?: string;
   trip?: string;
   tripUpdatedAt?: string;
-  status: "solving" | "solved" | "planned";
+  status: "solving" | "solved" | "planned" | "archived";
   attempts: TravelAttempt[];
   sharedBy?: { id: string; username: string };
   sharedWorkspaceId?: string;
@@ -395,6 +395,7 @@ export default function TravelPage() {
     setSearching(true);
     try {
       const mysteryCaches = caches.flatMap((cache) => {
+        if (cache.status === "archived") return [];
         const coordinate = finalTravelCoordinate(cache);
         return coordinate ? [{
           id: cache.id,
@@ -487,6 +488,7 @@ export default function TravelPage() {
   const visibleCaches = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase();
     return caches.filter((cache) => {
+      if (cache.status === "archived") return false;
       const isReady = Boolean(finalTravelCoordinate(cache));
       const matchesFilter = filter === "all" || (filter === "ready" ? isReady : !isReady);
       const matchesQuery = !normalized || [cache.gcCode, cache.name, locationLabel(cache), cache.trip]
@@ -499,11 +501,25 @@ export default function TravelPage() {
   }, [caches, filter, query]);
 
   const groups = useMemo(() => travelGroups(visibleCaches), [visibleCaches]);
-  const assignedCaches = caches.filter((cache) => normalizedTripName(cache.trip));
+  const activeCaches = useMemo(() => caches.filter((cache) => cache.status !== "archived"), [caches]);
+  const assignedCaches = activeCaches.filter((cache) => normalizedTripName(cache.trip));
   const unassignedCaches = visibleCaches.filter((cache) => !normalizedTripName(cache.trip));
   const readyCount = assignedCaches.filter((cache) => finalTravelCoordinate(cache)).length;
-  const tripCount = travelGroups(caches).length;
+  const tripCount = travelGroups(activeCaches).length;
   const savedCacheCount = savedPlans.reduce((total, plan) => total + plan.caches.length, 0);
+  const archivedInEditedTrip = useMemo(() => {
+    if (editingTrip === null) return [];
+    const normalizedName = normalizedTripName(editingTrip).toLocaleLowerCase();
+    if (!normalizedName) return [];
+    return caches.filter((cache) =>
+      cache.status === "archived" &&
+      normalizedTripName(cache.trip).toLocaleLowerCase() === normalizedName
+    );
+  }, [caches, editingTrip]);
+  const selectedVisibleCount = useMemo(
+    () => activeCaches.filter((cache) => selectedCacheIds.has(cache.id)).length,
+    [activeCaches, selectedCacheIds]
+  );
 
   function openNewTrip() {
     setEditingTrip("");
@@ -515,7 +531,17 @@ export default function TravelPage() {
   function openEditTrip(name: string, groupCaches: TravelCache[]) {
     setEditingTrip(name);
     setTripName(name);
-    setSelectedCacheIds(new Set(groupCaches.map((cache) => cache.id)));
+    // Archived caches are hidden from the trip picker, but they keep their
+    // trip assignment. Pre-select every member of this trip (including
+    // archived ones) so saving never silently unassigns a hidden cache, and
+    // renaming a trip moves its archived members along with it.
+    const normalizedName = name.toLocaleLowerCase();
+    const fullMembership = caches.filter((cache) =>
+      normalizedTripName(cache.trip).toLocaleLowerCase() === normalizedName
+    );
+    const visibleIds = new Set(groupCaches.map((cache) => cache.id));
+    fullMembership.forEach((cache) => visibleIds.add(cache.id));
+    setSelectedCacheIds(visibleIds);
     setTripError("");
   }
 
@@ -536,7 +562,10 @@ export default function TravelPage() {
       setTripError("Enter a trip name.");
       return;
     }
-    const duplicate = travelGroups(caches).some(([existing]) =>
+    // Only visible trips reserve names. A trip holding nothing but archived
+    // caches is hidden, so its name stays reusable; unarchiving such a cache
+    // later simply merges it into the trip sharing its stored name.
+    const duplicate = travelGroups(activeCaches).some(([existing]) =>
       existing.toLocaleLowerCase() === name.toLocaleLowerCase() &&
       existing.toLocaleLowerCase() !== editingTrip?.toLocaleLowerCase()
     );
@@ -567,10 +596,14 @@ export default function TravelPage() {
   function deleteTrip(name: string) {
     if (!window.confirm(`Remove ${name}? Its caches will return to Unassigned.`)) return;
     const changedAt = new Date().toISOString();
+    // Archived caches are hidden here; deleting a (possibly reused) trip name
+    // must never strip their stored membership.
     const nextCaches = caches.map((cache) =>
-      normalizedTripName(cache.trip).toLocaleLowerCase() === name.toLocaleLowerCase()
-        ? { ...cache, trip: undefined, tripUpdatedAt: changedAt }
-        : cache
+      cache.status === "archived"
+        ? cache
+        : normalizedTripName(cache.trip).toLocaleLowerCase() === name.toLocaleLowerCase()
+          ? { ...cache, trip: undefined, tripUpdatedAt: changedAt }
+          : cache
     );
     saveAssignments(nextCaches, `${name} removed`);
   }
@@ -724,13 +757,14 @@ export default function TravelPage() {
             <label htmlFor="travel-trip-name"><span>Trip name</span><input id="travel-trip-name" autoFocus value={tripName} maxLength={80} onChange={(event) => { setTripName(event.target.value); setTripError(""); }} placeholder="Stockholm weekend" /></label>
             <fieldset className="travel-cache-picker">
               <legend>Choose caches</legend>
-              {caches.map((cache) => {
+              {activeCaches.map((cache) => {
                 const coordinate = finalTravelCoordinate(cache);
                 const currentTrip = normalizedTripName(cache.trip);
                 return <label key={cache.id}><input type="checkbox" checked={selectedCacheIds.has(cache.id)} onChange={() => toggleSelected(cache.id)} /><span className={`attempt-state ${coordinate ? "correct" : "unchecked"}`}>{coordinate ? <Check size={14} /> : <CircleDot size={14} />}</span><span><strong>{cache.gcCode} · {cache.name}</strong><small>{locationLabel(cache) || "No location"}{currentTrip && currentTrip !== editingTrip ? ` · Currently in ${currentTrip}` : ""}</small></span></label>;
               })}
             </fieldset>
-            <p className="travel-picker-summary">{selectedCacheIds.size} {selectedCacheIds.size === 1 ? "cache" : "caches"} selected. Choosing a cache from another trip moves it here.</p>
+            <p className="travel-picker-summary">{selectedVisibleCount} {selectedVisibleCount === 1 ? "cache" : "caches"} selected. Choosing a cache from another trip moves it here.</p>
+            {archivedInEditedTrip.length > 0 && <p className="travel-picker-summary">Plus {archivedInEditedTrip.length} archived {archivedInEditedTrip.length === 1 ? "cache" : "caches"} will stay in this trip.</p>}
             {tripError && <p className="coordinate-error">{tripError}</p>}
             <div className="modal-actions"><button className="secondary-button" type="button" onClick={() => setEditingTrip(null)}>Cancel</button><button className="primary-button" type="submit">{editingTrip ? "Save trip" : "Create trip"}</button></div>
           </form>
