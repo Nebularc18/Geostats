@@ -24,7 +24,7 @@ export type MergeableMysteryCache = {
   region?: string;
   locality?: string;
   locationHierarchy?: string[];
-  status: "solving" | "solved" | "planned";
+  status: "solving" | "solved" | "planned" | "archived";
   trip?: string;
   tripUpdatedAt?: string;
   addedAt?: string;
@@ -173,7 +173,7 @@ export function mergeMysteryCaches<T extends MergeableMysteryCache>(
   options: MysteryCacheMergeOptions = {}
 ): T {
   const sharedWith = new Map([...existing.sharedWith, ...incoming.sharedWith].map((user) => [user.id, user]));
-  const statusRank = { solving: 0, planned: 1, solved: 2 } as const;
+  const statusRank = { solving: 0, planned: 1, solved: 2, archived: 3 } as const;
   const existingTripTime = Date.parse(existing.tripUpdatedAt ?? "");
   const incomingTripTime = Date.parse(incoming.tripUpdatedAt ?? "");
   const preferIncomingTrip = Number.isFinite(incomingTripTime)

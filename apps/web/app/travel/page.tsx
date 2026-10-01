@@ -28,7 +28,7 @@ type TravelCache = {
   locality?: string;
   trip?: string;
   tripUpdatedAt?: string;
-  status: "solving" | "solved" | "planned";
+  status: "solving" | "solved" | "planned" | "archived";
   attempts: TravelAttempt[];
   sharedBy?: { id: string; username: string };
   sharedWorkspaceId?: string;
@@ -395,6 +395,7 @@ export default function TravelPage() {
     setSearching(true);
     try {
       const mysteryCaches = caches.flatMap((cache) => {
+        if (cache.status === "archived") return [];
         const coordinate = finalTravelCoordinate(cache);
         return coordinate ? [{
           id: cache.id,
@@ -487,6 +488,7 @@ export default function TravelPage() {
   const visibleCaches = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase();
     return caches.filter((cache) => {
+      if (cache.status === "archived") return false;
       const isReady = Boolean(finalTravelCoordinate(cache));
       const matchesFilter = filter === "all" || (filter === "ready" ? isReady : !isReady);
       const matchesQuery = !normalized || [cache.gcCode, cache.name, locationLabel(cache), cache.trip]
@@ -499,10 +501,11 @@ export default function TravelPage() {
   }, [caches, filter, query]);
 
   const groups = useMemo(() => travelGroups(visibleCaches), [visibleCaches]);
-  const assignedCaches = caches.filter((cache) => normalizedTripName(cache.trip));
+  const activeCaches = useMemo(() => caches.filter((cache) => cache.status !== "archived"), [caches]);
+  const assignedCaches = activeCaches.filter((cache) => normalizedTripName(cache.trip));
   const unassignedCaches = visibleCaches.filter((cache) => !normalizedTripName(cache.trip));
   const readyCount = assignedCaches.filter((cache) => finalTravelCoordinate(cache)).length;
-  const tripCount = travelGroups(caches).length;
+  const tripCount = travelGroups(activeCaches).length;
   const savedCacheCount = savedPlans.reduce((total, plan) => total + plan.caches.length, 0);
 
   function openNewTrip() {
@@ -724,7 +727,7 @@ export default function TravelPage() {
             <label htmlFor="travel-trip-name"><span>Trip name</span><input id="travel-trip-name" autoFocus value={tripName} maxLength={80} onChange={(event) => { setTripName(event.target.value); setTripError(""); }} placeholder="Stockholm weekend" /></label>
             <fieldset className="travel-cache-picker">
               <legend>Choose caches</legend>
-              {caches.map((cache) => {
+              {activeCaches.map((cache) => {
                 const coordinate = finalTravelCoordinate(cache);
                 const currentTrip = normalizedTripName(cache.trip);
                 return <label key={cache.id}><input type="checkbox" checked={selectedCacheIds.has(cache.id)} onChange={() => toggleSelected(cache.id)} /><span className={`attempt-state ${coordinate ? "correct" : "unchecked"}`}>{coordinate ? <Check size={14} /> : <CircleDot size={14} />}</span><span><strong>{cache.gcCode} · {cache.name}</strong><small>{locationLabel(cache) || "No location"}{currentTrip && currentTrip !== editingTrip ? ` · Currently in ${currentTrip}` : ""}</small></span></label>;

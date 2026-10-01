@@ -4732,7 +4732,7 @@ select:focus {
 
 .mystery-overview {
   display: grid;
-  grid-template-columns: repeat(3, minmax(130px, 1fr));
+  grid-template-columns: repeat(4, minmax(130px, 1fr));
   margin-bottom: 18px;
   overflow: hidden;
   border: 1px solid var(--line);
@@ -4840,7 +4840,7 @@ select:focus {
 
 .mystery-filter-row {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: 5px;
   margin: 11px 0;
 }
@@ -5001,6 +5001,11 @@ select:focus {
   color: var(--blue);
 }
 
+.cache-status-dot.archived {
+  color: var(--muted);
+  opacity: 0.7;
+}
+
 .mystery-card-copy {
   display: grid;
   gap: 3px;
@@ -5071,6 +5076,51 @@ select:focus {
 .status-badge.planned {
   color: var(--blue);
   background: rgba(105, 169, 189, 0.13);
+}
+
+.status-badge.archived {
+  color: var(--muted);
+  background: rgba(237, 244, 232, 0.1);
+}
+
+.mystery-status-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(8, 13, 10, 0.42);
+}
+
+.mystery-status-row label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.mystery-status-row select {
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--ink);
+  background: rgba(8, 13, 10, 0.62);
+  font-size: 0.78rem;
+  font-weight: 400;
+  letter-spacing: normal;
+  text-transform: capitalize;
+}
+
+.mystery-status-row small {
+  color: var(--muted);
+  font-size: 0.7rem;
 }
 
 .mystery-detail-hero h2 {
