@@ -324,6 +324,74 @@ test("agent delete reports a missing attempt instead of silently succeeding", as
   await assert.rejects(controller.deleteAttempt("Bearer secret", "GC12345", "missing-id"), /Attempt was not found/);
 });
 
+test("agent stamps statusUpdatedAt when solving so merges resolve by recency", async () => {
+  const original = {
+    id: "workspace-1",
+    clientId: "local-1",
+    snapshotRevision: 4,
+    data: { id: "local-1", gcCode: "GC12345", name: "Cipher", status: "solving", attempts: [] }
+  };
+  let stored: any;
+  const tx = {
+    $queryRaw: async () => [],
+    mysteryWorkspace: {
+      findUnique: async () => original,
+      update: async (input: any) => {
+        stored = input.data.data;
+        return { clientId: original.clientId, data: input.data.data, snapshotRevision: 5 };
+      }
+    }
+  };
+  const controller = new MysteryAgentController(
+    { $transaction: async (callback: any) => callback(tx) } as any,
+    { userId: async () => "user-1" } as any
+  );
+
+  const result = await controller.addAttempt("Bearer secret", "GC12345", {
+    kind: "coordinate",
+    latitude: 59.40582,
+    longitude: 18.3612,
+    state: "correct"
+  });
+
+  assert.equal(result.mystery.status, "solved");
+  assert.ok(Number.isFinite(Date.parse(stored.statusUpdatedAt)));
+});
+
+test("agent leaves statusUpdatedAt alone when the status does not change", async () => {
+  const original = {
+    id: "workspace-1",
+    clientId: "local-1",
+    snapshotRevision: 5,
+    data: { id: "local-1", gcCode: "GC12345", name: "Cipher", status: "solving", attempts: [] }
+  };
+  let stored: any;
+  const tx = {
+    $queryRaw: async () => [],
+    mysteryWorkspace: {
+      findUnique: async () => original,
+      update: async (input: any) => {
+        stored = input.data.data;
+        return { clientId: original.clientId, data: input.data.data, snapshotRevision: 6 };
+      }
+    }
+  };
+  const controller = new MysteryAgentController(
+    { $transaction: async (callback: any) => callback(tx) } as any,
+    { userId: async () => "user-1" } as any
+  );
+
+  const result = await controller.addAttempt("Bearer secret", "GC12345", {
+    kind: "coordinate",
+    latitude: 59.40582,
+    longitude: 18.3612,
+    state: "wrong"
+  });
+
+  assert.equal(result.mystery.status, "solving");
+  assert.equal(stored.statusUpdatedAt, undefined);
+});
+
 test("agent replaces solution and field notes", async () => {
   const original = {
     id: "workspace-1",

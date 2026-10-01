@@ -214,7 +214,9 @@ export class MysteryAgentController {
 
       const hasSolution = attempts.some(attemptRevealsSolution);
       const status = hasSolution ? "solved" : mystery.status === "solved" && hadSolution ? "solving" : mystery.status;
-      const data = { ...mystery, attempts, status } as Prisma.InputJsonObject;
+      // Stamp explicit status changes so offline merge reconciliation can
+      // resolve conflicts by recency instead of silently undoing them.
+      const data = { ...mystery, attempts, status, ...(status !== mystery.status ? { statusUpdatedAt: new Date().toISOString() } : {}) } as Prisma.InputJsonObject;
       if (Buffer.byteLength(JSON.stringify(data), "utf8") > MAX_SNAPSHOT_BYTES) {
         throw new BadRequestException("Mystery data is too large");
       }
@@ -262,7 +264,7 @@ export class MysteryAgentController {
         : mystery.status === "solved" && hadSolution
           ? "solving"
           : mystery.status;
-      const data = { ...mystery, attempts, status } as Prisma.InputJsonObject;
+      const data = { ...mystery, attempts, status, ...(status !== mystery.status ? { statusUpdatedAt: new Date().toISOString() } : {}) } as Prisma.InputJsonObject;
       const updated = await tx.mysteryWorkspace.update({
         where: { id: existing.id },
         data: { data, snapshotRevision: { increment: 1 } },
