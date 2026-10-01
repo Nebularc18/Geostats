@@ -262,11 +262,13 @@ export class MysteryAgentController {
       const [deleted] = attempts.splice(index, 1);
 
       const hasSolution = attempts.some(attemptRevealsSolution);
-      const status = hasSolution
-        ? "solved"
-        : mystery.status === "solved" && hadSolution
-          ? "solving"
-          : mystery.status;
+      const status = mystery.status === "archived"
+        ? "archived"
+        : hasSolution
+          ? "solved"
+          : mystery.status === "solved" && hadSolution
+            ? "solving"
+            : mystery.status;
       const data = { ...mystery, attempts, status, ...(status !== mystery.status ? { statusUpdatedAt: new Date().toISOString() } : {}) } as Prisma.InputJsonObject;
       const updated = await tx.mysteryWorkspace.update({
         where: { id: existing.id },

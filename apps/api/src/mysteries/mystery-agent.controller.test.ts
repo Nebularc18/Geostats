@@ -300,6 +300,53 @@ test("agent delete keeps solved status while another solution remains", async ()
   assert.equal(result.mystery.attempts.length, 1);
 });
 
+for (const deletedAttemptId of ["wrong", "first", "second"]) {
+  test(`agent delete keeps an archived cache archived when removing ${deletedAttemptId}`, async () => {
+    const archivedAt = "2026-03-01T10:00:00.000Z";
+    const original = {
+      id: "workspace-1",
+      clientId: "local-1",
+      snapshotRevision: 11,
+      data: {
+        id: "local-1",
+        gcCode: "GC12345",
+        name: "Cipher",
+        status: "archived",
+        statusUpdatedAt: archivedAt,
+        attempts: [
+          { id: "first", kind: "coordinate", latitude: 59.4, longitude: 18.3, state: "correct" },
+          { id: "second", kind: "keyword", answer: "answer", finalLatitude: 59.5, finalLongitude: 18.4, state: "correct" },
+          { id: "wrong", kind: "approach", answer: "Try ROT13", state: "wrong" }
+        ]
+      }
+    };
+    let stored: any;
+    const tx = {
+      $queryRaw: async () => [],
+      mysteryWorkspace: {
+        findUnique: async () => original,
+        update: async (input: any) => {
+          stored = input.data.data;
+          return { clientId: original.clientId, data: stored, snapshotRevision: 12 };
+        }
+      }
+    };
+    const controller = new MysteryAgentController(
+      { $transaction: async (callback: any) => callback(tx) } as any,
+      { userId: async () => "user-1" } as any
+    );
+
+    const result = await controller.deleteAttempt("Bearer secret", "GC12345", deletedAttemptId);
+
+    assert.equal(result.mystery.status, "archived");
+    assert.equal(stored.statusUpdatedAt, archivedAt);
+    assert.equal(result.deleted.id, deletedAttemptId);
+    assert.deepEqual(result.mystery.attempts.map((attempt) => attempt.id),
+      original.data.attempts.filter((attempt) => attempt.id !== deletedAttemptId).map((attempt) => attempt.id));
+    assert.equal(result.revision, 12);
+  });
+}
+
 test("agent delete reports a missing attempt instead of silently succeeding", async () => {
   const original = {
     id: "workspace-1",
