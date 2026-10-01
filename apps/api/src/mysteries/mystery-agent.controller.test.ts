@@ -358,6 +358,41 @@ test("agent stamps statusUpdatedAt when solving so merges resolve by recency", a
   assert.ok(Number.isFinite(Date.parse(stored.statusUpdatedAt)));
 });
 
+test("agent keeps an archived cache archived when it records a solution", async () => {
+  const original = {
+    id: "workspace-1",
+    clientId: "local-1",
+    snapshotRevision: 4,
+    data: { id: "local-1", gcCode: "GC12345", name: "Cipher", status: "archived", statusUpdatedAt: "2026-03-01T10:00:00.000Z", attempts: [] }
+  };
+  let stored: any;
+  const tx = {
+    $queryRaw: async () => [],
+    mysteryWorkspace: {
+      findUnique: async () => original,
+      update: async (input: any) => {
+        stored = input.data.data;
+        return { clientId: original.clientId, data: input.data.data, snapshotRevision: 5 };
+      }
+    }
+  };
+  const controller = new MysteryAgentController(
+    { $transaction: async (callback: any) => callback(tx) } as any,
+    { userId: async () => "user-1" } as any
+  );
+
+  const result = await controller.addAttempt("Bearer secret", "GC12345", {
+    kind: "coordinate",
+    latitude: 59.40582,
+    longitude: 18.3612,
+    state: "correct"
+  });
+
+  assert.equal(result.mystery.status, "archived");
+  assert.equal(result.mystery.attempts.length, 1);
+  assert.equal(stored.statusUpdatedAt, "2026-03-01T10:00:00.000Z");
+});
+
 test("agent leaves statusUpdatedAt alone when the status does not change", async () => {
   const original = {
     id: "workspace-1",
