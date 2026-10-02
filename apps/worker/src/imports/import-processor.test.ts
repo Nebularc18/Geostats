@@ -1960,3 +1960,56 @@ test("overlapping imports rebuild after an initially unchanged import replaces n
   assert.equal(raw.ele, 1);
   assert.deepEqual(snapshots, [321, 1], "old import's actual replacement must rebuild the snapshot");
 });
+
+
+test("automatic retry rebuilds stats after private metadata committed before a failed recalculation", async () => {
+  const shared = { id: "cache-1", gcCode: "GC12345", metadataTrusted: false };
+  const existingFind = {
+    id: "find-1", cacheId: shared.id, foundAt: new Date("2024-05-01T10:34:00Z"),
+    foundDate: new Date("2024-05-01T00:00:00Z"), logText: "Nice find.",
+    isFtf: false, isFtfManual: false, importedFrom: ImportSource.MY_FINDS_GPX
+  };
+  let raw: any;
+  const statuses: string[] = [];
+  const writeCounts: number[] = [];
+  let recalculations = 0;
+  let snapshotElevation = 0;
+  const tx = { find: {
+    findMany: async () => [existingFind],
+    update: async () => { throw new Error("find must remain unchanged"); },
+    createMany: async () => { throw new Error("find must not be duplicated"); }
+  } };
+  const prisma = importTestClient({
+    import: {
+      findFirst: async () => ({ id: "import-1", source: ImportSource.MY_FINDS_GPX, fileType: ImportFileType.GPX, fileName: "finds.gpx", objectKey: "object" }),
+      update: async ({ data }: any) => { statuses.push(data.status); }
+    },
+    cache: { upsert: async () => shared },
+    geocachingProfile: { findUnique: async () => null },
+    $transaction: async (run: any) => run(tx),
+    $queryRaw: async (query: any) => {
+      const incoming = JSON.parse(query.values[3]);
+      if (isDeepStrictEqual(raw, incoming)) { writeCounts.push(0); return []; }
+      raw = incoming;
+      writeCounts.push(1);
+      return [{ cacheId: shared.id }];
+    }
+  });
+  const processor = new ImportProcessor(prisma as any, {
+    getObject: async () => Buffer.from(myFindsGpx.replace('<name>GC12345</name>', '<ele>321</ele><name>GC12345</name>'))
+  } as any);
+  (processor as any).recalculateStats = async () => {
+    recalculations += 1;
+    if (recalculations === 1) throw new Error("snapshot unavailable");
+    snapshotElevation = raw.ele;
+  };
+  const job = { importId: "import-1", userId: "user-1", objectKey: "object", source: ImportSource.MY_FINDS_GPX };
+  await assert.rejects(processor.process(job, { attemptsMade: 0, maxAttempts: 2 }), /snapshot unavailable/);
+  assert.equal(raw.ele, 321);
+  assert.equal(statuses.at(-1), ImportStatus.QUEUED);
+  await processor.process(job, { attemptsMade: 1, maxAttempts: 2 });
+  assert.deepEqual(writeCounts, [1, 0], "retry metadata write is already unchanged");
+  assert.equal(recalculations, 2);
+  assert.equal(snapshotElevation, 321);
+  assert.equal(statuses.at(-1), ImportStatus.COMPLETED);
+});

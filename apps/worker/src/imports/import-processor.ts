@@ -238,7 +238,9 @@ export class ImportProcessor {
           ? ImportSource.MY_FINDS_GPX
           : importSource;
       const incomingCaches = [...parsed.caches, ...parsed.finds.map((find) => find.cache)];
-      let shouldRecalculateStats = false;
+      // Earlier attempts may have committed metadata before failing to rebuild
+      // stats (or before finishing cache resolution). Retry that derived work.
+      let shouldRecalculateStats = attempt.attemptsMade > 0;
       const cachesByCode = await this.resolveCaches(payload.userId, incomingCaches, () => {
         shouldRecalculateStats = true;
       });
