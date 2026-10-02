@@ -16,8 +16,8 @@ test("legacy private metadata migration restores SQL filters without changing ca
   const legacy = {
     lat: "59", lon: "18", desc: "Private cache", time: "2020-01-01",
     "groundspeak:cache": {
-      "groundspeak:type": "Unknown Cache", "groundspeak:country": " Sweden ",
-      "groundspeak:owner": { text: " ALICE " }, "groundspeak:difficulty": "2.5",
+      "groundspeak:type": "Unknown Cache", "groundspeak:country": "\u00a0\t Sweden \t\u00a0",
+      "groundspeak:owner": { text: "\u00a0\t ALICE \t\u00a0" }, "groundspeak:difficulty": "2.5",
     },
   };
   try {
