@@ -76,12 +76,13 @@ type ExtremeCacheRow = {
   region: string | null;
   latitude: Prisma.Decimal;
   longitude: Prisma.Decimal;
-  hiddenDate: Date | null;
+  hiddenDate: Date | string | null;
   elevationMeters?: number | bigint | string | null;
 };
 
 function toExtremeCache(row: ExtremeCacheRow, foundCacheIds: Set<string>): ExtremeCacheEntry {
   const elevation = row.elevationMeters == null ? null : Number(row.elevationMeters);
+  const hiddenDate = row.hiddenDate ? new Date(row.hiddenDate) : null;
   return {
     gcCode: row.gcCode,
     name: row.name,
@@ -90,22 +91,53 @@ function toExtremeCache(row: ExtremeCacheRow, foundCacheIds: Set<string>): Extre
     region: row.region,
     latitude: Number(row.latitude),
     longitude: Number(row.longitude),
-    hiddenDate: row.hiddenDate ? row.hiddenDate.toISOString().slice(0, 10) : null,
+    hiddenDate: hiddenDate && Number.isFinite(hiddenDate.getTime()) ? hiddenDate.toISOString().slice(0, 10) : null,
     elevationMeters: elevation != null && Number.isFinite(elevation) ? elevation : null,
     found: foundCacheIds.has(row.id)
   };
 }
 
+// Bind $3 to the requesting account. Private metadata never enters the shared catalog.
+export function effectiveExtremeCachesSql(): string {
+  const coordinate = (key: string, maximum: number) => `CASE
+    WHEN length(m->>'${key}') <= 32 AND m->>'${key}' ~ '^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]{1,2})?$'
+    THEN CASE WHEN (m->>'${key}')::double precision BETWEEN -${maximum} AND ${maximum}
+              THEN (m->>'${key}')::double precision END END`;
+  return `effective_caches AS (
+    SELECT c.id, c.gc_code, c.name, c.cache_type, c.country, c.region,
+           c.latitude::double precision, c.longitude::double precision, to_char(c.hidden_date, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS hidden_date
+    FROM caches c WHERE c.metadata_trusted = true
+    UNION ALL
+    SELECT c.id, c.gc_code, COALESCE(m->>'name', c.gc_code), m->>'cacheType',
+           NULLIF(btrim(m->>'country'), ''), NULLIF(btrim(m->>'region'), ''),
+           ${coordinate("latitude", 90)}, ${coordinate("longitude", 180)}, m->>'hiddenDate'
+    FROM caches c JOIN user_cache_data u ON u.cache_id = c.id AND u.user_id = $3
+    CROSS JOIN LATERAL (SELECT u.raw->'geostatsMetadata' AS m) metadata
+    WHERE c.metadata_trusted = false
+  )`;
+}
+
+export function locationExtremeSql(field: "latitude" | "longitude" | "hidden_date", direction: "ASC" | "DESC"): string {
+  return `WITH ${effectiveExtremeCachesSql()}
+    SELECT id::text, gc_code AS "gcCode", name, cache_type AS "cacheType", country, region,
+           latitude, longitude, hidden_date AS "hiddenDate"
+    FROM effective_caches
+    WHERE ($1::text IS NULL OR country = $1) AND ($2::text IS NULL OR region = $2)
+      AND latitude IS NOT NULL AND longitude IS NOT NULL
+      ${field === "hidden_date" ? "AND hidden_date IS NOT NULL" : ""}
+    ORDER BY ${field} ${direction}, id LIMIT 1`;
+}
+
 export function elevationExtremeSql(direction: "ASC" | "DESC", region: string | null): string {
   return `
-  WITH candidates AS (
+  WITH ${effectiveExtremeCachesSql()}, candidates AS (
     SELECT u."cache_id" AS cache_id,
            CASE WHEN jsonb_typeof(u."raw"->'ele') = 'object'
                 THEN u."raw"->'ele'->>'text'
                 ELSE u."raw"->>'ele'
            END AS ele_text
     FROM "user_cache_data" u
-    WHERE jsonb_typeof(u."raw") = 'object' AND jsonb_exists(u."raw", 'ele')
+    WHERE u."user_id" = $3 AND jsonb_typeof(u."raw") = 'object' AND jsonb_exists(u."raw", 'ele')
   ),
   converted AS (
     SELECT cache_id,
@@ -126,10 +158,11 @@ export function elevationExtremeSql(direction: "ASC" | "DESC", region: string | 
          c."cache_type" AS "cacheType", c."country" AS country, c."region" AS region,
          c."latitude", c."longitude", c."hidden_date" AS "hiddenDate",
          v.elevation AS "elevationMeters"
-  FROM "caches" c
+  FROM effective_caches c
   JOIN valid v ON v.cache_id = c."id"
   WHERE ($1::text IS NULL OR c."country" = $1)
     AND ($2::text IS NULL OR c."region" = $2)
+    AND c.latitude IS NOT NULL AND c.longitude IS NOT NULL
   ORDER BY v.elevation ${direction}
   LIMIT 1
 `;
@@ -400,19 +433,11 @@ export class StatsService {
   async extremeCachesForUser(userId: string, country?: string | null, region?: string | null) {
     const cleanCountry = country?.trim() || null;
     const cleanRegion = region?.trim() || null;
-    const locationWhere: { country?: string; region?: string } = {};
-    if (cleanCountry) {
-      locationWhere.country = cleanCountry;
-    }
-    if (cleanRegion) {
-      locationWhere.region = cleanRegion;
-    }
-
-    const countries = await this.prisma.cache.groupBy({
-      by: ["country"],
-      where: { country: { not: null } },
-      orderBy: { country: "asc" }
-    });
+    const countries = await this.prisma.$queryRawUnsafe<Array<{ country: string }>>(
+      `WITH ${effectiveExtremeCachesSql()} SELECT DISTINCT country FROM effective_caches
+       WHERE country IS NOT NULL AND btrim(country) <> ''
+         AND ($1::text IS NULL OR country = $1) AND ($2::text IS NULL OR region = $2) ORDER BY country`, null, null, userId
+    );
 
     const referenceRegions = cleanCountry ? swedenRegionExtremes.filter((item) => item.country === cleanCountry).map((item) => item.region) : [];
 
@@ -423,7 +448,13 @@ export class StatsService {
     const firstHomeFind = await this.prisma.find.findFirst({
       where: {
         ...countableFindWhere(userId, normalizedGcUsername(profile)),
-        cache: { OR: [{ country: { not: null } }, { metadataTrusted: false, userData: { some: { userId } } }] }
+        cache: { OR: [
+          { metadataTrusted: true, country: { not: null } },
+          { metadataTrusted: false, userData: { some: { userId, AND: [
+            { raw: { path: ["geostatsMetadata", "country"], not: "" } },
+            { raw: { path: ["geostatsMetadata", "country"], not: Prisma.JsonNull } }
+          ] } } }
+        ] }
       },
       orderBy: [{ foundAt: "asc" }, { id: "asc" }],
       select: { cache: { select: { country: true, metadataTrusted: true, userData: { where: { userId }, take: 1, select: { raw: true } } } } }
@@ -431,33 +462,16 @@ export class StatsService {
     const homeCache = firstHomeFind ? { ...firstHomeFind.cache, ...personalCacheMetadata(firstHomeFind.cache, firstHomeFind.cache.userData?.[0]?.raw) } : null;
     const homeCountry = homeCache?.country?.trim() || null;
 
-    const [northernmost, southernmost, easternmost, westernmost, oldest] = await Promise.all([
-      this.prisma.cache.findFirst({
-        where: locationWhere,
-        orderBy: { latitude: "desc" }
-      }),
-      this.prisma.cache.findFirst({
-        where: locationWhere,
-        orderBy: { latitude: "asc" }
-      }),
-      this.prisma.cache.findFirst({
-        where: locationWhere,
-        orderBy: { longitude: "desc" }
-      }),
-      this.prisma.cache.findFirst({
-        where: locationWhere,
-        orderBy: { longitude: "asc" }
-      }),
-      this.prisma.cache.findFirst({
-        where: { ...locationWhere, hiddenDate: { not: null } },
-        orderBy: { hiddenDate: "asc" }
-      })
+    const [northRows, southRows, eastRows, westRows, oldestRows, highestRows, lowestRows] = await Promise.all([
+      this.prisma.$queryRawUnsafe<ExtremeCacheRow[]>(locationExtremeSql("latitude", "DESC"), cleanCountry, cleanRegion, userId),
+      this.prisma.$queryRawUnsafe<ExtremeCacheRow[]>(locationExtremeSql("latitude", "ASC"), cleanCountry, cleanRegion, userId),
+      this.prisma.$queryRawUnsafe<ExtremeCacheRow[]>(locationExtremeSql("longitude", "DESC"), cleanCountry, cleanRegion, userId),
+      this.prisma.$queryRawUnsafe<ExtremeCacheRow[]>(locationExtremeSql("longitude", "ASC"), cleanCountry, cleanRegion, userId),
+      this.prisma.$queryRawUnsafe<ExtremeCacheRow[]>(locationExtremeSql("hidden_date", "ASC"), cleanCountry, cleanRegion, userId),
+      this.prisma.$queryRawUnsafe<ExtremeCacheRow[]>(elevationExtremeSql("DESC", cleanRegion), cleanCountry, cleanRegion, userId),
+      this.prisma.$queryRawUnsafe<ExtremeCacheRow[]>(elevationExtremeSql("ASC", cleanRegion), cleanCountry, cleanRegion, userId)
     ]);
-
-    const [highestRows, lowestRows] = await Promise.all([
-      this.prisma.$queryRawUnsafe<ExtremeCacheRow[]>(elevationExtremeSql("DESC", cleanRegion), cleanCountry, cleanRegion),
-      this.prisma.$queryRawUnsafe<ExtremeCacheRow[]>(elevationExtremeSql("ASC", cleanRegion), cleanCountry, cleanRegion)
-    ]);
+    const [northernmost, southernmost, easternmost, westernmost, oldest] = [northRows[0], southRows[0], eastRows[0], westRows[0], oldestRows[0]];
 
     const rows = [northernmost, southernmost, easternmost, westernmost, oldest, highestRows[0], lowestRows[0]].filter((row): row is ExtremeCacheRow => row != null);
     const foundCacheIds = await this.foundCacheIdsFor(

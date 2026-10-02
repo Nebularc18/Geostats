@@ -423,13 +423,16 @@ export class ChallengeCheckersService {
     // Revalidate stored rules before any history query: archives may contain old oversized rules.
     const rules = parseRules(checker.rules);
     const workPerFind = ruleWork(rules);
+    const workMaximumFinds = Math.floor(MAX_EVALUATION_WORK / workPerFind);
+    const queryMaximumFinds = Math.min(maximumFinds ?? workMaximumFinds, workMaximumFinds);
     const profile = await this.prisma.geocachingProfile.findUnique({ where: { userId: checker.userId } });
     const username = profile?.gcUsername ?? "Geocacher";
     const finds = await this.prisma.find.findMany({
       where: countableFindWhere(checker.userId, username.trim().toLowerCase()),
       include: { cache: { include: { userData: { where: { userId: checker.userId }, take: 1 } } } },
       orderBy: { foundAt: "asc" },
-      ...(maximumFinds === undefined ? {} : { take: maximumFinds + 1 })
+      // One extra row detects excess without materializing the rest of the history.
+      take: queryMaximumFinds + 1
     });
     if (maximumFinds !== undefined && finds.length > maximumFinds) {
       throw new PayloadTooLargeException(`This public checker cannot evaluate more than ${maximumFinds.toLocaleString("en-US")} finds. Sign in and run the owned checker instead.`);

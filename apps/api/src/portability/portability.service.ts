@@ -6,7 +6,7 @@ import {
   OnModuleInit,
   ServiceUnavailableException,
 } from "@nestjs/common";
-import { Prisma, privateCacheRaw } from "@geostats/db";
+import { Prisma, personalCacheMetadata, privateCacheRaw } from "@geostats/db";
 import {
   AuthUser,
   ImportFileType,
@@ -591,7 +591,12 @@ export class PortabilityService implements OnModuleInit, OnModuleDestroy {
           for (const [index, cache] of data.caches.entries()) {
             const gcCode = text(cache.gcCode, `caches[${index}].gcCode`, 40).toUpperCase();
             const id = cacheId(gcCode, `caches[${index}].gcCode`);
-            const raw = privateCacheRaw(cache.raw, cache) as Prisma.InputJsonValue;
+            // New exports carry neutral shared fields and the owner's real metadata in raw.
+            // Validate the private overlay before preserving it; older archives use top-level fields.
+            const scopedMetadata = cache.raw && typeof cache.raw === "object" && !Array.isArray(cache.raw) && "geostatsMetadata" in cache.raw
+              ? personalCacheMetadata({ metadataTrusted: false }, cache.raw)
+              : {};
+            const raw = privateCacheRaw(cache.raw, { ...cache, ...scopedMetadata }) as Prisma.InputJsonValue;
             await tx.userCacheData.upsert({
               where: { userId_cacheId: { userId: user.id, cacheId: id } },
               create: { userId: user.id, cacheId: id, raw },

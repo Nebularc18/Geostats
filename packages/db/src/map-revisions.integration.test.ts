@@ -46,7 +46,7 @@ test("map revisions cover bulk writes, shared metadata, cascades and transaction
     await prisma.$executeRawUnsafe(`CREATE SCHEMA "${schema}"`);
     await prisma.$executeRawUnsafe('CREATE TABLE users (id TEXT PRIMARY KEY)');
     await prisma.$executeRawUnsafe('CREATE TABLE caches (id TEXT PRIMARY KEY, name TEXT)');
-    for (const table of ["finds", "hides", "imports", "geocaching_profiles", "corrected_coordinates"]) {
+    for (const table of ["finds", "hides", "imports", "geocaching_profiles", "corrected_coordinates", "user_cache_data"]) {
       await prisma.$executeRawUnsafe(`CREATE TABLE ${table} (
         id TEXT PRIMARY KEY, user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
         cache_id TEXT REFERENCES caches(id) ON DELETE CASCADE, value TEXT
@@ -57,6 +57,8 @@ test("map revisions cover bulk writes, shared metadata, cascades and transaction
     // Preserve dollar-quoted function/DO bodies as single SQL statements.
     const statements = migration.match(/(?:\$\$[\s\S]*?\$\$|[^;])+;/g) ?? [];
     for (const statement of statements) await prisma.$executeRawUnsafe(statement);
+    const privateMetadataMigration = readFileSync(resolve(__dirname, "../prisma/migrations/000037_user_cache_data_map_revisions/migration.sql"), "utf8").replace(/--[^\n]*/g, "");
+    for (const statement of privateMetadataMigration.match(/[^;]+;/g) ?? []) await prisma.$executeRawUnsafe(statement);
     await prisma.$executeRawUnsafe("INSERT INTO users VALUES ('a'), ('b'), ('unrelated')");
     await prisma.$executeRawUnsafe(`INSERT INTO caches VALUES ('${sharedCacheId}', 'Before'), ('${ownCacheId}', 'Own')`);
     assert.equal(await revision(), 0n);
@@ -72,7 +74,7 @@ test("map revisions cover bulk writes, shared metadata, cascades and transaction
     assert.equal(await revision(prisma, "unrelated"), 0n);
 
     // Every user-scoped mutation family invalidates on insert, update, delete.
-    for (const table of ["imports", "geocaching_profiles", "corrected_coordinates"]) {
+    for (const table of ["imports", "geocaching_profiles", "corrected_coordinates", "user_cache_data"]) {
       const before = await revision();
       await prisma.$executeRawUnsafe(`INSERT INTO ${table} VALUES ('row', 'a', '${ownCacheId}', 'old')`);
       assert.equal(await revision(), before + 1n, `${table} insert`);
@@ -81,6 +83,27 @@ test("map revisions cover bulk writes, shared metadata, cascades and transaction
       await prisma.$executeRawUnsafe(`DELETE FROM ${table} WHERE id = 'row'`);
       assert.equal(await revision(), before + 3n, `${table} delete`);
     }
+    // A metadata-only bulk reimport must invalidate exactly once at commit.
+    const privateBefore = await revision();
+    await prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(`INSERT INTO user_cache_data VALUES ('private-one', 'a', '${ownCacheId}', 'old'), ('private-two', 'a', '${ownCacheId}', 'old')`);
+      await tx.$executeRawUnsafe("UPDATE user_cache_data SET value = 'new' WHERE user_id = 'a'");
+      assert.equal(await revision(observer), privateBefore);
+      assert.equal(await tx.mapRevisionChange.count(), 1);
+    });
+    assert.equal(await revision(observer), privateBefore + 1n);
+    await assert.rejects(prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe("DELETE FROM user_cache_data WHERE user_id = 'a'");
+      throw new Error("private metadata rollback");
+    }), /private metadata rollback/);
+    assert.equal(await revision(), privateBefore + 1n);
+    assert.equal(await prisma.mapRevisionChange.count(), 0);
+    const privateOwnerBeforeA = await revision();
+    const privateOwnerBeforeB = await revision(prisma, "b");
+    await prisma.$executeRawUnsafe("UPDATE user_cache_data SET user_id = 'b' WHERE id = 'private-one'");
+    assert.equal(await revision(), privateOwnerBeforeA + 1n, "private metadata reassignment invalidates the previous owner");
+    assert.equal(await revision(prisma, "b"), privateOwnerBeforeB + 1n, "private metadata reassignment invalidates the new owner");
+
     // Moving ownership invalidates both owners, including restore-style updates.
     const beforeA = await revision();
     const beforeB = await revision(prisma, "b");

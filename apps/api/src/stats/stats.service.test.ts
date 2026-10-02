@@ -2,7 +2,7 @@ import { BadRequestException, NotFoundException } from "@nestjs/common";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { STATS_VERSION } from "@geostats/stats";
-import { elevationExtremeSql, StatsService } from "./stats.service";
+import { effectiveExtremeCachesSql, locationExtremeSql, elevationExtremeSql, StatsService } from "./stats.service";
 
 test("legacy elevation SQL guards conversion inside CASE and bounds terrestrial values", () => {
   for (const direction of ["ASC", "DESC"] as const) {
@@ -109,4 +109,48 @@ test("public snapshots only resolve profiles with explicit publication consent",
 
   await assert.rejects(() => service.publicSnapshotForUsername("Alice"), NotFoundException);
   assert.match(usernameQuery.sql, /public_stats_enabled/);
+});
+
+
+test("extremes rank private locations only within the requesting account", async () => {
+  const rows: any[] = [];
+  let homeQuery: any;
+  const prisma = {
+    geocachingProfile: { findUnique: async () => ({ gcUsername: "Alice" }) },
+    find: { findFirst: async (query: any) => {
+      homeQuery = query;
+      return { cache: { country: null, metadataTrusted: false, userData: [{ raw: {
+        geostatsMetadata: { country: "Sweden" }
+      } }] } };
+    } },
+    $queryRawUnsafe: async (sql: string, ...bindings: unknown[]) => {
+      assert.deepEqual(bindings, [null, null, "alice"]);
+      assert.match(sql, /u.user_id = \$3/);
+      rows.push(sql);
+      if (sql.includes("SELECT DISTINCT country")) return [{ country: "Sweden" }];
+      if (sql.includes("ORDER BY latitude DESC")) return [{ id: "private", gcCode: "GC1", name: "Private", cacheType: "Mystery Cache",
+        country: "Sweden", region: null, latitude: 65, longitude: 18, hiddenDate: "2020-01-01T00:00:00.000Z" }];
+      return [];
+    }
+  };
+  const service = new StatsService(prisma as any);
+  (service as any).foundCacheIdsFor = async () => new Set(["private"]);
+  const result = await service.extremeCachesForUser("alice");
+  assert.deepEqual(result.countries, ["Sweden"]);
+  assert.equal(result.homeCountry, "Sweden");
+  assert.equal(result.extremes.northernmost?.name, "Private");
+  assert.equal(result.extremes.northernmost?.latitude, 65);
+  assert.equal(result.extremes.northernmost?.hiddenDate, "2020-01-01");
+  assert.equal(rows.length, 8);
+  // Countryless private rows cannot win the earliest-home-find query.
+  const privateFilter = homeQuery.where.cache.OR[1].userData.some;
+  assert.equal(privateFilter.userId, "alice");
+  assert.deepEqual(privateFilter.AND[0].raw, { path: ["geostatsMetadata", "country"], not: "" });
+});
+
+test("extreme SQL discards neutral placeholders and scopes elevation data", () => {
+  assert.match(effectiveExtremeCachesSql(), /WHERE c.metadata_trusted = true/);
+  assert.match(effectiveExtremeCachesSql(), /u.user_id = \$3/);
+  assert.match(locationExtremeSql("latitude", "DESC"), /latitude IS NOT NULL AND longitude IS NOT NULL/);
+  assert.match(elevationExtremeSql("ASC", null), /u."user_id" = \$3/);
 });

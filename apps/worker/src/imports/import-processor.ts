@@ -239,7 +239,9 @@ export class ImportProcessor {
         payload.userId,
         [...parsed.caches, ...parsed.finds.map((find) => find.cache)]
       );
-      let shouldRecalculateStats = importRecord.source === ImportSource.MY_HIDES_GPX && parsed.caches.length > 0;
+      // Resolving caches writes private raw metadata used by statistics even
+      // when the matching finds keep the same date and FTF state.
+      let shouldRecalculateStats = cachesByCode.size > 0;
 
       await this.prisma.$transaction(async (tx) => {
         const parsedCaches =

@@ -1132,3 +1132,8 @@ test("owner-log grouping accepts a full same-cache batch and preserves row order
   assert.equal(stored[0]?.["geostats:log_id"], "0");
   assert.equal(stored.at(-1)?.["geostats:log_id"], String(RECEIVED_LOG_MAX_ROWS - 1));
 });
+
+
+test("owner-log CSV stops parsing at the row cap before an invalid suffix", () => {
+  assert.throws(() => parseReceivedLogsCsv("gcCode,date,finder\n" + "GC123,2024-01-15,Finder\n".repeat(RECEIVED_LOG_MAX_ROWS) + '\"unterminated'), /Too many owner-log rows/);
+});

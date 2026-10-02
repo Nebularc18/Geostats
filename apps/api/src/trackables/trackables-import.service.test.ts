@@ -27,7 +27,10 @@ function serviceHarness(existingCaches: unknown[] = []) {
   let transactions = 0;
   const tx = {
     cache: {
-      findMany: async () => existingCaches,
+      findMany: async (query: any) => {
+        assert.deepEqual(query.select.userData.where, { userId: "user-1" });
+        return existingCaches;
+      },
       createMany: async (input: unknown) => cacheCreates.push(input),
       update: async (input: unknown) => cacheUpdates.push(input),
     },
@@ -154,3 +157,22 @@ test("large journey logs are written in bounded batches", async () => {
     [500, 1],
   );
 });
+
+
+for (const scenario of [
+  { label: "private placeholder coordinates", metadataTrusted: false, raw: { lat: "56.2", lon: "15.7" }, expected: [56.2, 15.7] },
+  { label: "placeholder without private coordinates", metadataTrusted: false, raw: {}, expected: [null, null] },
+  { label: "invalid private coordinates", metadataTrusted: false, raw: { lat: "999", lon: "15.7" }, expected: [null, null] },
+  { label: "trusted real zero coordinates", metadataTrusted: true, raw: { lat: "56.2", lon: "15.7" }, expected: [0, 0] }
+]) {
+  test(`journey coordinate fallback uses ${scenario.label}`, async () => {
+    const shared = { id: "cache-1", gcCode: "GC123", name: "GC123", latitude: 0, longitude: 0, metadataTrusted: scenario.metadataTrusted, userData: [{ raw: scenario.raw }] };
+    const harness = serviceHarness([shared]);
+    (harness.service as any).parse = async () => parsedImport([{ trackingCode: "TB123", name: "A traveller", raw: {} }], [log({ latitude: null, longitude: null })]);
+    await harness.service.import("user-1", "journey.csv", Buffer.from("ignored"));
+    const created = harness.createdLogs[0].data[0];
+    assert.equal(created.cacheId, shared.id);
+    assert.deepEqual([created.latitude, created.longitude], scenario.expected);
+    assert.equal(shared.latitude, 0);
+  });
+}

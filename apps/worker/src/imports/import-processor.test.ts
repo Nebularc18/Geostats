@@ -1455,7 +1455,7 @@ test("process creates multiple same-cache finds when no existing row matches the
   );
 });
 
-test("process skips stats recalculation when an import has no new or changed finds", async () => {
+test("process rebuilds stats for private metadata even when finds are unchanged", async () => {
   const existingCache = {
     id: "cache-1",
     gcCode: "GC12345",
@@ -1563,7 +1563,7 @@ test("process skips stats recalculation when an import has no new or changed fin
 
   assert.equal(findUpdated, false);
   assert.equal(findCreated, false);
-  assert.equal(recalculationFindsLoaded, false);
+  assert.equal(recalculationFindsLoaded, true);
 });
 
 async function importFindTimestamp(
@@ -1795,7 +1795,7 @@ test("process preserves a manually cleared FTF mark during re-import", async () 
   });
 
   assert.equal(updatedData?.isFtf, undefined);
-  assert.equal(recalculationFindsLoaded, false);
+  assert.equal(recalculationFindsLoaded, true);
 });
 
 for (const metadataTrusted of [false, true]) {
@@ -1831,3 +1831,39 @@ for (const metadataTrusted of [false, true]) {
     assert.equal(shared.metadataTrusted, metadataTrusted);
   });
 }
+
+test("metadata-only reimport rebuilds the snapshot after writing private raw", async () => {
+  const shared = { id: "cache-1", gcCode: "GC12345", metadataTrusted: false };
+  const existingFind = {
+    id: "find-1", cacheId: shared.id,
+    foundAt: new Date("2024-05-01T10:34:00Z"),
+    foundDate: new Date("2024-05-01T00:00:00Z"),
+    logText: "Nice find.", isFtf: false, isFtfManual: false,
+    importedFrom: ImportSource.MY_FINDS_GPX
+  };
+  let raw: any = { ele: 1 };
+  let snapshotElevation: unknown = 1;
+  const tx = {
+    find: {
+      findMany: async () => [existingFind],
+      update: async () => { throw new Error("metadata-only reimport must not update find"); },
+      createMany: async () => { throw new Error("existing find must not be duplicated"); }
+    }
+  };
+  const prisma = {
+    import: { findFirst: async () => ({ id: "import-1", userId: "user-1", source: ImportSource.MY_FINDS_GPX, fileType: ImportFileType.GPX, fileName: "finds.gpx", objectKey: "object" }), update: async () => ({}) },
+    cache: { upsert: async () => shared },
+    userCacheData: { upsert: async ({ update }: any) => { raw = update.raw; } },
+    geocachingProfile: { findUnique: async () => null },
+    $transaction: async (run: any) => run(tx)
+  };
+  const processor = new ImportProcessor(importTestClient(prisma) as any, {
+    getObject: async () => Buffer.from(myFindsGpx.replace('<name>GC12345</name>', '<ele>321</ele><name>GC12345</name>'))
+  } as any);
+  (processor as any).recalculateStats = async (userId: string) => {
+    assert.equal(userId, "user-1");
+    snapshotElevation = raw.ele;
+  };
+  await processor.process({ importId: "import-1", userId: "user-1", objectKey: "object", source: ImportSource.MY_FINDS_GPX });
+  assert.equal(snapshotElevation, 321);
+});

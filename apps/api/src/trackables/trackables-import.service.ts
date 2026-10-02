@@ -1,5 +1,5 @@
 import { Injectable } from "@nestjs/common";
-import { Prisma } from "@geostats/db";
+import { Prisma, personalCacheMetadata } from "@geostats/db";
 import { parseTrackableImportFile, type ParsedTrackable, type ParsedTrackableImport, type ParsedTrackableLog, type ParsedTrackableLogType } from "@geostats/gpx-parser";
 import { createHash, randomUUID } from "node:crypto";
 import { PrismaService } from "../common/prisma.service";
@@ -184,18 +184,25 @@ export class TrackablesImportService {
           batches(cacheCodeList, TRACKABLE_IMPORT_QUERY_BATCH_SIZE).map((batch) =>
             tx.cache.findMany({
               where: { gcCode: { in: batch } },
-              select: { id: true, gcCode: true, name: true, latitude: true, longitude: true }
+              select: { id: true, gcCode: true, name: true, latitude: true, longitude: true, metadataTrusted: true, userData: { where: { userId }, take: 1, select: { raw: true } } }
             })
           )
         )
       ).flat();
-      const cachesByCode = new Map<string, { id: string; name: string; latitude: number; longitude: number }>(
-        existingCaches.map((cache) => [cache.gcCode, {
-          id: cache.id,
-          name: cache.name,
-          latitude: Number(cache.latitude),
-          longitude: Number(cache.longitude)
-        }])
+      const cachesByCode = new Map<string, { id: string; name: string; latitude: number | null; longitude: number | null }>(
+        existingCaches.map((cache) => {
+          const personal = personalCacheMetadata(cache, cache.userData?.[0]?.raw);
+          // Neutral placeholders are identities, not a real 0/0 location.
+          const latitude = personal.latitude ?? (cache.metadataTrusted ? Number(cache.latitude) : null);
+          const longitude = personal.longitude ?? (cache.metadataTrusted ? Number(cache.longitude) : null);
+          const hasCoordinates = validCoordinate(latitude, longitude);
+          return [cache.gcCode, {
+            id: cache.id,
+            name: personal.name ?? cache.name,
+            latitude: hasCoordinates ? latitude : null,
+            longitude: hasCoordinates ? longitude : null
+          }];
+        })
       );
       const unresolved = new Set(cacheCodeList.filter((code) => !cachesByCode.has(code)));
 

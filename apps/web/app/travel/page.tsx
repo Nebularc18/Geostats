@@ -7,7 +7,7 @@ import { AppShell } from "../../components/app-shell";
 import { PlaceAutocomplete, type SelectedPlace } from "../../components/place-autocomplete";
 import { API_URL, apiFetch, getApiSessionEpoch, subscribeStatsSummaryCache } from "../../lib/api";
 import { normalizeMysteryArea } from "../../lib/mystery-area";
-import { createTravelSessionBoundary, keepTravelSessionAfterNetworkFailure, readTravelStorage, type TravelSession } from "../../lib/travel-storage";
+import { createTravelSessionBoundary, hasLegacyTravelPlans, keepTravelSessionAfterNetworkFailure, readTravelStorage, type TravelSession } from "../../lib/travel-storage";
 import {
   finalTravelCoordinate,
   newerTravelAssignment,
@@ -268,6 +268,7 @@ function TravelWorkspace({ session }: { session: TravelSession }) {
   const [planName, setPlanName] = useState("");
   const [savedPlans, setSavedPlans] = useState<SavedTravelPlan[]>([]);
   const [plansReady, setPlansReady] = useState(false);
+  const [legacyPlansPresent, setLegacyPlansPresent] = useState(false);
   const [poolSummary, setPoolSummary] = useState<TravelPoolSummary | null>(null);
   const [poolLoading, setPoolLoading] = useState(true);
 
@@ -393,6 +394,7 @@ function TravelWorkspace({ session }: { session: TravelSession }) {
   useEffect(() => {
     try {
       setSavedPlans(validSavedPlans(readTravelStorage(localStorage, session).plans));
+      setLegacyPlansPresent(hasLegacyTravelPlans(localStorage, session));
     } catch {
       // Storage may be disabled; legacy plans remain unread.
     }
@@ -705,6 +707,10 @@ function TravelWorkspace({ session }: { session: TravelSession }) {
           <Link className="secondary-button" href="/mysteries"><Puzzle size={17} /> Open mysteries</Link>
         </div>
       </header>
+
+      {legacyPlansPresent && <section className="panel" role="status">
+        Earlier travel plans are still stored in this browser. Their account ownership cannot be verified, so they are not loaded here. Keep this browser's data if you need those plans; new plans are saved separately for your signed-in account.
+      </section>}
 
       <section className="travel-summary" aria-label="Travel overview">
         <div><Navigation size={19} /><span><small>Saved plans</small><strong>{savedPlans.length}</strong></span></div>

@@ -107,7 +107,7 @@ test("public checker evaluation rejects find histories above its bounded query",
   assert.equal(findQuery?.take, 10_001);
 });
 
-test("owned checker evaluation keeps complete find-history compatibility", async () => {
+test("owned checker evaluation bounds loading by its work budget while allowing histories beyond the public cap", async () => {
   const checker = {
     id: "checker-1",
     userId: "user-1",
@@ -129,7 +129,7 @@ test("owned checker evaluation keeps complete find-history compatibility", async
   const service = new ChallengeCheckersService(prisma as never, {} as never);
 
   await service.runOwned("user-1", "checker-1");
-  assert.equal(findQuery && "take" in findQuery, false);
+  assert.equal(findQuery?.take, 1_000_001);
 });
 
 test("uses imported location choices when catalog providers are unavailable", async () => {
@@ -189,14 +189,19 @@ test("oversized persisted rules are rejected on owned and public runs before loa
 
 test("bounded filters with a large history reject excessive evaluation work before mapping finds", async () => {
   const checker = { id: "checker", userId: "owner", rules: [filterRule({ countries: Array(256).fill("nonmatching") })] };
+  const queryLimits: number[] = [];
   const service = new ChallengeCheckersService({
     challengeChecker: { findFirst: async () => checker },
     geocachingProfile: { findUnique: async () => ({ gcUsername: "Owner" }) },
     // Invalid find objects would throw if evaluation were reached.
-    find: { findMany: async () => Array(4_000).fill(null) }
+    find: { findMany: async (query: { take: number }) => {
+      queryLimits.push(query.take);
+      return Array(query.take).fill(null);
+    } }
   } as any, {} as any);
   await assert.rejects(service.runOwned("owner", "checker"), /evaluation exceeds the work limit/);
   await assert.rejects(service.runPublic("published"), /evaluation exceeds the work limit/);
+  assert.deepEqual(queryLimits, [Math.floor(1_000_000 / 258) + 1, Math.floor(1_000_000 / 258) + 1]);
 });
 
 test("ordinary Project-GC filters continue to be persisted", async () => {

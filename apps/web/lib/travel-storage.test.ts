@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mysteryStorageKeys } from "./mystery-storage.ts";
-import { createTravelSessionBoundary, keepTravelSessionAfterNetworkFailure, readTravelStorage, travelStorageKeys } from "./travel-storage.ts";
+import { createTravelSessionBoundary, hasLegacyTravelPlans, keepTravelSessionAfterNetworkFailure, readTravelStorage, travelStorageKeys } from "./travel-storage.ts";
 
 test("Travel shares only the current account's Mysteries cache and isolates plans by server and identity", () => {
   const keys = travelStorageKeys("https://EXAMPLE.com/api/", "user/a");
@@ -61,6 +61,22 @@ test("late search and sync completions remain invalid after logout and re-login 
   assert.deepEqual(applied, []);
   assert.equal(boundary.activate("https://example.com", "alice"), next);
   boundary.clear();
+});
+
+test("legacy plan notice checks existence without parsing content or exposing it to account storage", () => {
+  const boundary = createTravelSessionBoundary();
+  const session = boundary.activate("https://example.com", "alice");
+  const reads: number[] = [];
+  const storage = { length: 1, key(index: number) { reads.push(index); return "geostats-travel-plans-v2"; },
+    getItem() { assert.fail("the notice must not read legacy contents"); } };
+  assert.equal(hasLegacyTravelPlans(storage, session), true);
+  assert.deepEqual(reads, [0]);
+  assert.equal(hasLegacyTravelPlans({ length: 0, key: () => null }, session), false);
+  assert.equal(hasLegacyTravelPlans({ length: 1, key: () => { throw new Error("storage disabled"); } }, session), false);
+  boundary.clear();
+  reads.length = 0;
+  assert.equal(hasLegacyTravelPlans(storage, session), false);
+  assert.deepEqual(reads, []);
 });
 
 test("a verified mounted workspace remains usable offline, but not after an auth epoch change or auth rejection", () => {

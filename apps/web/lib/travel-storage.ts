@@ -67,3 +67,15 @@ export function readTravelStorage(storage: Pick<Storage, "getItem">, session: Tr
   // Unsuffixed legacy copies have no verifiable owner and are deliberately ignored.
   return { caches: read(session.keys.caches), plans: read(session.keys.plans) };
 }
+
+/** Report only the existence of unowned legacy plans; never parse or hydrate their contents. */
+export function hasLegacyTravelPlans(storage: Pick<Storage, "length" | "key">, session: TravelSession): boolean {
+  if (!session.isCurrent()) return false;
+  try {
+    for (let index = 0; index < storage.length; index++) {
+      if (storage.key(index) === "geostats-travel-plans-v2") return true;
+    }
+    return false;
+  }
+  catch { return false; }
+}
