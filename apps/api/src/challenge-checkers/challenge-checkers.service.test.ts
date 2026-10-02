@@ -256,3 +256,46 @@ test("challenge location and execution preserve metadata from the exact user's p
   assert.equal(result.rules[0].evidence[0].name, "Private find");
   assert.deepEqual(savedQuery.include.cache.include.userData.where, { userId: "alice" });
 });
+
+
+test("monthly history scans reduce the owned work budget before mapping finds", async () => {
+  const checker = { id: "monthly", userId: "owner", rules: [{
+    type: "MONTHLY_ATTRIBUTE", minimum: 1, overallMinimum: 12,
+    months: Array.from({ length: 12 }, (_, index) => ({ month: index + 1, minimum: 1 })),
+    attributeId: "1", attributeLabel: "Dogs", filters: [{}], excludedGcCodes: [], excludeSelf: false
+  }] };
+  let historyLimit = 0;
+  const service = new ChallengeCheckersService({
+    challengeChecker: { findFirst: async () => checker },
+    geocachingProfile: { findUnique: async () => ({ gcUsername: "Owner" }) },
+    find: { findMany: async ({ take }: { take: number }) => {
+      historyLimit = take;
+      return Array(take).fill(null); // Reject overflow before touching these invalid records.
+    } }
+  } as any, {} as any);
+  await assert.rejects(service.runOwned("owner", "monthly"), /evaluation exceeds the work limit/);
+  assert.equal(historyLimit, Math.floor(1_000_000 / 14) + 1);
+});
+
+test("legacy checker lists remain accessible while saves and runs enforce current limits", async () => {
+  const oversizedRules = [filterRule({ countries: Array(257).fill("Sweden") })];
+  const aggregateRules = Array.from({ length: 5 }, () => filterRule({ countries: Array(256).fill("Norway") }));
+  const normalRules = [{ type: "TOTAL_FINDS", minimum: 1 }];
+  const rows = [oversizedRules, aggregateRules, normalRules].map((rules, index) => ({ id: String(index), userId: "owner", rules }));
+  const service = new ChallengeCheckersService({
+    challengeChecker: {
+      findMany: async ({ where }: any) => { assert.deepEqual(where, { userId: "owner" }); return rows; },
+      findFirst: async ({ where }: any) => rows.find(row => row.id === where.id),
+      update: async () => { throw new Error("invalid changes must not be saved"); }
+    },
+    user: { findUnique: async () => ({ username: "Owner" }) },
+    find: { findMany: async () => { throw new Error("invalid rules must fail before loading history"); } }
+  } as any, {} as any);
+  const result = await service.list("owner");
+  assert.equal(result.checkers.length, 3);
+  assert.equal(result.checkers[0].rules[0].type, "PROJECT_GC_NUMBER");
+  assert.deepEqual(result.checkers[2].rules, normalRules);
+  await assert.rejects(service.update("owner", "0", { rules: oversizedRules }), /Invalid countries filter/);
+  await assert.rejects(service.runOwned("owner", "0"), /Invalid countries filter/);
+  await assert.rejects(service.runOwned("owner", "1"), /total checker complexity/);
+});

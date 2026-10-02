@@ -20,6 +20,7 @@ const MAX_EVALUATION_WORK = 1_000_000;
 function ruleWork(rules: ChallengeRule[]) {
   let filters = 0;
   let choices = 0;
+  let monthlyScans = 0;
   for (const rule of rules) {
     if ("filters" in rule) {
       filters += rule.filters.length;
@@ -28,11 +29,12 @@ function ruleWork(rules: ChallengeRule[]) {
       }
     }
     if ("excludedGcCodes" in rule) choices += rule.excludedGcCodes.length;
+    if (rule.type === "MONTHLY_ATTRIBUTE") monthlyScans += rule.months.length;
   }
   if (filters > MAX_CHECKER_FILTERS || choices > MAX_CHECKER_FILTER_CHOICES) {
     throw new BadRequestException("Challenge filters exceed the total checker complexity limit");
   }
-  return rules.length + filters + choices;
+  return rules.length + filters + choices + monthlyScans;
 }
 
 export function resolveDisplayTimeZone(profile: { homeLatitude?: unknown; homeLongitude?: unknown; timeZone?: string | null } | null) {
@@ -52,7 +54,7 @@ function cleanOptionalText(value: unknown, label: string, maximum: number) {
   return value.trim();
 }
 
-function parseRules(value: unknown): ChallengeRule[] {
+function parseRules(value: unknown, { enforceComplexityLimits = true }: { enforceComplexityLimits?: boolean } = {}): ChallengeRule[] {
   if (!Array.isArray(value) || value.length < 1 || value.length > 10) {
     throw new BadRequestException("rules must contain between 1 and 10 rules");
   }
@@ -133,7 +135,7 @@ function parseRules(value: unknown): ChallengeRule[] {
     }
     if (rule.type === "PROJECT_GC_NUMBER") {
       if (!Array.isArray(rule.filters) || rule.filters.length < 1 || rule.filters.length > 50) throw new BadRequestException("Imported Project-GC rule must contain filters");
-      const filters = rule.filters.map((filter) => validateStoredProjectGcFilter(filter));
+      const filters = rule.filters.map((filter) => validateStoredProjectGcFilter(filter, enforceComplexityLimits));
       return { type: rule.type, minimum, filters, filterLabel: projectGcFilterLabel(filters) };
     }
     if (rule.type === "CALENDAR_FILL") {
@@ -144,14 +146,14 @@ function parseRules(value: unknown): ChallengeRule[] {
       }
       if (typeof rule.allowLeapDaySkip !== "boolean") throw new BadRequestException("Calendar rule allowLeapDaySkip must be a boolean");
       if (!Array.isArray(rule.filters) || rule.filters.length !== 1) throw new BadRequestException("Imported calendar rule must contain exactly one filter");
-      const filters = rule.filters.map((filter) => validateStoredProjectGcFilter(filter));
+      const filters = rule.filters.map((filter) => validateStoredProjectGcFilter(filter, enforceComplexityLimits));
       const filterLabel = cleanOptionalText(rule.filterLabel, "filterLabel", 200) ?? projectGcFilterLabel(filters);
       return { type: rule.type, minimum, perDay, allowLeapDaySkip: rule.allowLeapDaySkip, filters, filterLabel };
     }
     if (rule.type === "DISTINCT_TYPES") {
       if (minimum < 1 || minimum > 100) throw new BadRequestException("Distinct-types minimum must be between 1 and 100");
       if (!Array.isArray(rule.filters) || rule.filters.length !== 1) throw new BadRequestException("Imported distinct-types rule must contain exactly one filter");
-      const filters = rule.filters.map((filter) => validateStoredProjectGcFilter(filter));
+      const filters = rule.filters.map((filter) => validateStoredProjectGcFilter(filter, enforceComplexityLimits));
       const filterLabel = cleanOptionalText(rule.filterLabel, "filterLabel", 200) ?? projectGcFilterLabel(filters);
       return { type: rule.type, minimum, filters, filterLabel };
     }
@@ -178,10 +180,10 @@ function parseRules(value: unknown): ChallengeRule[] {
       const attributeLabel = cleanOptionalText(rule.attributeLabel, "attributeLabel", 120);
       if (!attributeId || !attributeLabel) throw new BadRequestException("attributeId and attributeLabel are required");
       if (!Array.isArray(rule.filters) || rule.filters.length !== 1) throw new BadRequestException("Imported monthly rule must contain exactly one filter");
-      const filters = rule.filters.map((filter) => validateStoredProjectGcFilter(filter));
+      const filters = rule.filters.map((filter) => validateStoredProjectGcFilter(filter, enforceComplexityLimits));
       const filterLabel = cleanOptionalText(rule.filterLabel, "filterLabel", 200) ?? projectGcFilterLabel(filters);
       const excludedGcCodes = Array.isArray(rule.excludedGcCodes) ? rule.excludedGcCodes : [];
-      if (excludedGcCodes.length > MAX_FILTER_CHOICES) throw new BadRequestException("Too many excluded GC codes");
+      if (enforceComplexityLimits && excludedGcCodes.length > MAX_FILTER_CHOICES) throw new BadRequestException("Too many excluded GC codes");
       for (const code of excludedGcCodes) {
         if (typeof code !== "string" || code.length > 40 || !/^GC[A-Z0-9]+$/i.test(code.trim())) throw new BadRequestException("Excluded GC codes must be valid");
       }
@@ -190,19 +192,19 @@ function parseRules(value: unknown): ChallengeRule[] {
     }
     throw new BadRequestException("Unsupported challenge rule type");
   });
-  ruleWork(rules);
+  if (enforceComplexityLimits) ruleWork(rules);
   return rules;
 }
 
-function validateStoredProjectGcFilter(value: unknown): ProjectGcFindFilter {
+function validateStoredProjectGcFilter(value: unknown, enforceComplexityLimits: boolean): ProjectGcFindFilter {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new BadRequestException("Invalid imported Project-GC filter");
   const filter = value as Record<string, unknown>;
   const allowed = new Set(["countries", "regions", "counties", "cacheTypeIds", "excludedCacheTypeIds", "sizes", "difficulties", "terrains", "minVisitDate", "maxVisitDate", "minHiddenDate", "maxHiddenDate", "minLatitude", "maxLatitude", "minLongitude", "maxLongitude"]);
   if (Object.keys(filter).some((key) => !allowed.has(key))) throw new BadRequestException("Invalid imported Project-GC filter field");
   const textArrays = ["countries", "regions", "counties", "cacheTypeIds", "excludedCacheTypeIds", "sizes"];
   const numberArrays = ["difficulties", "terrains"];
-  for (const key of textArrays) if (filter[key] !== undefined && (!Array.isArray(filter[key]) || (filter[key] as unknown[]).length > MAX_FILTER_CHOICES || !(filter[key] as unknown[]).every((item) => typeof item === "string" && item.length <= 120))) throw new BadRequestException(`Invalid ${key} filter`);
-  for (const key of numberArrays) if (filter[key] !== undefined && (!Array.isArray(filter[key]) || (filter[key] as unknown[]).length > MAX_FILTER_CHOICES || !(filter[key] as unknown[]).every((item) => typeof item === "number" && Number.isFinite(item)))) throw new BadRequestException(`Invalid ${key} filter`);
+  for (const key of textArrays) if (filter[key] !== undefined && (!Array.isArray(filter[key]) || (enforceComplexityLimits && (filter[key] as unknown[]).length > MAX_FILTER_CHOICES) || !(filter[key] as unknown[]).every((item) => typeof item === "string" && item.length <= 120))) throw new BadRequestException(`Invalid ${key} filter`);
+  for (const key of numberArrays) if (filter[key] !== undefined && (!Array.isArray(filter[key]) || (enforceComplexityLimits && (filter[key] as unknown[]).length > MAX_FILTER_CHOICES) || !(filter[key] as unknown[]).every((item) => typeof item === "number" && Number.isFinite(item)))) throw new BadRequestException(`Invalid ${key} filter`);
   for (const key of ["minVisitDate", "maxVisitDate", "minHiddenDate", "maxHiddenDate"]) if (filter[key] !== undefined && (typeof filter[key] !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(filter[key] as string))) throw new BadRequestException(`Invalid ${key} filter`);
   for (const key of ["minLatitude", "maxLatitude", "minLongitude", "maxLongitude"]) if (filter[key] !== undefined && (typeof filter[key] !== "number" || !Number.isFinite(filter[key]))) throw new BadRequestException(`Invalid ${key} filter`);
   return filter as ProjectGcFindFilter;
@@ -217,7 +219,8 @@ export class ChallengeCheckersService {
       this.prisma.challengeChecker.findMany({ where: { userId }, orderBy: { updatedAt: "desc" } }),
       this.prisma.user.findUnique({ where: { id: userId }, select: { username: true } })
     ]);
-    return { checkers: checkers.map((checker) => ({ ...checker, rules: parseRules(checker.rules) })), username: user?.username ?? "user" };
+    // Legacy checkers remain readable/editable; saves and runs enforce current limits.
+    return { checkers: checkers.map((checker) => ({ ...checker, rules: parseRules(checker.rules, { enforceComplexityLimits: false }) })), username: user?.username ?? "user" };
   }
 
   async locationsForUser(userId: string) {
