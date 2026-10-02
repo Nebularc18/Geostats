@@ -1,6 +1,7 @@
 import { Cache, calculateUserStats, privateCacheRaw, PrismaClient, Prisma } from "@geostats/db";
 import { DEFAULT_FTF_DETECTION_TERMS, detectFtfLog, parseImportFile, termRegex as ftfTermRegex } from "@geostats/gpx-parser";
 import { ImportFileType, ImportJobPayload, ImportSource, ImportStatus } from "@geostats/shared";
+import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { ObjectStorage } from "../storage/object-storage";
 
@@ -237,10 +238,10 @@ export class ImportProcessor {
           ? ImportSource.MY_FINDS_GPX
           : importSource;
       const incomingCaches = [...parsed.caches, ...parsed.finds.map((find) => find.cache)];
-      // Compare before cache resolution replaces private raw. JSON normalization
-      // matches persisted JSON (including dates) without depending on key order.
-      let shouldRecalculateStats = await this.privateMetadataChanged(payload.userId, incomingCaches);
-      const cachesByCode = await this.resolveCaches(payload.userId, incomingCaches);
+      let shouldRecalculateStats = false;
+      const cachesByCode = await this.resolveCaches(payload.userId, incomingCaches, () => {
+        shouldRecalculateStats = true;
+      });
 
       await this.prisma.$transaction(async (tx) => {
         const parsedCaches =
@@ -428,25 +429,7 @@ export class ImportProcessor {
     };
   }
 
-  private async privateMetadataChanged(userId: string, caches: any[]): Promise<boolean> {
-    const incoming = new Map<string, unknown>();
-    for (const cache of caches) {
-      const gcCode = String(cache.gcCode).trim().toUpperCase();
-      if (!incoming.has(gcCode)) incoming.set(gcCode, JSON.parse(JSON.stringify(privateCacheRaw(cache.raw, cache))));
-    }
-    const codes = [...incoming.keys()];
-    const stored = new Map<string, unknown>();
-    for (let offset = 0; offset < codes.length; offset += FIND_CREATE_BATCH_SIZE) {
-      const rows = await this.prisma.userCacheData.findMany({
-        where: { userId, cache: { gcCode: { in: codes.slice(offset, offset + FIND_CREATE_BATCH_SIZE) } } },
-        select: { raw: true, cache: { select: { gcCode: true } } }
-      });
-      for (const row of rows) stored.set(row.cache.gcCode, row.raw);
-    }
-    return [...incoming].some(([code, raw]) => !stored.has(code) || !isDeepStrictEqual(stored.get(code), raw));
-  }
-
-  private async resolveCaches(userId: string, caches: any[]): Promise<Map<string, Cache>> {
+  private async resolveCaches(userId: string, caches: any[], onMetadataChanged: () => void = () => {}): Promise<Map<string, Cache>> {
     const uniqueCaches = new Map<string, any>();
     for (const cache of caches) {
       const gcCode = String(cache.gcCode).trim().toUpperCase();
@@ -469,7 +452,7 @@ export class ImportProcessor {
 
         const cache = uniqueCacheValues[index];
         try {
-          resolvedCaches[index] = [cache.gcCode, await this.findOrCreateCache(userId, cache)];
+          resolvedCaches[index] = [cache.gcCode, await this.findOrCreateCache(userId, cache, onMetadataChanged)];
         } catch (error) {
           if (!failed) {
             failed = true;
@@ -494,7 +477,7 @@ export class ImportProcessor {
     }
   }
 
-  private async findOrCreateCache(userId: string, cache: any): Promise<Cache> {
+  private async findOrCreateCache(userId: string, cache: any, onMetadataChanged: () => void = () => {}): Promise<Cache> {
     const create = this.cacheCreateInput(cache);
     let resolved: Cache;
     try {
@@ -510,12 +493,19 @@ export class ImportProcessor {
         throw error;
       }
     }
-    const raw = privateCacheRaw(cache.raw, cache) as Prisma.InputJsonValue;
-    await this.prisma.userCacheData.upsert({
-      where: { userId_cacheId: { userId, cacheId: resolved.id } },
-      create: { userId, cacheId: resolved.id, raw },
-      update: { raw }
-    });
+    const raw = JSON.stringify(privateCacheRaw(cache.raw, cache));
+    // PostgreSQL compares against the locked row at the actual write, so an
+    // overlapping import cannot make an earlier comparison stale. JSONB equality
+    // also ignores key order. Identical imports perform no metadata update.
+    const changed = await this.prisma.$queryRaw<Array<{ cacheId: string }>>(Prisma.sql`
+      INSERT INTO "user_cache_data" ("id", "user_id", "cache_id", "raw", "created_at", "updated_at")
+      VALUES (${randomUUID()}, ${userId}, ${resolved.id}, ${raw}::jsonb, NOW(), NOW())
+      ON CONFLICT ("user_id", "cache_id") DO UPDATE
+      SET "raw" = EXCLUDED."raw", "updated_at" = NOW()
+      WHERE "user_cache_data"."raw" IS DISTINCT FROM EXCLUDED."raw"
+      RETURNING "cache_id" AS "cacheId"
+    `);
+    if (changed.length > 0) onMetadataChanged();
     return resolved;
   }
 
