@@ -1137,3 +1137,9 @@ test("owner-log grouping accepts a full same-cache batch and preserves row order
 test("owner-log CSV stops parsing at the row cap before an invalid suffix", () => {
   assert.throws(() => parseReceivedLogsCsv("gcCode,date,finder\n" + "GC123,2024-01-15,Finder\n".repeat(RECEIVED_LOG_MAX_ROWS) + '\"unterminated'), /Too many owner-log rows/);
 });
+
+test("owner-log CSV allows a full batch with blank records before between and after logs", () => {
+  const csv = '\n  , ,\r\ngcCode,date,finder\n' + 'GC123,2024-01-15,Finder\n\n"  ","\t",\r\n'.repeat(RECEIVED_LOG_MAX_ROWS) + '\n';
+  assert.equal(parseReceivedLogsCsv(csv).length, RECEIVED_LOG_MAX_ROWS);
+  assert.throws(() => parseReceivedLogsCsv(csv + '"unterminated'), /Too many owner-log rows/);
+});

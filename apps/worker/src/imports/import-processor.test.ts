@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { Prisma } from "@geostats/db";
+import { Prisma, privateCacheRaw } from "@geostats/db";
 import { ImportFileType, ImportSource, ImportStatus } from "@geostats/shared";
 import { ImportProcessor } from "./import-processor";
 
 function importTestClient<T extends Record<string, any>>(prisma: T): T {
   return {
     ...prisma,
-    userCacheData: prisma.userCacheData ?? { upsert: async () => ({}) },
+    userCacheData: { findMany: async () => [], upsert: async () => ({}), ...prisma.userCacheData },
     import: prisma.import && {
       updateMany: async () => ({ count: 1 }),
       ...prisma.import
@@ -1843,6 +1843,7 @@ test("metadata-only reimport rebuilds the snapshot after writing private raw", a
   };
   let raw: any = { ele: 1 };
   let snapshotElevation: unknown = 1;
+  let recalculations = 0;
   const tx = {
     find: {
       findMany: async () => [existingFind],
@@ -1853,7 +1854,14 @@ test("metadata-only reimport rebuilds the snapshot after writing private raw", a
   const prisma = {
     import: { findFirst: async () => ({ id: "import-1", userId: "user-1", source: ImportSource.MY_FINDS_GPX, fileType: ImportFileType.GPX, fileName: "finds.gpx", objectKey: "object" }), update: async () => ({}) },
     cache: { upsert: async () => shared },
-    userCacheData: { upsert: async ({ update }: any) => { raw = update.raw; } },
+    userCacheData: {
+      findMany: async (query: any) => {
+        assert.equal(query.where.userId, "user-1");
+        assert.deepEqual(query.where.cache.gcCode.in, ["GC12345"]);
+        return [{ cache: { gcCode: "GC12345" }, raw }];
+      },
+      upsert: async ({ update }: any) => { raw = update.raw; }
+    },
     geocachingProfile: { findUnique: async () => null },
     $transaction: async (run: any) => run(tx)
   };
@@ -1863,7 +1871,32 @@ test("metadata-only reimport rebuilds the snapshot after writing private raw", a
   (processor as any).recalculateStats = async (userId: string) => {
     assert.equal(userId, "user-1");
     snapshotElevation = raw.ele;
+    recalculations += 1;
   };
   await processor.process({ importId: "import-1", userId: "user-1", objectKey: "object", source: ImportSource.MY_FINDS_GPX });
   assert.equal(snapshotElevation, 321);
+  assert.equal(recalculations, 1);
+  // Persisted JSON may use a different object key order on the next read.
+  raw = Object.fromEntries(Object.entries(raw).reverse());
+  await processor.process({ importId: "import-1", userId: "user-1", objectKey: "object", source: ImportSource.MY_FINDS_GPX });
+  assert.equal(recalculations, 1, "idempotent GPX reimport must not rebuild stats");
+});
+
+
+test("private metadata comparison batches reads and scopes every batch to the importer", async () => {
+  const caches = Array.from({ length: 1100 }, (_, index) => ({ gcCode: `GC${index}`, name: `Cache ${index}`, raw: { lat: 55, lon: 15 } }));
+  const byCode = new Map(caches.map(cache => [cache.gcCode, privateCacheRaw(cache.raw, cache)]));
+  const batchLengths: number[] = [];
+  const processor = new ImportProcessor({
+    userCacheData: { findMany: async (query: any) => {
+      assert.equal(query.where.userId, "user-1");
+      const codes = query.where.cache.gcCode.in as string[];
+      batchLengths.push(codes.length);
+      return codes.map(gcCode => ({ cache: { gcCode }, raw: byCode.get(gcCode) }));
+    } }
+  } as any, {} as any);
+  assert.equal(await (processor as any).privateMetadataChanged("user-1", caches), false);
+  assert.deepEqual(batchLengths, [500, 500, 100]);
+  byCode.delete("GC1099");
+  assert.equal(await (processor as any).privateMetadataChanged("user-1", caches), true);
 });

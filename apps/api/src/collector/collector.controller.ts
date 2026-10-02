@@ -952,7 +952,7 @@ function countReceivedLogs(logs: Array<Record<string, any>>) {
 
 function parseCsv(text: string): string[][] {
   try {
-    return parseCsvRows(text, ",", { maxRows: RECEIVED_LOG_MAX_ROWS + 1 }).filter((row) => row.some((value) => value.trim()));
+    return parseCsvRows(text, ",", { maxRows: RECEIVED_LOG_MAX_ROWS + 1, skipBlankRows: true }).filter((row) => row.some((value) => value.trim()));
   } catch (error) {
     if (error instanceof Error && error.message === "CSV row limit exceeded") {
       throw new BadRequestException("Too many owner-log rows; split imports into batches of 10,000");

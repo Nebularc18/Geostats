@@ -32,7 +32,9 @@ END
 $$;
 
 CREATE FUNCTION pg_temp.normalize_private_cache_metadata(raw JSONB) RETURNS JSONB
-LANGUAGE plpgsql AS $$
+-- Date-only/offsetless legacy values use UTC regardless of deployment session
+-- timezone; explicit offsets still determine their original instant.
+LANGUAGE plpgsql SET TimeZone = 'UTC' AS $$
 DECLARE extension JSONB; normalized JSONB; latitude JSONB; longitude JSONB;
   cache_type TEXT; hidden_date TEXT; owner_name TEXT;
 BEGIN

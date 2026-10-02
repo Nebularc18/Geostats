@@ -1,6 +1,7 @@
 import { Cache, calculateUserStats, privateCacheRaw, PrismaClient, Prisma } from "@geostats/db";
 import { DEFAULT_FTF_DETECTION_TERMS, detectFtfLog, parseImportFile, termRegex as ftfTermRegex } from "@geostats/gpx-parser";
 import { ImportFileType, ImportJobPayload, ImportSource, ImportStatus } from "@geostats/shared";
+import { isDeepStrictEqual } from "node:util";
 import { ObjectStorage } from "../storage/object-storage";
 
 type ParsedImportResult = Awaited<ReturnType<typeof parseImportFile>>;
@@ -235,13 +236,11 @@ export class ImportProcessor {
         importRecord.fileType === ImportFileType.ZIP && parsed.finds.length > 0
           ? ImportSource.MY_FINDS_GPX
           : importSource;
-      const cachesByCode = await this.resolveCaches(
-        payload.userId,
-        [...parsed.caches, ...parsed.finds.map((find) => find.cache)]
-      );
-      // Resolving caches writes private raw metadata used by statistics even
-      // when the matching finds keep the same date and FTF state.
-      let shouldRecalculateStats = cachesByCode.size > 0;
+      const incomingCaches = [...parsed.caches, ...parsed.finds.map((find) => find.cache)];
+      // Compare before cache resolution replaces private raw. JSON normalization
+      // matches persisted JSON (including dates) without depending on key order.
+      let shouldRecalculateStats = await this.privateMetadataChanged(payload.userId, incomingCaches);
+      const cachesByCode = await this.resolveCaches(payload.userId, incomingCaches);
 
       await this.prisma.$transaction(async (tx) => {
         const parsedCaches =
@@ -252,13 +251,17 @@ export class ImportProcessor {
           const cache = this.cacheFor(cachesByCode, parsedCache.gcCode);
 
           if (importRecord.source === ImportSource.MY_HIDES_GPX) {
-            const [currentHide] = await tx.$queryRaw<Array<{ receivedLogsRaw: Prisma.JsonValue | null }>>(Prisma.sql`
-              SELECT "received_logs_raw" AS "receivedLogsRaw"
+            const [currentHide] = await tx.$queryRaw<Array<{ receivedLogsRaw: Prisma.JsonValue | null; placedAt: Date | null; receivedLogCount: number }>>(Prisma.sql`
+              SELECT "received_logs_raw" AS "receivedLogsRaw", "placed_at" AS "placedAt", "received_log_count" AS "receivedLogCount"
               FROM "hides"
               WHERE "user_id" = ${payload.userId} AND "cache_id" = ${cache.id}
               FOR UPDATE
             `);
             const merged = mergedHideRaw(parsedCache.raw, currentHide?.receivedLogsRaw);
+            if (!currentHide || currentHide.placedAt?.getTime() !== parsedCache.hiddenDate?.getTime()
+              || currentHide.receivedLogCount !== merged.count || !isDeepStrictEqual(currentHide.receivedLogsRaw, JSON.parse(JSON.stringify(merged.raw)))) {
+              shouldRecalculateStats = true;
+            }
             await tx.hide.upsert({
               where: {
                 userId_cacheId: {
@@ -423,6 +426,24 @@ export class ImportProcessor {
       longitude: 0,
       metadataTrusted: false
     };
+  }
+
+  private async privateMetadataChanged(userId: string, caches: any[]): Promise<boolean> {
+    const incoming = new Map<string, unknown>();
+    for (const cache of caches) {
+      const gcCode = String(cache.gcCode).trim().toUpperCase();
+      if (!incoming.has(gcCode)) incoming.set(gcCode, JSON.parse(JSON.stringify(privateCacheRaw(cache.raw, cache))));
+    }
+    const codes = [...incoming.keys()];
+    const stored = new Map<string, unknown>();
+    for (let offset = 0; offset < codes.length; offset += FIND_CREATE_BATCH_SIZE) {
+      const rows = await this.prisma.userCacheData.findMany({
+        where: { userId, cache: { gcCode: { in: codes.slice(offset, offset + FIND_CREATE_BATCH_SIZE) } } },
+        select: { raw: true, cache: { select: { gcCode: true } } }
+      });
+      for (const row of rows) stored.set(row.cache.gcCode, row.raw);
+    }
+    return [...incoming].some(([code, raw]) => !stored.has(code) || !isDeepStrictEqual(stored.get(code), raw));
   }
 
   private async resolveCaches(userId: string, caches: any[]): Promise<Map<string, Cache>> {

@@ -12,6 +12,7 @@ test("legacy private metadata migration restores SQL filters without changing ca
   const schema = `private_metadata_test_${randomUUID().replaceAll("-", "")}`;
   const url = new URL(databaseUrl!);
   url.searchParams.set("schema", schema);
+  url.searchParams.set("connection_limit", "1");
   const prisma = new PrismaClient({ datasources: { db: { url: url.href } } });
   const legacy = {
     lat: "59", lon: "18", desc: "Private cache", time: "2020-01-01",
@@ -34,6 +35,8 @@ test("legacy private metadata migration restores SQL filters without changing ca
     await prisma.$executeRaw`INSERT INTO user_cache_data VALUES ('bad', 'a', 'private', ${JSON.stringify({
       lat: "1e999999", lon: "18", time: "not a date", cache: { difficulty: "NaN" },
     })}::jsonb)`;
+    await prisma.$executeRaw`INSERT INTO user_cache_data VALUES ('offset', 'a', 'private', ${JSON.stringify({ time: "2020-01-01T00:00:00+02:00" })}::jsonb)`;
+    await prisma.$executeRawUnsafe("SET TIME ZONE 'Europe/Stockholm'");
     const migration = readFileSync(resolve(__dirname, "../prisma/migrations/000038_normalize_private_cache_metadata/migration.sql"), "utf8").replace(/--[^\n]*/g, "");
     for (const statement of migration.match(/(?:\$\$[\s\S]*?\$\$|[^;])+;/g) ?? []) {
       await prisma.$executeRawUnsafe(statement);
@@ -46,6 +49,8 @@ test("legacy private metadata migration restores SQL filters without changing ca
     assert.equal(normalized.longitude, 18);
     assert.equal(normalized.cacheType, "Mystery Cache");
     assert.equal(normalized.hiddenDate, "2020-01-01T00:00:00.000Z");
+    assert.equal((data.offset.geostatsMetadata as Record<string, unknown>).hiddenDate, "2019-12-31T22:00:00.000Z");
+    assert.deepEqual(await prisma.$queryRawUnsafe("SHOW TimeZone"), [{ TimeZone: "Europe/Stockholm" }]);
     assert.deepEqual(personalCacheMetadata({ metadataTrusted: false }, data.a), personalCacheMetadata({ metadataTrusted: false }, legacy));
     assert.equal((data.b.geostatsMetadata as Record<string, unknown>).name, "Keep");
     assert.equal((data.b.geostatsMetadata as Record<string, unknown>).country, null);
