@@ -1,5 +1,5 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException, PayloadTooLargeException } from "@nestjs/common";
-import { countableFindWhere, Prisma } from "@geostats/db";
+import { countableFindWhere, personalCacheMetadata, Prisma } from "@geostats/db";
 import { randomBytes } from "node:crypto";
 import timezoneAt from "tz-lookup";
 import { PrismaService } from "../common/prisma.service";
@@ -11,6 +11,31 @@ import { importProjectGcAlphabetScript, importProjectGcBirthdayScript, importPro
 type CheckerInput = { name?: unknown; gcCode?: unknown; description?: unknown; rules?: unknown };
 
 const MAX_PUBLIC_FIND_HISTORY = 10_000;
+const MAX_FILTER_CHOICES = 256;
+const MAX_CHECKER_FILTER_CHOICES = 1_024;
+const MAX_CHECKER_FILTERS = 100;
+const MAX_EVALUATION_WORK = 1_000_000;
+
+// Count the list comparisons performed for each find, including imported rules.
+function ruleWork(rules: ChallengeRule[]) {
+  let filters = 0;
+  let choices = 0;
+  let monthlyScans = 0;
+  for (const rule of rules) {
+    if ("filters" in rule) {
+      filters += rule.filters.length;
+      for (const filter of rule.filters) {
+        for (const value of Object.values(filter)) if (Array.isArray(value)) choices += value.length;
+      }
+    }
+    if ("excludedGcCodes" in rule) choices += rule.excludedGcCodes.length;
+    if (rule.type === "MONTHLY_ATTRIBUTE") monthlyScans += rule.months.length;
+  }
+  if (filters > MAX_CHECKER_FILTERS || choices > MAX_CHECKER_FILTER_CHOICES) {
+    throw new BadRequestException("Challenge filters exceed the total checker complexity limit");
+  }
+  return rules.length + filters + choices + monthlyScans;
+}
 
 export function resolveDisplayTimeZone(profile: { homeLatitude?: unknown; homeLongitude?: unknown; timeZone?: string | null } | null) {
   const fallback = profile?.timeZone ?? "Europe/Stockholm";
@@ -29,11 +54,11 @@ function cleanOptionalText(value: unknown, label: string, maximum: number) {
   return value.trim();
 }
 
-function parseRules(value: unknown): ChallengeRule[] {
+function parseRules(value: unknown, { enforceComplexityLimits = true }: { enforceComplexityLimits?: boolean } = {}): ChallengeRule[] {
   if (!Array.isArray(value) || value.length < 1 || value.length > 10) {
     throw new BadRequestException("rules must contain between 1 and 10 rules");
   }
-  return value.map((candidate) => {
+  const rules: ChallengeRule[] = value.map((candidate) => {
     if (!candidate || typeof candidate !== "object") throw new BadRequestException("Each rule must be an object");
     const rule = candidate as Record<string, unknown>;
     const minimum = Number(rule.minimum);
@@ -110,7 +135,7 @@ function parseRules(value: unknown): ChallengeRule[] {
     }
     if (rule.type === "PROJECT_GC_NUMBER") {
       if (!Array.isArray(rule.filters) || rule.filters.length < 1 || rule.filters.length > 50) throw new BadRequestException("Imported Project-GC rule must contain filters");
-      const filters = rule.filters.map((filter) => validateStoredProjectGcFilter(filter));
+      const filters = rule.filters.map((filter) => validateStoredProjectGcFilter(filter, enforceComplexityLimits));
       return { type: rule.type, minimum, filters, filterLabel: projectGcFilterLabel(filters) };
     }
     if (rule.type === "CALENDAR_FILL") {
@@ -121,14 +146,14 @@ function parseRules(value: unknown): ChallengeRule[] {
       }
       if (typeof rule.allowLeapDaySkip !== "boolean") throw new BadRequestException("Calendar rule allowLeapDaySkip must be a boolean");
       if (!Array.isArray(rule.filters) || rule.filters.length !== 1) throw new BadRequestException("Imported calendar rule must contain exactly one filter");
-      const filters = rule.filters.map((filter) => validateStoredProjectGcFilter(filter));
+      const filters = rule.filters.map((filter) => validateStoredProjectGcFilter(filter, enforceComplexityLimits));
       const filterLabel = cleanOptionalText(rule.filterLabel, "filterLabel", 200) ?? projectGcFilterLabel(filters);
       return { type: rule.type, minimum, perDay, allowLeapDaySkip: rule.allowLeapDaySkip, filters, filterLabel };
     }
     if (rule.type === "DISTINCT_TYPES") {
       if (minimum < 1 || minimum > 100) throw new BadRequestException("Distinct-types minimum must be between 1 and 100");
       if (!Array.isArray(rule.filters) || rule.filters.length !== 1) throw new BadRequestException("Imported distinct-types rule must contain exactly one filter");
-      const filters = rule.filters.map((filter) => validateStoredProjectGcFilter(filter));
+      const filters = rule.filters.map((filter) => validateStoredProjectGcFilter(filter, enforceComplexityLimits));
       const filterLabel = cleanOptionalText(rule.filterLabel, "filterLabel", 200) ?? projectGcFilterLabel(filters);
       return { type: rule.type, minimum, filters, filterLabel };
     }
@@ -155,28 +180,31 @@ function parseRules(value: unknown): ChallengeRule[] {
       const attributeLabel = cleanOptionalText(rule.attributeLabel, "attributeLabel", 120);
       if (!attributeId || !attributeLabel) throw new BadRequestException("attributeId and attributeLabel are required");
       if (!Array.isArray(rule.filters) || rule.filters.length !== 1) throw new BadRequestException("Imported monthly rule must contain exactly one filter");
-      const filters = rule.filters.map((filter) => validateStoredProjectGcFilter(filter));
+      const filters = rule.filters.map((filter) => validateStoredProjectGcFilter(filter, enforceComplexityLimits));
       const filterLabel = cleanOptionalText(rule.filterLabel, "filterLabel", 200) ?? projectGcFilterLabel(filters);
       const excludedGcCodes = Array.isArray(rule.excludedGcCodes) ? rule.excludedGcCodes : [];
+      if (enforceComplexityLimits && excludedGcCodes.length > MAX_FILTER_CHOICES) throw new BadRequestException("Too many excluded GC codes");
       for (const code of excludedGcCodes) {
-        if (typeof code !== "string" || !/^GC[A-Z0-9]+$/i.test(code.trim())) throw new BadRequestException("Excluded GC codes must be valid");
+        if (typeof code !== "string" || code.length > 40 || !/^GC[A-Z0-9]+$/i.test(code.trim())) throw new BadRequestException("Excluded GC codes must be valid");
       }
       if (typeof rule.excludeSelf !== "boolean") throw new BadRequestException("Monthly rule excludeSelf must be a boolean");
       return { type: rule.type, months, overallMinimum, attributeId, attributeLabel, filters, filterLabel, excludedGcCodes, excludeSelf: rule.excludeSelf };
     }
     throw new BadRequestException("Unsupported challenge rule type");
   });
+  if (enforceComplexityLimits) ruleWork(rules);
+  return rules;
 }
 
-function validateStoredProjectGcFilter(value: unknown): ProjectGcFindFilter {
+function validateStoredProjectGcFilter(value: unknown, enforceComplexityLimits: boolean): ProjectGcFindFilter {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new BadRequestException("Invalid imported Project-GC filter");
   const filter = value as Record<string, unknown>;
   const allowed = new Set(["countries", "regions", "counties", "cacheTypeIds", "excludedCacheTypeIds", "sizes", "difficulties", "terrains", "minVisitDate", "maxVisitDate", "minHiddenDate", "maxHiddenDate", "minLatitude", "maxLatitude", "minLongitude", "maxLongitude"]);
   if (Object.keys(filter).some((key) => !allowed.has(key))) throw new BadRequestException("Invalid imported Project-GC filter field");
   const textArrays = ["countries", "regions", "counties", "cacheTypeIds", "excludedCacheTypeIds", "sizes"];
   const numberArrays = ["difficulties", "terrains"];
-  for (const key of textArrays) if (filter[key] !== undefined && (!Array.isArray(filter[key]) || !(filter[key] as unknown[]).every((item) => typeof item === "string" && item.length <= 120))) throw new BadRequestException(`Invalid ${key} filter`);
-  for (const key of numberArrays) if (filter[key] !== undefined && (!Array.isArray(filter[key]) || !(filter[key] as unknown[]).every((item) => typeof item === "number" && Number.isFinite(item)))) throw new BadRequestException(`Invalid ${key} filter`);
+  for (const key of textArrays) if (filter[key] !== undefined && (!Array.isArray(filter[key]) || (enforceComplexityLimits && (filter[key] as unknown[]).length > MAX_FILTER_CHOICES) || !(filter[key] as unknown[]).every((item) => typeof item === "string" && item.length <= 120))) throw new BadRequestException(`Invalid ${key} filter`);
+  for (const key of numberArrays) if (filter[key] !== undefined && (!Array.isArray(filter[key]) || (enforceComplexityLimits && (filter[key] as unknown[]).length > MAX_FILTER_CHOICES) || !(filter[key] as unknown[]).every((item) => typeof item === "number" && Number.isFinite(item)))) throw new BadRequestException(`Invalid ${key} filter`);
   for (const key of ["minVisitDate", "maxVisitDate", "minHiddenDate", "maxHiddenDate"]) if (filter[key] !== undefined && (typeof filter[key] !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(filter[key] as string))) throw new BadRequestException(`Invalid ${key} filter`);
   for (const key of ["minLatitude", "maxLatitude", "minLongitude", "maxLongitude"]) if (filter[key] !== undefined && (typeof filter[key] !== "number" || !Number.isFinite(filter[key]))) throw new BadRequestException(`Invalid ${key} filter`);
   return filter as ProjectGcFindFilter;
@@ -191,14 +219,15 @@ export class ChallengeCheckersService {
       this.prisma.challengeChecker.findMany({ where: { userId }, orderBy: { updatedAt: "desc" } }),
       this.prisma.user.findUnique({ where: { id: userId }, select: { username: true } })
     ]);
-    return { checkers: checkers.map((checker) => ({ ...checker, rules: parseRules(checker.rules) })), username: user?.username ?? "user" };
+    // Legacy checkers remain readable/editable; saves and runs enforce current limits.
+    return { checkers: checkers.map((checker) => ({ ...checker, rules: parseRules(checker.rules, { enforceComplexityLimits: false }) })), username: user?.username ?? "user" };
   }
 
   async locationsForUser(userId: string) {
     const profile = await this.prisma.geocachingProfile.findUnique({ where: { userId }, select: { gcUsername: true } });
     const finds = await this.prisma.find.findMany({
       where: countableFindWhere(userId, profile?.gcUsername?.trim().toLowerCase() ?? null),
-      select: { cache: { select: { country: true, region: true, county: true } } }
+      select: { cache: { select: { country: true, region: true, county: true, metadataTrusted: true, userData: { where: { userId }, take: 1, select: { raw: true } } } } }
     });
     const countries = new Map<string, Map<string, Set<string>>>();
     const usable = (value: string | null | undefined) => {
@@ -206,15 +235,16 @@ export class ChallengeCheckersService {
       return cleaned && !["none", "unknown", "n/a", "null"].includes(cleaned.toLocaleLowerCase()) ? cleaned : null;
     };
     for (const find of finds) {
-      const country = usable(find.cache.country);
+      const cache = { ...find.cache, ...personalCacheMetadata(find.cache, find.cache.userData?.[0]?.raw) };
+      const country = usable(cache.country);
       if (!country) continue;
       let regions = countries.get(country);
       if (!regions) { regions = new Map(); countries.set(country, regions); }
-      const region = usable(find.cache.region);
+      const region = usable(cache.region);
       if (!region) continue;
       let counties = regions.get(region);
       if (!counties) { counties = new Set(); regions.set(region, counties); }
-      const county = usable(find.cache.county);
+      const county = usable(cache.county);
       if (county) counties.add(county);
     }
     const compare = (left: string, right: string) => left.localeCompare(right, undefined, { sensitivity: "base" });
@@ -236,6 +266,7 @@ export class ChallengeCheckersService {
           select: {
             cacheType: true,
             size: true,
+            metadataTrusted: true,
             userData: { where: { userId }, take: 1, select: { raw: true } }
           }
         }
@@ -244,14 +275,14 @@ export class ChallengeCheckersService {
     const compare = (left: string, right: string) => left.localeCompare(right, undefined, { sensitivity: "base", numeric: true });
     const sizes = [...new Set([
       "Micro", "Small", "Regular", "Large", "Other", "Virtual",
-      ...finds.map((find) => find.cache.size?.trim()).filter((value): value is string => Boolean(value))
+      ...finds.map((find) => ({ ...find.cache, ...personalCacheMetadata(find.cache, find.cache.userData?.[0]?.raw) }).size?.trim()).filter((value): value is string => Boolean(value))
     ])].sort(compare);
     const attributeMap = new Map<string, string>();
     for (const find of finds) {
       for (const attribute of attributesFromRaw(find.cache.userData[0]?.raw)) attributeMap.set(attribute.id, attribute.label);
     }
     const attributes = [...attributeMap].map(([id, label]) => ({ id, label })).sort((left, right) => compare(left.label, right.label));
-    return { cacheTypes: cacheTypeOptions(finds.map((find) => find.cache.cacheType)), sizes, attributes };
+    return { cacheTypes: cacheTypeOptions(finds.map((find) => ({ ...find.cache, ...personalCacheMetadata(find.cache, find.cache.userData?.[0]?.raw) }).cacheType)), sizes, attributes };
   }
 
   importProjectGc(input: Record<string, unknown>) {
@@ -392,19 +423,27 @@ export class ChallengeCheckersService {
   }
 
   private async run(checker: { id: string; userId: string; name: string; gcCode: string | null; description: string | null; rules: Prisma.JsonValue; publicSlug: string | null; publishedAt: Date | null; updatedAt: Date }, maximumFinds?: number) {
+    // Revalidate stored rules before any history query: archives may contain old oversized rules.
+    const rules = parseRules(checker.rules);
+    const workPerFind = ruleWork(rules);
+    const workMaximumFinds = Math.floor(MAX_EVALUATION_WORK / workPerFind);
+    const queryMaximumFinds = Math.min(maximumFinds ?? workMaximumFinds, workMaximumFinds);
     const profile = await this.prisma.geocachingProfile.findUnique({ where: { userId: checker.userId } });
     const username = profile?.gcUsername ?? "Geocacher";
     const finds = await this.prisma.find.findMany({
       where: countableFindWhere(checker.userId, username.trim().toLowerCase()),
       include: { cache: { include: { userData: { where: { userId: checker.userId }, take: 1 } } } },
       orderBy: { foundAt: "asc" },
-      ...(maximumFinds === undefined ? {} : { take: maximumFinds + 1 })
+      // One extra row detects excess without materializing the rest of the history.
+      take: queryMaximumFinds + 1
     });
     if (maximumFinds !== undefined && finds.length > maximumFinds) {
       throw new PayloadTooLargeException(`This public checker cannot evaluate more than ${maximumFinds.toLocaleString("en-US")} finds. Sign in and run the owned checker instead.`);
     }
-    const rules = parseRules(checker.rules);
-    const checkerFinds = finds.map((find) => ({ ...find, cache: { ...find.cache, raw: find.cache.userData?.[0]?.raw } }));
+    if (finds.length * workPerFind > MAX_EVALUATION_WORK) {
+      throw new PayloadTooLargeException("Challenge evaluation exceeds the work limit. Reduce the number of filters or choices.");
+    }
+    const checkerFinds = finds.map((find) => ({ ...find, cache: { ...find.cache, ...personalCacheMetadata(find.cache, find.cache.userData?.[0]?.raw), raw: find.cache.userData?.[0]?.raw } }));
     // Monthly challenge checkers exclude the challenge cache itself (and any
     // configured codes), mirroring the engine's default exclusion.
     const effectiveRules = rules.map((rule) => rule.type === "MONTHLY_ATTRIBUTE" && rule.excludeSelf && checker.gcCode

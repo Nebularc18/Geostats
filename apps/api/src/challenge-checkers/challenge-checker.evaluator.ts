@@ -125,9 +125,12 @@ export type RuleResult = {
 };
 
 const MAX_EVIDENCE_ROWS = 500;
+// Reuse collation rules across the bounded evaluation instead of constructing
+// locale comparison options for every attacker-controlled choice.
+const TEXT_COLLATOR = new Intl.Collator(undefined, { sensitivity: "accent" });
 
 function sameText(left: string | null, right: string) {
-  return left?.trim().localeCompare(right.trim(), undefined, { sensitivity: "accent" }) === 0;
+  return left != null && TEXT_COLLATOR.compare(left.trim(), right.trim()) === 0;
 }
 
 function normalizeLocationName(value: string) {
@@ -150,8 +153,8 @@ export function sameLocationText(left: string | null | undefined, right: string)
   if (left == null) return false;
   const leftTrimmed = left.trim();
   const rightTrimmed = right.trim();
-  if (leftTrimmed.localeCompare(rightTrimmed, undefined, { sensitivity: "accent" }) === 0) return true;
-  return normalizeLocationName(leftTrimmed).localeCompare(normalizeLocationName(rightTrimmed), undefined, { sensitivity: "accent" }) === 0;
+  if (TEXT_COLLATOR.compare(leftTrimmed, rightTrimmed) === 0) return true;
+  return TEXT_COLLATOR.compare(normalizeLocationName(leftTrimmed), normalizeLocationName(rightTrimmed)) === 0;
 }
 
 function loggedCalendarKey(find: CheckerFind) {

@@ -1,3 +1,4 @@
+import { personalCacheMetadata } from "@geostats/db";
 import { BadGatewayException, Injectable, NotFoundException } from "@nestjs/common";
 import { envOrDefault } from "../common/env";
 import { PrismaService } from "../common/prisma.service";
@@ -185,8 +186,10 @@ export class TravelSearchService {
         cache: { hides: { none: { userId } } }
       },
       select: {
+        raw: true,
         cache: {
           select: {
+            metadataTrusted: true,
             cacheType: true,
             finds: { where: { userId }, select: { id: true }, take: 1 }
           }
@@ -199,7 +202,8 @@ export class TravelSearchService {
     const pool = records.slice(0, MAX_CACHE_POOL);
     const typeCounts = new Map<string, number>();
     let found = 0;
-    for (const { cache } of pool) {
+    for (const { cache: shared, raw } of pool) {
+      const cache = { ...shared, ...personalCacheMetadata(shared, raw) };
       const type = cache.cacheType?.trim() || "Unknown type";
       typeCounts.set(type, (typeCounts.get(type) ?? 0) + 1);
       if (cache.finds.length) found += 1;
@@ -287,16 +291,22 @@ export class TravelSearchService {
           hides: { none: { userId } },
           OR: [
             { latitude, ...(longitude ? { longitude } : {}) },
-            { corrections: { some: { userId, latitude, ...(longitude ? { longitude } : {}) } } }
+            { corrections: { some: { userId, latitude, ...(longitude ? { longitude } : {}) } } },
+            { metadataTrusted: false, userData: { some: { userId, AND: [
+              { raw: { path: ["geostatsMetadata", "latitude"], ...latitude } },
+              ...(longitude ? [{ raw: { path: ["geostatsMetadata", "longitude"], ...longitude } }] : [])
+            ] } } }
           ]
         }
       },
       select: {
+        raw: true,
         cache: {
           select: {
             id: true,
             gcCode: true,
             name: true,
+            metadataTrusted: true,
             cacheType: true,
             difficulty: true,
             terrain: true,
@@ -315,7 +325,8 @@ export class TravelSearchService {
       take: MAX_CACHE_POOL + 1
     });
     const poolTruncated = records.length > MAX_CACHE_POOL;
-    const importedCandidates: TravelCandidate[] = records.slice(0, MAX_CACHE_POOL).map(({ cache }) => {
+    const importedCandidates: TravelCandidate[] = records.slice(0, MAX_CACHE_POOL).map(({ cache: shared, raw }) => {
+      const cache = { ...shared, ...personalCacheMetadata(shared, raw) };
       const correction = cache.corrections[0];
       return {
         id: cache.id,

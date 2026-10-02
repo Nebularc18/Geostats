@@ -1,5 +1,5 @@
 import { BadRequestException, Injectable } from "@nestjs/common";
-import { Prisma } from "@geostats/db";
+import { Prisma, privateCacheRaw } from "@geostats/db";
 import { parseCsvRows, ImportFileType, ImportSource, ImportStatus, canonicalCacheTypeName } from "@geostats/shared";
 import { PrismaService } from "../common/prisma.service";
 import { StatsService } from "../stats/stats.service";
@@ -604,47 +604,30 @@ export class GsakImportService {
     let corrections = 0;
     await this.prisma.$transaction(async (tx) => {
       for (const row of rows) {
-        const raw = cacheRaw(
+        const raw = privateCacheRaw(cacheRaw(
           existingByCode.get(row.gcCode)?.userData?.[0]?.raw,
           row,
-        ) as Prisma.InputJsonValue;
-        const metadata = {
-          gcCode: row.gcCode,
-          name: row.name,
-          // Canonicalize GSAK short names ("Mystery") to the same stored
-          // value GPX imports use ("Mystery Cache").
-          cacheType: canonicalCacheTypeName(row.cacheType),
-          difficulty: row.difficulty,
-          terrain: row.terrain,
-          size: row.size,
-          latitude: row.latitude,
-          longitude: row.longitude,
-          country: row.country,
-          region: row.region,
-          county: row.county,
-          hiddenDate: row.hiddenDate,
-          ownerName: row.ownerName,
-          metadataTrusted: true,
-        };
+        ), row) as Prisma.InputJsonValue;
+        // Personal imports cannot publish metadata to the shared catalog.
         const cache = await tx.cache.upsert({
           where: { gcCode: row.gcCode },
-          create: metadata,
+          create: {
+            gcCode: row.gcCode,
+            name: row.gcCode,
+            latitude: 0,
+            longitude: 0,
+            metadataTrusted: false,
+          },
           update: {},
         });
-        if (cache.metadataTrusted === false) {
-          await tx.cache.updateMany({
-            where: { id: cache.id, metadataTrusted: false },
-            data: metadata,
-          });
-        }
         await tx.userCacheData.upsert({
           where: { userId_cacheId: { userId, cacheId: cache.id } },
           create: { userId, cacheId: cache.id, raw },
           update: { raw },
         });
         // Journey imports keep cache metadata on the user's movement log until
-        // a trusted GSAK/cache import supplies the shared cache record. Link
-        // those existing rows now so the missing-cache queue is cleared.
+        // a shared cache identity exists. Metadata remains private until admin
+        // enrichment, even when those existing rows are linked now.
         if (tx.trackableLog) {
           await tx.trackableLog.updateMany({
             where: { userId, gcCode: row.gcCode, cacheId: null },

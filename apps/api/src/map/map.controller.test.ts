@@ -224,8 +224,8 @@ test("map filters are applied before pagination", async () => {
 
   const conditions = calls.finds[0].where.AND as any[];
   const cacheCondition = conditions.find((condition) => condition.cache).cache;
-  const cacheFilters = cacheCondition.AND as any[];
-  assert.equal(cacheFilters[0].OR[0].gcCode.contains, "old cache");
+  const cacheFilters = cacheCondition.OR[0].AND as any[];
+  assert.equal(cacheFilters[1].OR[0].gcCode.contains, "old cache");
   assert.equal(cacheFilters.find((condition) => condition.cacheType)?.cacheType, "Mystery Cache");
   assert.deepEqual(cacheFilters.find((condition) => condition.difficulty)?.difficulty, { gte: 1.5, lte: 3 });
   assert.deepEqual(cacheFilters.find((condition) => condition.terrain)?.terrain, { gte: 2, lte: 4 });
@@ -253,4 +253,21 @@ test("rejects revision tokens issued before the persisted revision migration", a
   await assert.rejects(() => controller.caches(user, {
     cursor: "find-1", snapshot: new Date().toISOString(), snapshotRevision: "none:none:none:0:0"
   }), ConflictException);
+});
+
+
+test("private imported map metadata is scoped to the requesting user and filters before pagination", async () => {
+  const placeholder = { ...cache(), name: "GC1", metadataTrusted: false, latitude: 0, longitude: 0,
+    userData: [{ raw: { geostatsMetadata: { name: "Private cache", latitude: 57, longitude: 16, country: "Sweden", difficulty: 3 } } }] };
+  const { controller, calls } = controllerWith({ finds: [{ id: "find-1", foundAt: new Date(), cache: placeholder }] });
+  const response = await controller.caches(user, { country: "Sweden", difficultyMin: "2" });
+  assert.equal(response.points[0].name, "Private cache");
+  assert.equal(response.points[0].latitude, 57);
+  const query = calls.finds[0];
+  assert.deepEqual(query.select.cache.select.userData.where, { userId: user.id });
+  const personal = query.where.AND.find((item: any) => item.cache).cache.OR[1];
+  assert.equal(personal.metadataTrusted, false);
+  assert.equal(personal.userData.some.userId, user.id);
+  assert.ok(personal.userData.some.AND.some((item: any) => item.raw.path[1] === "country" && item.raw.equals === "Sweden"));
+  assert.ok(personal.userData.some.AND.some((item: any) => item.raw.path[1] === "difficulty" && item.raw.gte === 2));
 });

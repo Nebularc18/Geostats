@@ -1,13 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { isDeepStrictEqual } from "node:util";
 import { Prisma } from "@geostats/db";
 import { ImportFileType, ImportSource, ImportStatus } from "@geostats/shared";
 import { ImportProcessor } from "./import-processor";
 
 function importTestClient<T extends Record<string, any>>(prisma: T): T {
   return {
+    $queryRaw: async (query: any) => {
+      const [, userId, cacheId, json] = query.values;
+      const raw = JSON.parse(json);
+      await prisma.userCacheData?.upsert?.({ where: { userId_cacheId: { userId, cacheId } }, create: { userId, cacheId, raw }, update: { raw } });
+      return [{ cacheId }];
+    },
     ...prisma,
-    userCacheData: prisma.userCacheData ?? { upsert: async () => ({}) },
     import: prisma.import && {
       updateMany: async () => ({ count: 1 }),
       ...prisma.import
@@ -137,7 +143,7 @@ test("cache resolution uses a bounded worker pool and keeps unique codes", async
     },
     userCacheData: { upsert: async () => ({}) }
   };
-  const processor = new ImportProcessor(prisma as any, {} as any);
+  const processor = new ImportProcessor(importTestClient(prisma) as any, {} as any);
   const caches = Array.from({ length: 20 }, (_, index) => ({
     gcCode: `GC${String(index + 1).padStart(5, "0")}`,
     name: `Cache ${index + 1}`,
@@ -177,7 +183,7 @@ test("cache resolution waits for active workers and stops scheduling after a fai
     },
     userCacheData: { upsert: async () => ({}) }
   };
-  const processor = new ImportProcessor(prisma as any, {} as any);
+  const processor = new ImportProcessor(importTestClient(prisma) as any, {} as any);
   const caches = Array.from({ length: 20 }, (_, index) => ({
     gcCode: `GC${String(index + 1).padStart(5, "0")}`,
     name: `Cache ${index + 1}`,
@@ -465,10 +471,10 @@ test("process uses the user's existing cache metadata without overwriting it", a
   assert.equal(cacheUpserts.length, 1);
   assert.deepEqual(cacheUpserts[0].where, { gcCode: "GC12345" });
   assert.equal(cacheUpserts[0].create.userId, undefined);
-  assert.equal(cacheUpserts[0].create.name, "Attacker Cache Name");
-  assert.equal(cacheUpserts[0].create.latitude, 56.1612);
-  assert.equal(cacheUpserts[0].create.longitude, 15.5869);
-  assert.equal(cacheUpserts[0].create.metadataTrusted, true);
+  assert.equal(cacheUpserts[0].create.name, "GC12345");
+  assert.equal(cacheUpserts[0].create.latitude, 0);
+  assert.equal(cacheUpserts[0].create.longitude, 0);
+  assert.equal(cacheUpserts[0].create.metadataTrusted, false);
   assert.deepEqual(cacheUpserts[0].update, {});
   assert.equal(userCacheUpserts.length, 1);
   assert.deepEqual(userCacheUpserts[0].where, {
@@ -647,10 +653,10 @@ test("process creates missing cache metadata before the import transaction", asy
     },
     cache: {
       upsert: async ({ create, update }: any) => {
-        assert.equal(create.name, "Attacker Cache Name");
-        assert.equal(create.latitude, 56.1612);
-        assert.equal(create.longitude, 15.5869);
-        assert.equal(create.metadataTrusted, true);
+        assert.equal(create.name, "GC12345");
+        assert.equal(create.latitude, 0);
+        assert.equal(create.longitude, 0);
+        assert.equal(create.metadataTrusted, false);
         assert.deepEqual(update, {});
         cacheCreateCompleted = true;
         return createdCache;
@@ -694,7 +700,7 @@ test("process creates missing cache metadata before the import transaction", asy
   assert.equal(importTransactionStarted, true);
 });
 
-test("process stores source-specific cache-type spellings under one canonical name", async () => {
+test("process does not publish source-specific cache types to the shared catalog", async () => {
   const shortTypeGpx = `<?xml version="1.0" encoding="UTF-8"?>
 <gpx version="1.0">
   <wpt lat="56.161200" lon="15.586900">
@@ -780,7 +786,7 @@ test("process stores source-specific cache-type spellings under one canonical na
     source: ImportSource.MY_HIDES_GPX
   });
 
-  assert.equal(storedCacheType, "Mystery Cache");
+  assert.equal(storedCacheType, undefined);
 });
 
 test("process marks a committed import failed when stats recalculation fails", async () => {
@@ -1455,7 +1461,7 @@ test("process creates multiple same-cache finds when no existing row matches the
   );
 });
 
-test("process skips stats recalculation when an import has no new or changed finds", async () => {
+test("process rebuilds stats for private metadata even when finds are unchanged", async () => {
   const existingCache = {
     id: "cache-1",
     gcCode: "GC12345",
@@ -1563,7 +1569,7 @@ test("process skips stats recalculation when an import has no new or changed fin
 
   assert.equal(findUpdated, false);
   assert.equal(findCreated, false);
-  assert.equal(recalculationFindsLoaded, false);
+  assert.equal(recalculationFindsLoaded, true);
 });
 
 async function importFindTimestamp(
@@ -1795,39 +1801,215 @@ test("process preserves a manually cleared FTF mark during re-import", async () 
   });
 
   assert.equal(updatedData?.isFtf, undefined);
-  assert.equal(recalculationFindsLoaded, false);
+  assert.equal(recalculationFindsLoaded, true);
 });
 
-test("GPX import repairs existing placeholders and returns metadata for statistics", async () => {
-  const placeholder = { id: "cache-1", gcCode: "GC12345", metadataTrusted: false };
-  const incoming = {
-    gcCode: "GC12345", name: "Swedish cache", latitude: 56.1, longitude: 15.6,
-    country: "Sweden", cacheType: "Traditional Cache", difficulty: 2, terrain: 2.5,
-    size: "Small", raw: { privateNote: "Only this user" }
-  };
-  let stored: any = placeholder;
-  const prisma = {
-    cache: {
-      upsert: async () => stored,
-      updateMany: async ({ where, data }: any) => {
-        assert.deepEqual(where, { id: "cache-1", metadataTrusted: false });
-        assert.equal("raw" in data, false);
-        stored = { ...stored, ...data };
-        return { count: 1 };
+for (const metadataTrusted of [false, true]) {
+  test(`GPX import preserves shared metadata (trusted=${metadataTrusted}) and stores private raw`, async () => {
+    const shared = { id: "cache-1", gcCode: "GC12345", name: "Existing metadata", latitude: 1, longitude: 2, metadataTrusted };
+    const incoming = {
+      gcCode: "GC12345", name: "Attacker metadata", latitude: 56.1, longitude: 15.6,
+      ownerName: "victim", raw: { privateNote: "Only this user", lat: "56.1" }
+    };
+    const prisma = {
+      cache: {
+        upsert: async ({ create, update }: any) => {
+          assert.deepEqual(create, { gcCode: "GC12345", name: "GC12345", latitude: 0, longitude: 0, metadataTrusted: false });
+          assert.deepEqual(update, {});
+          return shared;
+        },
+        updateMany: async () => { throw new Error("Personal import must not modify shared metadata"); }
       },
-      findUnique: async () => stored
-    },
-    userCacheData: {
-      upsert: async ({ create }: any) => {
-        assert.equal(create.userId, "user-1");
-        assert.deepEqual(create.raw, incoming.raw);
+      userCacheData: {
+        upsert: async ({ where, create, update }: any) => {
+          assert.deepEqual(where, { userId_cacheId: { userId: "attacker", cacheId: shared.id } });
+          assert.equal(create.userId, "attacker");
+          assert.deepEqual({ ...create.raw, geostatsMetadata: undefined }, { ...incoming.raw, geostatsMetadata: undefined });
+          assert.equal(create.raw.geostatsMetadata.name, incoming.name);
+          assert.deepEqual(update, { raw: create.raw });
+        }
       }
+    };
+    const processor = new ImportProcessor(importTestClient(prisma) as any, {} as any);
+    const result = await (processor as any).findOrCreateCache("attacker", incoming);
+    assert.equal(result, shared);
+    assert.equal(shared.name, "Existing metadata");
+    assert.equal(shared.metadataTrusted, metadataTrusted);
+  });
+}
+
+test("metadata-only reimport rebuilds the snapshot after writing private raw", async () => {
+  const shared = { id: "cache-1", gcCode: "GC12345", metadataTrusted: false };
+  const existingFind = {
+    id: "find-1", cacheId: shared.id,
+    foundAt: new Date("2024-05-01T10:34:00Z"),
+    foundDate: new Date("2024-05-01T00:00:00Z"),
+    logText: "Nice find.", isFtf: false, isFtfManual: false,
+    importedFrom: ImportSource.MY_FINDS_GPX
+  };
+  let raw: any = { ele: 1 };
+  let snapshotElevation: unknown = 1;
+  let recalculations = 0;
+  const tx = {
+    find: {
+      findMany: async () => [existingFind],
+      update: async () => { throw new Error("metadata-only reimport must not update find"); },
+      createMany: async () => { throw new Error("existing find must not be duplicated"); }
     }
   };
-  const processor = new ImportProcessor(prisma as any, {} as any);
-  const result = await (processor as any).findOrCreateCache("user-1", incoming);
-  assert.equal(result.country, "Sweden");
-  assert.equal(result.difficulty, 2);
-  assert.equal(result.latitude, 56.1);
-  assert.equal(result.metadataTrusted, true);
+  const prisma = {
+    import: { findFirst: async () => ({ id: "import-1", userId: "user-1", source: ImportSource.MY_FINDS_GPX, fileType: ImportFileType.GPX, fileName: "finds.gpx", objectKey: "object" }), update: async () => ({}) },
+    cache: { upsert: async () => shared },
+    userCacheData: {
+      upsert: async () => { throw new Error("private write must use atomic SQL"); }
+    },
+    $queryRaw: async (query: any) => {
+      assert.match(query.sql, /IS DISTINCT FROM EXCLUDED/);
+      const [, userId, cacheId, json] = query.values;
+      assert.equal(userId, "user-1");
+      assert.equal(cacheId, shared.id);
+      const incoming = JSON.parse(json);
+      if (isDeepStrictEqual(raw, incoming)) return [];
+      raw = incoming;
+      return [{ cacheId }];
+    },
+    geocachingProfile: { findUnique: async () => null },
+    $transaction: async (run: any) => run(tx)
+  };
+  const processor = new ImportProcessor(importTestClient(prisma) as any, {
+    getObject: async () => Buffer.from(myFindsGpx.replace('<name>GC12345</name>', '<ele>321</ele><name>GC12345</name>'))
+  } as any);
+  (processor as any).recalculateStats = async (userId: string) => {
+    assert.equal(userId, "user-1");
+    snapshotElevation = raw.ele;
+    recalculations += 1;
+  };
+  await processor.process({ importId: "import-1", userId: "user-1", objectKey: "object", source: ImportSource.MY_FINDS_GPX });
+  assert.equal(snapshotElevation, 321);
+  assert.equal(recalculations, 1);
+  // Persisted JSON may use a different object key order on the next read.
+  raw = Object.fromEntries(Object.entries(raw).reverse());
+  await processor.process({ importId: "import-1", userId: "user-1", objectKey: "object", source: ImportSource.MY_FINDS_GPX });
+  assert.equal(recalculations, 1, "idempotent GPX reimport must not rebuild stats");
+});
+
+
+test("overlapping imports rebuild after an initially unchanged import replaces newer private metadata", async () => {
+  const shared = { id: "cache-1", gcCode: "GC12345", metadataTrusted: false };
+  const existingFind = {
+    id: "find-1", cacheId: shared.id, foundAt: new Date("2024-05-01T10:34:00Z"),
+    foundDate: new Date("2024-05-01T00:00:00Z"), logText: "Nice find.",
+    isFtf: false, isFtfManual: false, importedFrom: ImportSource.MY_FINDS_GPX
+  };
+  let raw: any;
+  const snapshots: number[] = [];
+  let pauseOld = false;
+  let oldAtWrite!: () => void;
+  let resumeOld!: () => void;
+  const atWrite = new Promise<void>(resolve => { oldAtWrite = resolve; });
+  const resumed = new Promise<void>(resolve => { resumeOld = resolve; });
+  const tx = { find: {
+    findMany: async () => [existingFind],
+    update: async () => { throw new Error("find must remain unchanged"); },
+    createMany: async () => { throw new Error("find must not be duplicated"); }
+  } };
+  const prisma = importTestClient({
+    import: { findFirst: async () => ({ id: "import-1", source: ImportSource.MY_FINDS_GPX, fileType: ImportFileType.GPX, fileName: "finds.gpx", objectKey: "object" }), update: async () => ({}) },
+    cache: { upsert: async () => shared },
+    geocachingProfile: { findUnique: async () => null },
+    $transaction: async (run: any) => run(tx),
+    $queryRaw: async (query: any) => {
+      assert.match(query.sql, /WHERE "user_cache_data"\."raw" IS DISTINCT FROM EXCLUDED\."raw"/);
+      const [, userId, cacheId, json] = query.values;
+      assert.equal(userId, "user-1");
+      assert.equal(cacheId, shared.id);
+      const incoming = JSON.parse(json);
+      if (pauseOld && incoming.ele === 1) {
+        pauseOld = false;
+        assert.deepEqual(raw, incoming, "old import initially matches stored metadata");
+        oldAtWrite();
+        await resumed;
+      }
+      // Model the atomic database comparison after obtaining the write lock.
+      if (isDeepStrictEqual(raw, incoming)) return [];
+      raw = incoming;
+      return [{ cacheId }];
+    }
+  });
+  const makeProcessor = (elevation: number) => {
+    const processor = new ImportProcessor(prisma as any, {
+      getObject: async () => Buffer.from(myFindsGpx.replace('<name>GC12345</name>', `<ele>${elevation}</ele><name>GC12345</name>`))
+    } as any);
+    (processor as any).recalculateStats = async () => { snapshots.push(raw.ele); };
+    return processor;
+  };
+  const job = { importId: "import-1", userId: "user-1", objectKey: "object", source: ImportSource.MY_FINDS_GPX };
+  const oldProcessor = makeProcessor(1);
+  await oldProcessor.process(job);
+  snapshots.length = 0;
+  pauseOld = true;
+  const oldImport = oldProcessor.process(job);
+  await atWrite;
+  try {
+    await makeProcessor(321).process({ ...job, importId: "import-2" });
+    assert.deepEqual(snapshots, [321]);
+  } finally {
+    resumeOld();
+  }
+  await oldImport;
+  assert.equal(raw.ele, 1);
+  assert.deepEqual(snapshots, [321, 1], "old import's actual replacement must rebuild the snapshot");
+});
+
+
+test("automatic retry rebuilds stats after private metadata committed before a failed recalculation", async () => {
+  const shared = { id: "cache-1", gcCode: "GC12345", metadataTrusted: false };
+  const existingFind = {
+    id: "find-1", cacheId: shared.id, foundAt: new Date("2024-05-01T10:34:00Z"),
+    foundDate: new Date("2024-05-01T00:00:00Z"), logText: "Nice find.",
+    isFtf: false, isFtfManual: false, importedFrom: ImportSource.MY_FINDS_GPX
+  };
+  let raw: any;
+  const statuses: string[] = [];
+  const writeCounts: number[] = [];
+  let recalculations = 0;
+  let snapshotElevation = 0;
+  const tx = { find: {
+    findMany: async () => [existingFind],
+    update: async () => { throw new Error("find must remain unchanged"); },
+    createMany: async () => { throw new Error("find must not be duplicated"); }
+  } };
+  const prisma = importTestClient({
+    import: {
+      findFirst: async () => ({ id: "import-1", source: ImportSource.MY_FINDS_GPX, fileType: ImportFileType.GPX, fileName: "finds.gpx", objectKey: "object" }),
+      update: async ({ data }: any) => { statuses.push(data.status); }
+    },
+    cache: { upsert: async () => shared },
+    geocachingProfile: { findUnique: async () => null },
+    $transaction: async (run: any) => run(tx),
+    $queryRaw: async (query: any) => {
+      const incoming = JSON.parse(query.values[3]);
+      if (isDeepStrictEqual(raw, incoming)) { writeCounts.push(0); return []; }
+      raw = incoming;
+      writeCounts.push(1);
+      return [{ cacheId: shared.id }];
+    }
+  });
+  const processor = new ImportProcessor(prisma as any, {
+    getObject: async () => Buffer.from(myFindsGpx.replace('<name>GC12345</name>', '<ele>321</ele><name>GC12345</name>'))
+  } as any);
+  (processor as any).recalculateStats = async () => {
+    recalculations += 1;
+    if (recalculations === 1) throw new Error("snapshot unavailable");
+    snapshotElevation = raw.ele;
+  };
+  const job = { importId: "import-1", userId: "user-1", objectKey: "object", source: ImportSource.MY_FINDS_GPX };
+  await assert.rejects(processor.process(job, { attemptsMade: 0, maxAttempts: 2 }), /snapshot unavailable/);
+  assert.equal(raw.ele, 321);
+  assert.equal(statuses.at(-1), ImportStatus.QUEUED);
+  await processor.process(job, { attemptsMade: 1, maxAttempts: 2 });
+  assert.deepEqual(writeCounts, [1, 0], "retry metadata write is already unchanged");
+  assert.equal(recalculations, 2);
+  assert.equal(snapshotElevation, 321);
+  assert.equal(statuses.at(-1), ImportStatus.COMPLETED);
 });

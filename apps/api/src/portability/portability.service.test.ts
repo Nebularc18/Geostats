@@ -244,7 +244,61 @@ test("import creates global cache metadata and keeps raw data inside the authent
   assert.equal(userCacheWrites.length, 1);
   assert.equal(userCacheWrites[0].create.userId, user.id);
   assert.equal(userCacheWrites[0].create.cacheId, "user-cache-1");
-  assert.deepEqual(userCacheWrites[0].create.raw, { attackerControlled: true });
+  assert.equal(userCacheWrites[0].create.raw.attackerControlled, true);
+  assert.equal(userCacheWrites[0].create.raw.geostatsMetadata.name, "Archive controlled name");
+});
+
+test("restore preserves validated private cache metadata alongside neutral exported catalog fields", async () => {
+  const userCacheWrites: any[] = [];
+  const cacheWrites: any[] = [];
+  const tx = importTransaction([{ id: "private-cache", gcCode: "GCPOISON" }], cacheWrites, [], userCacheWrites);
+  const service = new PortabilityService({ $transaction: async (callback: any) => callback(tx) } as any, {} as any);
+  const input = JSON.parse(archiveWithCache().toString());
+  const row = input.data.caches[0];
+  Object.assign(row, { name: "GCPOISON", latitude: 0, longitude: 0, country: null, region: null, ownerName: null });
+  row.raw = { geostatsMetadata: {
+    name: "Private imported name", latitude: 59.3, longitude: 18.1, country: "Sweden", region: "Stockholm",
+    ownerName: "Owner", hiddenDate: "2025-04-03T00:00:00.000Z", metadataTrusted: true, id: "other-cache"
+  } } as any;
+  await service.importData(user, JSON.stringify(input));
+  const restored = userCacheWrites[0].create.raw.geostatsMetadata;
+  assert.equal(restored.name, "Private imported name");
+  assert.equal(restored.latitude, 59.3);
+  assert.equal(restored.longitude, 18.1);
+  assert.equal(restored.country, "Sweden");
+  assert.equal(restored.region, "Stockholm");
+  assert.equal(restored.hiddenDate, "2025-04-03T00:00:00.000Z");
+  assert.equal(restored.ownerNameNormalized, "owner");
+  assert.equal(restored.metadataTrusted, undefined);
+  assert.equal(restored.id, undefined);
+  assert.equal(cacheWrites[0].data[0].name, "GCPOISON");
+  assert.equal(cacheWrites[0].data[0].latitude, 0);
+  assert.equal(cacheWrites[0].data[0].metadataTrusted, false);
+});
+
+test("portable elevation rejects overflowing and malformed values before any transaction", async () => {
+  const service = new PortabilityService({
+    $transaction: async () => assert.fail("invalid elevation must be rejected before writes"),
+  } as any, {} as any);
+  for (const ele of ["9".repeat(400), { text: "9".repeat(400) }, "Infinity", "NaN", 10_001, -12_001, true, [], {}, "", "   "]) {
+    const input = JSON.parse(archiveWithCache().toString());
+    input.data.caches[0].raw = { ele };
+    await assert.rejects(service.importData(user, JSON.stringify(input)), /finite elevation/);
+  }
+});
+
+test("portable elevation preserves ordinary numbers and XML text wrappers in user-scoped raw", async () => {
+  for (const [ele, expected] of [[8848.86, 8848.86], ["-430.5", -430.5], [{ text: " 125.25 ", unit: "m" }, { text: 125.25, unit: "m" }], ["1e3", 1000], [null, null]]) {
+    const userCacheWrites: any[] = [];
+    const tx = importTransaction([{ id: "user-cache-1", gcCode: "GCPOISON" }], [], [], userCacheWrites);
+    const service = new PortabilityService({ $transaction: async (callback: any) => callback(tx) } as any, {} as any);
+    const input = JSON.parse(archiveWithCache().toString());
+    input.data.caches[0].raw = { ele, other: "preserved" };
+    await service.importData(user, JSON.stringify(input));
+    assert.deepEqual(userCacheWrites[0].create.raw.ele, expected);
+    assert.equal(userCacheWrites[0].create.raw.other, "preserved");
+    assert.equal(userCacheWrites[0].create.userId, user.id);
+  }
 });
 
 test("import can attach portable records to cache metadata already owned by the user", async () => {

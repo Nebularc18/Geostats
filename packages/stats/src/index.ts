@@ -54,7 +54,7 @@ export interface CountBucket {
   count: number;
 }
 
-export const STATS_VERSION = 22;
+export const STATS_VERSION = 23;
 
 export function normalizedGcUsername(profile?: { gcUsername?: string | null } | string | null): string | null {
   const value = typeof profile === "string" ? profile : profile?.gcUsername;

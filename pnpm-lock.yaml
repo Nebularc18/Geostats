@@ -335,6 +335,9 @@ importers:
 
   packages/db:
     dependencies:
+      '@geostats/shared':
+        specifier: workspace:*
+        version: link:../shared
       '@geostats/stats':
         specifier: workspace:*
         version: link:../stats

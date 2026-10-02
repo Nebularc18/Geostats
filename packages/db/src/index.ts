@@ -17,3 +17,5 @@ export type {
 } from "@prisma/client";
 
 export { calculateUserStats, countableFindWhere } from "./stats";
+export { personalCacheMetadata, privateCacheRaw } from "./personal-cache-metadata";
+export type { PersonalCacheMetadata } from "./personal-cache-metadata";

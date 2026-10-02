@@ -67,6 +67,7 @@ const PROJECT_GC_SOURCE_PATH = resolve(
   process.cwd(),
   "apps/tools/src/collect-project-gc-finder-countries.ts",
 );
+export const RECEIVED_LOG_MAX_ROWS = 10_000;
 const COLLECTOR_CSV_MAX_BYTES = 10_485_760;
 const COLLECTOR_CSV_MIME_TYPES = new Set([
   "text/csv",
@@ -951,8 +952,11 @@ function countReceivedLogs(logs: Array<Record<string, any>>) {
 
 function parseCsv(text: string): string[][] {
   try {
-    return parseCsvRows(text).filter((row) => row.some((value) => value.trim()));
-  } catch {
+    return parseCsvRows(text, ",", { maxRows: RECEIVED_LOG_MAX_ROWS + 1, skipBlankRows: true }).filter((row) => row.some((value) => value.trim()));
+  } catch (error) {
+    if (error instanceof Error && error.message === "CSV row limit exceeded") {
+      throw new BadRequestException("Too many owner-log rows; split imports into batches of 10,000");
+    }
     throw new BadRequestException("CSV contains an unclosed quoted field");
   }
 }
@@ -976,6 +980,9 @@ export function parseReceivedLogsCsv(content: string): ReceivedLogInput[] {
     throw new BadRequestException(
       "CSV must contain a header row and at least one log row",
     );
+  }
+  if (rows.length - 1 > RECEIVED_LOG_MAX_ROWS) {
+    throw new BadRequestException("Too many owner-log rows; split imports into batches of 10,000");
   }
   const headers = rows[0];
   const indexes = {
@@ -1133,7 +1140,7 @@ export class CollectorController {
   private async assertAdminCollectorUser(userId: string) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { email: true },
+      select: { id: true, email: true },
     });
     if (!user || !this.auth?.isAdmin(user)) {
       throw new UnauthorizedException(
@@ -1399,17 +1406,23 @@ export class CollectorController {
     if (!Array.isArray(logs)) {
       throw new BadRequestException("logs must be an array");
     }
-    const byCode = new Map<string, Array<Record<string, any>>>();
-    for (const log of logs) {
-      const normalized = rawFromInput(log);
-      byCode.set(normalized.gcCode, [
-        ...(byCode.get(normalized.gcCode) ?? []),
-        normalized.raw,
-      ]);
-    }
     const caches = body.caches ?? [];
     if (!Array.isArray(caches)) {
       throw new BadRequestException("caches must be an array");
+    }
+    // Check the whole batch before normalizing or grouping attacker input.
+    if (logs.length + caches.length > RECEIVED_LOG_MAX_ROWS) {
+      throw new BadRequestException("Too many owner-log rows; split imports into batches of 10,000");
+    }
+    const byCode = new Map<string, Array<Record<string, any>>>();
+    for (const log of logs) {
+      const normalized = rawFromInput(log);
+      let cacheLogs = byCode.get(normalized.gcCode);
+      if (!cacheLogs) {
+        cacheLogs = [];
+        byCode.set(normalized.gcCode, cacheLogs);
+      }
+      cacheLogs.push(normalized.raw);
     }
     const cacheTotals = new Map(
       caches

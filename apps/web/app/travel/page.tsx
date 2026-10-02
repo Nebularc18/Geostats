@@ -5,8 +5,9 @@ import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Check, CircleDot, Database, ExternalLink, LoaderCircle, MapPin, Navigation, Pencil, Plus, Puzzle, Route, Search, Trash2, X } from "lucide-react";
 import { AppShell } from "../../components/app-shell";
 import { PlaceAutocomplete, type SelectedPlace } from "../../components/place-autocomplete";
-import { apiFetch } from "../../lib/api";
+import { API_URL, apiFetch, getApiSessionEpoch, subscribeStatsSummaryCache } from "../../lib/api";
 import { normalizeMysteryArea } from "../../lib/mystery-area";
+import { createTravelSessionBoundary, hasLegacyTravelPlans, keepTravelSessionAfterNetworkFailure, readTravelStorage, type TravelSession } from "../../lib/travel-storage";
 import {
   finalTravelCoordinate,
   newerTravelAssignment,
@@ -99,9 +100,6 @@ type SavedTravelPlan = {
   caches: TravelRecommendation[];
 };
 
-const STORAGE_KEY = "geostats-mysteries-v1";
-const TRAVEL_PLAN_STORAGE_KEY = "geostats-travel-plans-v2";
-
 function coordinateText(place: Pick<TravelPlace, "latitude" | "longitude">) {
   return `${place.latitude},${place.longitude}`;
 }
@@ -180,6 +178,70 @@ function shareableCache(cache: TravelCache) {
 }
 
 export default function TravelPage() {
+  const [session, setSession] = useState<TravelSession | null>(null);
+  const [identityError, setIdentityError] = useState("");
+
+  useEffect(() => {
+    const boundary = createTravelSessionBoundary();
+    let active = true;
+    let sequence = 0;
+    let epoch = getApiSessionEpoch();
+    let identityRequest: AbortController | null = null;
+
+    async function resolveIdentity(reset = false) {
+      const requestSequence = ++sequence;
+      identityRequest?.abort();
+      const controller = new AbortController();
+      identityRequest = controller;
+      if (reset) {
+        boundary.clear();
+        setSession(null);
+      }
+      const requestEpoch = getApiSessionEpoch();
+      try {
+        const data = await apiFetch<{ user?: { id?: unknown } }>("/auth/me", { cache: "no-store", signal: controller.signal });
+        if (!active || controller.signal.aborted || requestSequence !== sequence || requestEpoch !== getApiSessionEpoch()) return;
+        if (typeof data.user?.id !== "string" || !data.user.id.trim()) throw new Error("Sign in to load your travel plans.");
+        setSession(boundary.activate(API_URL, data.user.id));
+        setIdentityError("");
+      } catch (error) {
+        if (!active || controller.signal.aborted || requestSequence !== sequence) return;
+        if (keepTravelSessionAfterNetworkFailure(boundary.current(), error, requestEpoch, getApiSessionEpoch())) return;
+        boundary.clear();
+        setSession(null);
+        setIdentityError("Sign in and reconnect to load your travel plans.");
+      }
+    }
+
+    const revalidate = () => {
+      if (document.visibilityState !== "hidden") void resolveIdentity();
+    };
+    const unsubscribe = subscribeStatsSummaryCache((event) => {
+      if (event.sessionEpoch === epoch) return;
+      epoch = event.sessionEpoch;
+      void resolveIdentity(true);
+    });
+    void resolveIdentity();
+    window.addEventListener("focus", revalidate);
+    window.addEventListener("online", revalidate);
+    document.addEventListener("visibilitychange", revalidate);
+    return () => {
+      active = false;
+      sequence += 1;
+      identityRequest?.abort();
+      boundary.clear();
+      unsubscribe();
+      window.removeEventListener("focus", revalidate);
+      window.removeEventListener("online", revalidate);
+      document.removeEventListener("visibilitychange", revalidate);
+    };
+  }, []);
+
+  if (!session) return <AppShell><section className="panel" aria-busy={!identityError}>{identityError || "Loading your account travel plans…"}</section></AppShell>;
+  return <TravelWorkspace key={`${session.keys.namespace}:${session.generation}`} session={session} />;
+}
+
+function TravelWorkspace({ session }: { session: TravelSession }) {
   const revisions = useRef(new Map<string, number>());
   const latestCaches = useRef<TravelCache[]>([]);
   const preservedSharedCaches = useRef<TravelCache[]>([]);
@@ -206,25 +268,39 @@ export default function TravelPage() {
   const [planName, setPlanName] = useState("");
   const [savedPlans, setSavedPlans] = useState<SavedTravelPlan[]>([]);
   const [plansReady, setPlansReady] = useState(false);
+  const [legacyPlansPresent, setLegacyPlansPresent] = useState(false);
   const [poolSummary, setPoolSummary] = useState<TravelPoolSummary | null>(null);
   const [poolLoading, setPoolLoading] = useState(true);
 
   latestCaches.current = caches;
 
   function persistCaches(ownedCaches: TravelCache[]) {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify([...ownedCaches, ...preservedSharedCaches.current]));
+    if (!session.isCurrent()) return;
+    localStorage.setItem(session.keys.caches, JSON.stringify([...ownedCaches, ...preservedSharedCaches.current]));
+  }
+
+  async function confirmSession() {
+    if (!session.isCurrent()) return false;
+    // Another tab can change the session cookie before this tab receives focus.
+    const data = await apiFetch<{ user?: { id?: unknown } }>("/auth/me", { cache: "no-store", signal: session.signal, headers: { "X-Geostats-Account-Id": session.userId } });
+    return session.isCurrent() && data.user?.id === session.userId;
   }
 
   async function syncCache(cache: TravelCache) {
+    if (!session.isCurrent()) return;
     try {
       let pending = cache;
       for (let attempt = 0; attempt < 4; attempt += 1) {
+        if (!await confirmSession()) return;
         const revision = (revisions.current.get(cache.id) ?? 0) + 1;
         revisions.current.set(cache.id, revision);
         const response = await apiFetch<{ revision: number; mystery: TravelCache }>(`/mysteries/${encodeURIComponent(cache.id)}`, {
           method: "PUT",
+          signal: session.signal,
+          headers: { "X-Geostats-Account-Id": session.userId },
           body: JSON.stringify({ mystery: shareableCache(pending), revision })
         });
+        if (!session.isCurrent()) return;
         revisions.current.set(cache.id, Math.max(revisions.current.get(cache.id) ?? 0, response.revision));
         const server = normalizedCaches([{ ...response.mystery, id: cache.id }])[0];
         if (!server) throw new Error("Account returned an invalid mystery snapshot");
@@ -235,6 +311,7 @@ export default function TravelPage() {
         const resolution = reconcileStaleTravelAssignment(server, pending);
         if (!resolution.retry) {
           setCaches((current) => {
+            if (!session.isCurrent()) return current;
             const next = current.map((item) => item.id === cache.id && item.tripUpdatedAt === cache.tripUpdatedAt
               ? { ...item, trip: resolution.cache.trip, tripUpdatedAt: resolution.cache.tripUpdatedAt }
               : item);
@@ -248,27 +325,27 @@ export default function TravelPage() {
       }
       setNotice(`${cache.gcCode} is saved on this device. Account sync could not catch up yet.`);
     } catch {
-      setNotice("Trip changes are saved on this device. Account sync will retry when Mysteries opens.");
+      if (session.isCurrent()) setNotice("Trip changes are saved on this device. Account sync will retry when Mysteries opens.");
     }
   }
 
   useEffect(() => {
     let localCaches: TravelCache[] = [];
     try {
-      const storedCaches = normalizedCaches(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "[]"));
+      const storedCaches = normalizedCaches(readTravelStorage(localStorage, session).caches);
       preservedSharedCaches.current = storedCaches.filter((cache) => Boolean(cache.sharedBy));
       localCaches = storedCaches.filter((cache) => !cache.sharedBy);
     } catch {
-      localStorage.removeItem(STORAGE_KEY);
+      // Storage may be disabled; do not fall back to another account's copy.
     }
     latestCaches.current = localCaches;
     setCaches(localCaches);
     setReady(true);
 
     let active = true;
-    void apiFetch<{ mysteries: OwnedMysterySnapshot[]; deletedClientIds: string[] }>("/mysteries/owned")
+    void apiFetch<{ mysteries: OwnedMysterySnapshot[]; deletedClientIds: string[] }>("/mysteries/owned", { signal: session.signal, headers: { "X-Geostats-Account-Id": session.userId } })
       .then(({ mysteries, deletedClientIds }) => {
-        if (!active) return;
+        if (!active || !session.isCurrent()) return;
         const deleted = new Set(Array.isArray(deletedClientIds) ? deletedClientIds : []);
         const deviceCaches = latestCaches.current;
         const localById = new Map(deviceCaches.map((cache) => [cache.id, cache]));
@@ -299,38 +376,39 @@ export default function TravelPage() {
         // The planner stays usable from its browser copy while offline.
       });
     return () => { active = false; };
-  }, []);
+  }, [session]);
 
   useEffect(() => {
     let active = true;
-    void apiFetch<TravelPoolSummary>("/map/travel-pool")
+    void apiFetch<TravelPoolSummary>("/map/travel-pool", { signal: session.signal, headers: { "X-Geostats-Account-Id": session.userId } })
       .then((summary) => {
-        if (active) setPoolSummary(summary);
+        if (active && session.isCurrent()) setPoolSummary(summary);
       })
       .catch(() => undefined)
       .finally(() => {
-        if (active) setPoolLoading(false);
+        if (active && session.isCurrent()) setPoolLoading(false);
       });
     return () => { active = false; };
-  }, []);
+  }, [session]);
 
   useEffect(() => {
     try {
-      setSavedPlans(validSavedPlans(JSON.parse(localStorage.getItem(TRAVEL_PLAN_STORAGE_KEY) ?? "[]")));
+      setSavedPlans(validSavedPlans(readTravelStorage(localStorage, session).plans));
+      setLegacyPlansPresent(hasLegacyTravelPlans(localStorage, session));
     } catch {
-      localStorage.removeItem(TRAVEL_PLAN_STORAGE_KEY);
+      // Storage may be disabled; legacy plans remain unread.
     }
     setPlansReady(true);
-  }, []);
+  }, [session]);
 
   useEffect(() => {
-    if (!plansReady) return;
+    if (!plansReady || !session.isCurrent()) return;
     try {
-      localStorage.setItem(TRAVEL_PLAN_STORAGE_KEY, JSON.stringify(savedPlans));
+      localStorage.setItem(session.keys.plans, JSON.stringify(savedPlans));
     } catch {
       setNotice("Browser storage is full. The last travel plan could not be saved.");
     }
-  }, [plansReady, savedPlans]);
+  }, [plansReady, savedPlans, session]);
 
   useEffect(() => {
     if (!ready) return;
@@ -339,11 +417,11 @@ export default function TravelPage() {
     } catch {
       setNotice("Browser storage is full. The last trip change could not be saved.");
     }
-  }, [caches, ready]);
+  }, [caches, ready, session]);
 
   useEffect(() => {
     const receiveStorageUpdate = (event: StorageEvent) => {
-      if (event.key !== STORAGE_KEY || !event.newValue) return;
+      if (!session.isCurrent() || event.key !== session.keys.caches || !event.newValue) return;
       try {
         const updatedCaches = normalizedCaches(JSON.parse(event.newValue));
         preservedSharedCaches.current = updatedCaches.filter((cache) => Boolean(cache.sharedBy));
@@ -356,9 +434,10 @@ export default function TravelPage() {
     };
     window.addEventListener("storage", receiveStorageUpdate);
     return () => window.removeEventListener("storage", receiveStorageUpdate);
-  }, []);
+  }, [session]);
 
   function saveAssignments(nextCaches: TravelCache[], message: string) {
+    if (!session.isCurrent()) return;
     latestCaches.current = nextCaches;
     setCaches(nextCaches);
     try {
@@ -383,6 +462,7 @@ export default function TravelPage() {
 
   async function findCaches(event: FormEvent) {
     event.preventDefault();
+    if (!session.isCurrent()) return;
     setSearchError("");
     if (origin.trim().length < 2) {
       setSearchError(searchMode === "nearby" ? "Enter the place you are starting from." : "Enter a starting point.");
@@ -394,6 +474,7 @@ export default function TravelPage() {
     }
     setSearching(true);
     try {
+      if (!await confirmSession()) return;
       const mysteryCaches = caches.flatMap((cache) => {
         if (cache.status === "archived") return [];
         const coordinate = finalTravelCoordinate(cache);
@@ -410,6 +491,8 @@ export default function TravelPage() {
       });
       const result = await apiFetch<TravelSearchResult>("/map/travel-search", {
         method: "POST",
+        signal: session.signal,
+        headers: { "X-Geostats-Account-Id": session.userId },
         body: JSON.stringify({
           mode: searchMode,
           origin: origin.trim(),
@@ -429,17 +512,19 @@ export default function TravelPage() {
           } : undefined
         })
       });
+      if (!session.isCurrent()) return;
       setSearchResult(result);
       setSelectedRecommendations(new Set(result.recommendations.filter((cache) => !cache.found).map((cache) => cache.id)));
       setPlanName(searchMode === "route"
         ? `${shortPlace(result.origin.label)} to ${shortPlace(result.destination?.label ?? destination)}`
         : shortPlace(result.origin.label));
     } catch (error) {
+      if (!session.isCurrent()) return;
       setSearchResult(null);
       setSelectedRecommendations(new Set());
       setSearchError(error instanceof Error ? error.message : "The cache search failed. Try again.");
     } finally {
-      setSearching(false);
+      if (session.isCurrent()) setSearching(false);
     }
   }
 
@@ -453,6 +538,7 @@ export default function TravelPage() {
   }
 
   function saveRecommendedPlan() {
+    if (!session.isCurrent()) return;
     const name = normalizedTripName(planName);
     const selected = searchResult?.recommendations.filter((cache) => selectedRecommendations.has(cache.id)) ?? [];
     if (!name) {
@@ -480,6 +566,7 @@ export default function TravelPage() {
   }
 
   function deleteSavedPlan(plan: SavedTravelPlan) {
+    if (!session.isCurrent()) return;
     if (!window.confirm(`Remove ${plan.name}?`)) return;
     setSavedPlans((current) => current.filter(({ id }) => id !== plan.id));
     setNotice(`${plan.name} removed`);
@@ -620,6 +707,10 @@ export default function TravelPage() {
           <Link className="secondary-button" href="/mysteries"><Puzzle size={17} /> Open mysteries</Link>
         </div>
       </header>
+
+      {legacyPlansPresent && <section className="panel" role="status">
+        Earlier travel plans are still stored in this browser. Their account ownership cannot be verified, so they are not loaded here. Keep this browser's data if you need those plans; new plans are saved separately for your signed-in account.
+      </section>}
 
       <section className="travel-summary" aria-label="Travel overview">
         <div><Navigation size={19} /><span><small>Saved plans</small><strong>{savedPlans.length}</strong></span></div>

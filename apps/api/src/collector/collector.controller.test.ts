@@ -12,6 +12,7 @@ import {
   normalizeFinderCountryRows,
   parseReceivedLogsCsv,
   rawFromInput,
+  RECEIVED_LOG_MAX_ROWS,
   trustedBaseUrl,
 } from "./collector.controller";
 
@@ -1091,4 +1092,54 @@ test("projectGcFinderCountries rejects empty rows before clearing data", async (
     BadRequestException,
   );
   assert.equal(transactionCalled, false);
+});
+
+
+test("owner-log JSON row limits reject before normalization and database reads", async () => {
+  const controller = new CollectorController({} as any, {} as any);
+  const normalizeTrap = Object.defineProperty({}, "gcCode", { get: () => { throw new Error("normalization ran"); } });
+  for (const body of [
+    { logs: Array(RECEIVED_LOG_MAX_ROWS + 1).fill(normalizeTrap) },
+    { caches: Array(RECEIVED_LOG_MAX_ROWS + 1).fill(normalizeTrap) },
+    { logs: Array(RECEIVED_LOG_MAX_ROWS).fill(normalizeTrap), caches: [normalizeTrap] }
+  ]) {
+    await assert.rejects(() => (controller as any).importReceivedLogsForUser("user-1", body), /Too many owner-log rows/);
+  }
+});
+
+test("owner-log CSV caps rows before building input records", () => {
+  assert.throws(() => parseReceivedLogsCsv("gcCode,date,finder\n" + "GC123,2024-01-15,Finder\n".repeat(RECEIVED_LOG_MAX_ROWS + 1)), /Too many owner-log rows/);
+  assert.equal(parseReceivedLogsCsv("gcCode,date,finder\n" + "GC123,2024-01-15,Finder\n".repeat(RECEIVED_LOG_MAX_ROWS)).length, RECEIVED_LOG_MAX_ROWS);
+});
+
+test("owner-log grouping accepts a full same-cache batch and preserves row order", async () => {
+  const date = new Date("2024-01-01T00:00:00Z");
+  const hide = { id: "hide-1", cacheId: "cache-1", updatedAt: date, receivedLogsRaw: {}, cache: { gcCode: "GC123", updatedAt: date, userData: [] } };
+  let written: unknown;
+  const tx = { hide: {
+    findFirst: async () => hide,
+    updateMany: async ({ data }: any) => { written = data.receivedLogsRaw; return { count: 1 }; }
+  } };
+  const controller = new CollectorController({
+    hide: { findMany: async () => [hide] },
+    $transaction: async (run: any) => run(tx)
+  } as any, { buildSnapshotForUser: async () => ({}), replaceSnapshotForUser: async () => ({}) } as any);
+  const logs = Array.from({ length: RECEIVED_LOG_MAX_ROWS }, (_, index) => ({ gcCode: "GC123", date: "2024-01-15", finder: `Finder ${index}`, logId: String(index) }));
+  const result = await (controller as any).importReceivedLogsForUser("user-1", { logs });
+  assert.equal(result.added, RECEIVED_LOG_MAX_ROWS);
+  const stored = cacheLogs(written);
+  assert.equal(stored.length, RECEIVED_LOG_MAX_ROWS);
+  assert.equal(stored[0]?.["geostats:log_id"], "0");
+  assert.equal(stored.at(-1)?.["geostats:log_id"], String(RECEIVED_LOG_MAX_ROWS - 1));
+});
+
+
+test("owner-log CSV stops parsing at the row cap before an invalid suffix", () => {
+  assert.throws(() => parseReceivedLogsCsv("gcCode,date,finder\n" + "GC123,2024-01-15,Finder\n".repeat(RECEIVED_LOG_MAX_ROWS) + '\"unterminated'), /Too many owner-log rows/);
+});
+
+test("owner-log CSV allows a full batch with blank records before between and after logs", () => {
+  const csv = '\n  , ,\r\ngcCode,date,finder\n' + 'GC123,2024-01-15,Finder\n\n"  ","\t",\r\n'.repeat(RECEIVED_LOG_MAX_ROWS) + '\n';
+  assert.equal(parseReceivedLogsCsv(csv).length, RECEIVED_LOG_MAX_ROWS);
+  assert.throws(() => parseReceivedLogsCsv(csv + '"unterminated'), /Too many owner-log rows/);
 });

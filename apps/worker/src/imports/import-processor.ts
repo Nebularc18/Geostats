@@ -1,6 +1,8 @@
-import { Cache, calculateUserStats, PrismaClient, Prisma } from "@geostats/db";
+import { Cache, calculateUserStats, privateCacheRaw, PrismaClient, Prisma } from "@geostats/db";
 import { DEFAULT_FTF_DETECTION_TERMS, detectFtfLog, parseImportFile, termRegex as ftfTermRegex } from "@geostats/gpx-parser";
-import { ImportFileType, ImportJobPayload, ImportSource, ImportStatus, canonicalCacheTypeName } from "@geostats/shared";
+import { ImportFileType, ImportJobPayload, ImportSource, ImportStatus } from "@geostats/shared";
+import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { ObjectStorage } from "../storage/object-storage";
 
 type ParsedImportResult = Awaited<ReturnType<typeof parseImportFile>>;
@@ -235,11 +237,13 @@ export class ImportProcessor {
         importRecord.fileType === ImportFileType.ZIP && parsed.finds.length > 0
           ? ImportSource.MY_FINDS_GPX
           : importSource;
-      const cachesByCode = await this.resolveCaches(
-        payload.userId,
-        [...parsed.caches, ...parsed.finds.map((find) => find.cache)]
-      );
-      let shouldRecalculateStats = importRecord.source === ImportSource.MY_HIDES_GPX && parsed.caches.length > 0;
+      const incomingCaches = [...parsed.caches, ...parsed.finds.map((find) => find.cache)];
+      // Earlier attempts may have committed metadata before failing to rebuild
+      // stats (or before finishing cache resolution). Retry that derived work.
+      let shouldRecalculateStats = attempt.attemptsMade > 0;
+      const cachesByCode = await this.resolveCaches(payload.userId, incomingCaches, () => {
+        shouldRecalculateStats = true;
+      });
 
       await this.prisma.$transaction(async (tx) => {
         const parsedCaches =
@@ -250,13 +254,17 @@ export class ImportProcessor {
           const cache = this.cacheFor(cachesByCode, parsedCache.gcCode);
 
           if (importRecord.source === ImportSource.MY_HIDES_GPX) {
-            const [currentHide] = await tx.$queryRaw<Array<{ receivedLogsRaw: Prisma.JsonValue | null }>>(Prisma.sql`
-              SELECT "received_logs_raw" AS "receivedLogsRaw"
+            const [currentHide] = await tx.$queryRaw<Array<{ receivedLogsRaw: Prisma.JsonValue | null; placedAt: Date | null; receivedLogCount: number }>>(Prisma.sql`
+              SELECT "received_logs_raw" AS "receivedLogsRaw", "placed_at" AS "placedAt", "received_log_count" AS "receivedLogCount"
               FROM "hides"
               WHERE "user_id" = ${payload.userId} AND "cache_id" = ${cache.id}
               FOR UPDATE
             `);
             const merged = mergedHideRaw(parsedCache.raw, currentHide?.receivedLogsRaw);
+            if (!currentHide || currentHide.placedAt?.getTime() !== parsedCache.hiddenDate?.getTime()
+              || currentHide.receivedLogCount !== merged.count || !isDeepStrictEqual(currentHide.receivedLogsRaw, JSON.parse(JSON.stringify(merged.raw)))) {
+              shouldRecalculateStats = true;
+            }
             await tx.hide.upsert({
               where: {
                 userId_cacheId: {
@@ -414,25 +422,16 @@ export class ImportProcessor {
     const gcCode = String(cache.gcCode).trim().toUpperCase();
     return {
       gcCode,
-      name: cache.name,
-      // Canonicalize so GPX full names ("Unknown Cache") and GSAK short
-      // names ("Mystery") land on one stored value and stay linked.
-      cacheType: canonicalCacheTypeName(cache.cacheType),
-      difficulty: cache.difficulty,
-      terrain: cache.terrain,
-      size: cache.size,
-      latitude: cache.latitude,
-      longitude: cache.longitude,
-      country: cache.country,
-      region: cache.region,
-      county: cache.county,
-      hiddenDate: cache.hiddenDate,
-      ownerName: cache.ownerName,
-      metadataTrusted: true
+      // Personal uploads establish identity only. Administrators enrich the
+      // shared catalog; uploaded metadata stays in userCacheData.raw.
+      name: gcCode,
+      latitude: 0,
+      longitude: 0,
+      metadataTrusted: false
     };
   }
 
-  private async resolveCaches(userId: string, caches: any[]): Promise<Map<string, Cache>> {
+  private async resolveCaches(userId: string, caches: any[], onMetadataChanged: () => void = () => {}): Promise<Map<string, Cache>> {
     const uniqueCaches = new Map<string, any>();
     for (const cache of caches) {
       const gcCode = String(cache.gcCode).trim().toUpperCase();
@@ -455,7 +454,7 @@ export class ImportProcessor {
 
         const cache = uniqueCacheValues[index];
         try {
-          resolvedCaches[index] = [cache.gcCode, await this.findOrCreateCache(userId, cache)];
+          resolvedCaches[index] = [cache.gcCode, await this.findOrCreateCache(userId, cache, onMetadataChanged)];
         } catch (error) {
           if (!failed) {
             failed = true;
@@ -480,7 +479,7 @@ export class ImportProcessor {
     }
   }
 
-  private async findOrCreateCache(userId: string, cache: any): Promise<Cache> {
+  private async findOrCreateCache(userId: string, cache: any, onMetadataChanged: () => void = () => {}): Promise<Cache> {
     const create = this.cacheCreateInput(cache);
     let resolved: Cache;
     try {
@@ -496,19 +495,19 @@ export class ImportProcessor {
         throw error;
       }
     }
-    if (resolved.metadataTrusted === false) {
-      // A normal import can repair placeholders, but cannot replace established metadata.
-      await this.prisma.cache.updateMany({
-        where: { id: resolved.id, metadataTrusted: false },
-        data: create
-      });
-      resolved = await this.findExistingCache(cache.gcCode);
-    }
-    await this.prisma.userCacheData.upsert({
-      where: { userId_cacheId: { userId, cacheId: resolved.id } },
-      create: { userId, cacheId: resolved.id, raw: cache.raw as Prisma.InputJsonValue },
-      update: { raw: cache.raw as Prisma.InputJsonValue }
-    });
+    const raw = JSON.stringify(privateCacheRaw(cache.raw, cache));
+    // PostgreSQL compares against the locked row at the actual write, so an
+    // overlapping import cannot make an earlier comparison stale. JSONB equality
+    // also ignores key order. Identical imports perform no metadata update.
+    const changed = await this.prisma.$queryRaw<Array<{ cacheId: string }>>(Prisma.sql`
+      INSERT INTO "user_cache_data" ("id", "user_id", "cache_id", "raw", "created_at", "updated_at")
+      VALUES (${randomUUID()}, ${userId}, ${resolved.id}, ${raw}::jsonb, NOW(), NOW())
+      ON CONFLICT ("user_id", "cache_id") DO UPDATE
+      SET "raw" = EXCLUDED."raw", "updated_at" = NOW()
+      WHERE "user_cache_data"."raw" IS DISTINCT FROM EXCLUDED."raw"
+      RETURNING "cache_id" AS "cacheId"
+    `);
+    if (changed.length > 0) onMetadataChanged();
     return resolved;
   }
 

@@ -53,6 +53,10 @@ let statsSummaryGeneration = 0;
 let statsSummarySessionEpoch = 0;
 let lastImportStatuses: Map<string, string> | null = null;
 
+export function getApiSessionEpoch() {
+  return statsSummarySessionEpoch;
+}
+
 function statsSummaryKey() {
   return `${API_URL}|${statsSummaryAccountKey ?? "session"}`;
 }
