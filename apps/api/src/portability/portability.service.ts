@@ -6,7 +6,7 @@ import {
   OnModuleInit,
   ServiceUnavailableException,
 } from "@nestjs/common";
-import { Prisma } from "@geostats/db";
+import { Prisma, privateCacheRaw } from "@geostats/db";
 import {
   AuthUser,
   ImportFileType,
@@ -17,6 +17,7 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { PrismaService } from "../common/prisma.service";
 import { StorageService } from "../storage/storage.service";
+import { MAX_ELEVATION_METERS, MAX_ELEVATION_TEXT_LENGTH, MIN_ELEVATION_METERS } from "../common/elevation";
 
 const FORMAT = "geostats-portable-data";
 const VERSION = 1;
@@ -158,6 +159,26 @@ function batches<T>(values: T[]): T[][] {
   return result;
 }
 
+function normalizedCacheRaw(raw: unknown, label: string): unknown {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return raw;
+  const record = raw as Record<string, unknown>;
+  if (record.ele == null) return raw;
+  const wrapped = typeof record.ele === "object" && !Array.isArray(record.ele);
+  const value = wrapped ? (record.ele as Record<string, unknown>).text : record.ele;
+  if (
+    (typeof value !== "number" && typeof value !== "string") ||
+    (typeof value === "string" && (!value.trim() || value.length > MAX_ELEVATION_TEXT_LENGTH)) ||
+    !Number.isFinite(Number(value)) ||
+    Number(value) < MIN_ELEVATION_METERS || Number(value) > MAX_ELEVATION_METERS
+  ) {
+    throw new BadRequestException(`${label}.ele must be a finite elevation between ${MIN_ELEVATION_METERS} and ${MAX_ELEVATION_METERS} metres`);
+  }
+  return {
+    ...record,
+    ele: wrapped ? { ...(record.ele as Record<string, unknown>), text: Number(value) } : Number(value),
+  };
+}
+
 export function parsePortableArchive(input: Buffer | string): PortableArchive {
   let raw: unknown;
   try {
@@ -211,7 +232,10 @@ export function parsePortableArchive(input: Buffer | string): PortableArchive {
     data: {
       profile:
         data.profile === null ? null : object(data.profile, "data.profile"),
-      caches: records(recordArrays.caches, "data.caches"),
+      caches: records(recordArrays.caches, "data.caches").map((cache, index) => ({
+        ...cache,
+        raw: normalizedCacheRaw(cache.raw, `data.caches[${index}].raw`),
+      })),
       finds: records(recordArrays.finds, "data.finds"),
       hides: records(recordArrays.hides, "data.hides"),
       correctedCoordinates: records(
@@ -567,7 +591,7 @@ export class PortabilityService implements OnModuleInit, OnModuleDestroy {
           for (const [index, cache] of data.caches.entries()) {
             const gcCode = text(cache.gcCode, `caches[${index}].gcCode`, 40).toUpperCase();
             const id = cacheId(gcCode, `caches[${index}].gcCode`);
-            const raw = cache.raw == null ? Prisma.JsonNull : (cache.raw as Prisma.InputJsonValue);
+            const raw = privateCacheRaw(cache.raw, cache) as Prisma.InputJsonValue;
             await tx.userCacheData.upsert({
               where: { userId_cacheId: { userId: user.id, cacheId: id } },
               create: { userId: user.id, cacheId: id, raw },

@@ -54,17 +54,11 @@ export class AuthService {
     return "password";
   }
 
-  isAdmin(user: Pick<AuthUser, "email">): boolean {
+  isAdmin(user: Pick<AuthUser, "id" | "email">): boolean {
+    const configuredIds = (process.env.ADMIN_USER_IDS ?? "").split(",").map((value) => value.trim()).filter(Boolean);
+    if (configuredIds.includes(user.id)) return true;
     const email = user.email.trim().toLowerCase();
-    const configuredAdmins = (process.env.ADMIN_EMAILS ?? "")
-      .split(",")
-      .map((value) => value.trim().toLowerCase())
-      .filter(Boolean);
-
-    if (configuredAdmins.includes(email)) {
-      return true;
-    }
-
+    // Email addresses asserted by callers or old tokens never grant privileges.
     return this.authMode() === "dev" && email === envOrDefault("DEV_AUTH_EMAIL", "dev@local.geostats").trim().toLowerCase();
   }
 

@@ -23,6 +23,7 @@ export class AuthGuard implements CanActivate {
     if (!token) {
       if (this.auth.authMode() === "dev") {
         request.user = await this.auth.devUser();
+        this.assertExpectedAccount(request);
         return true;
       }
       throw new UnauthorizedException("Authentication required");
@@ -33,6 +34,14 @@ export class AuthGuard implements CanActivate {
     } catch {
       throw new UnauthorizedException("Invalid or expired token");
     }
+    this.assertExpectedAccount(request);
     return true;
+  }
+
+  private assertExpectedAccount(request: AuthenticatedRequest) {
+    const expected = request.headers["x-geostats-account-id"];
+    if (expected !== undefined && expected !== request.user.id) {
+      throw new UnauthorizedException("Account changed; reload before continuing");
+    }
   }
 }

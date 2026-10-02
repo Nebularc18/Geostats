@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   apiFetch,
+  getApiSessionEpoch,
   getStatsSummary,
   invalidateStatsSummaryCache,
   setStatsSummaryAccount,
@@ -41,6 +42,15 @@ function useAccount(accountId: string) {
 test.afterEach(() => {
   setStatsSummaryAccount(null);
   invalidateStatsSummaryCache();
+});
+
+test("the exposed session epoch changes with accounts, but not ordinary cache invalidation", () => {
+  useAccount("travel-session-alice");
+  const epoch = getApiSessionEpoch();
+  invalidateStatsSummaryCache();
+  assert.equal(getApiSessionEpoch(), epoch);
+  setStatsSummaryAccount("travel-session-bob");
+  assert.ok(getApiSessionEpoch() > epoch);
 });
 
 test("deduplicates concurrent summary requests and reuses a fresh session cache", async () => {

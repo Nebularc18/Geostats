@@ -1,6 +1,6 @@
-import { Cache, calculateUserStats, PrismaClient, Prisma } from "@geostats/db";
+import { Cache, calculateUserStats, privateCacheRaw, PrismaClient, Prisma } from "@geostats/db";
 import { DEFAULT_FTF_DETECTION_TERMS, detectFtfLog, parseImportFile, termRegex as ftfTermRegex } from "@geostats/gpx-parser";
-import { ImportFileType, ImportJobPayload, ImportSource, ImportStatus, canonicalCacheTypeName } from "@geostats/shared";
+import { ImportFileType, ImportJobPayload, ImportSource, ImportStatus } from "@geostats/shared";
 import { ObjectStorage } from "../storage/object-storage";
 
 type ParsedImportResult = Awaited<ReturnType<typeof parseImportFile>>;
@@ -414,21 +414,12 @@ export class ImportProcessor {
     const gcCode = String(cache.gcCode).trim().toUpperCase();
     return {
       gcCode,
-      name: cache.name,
-      // Canonicalize so GPX full names ("Unknown Cache") and GSAK short
-      // names ("Mystery") land on one stored value and stay linked.
-      cacheType: canonicalCacheTypeName(cache.cacheType),
-      difficulty: cache.difficulty,
-      terrain: cache.terrain,
-      size: cache.size,
-      latitude: cache.latitude,
-      longitude: cache.longitude,
-      country: cache.country,
-      region: cache.region,
-      county: cache.county,
-      hiddenDate: cache.hiddenDate,
-      ownerName: cache.ownerName,
-      metadataTrusted: true
+      // Personal uploads establish identity only. Administrators enrich the
+      // shared catalog; uploaded metadata stays in userCacheData.raw.
+      name: gcCode,
+      latitude: 0,
+      longitude: 0,
+      metadataTrusted: false
     };
   }
 
@@ -496,18 +487,11 @@ export class ImportProcessor {
         throw error;
       }
     }
-    if (resolved.metadataTrusted === false) {
-      // A normal import can repair placeholders, but cannot replace established metadata.
-      await this.prisma.cache.updateMany({
-        where: { id: resolved.id, metadataTrusted: false },
-        data: create
-      });
-      resolved = await this.findExistingCache(cache.gcCode);
-    }
+    const raw = privateCacheRaw(cache.raw, cache) as Prisma.InputJsonValue;
     await this.prisma.userCacheData.upsert({
       where: { userId_cacheId: { userId, cacheId: resolved.id } },
-      create: { userId, cacheId: resolved.id, raw: cache.raw as Prisma.InputJsonValue },
-      update: { raw: cache.raw as Prisma.InputJsonValue }
+      create: { userId, cacheId: resolved.id, raw },
+      update: { raw }
     });
     return resolved;
   }

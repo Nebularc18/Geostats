@@ -149,3 +149,105 @@ test("uses imported location choices when catalog providers are unavailable", as
   assert.deepEqual(await service.locationCatalogForUser("user-1", "Norway", undefined), { regions: ["Vestland"], counties: [] });
   assert.deepEqual(await service.locationCatalogForUser("user-1", "Norway", "Vestland"), { regions: [], counties: ["Bergen", "Voss"] });
 });
+
+
+function filterRule(filter: Record<string, unknown>) {
+  return { type: "PROJECT_GC_NUMBER", minimum: 1, filters: [filter] };
+}
+
+test("creation and updates reject oversized text and numeric filter lists before writing", async () => {
+  let writes = 0;
+  const service = new ChallengeCheckersService({ challengeChecker: {
+    findFirst: async () => ({ id: "checker", userId: "owner" }),
+    create: async () => { writes++; }, update: async () => { writes++; }
+  } } as any, {} as any);
+  for (const key of ["countries", "regions", "counties", "cacheTypeIds", "excludedCacheTypeIds", "sizes", "difficulties", "terrains"]) {
+    const rule = filterRule({ [key]: Array(257).fill(["difficulties", "terrains"].includes(key) ? 1 : "nonmatching") });
+    await assert.rejects(service.create("owner", { name: "Bounded", gcCode: "GC123", rules: [rule] }), /Invalid .* filter/);
+    await assert.rejects(service.update("owner", "checker", { rules: [rule] }), /Invalid .* filter/);
+  }
+  assert.equal(writes, 0);
+});
+
+test("multiple individually bounded filters cannot evade total checker complexity limits", async () => {
+  const service = new ChallengeCheckersService({} as any, {} as any);
+  const rules = Array.from({ length: 5 }, () => filterRule({ countries: Array(256).fill("nonmatching") }));
+  await assert.rejects(service.create("owner", { name: "Bounded", gcCode: "GC123", rules }), /total checker complexity/);
+});
+
+test("oversized persisted rules are rejected on owned and public runs before loading finds", async () => {
+  let queriedFinds = false;
+  const checker = { id: "checker", userId: "owner", rules: [filterRule({ countries: Array(257).fill("nonmatching") })] };
+  const service = new ChallengeCheckersService({
+    challengeChecker: { findFirst: async () => checker },
+    find: { findMany: async () => { queriedFinds = true; return []; } }
+  } as any, {} as any);
+  await assert.rejects(service.runOwned("owner", "checker"), /Invalid countries filter/);
+  await assert.rejects(service.runPublic("published"), /Invalid countries filter/);
+  assert.equal(queriedFinds, false);
+});
+
+test("bounded filters with a large history reject excessive evaluation work before mapping finds", async () => {
+  const checker = { id: "checker", userId: "owner", rules: [filterRule({ countries: Array(256).fill("nonmatching") })] };
+  const service = new ChallengeCheckersService({
+    challengeChecker: { findFirst: async () => checker },
+    geocachingProfile: { findUnique: async () => ({ gcUsername: "Owner" }) },
+    // Invalid find objects would throw if evaluation were reached.
+    find: { findMany: async () => Array(4_000).fill(null) }
+  } as any, {} as any);
+  await assert.rejects(service.runOwned("owner", "checker"), /evaluation exceeds the work limit/);
+  await assert.rejects(service.runPublic("published"), /evaluation exceeds the work limit/);
+});
+
+test("ordinary Project-GC filters continue to be persisted", async () => {
+  let saved: any;
+  const service = new ChallengeCheckersService({ challengeChecker: { create: async ({ data }: any) => { saved = data; return data; } } } as any, {} as any);
+  await service.create("owner", { name: "Normal", gcCode: "GC123", rules: [filterRule({ countries: ["Sweden", "Norway"], difficulties: [1, 1.5, 2] })] });
+  assert.deepEqual(saved.rules[0].filters, [{ countries: ["Sweden", "Norway"], difficulties: [1, 1.5, 2] }]);
+});
+
+
+test("alternate imported rule forms enforce the same filter bounds", async () => {
+  const service = new ChallengeCheckersService({} as any, {} as any);
+  const filters = [{ counties: Array(257).fill("nonmatching") }];
+  const rules = [
+    { type: "CALENDAR_FILL", minimum: 1, perDay: 1, allowLeapDaySkip: false, filters },
+    { type: "DISTINCT_TYPES", minimum: 1, filters },
+    { type: "MONTHLY_ATTRIBUTE", minimum: 1, months: [{ month: 1, minimum: 1 }], overallMinimum: 1, attributeId: "1", attributeLabel: "Dogs", filters, excludedGcCodes: [], excludeSelf: false }
+  ];
+  for (const rule of rules) {
+    await assert.rejects(service.create("owner", { name: "Bounded", gcCode: "GC123", rules: [rule] }), /Invalid counties filter/);
+  }
+  await assert.rejects(service.create("owner", { name: "Bounded", gcCode: "GC123", rules: [{ ...rules[2], filters: [{}], excludedGcCodes: Array(257).fill("GC123") }] }), /Too many excluded GC codes/);
+});
+
+test("empty filters cannot evade the aggregate filter-count bound", async () => {
+  const service = new ChallengeCheckersService({} as any, {} as any);
+  const rules = Array.from({ length: 3 }, () => ({ type: "PROJECT_GC_NUMBER", minimum: 1, filters: Array.from({ length: 50 }, () => ({})) }));
+  await assert.rejects(service.create("owner", { name: "Bounded", gcCode: "GC123", rules }), /total checker complexity/);
+});
+
+
+test("challenge location and execution preserve metadata from the exact user's private import", async () => {
+  let savedQuery: any;
+  const cache = { gcCode: "GCFIND", name: "GCFIND", metadataTrusted: false, latitude: 0, longitude: 0,
+    country: null, region: null, county: null, cacheType: null,
+    userData: [{ raw: { geostatsMetadata: { name: "Private find", latitude: 59, longitude: 18,
+      country: "Sweden", region: "Stockholm", cacheType: "Traditional Cache" } } }] };
+  const checker = { id: "checker", userId: "alice", name: "Sweden", gcCode: "GCTEST", description: null,
+    rules: [{ type: "LOCATION", field: "country", value: "Sweden", minimum: 1 }], publicSlug: null,
+    publishedAt: null, updatedAt: new Date() };
+  const service = new ChallengeCheckersService({
+    challengeChecker: { findFirst: async () => checker },
+    geocachingProfile: { findUnique: async () => ({ gcUsername: "Alice", timeZone: "Europe/Stockholm" }) },
+    find: { findMany: async (query: any) => { savedQuery = query; return [{ cache, foundAt: new Date(), foundDate: new Date() }]; } },
+    import: { findFirst: async () => null }
+  } as any, {} as any);
+  const locations = await service.locationsForUser("alice");
+  assert.equal(locations[0].name, "Sweden");
+  assert.deepEqual(savedQuery.select.cache.select.userData.where, { userId: "alice" });
+  const result = await service.runOwned("alice", "checker");
+  assert.equal(result.passed, true);
+  assert.equal(result.rules[0].evidence[0].name, "Private find");
+  assert.deepEqual(savedQuery.include.cache.include.userData.where, { userId: "alice" });
+});

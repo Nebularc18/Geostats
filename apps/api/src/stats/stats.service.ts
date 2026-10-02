@@ -1,10 +1,11 @@
 import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
-import { calculateUserStats, countableFindWhere, Prisma } from "@geostats/db";
+import { calculateUserStats, countableFindWhere, personalCacheMetadata, Prisma } from "@geostats/db";
 import { normalizedGcUsername, STATS_VERSION } from "@geostats/stats";
 import { PrismaService } from "../common/prisma.service";
 import { countryExtremes, CountryExtremeEntry } from "./country-extremes";
 import { swedenRegionExtremes } from "./sweden-region-extremes";
 import { friendComparisonStats } from "./friend-comparison";
+import { MAX_ELEVATION_METERS, MAX_ELEVATION_TEXT_LENGTH, MIN_ELEVATION_METERS } from "../common/elevation";
 
 const DEFAULT_FTF_FIND_LIMIT = 100;
 const MAX_FTF_FIND_LIMIT = 200;
@@ -29,6 +30,8 @@ type FtfFindRow = {
     size: string | null;
     country: string | null;
     region: string | null;
+    metadataTrusted?: boolean;
+    userData?: Array<{ raw: unknown }>;
   };
 };
 
@@ -93,7 +96,7 @@ function toExtremeCache(row: ExtremeCacheRow, foundCacheIds: Set<string>): Extre
   };
 }
 
-function elevationExtremeSql(direction: "ASC" | "DESC", region: string | null): string {
+export function elevationExtremeSql(direction: "ASC" | "DESC", region: string | null): string {
   return `
   WITH candidates AS (
     SELECT u."cache_id" AS cache_id,
@@ -104,10 +107,19 @@ function elevationExtremeSql(direction: "ASC" | "DESC", region: string | null): 
     FROM "user_cache_data" u
     WHERE jsonb_typeof(u."raw") = 'object' AND jsonb_exists(u."raw", 'ele')
   ),
-  valid AS (
-    SELECT cache_id, MAX(CAST(ele_text AS double precision)) AS elevation
+  converted AS (
+    SELECT cache_id,
+           CASE WHEN length(ele_text) <= ${MAX_ELEVATION_TEXT_LENGTH}
+                     AND ele_text ~ '^-?[0-9]+([.][0-9]+)?$'
+                THEN CAST(ele_text AS double precision)
+                ELSE NULL
+           END AS elevation
     FROM candidates
-    WHERE ele_text ~ '^-?[0-9]+([.][0-9]+)?$'
+  ),
+  valid AS (
+    SELECT cache_id, MAX(elevation) AS elevation
+    FROM converted
+    WHERE elevation BETWEEN ${MIN_ELEVATION_METERS} AND ${MAX_ELEVATION_METERS}
     GROUP BY cache_id
   )
   SELECT c."id"::text AS id, c."gc_code" AS "gcCode", c."name" AS name,
@@ -411,12 +423,13 @@ export class StatsService {
     const firstHomeFind = await this.prisma.find.findFirst({
       where: {
         ...countableFindWhere(userId, normalizedGcUsername(profile)),
-        cache: { country: { not: null } }
+        cache: { OR: [{ country: { not: null } }, { metadataTrusted: false, userData: { some: { userId } } }] }
       },
       orderBy: [{ foundAt: "asc" }, { id: "asc" }],
-      select: { cache: { select: { country: true } } }
+      select: { cache: { select: { country: true, metadataTrusted: true, userData: { where: { userId }, take: 1, select: { raw: true } } } } }
     });
-    const homeCountry = firstHomeFind?.cache.country?.trim() || null;
+    const homeCache = firstHomeFind ? { ...firstHomeFind.cache, ...personalCacheMetadata(firstHomeFind.cache, firstHomeFind.cache.userData?.[0]?.raw) } : null;
+    const homeCountry = homeCache?.country?.trim() || null;
 
     const [northernmost, southernmost, easternmost, westernmost, oldest] = await Promise.all([
       this.prisma.cache.findFirst({
@@ -503,7 +516,9 @@ export class StatsService {
               terrain: true,
               size: true,
               country: true,
-              region: true
+              region: true,
+              metadataTrusted: true,
+              userData: { where: { userId }, take: 1, select: { raw: true } }
             }
           }
         },
@@ -517,7 +532,11 @@ export class StatsService {
       }
       throw error;
     }
-    const page = finds.slice(0, limit);
+    const effectiveFinds = finds.map((find) => ({ ...find, cache: {
+      ...find.cache,
+      ...personalCacheMetadata(find.cache, find.cache.userData?.[0]?.raw)
+    } })).filter((find) => !gcUsername || !find.cache.ownerName || find.cache.ownerName.trim().toLowerCase() !== gcUsername);
+    const page = effectiveFinds.slice(0, limit);
 
     return {
       finds: page.map((find) => ({
@@ -536,7 +555,7 @@ export class StatsService {
           region: find.cache.region
         }
       })),
-      nextCursor: finds.length > limit ? (page.at(-1)?.id ?? null) : null
+      nextCursor: finds.length > limit ? (effectiveFinds.length > limit ? page.at(-1)?.id : finds.at(-1)?.id) ?? null : null
     };
   }
 

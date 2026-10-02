@@ -2,7 +2,39 @@ import { BadRequestException, NotFoundException } from "@nestjs/common";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { STATS_VERSION } from "@geostats/stats";
-import { StatsService } from "./stats.service";
+import { elevationExtremeSql, StatsService } from "./stats.service";
+
+test("legacy elevation SQL guards conversion inside CASE and bounds terrestrial values", () => {
+  for (const direction of ["ASC", "DESC"] as const) {
+    const sql = elevationExtremeSql(direction, null);
+    assert.match(sql, /CASE WHEN length\(ele_text\) <= 32[\s\S]*THEN CAST\(ele_text AS double precision\)[\s\S]*ELSE NULL/);
+    assert.match(sql, /WHERE elevation BETWEEN -12000 AND 10000/);
+    assert.match(sql, new RegExp(`ORDER BY v.elevation ${direction}`));
+    assert.match(sql, /u\."raw"->'ele'->>'text'/);
+  }
+});
+
+test("FTF rows display only requesting-user metadata on neutral catalog entries", async () => {
+  const neutral = { gcCode: "GC1", name: "GC1", cacheType: null, difficulty: null, terrain: null,
+    size: null, country: null, region: null, metadataTrusted: false };
+  const row = (id: string, owner: string) => ({ id, foundAt: new Date("2024-01-01"), isFtf: true, logText: "Found",
+    cache: { ...neutral, userData: [{ raw: { geostatsMetadata: { name: "Private name", cacheType: "Mystery",
+      difficulty: 2.5, terrain: 3, country: "Sweden", ownerName: owner } } }] }
+  });
+  const prisma = {
+    geocachingProfile: { findUnique: async () => ({ gcUsername: "Alice" }) },
+    find: { findMany: async (query: any) => {
+      assert.deepEqual(query.select.cache.select.userData, { where: { userId: "alice-id" }, take: 1, select: { raw: true } });
+      return [row("own", " ALICE "), row("other", "Bob")];
+    } }
+  };
+  const result = await new StatsService(prisma as any).ftfFindsForUser("alice-id");
+  assert.equal(result.finds.length, 1);
+  assert.equal(result.finds[0].cache.name, "Private name");
+  assert.equal(result.finds[0].cache.cacheType, "Mystery Cache");
+  assert.equal(result.finds[0].cache.country, "Sweden");
+  assert.equal(result.finds[0].cache.gcCode, "GC1");
+});
 
 test("rejects ambiguous case-insensitive geocaching usernames", async () => {
   let latestImportLookups = 0;

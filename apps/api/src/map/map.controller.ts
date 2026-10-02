@@ -1,6 +1,6 @@
 import { BadRequestException, Body, ConflictException, Controller, Get, Post, Query, UseGuards } from "@nestjs/common";
 import { AuthUser } from "@geostats/shared";
-import { countableFindWhere, Prisma } from "@geostats/db";
+import { countableFindWhere, personalCacheMetadata, Prisma } from "@geostats/db";
 import { normalizedGcUsername } from "@geostats/stats";
 import { Type } from "class-transformer";
 import { ArrayMaxSize, IsArray, IsBoolean, IsDateString, IsIn, IsNumber, IsNumberString, IsOptional, IsString, Max, MaxLength, Min, MinLength, ValidateIf, ValidateNested } from "class-validator";
@@ -287,7 +287,7 @@ function mapDateRange(query: MapPointsQueryDto) {
   };
 }
 
-function mapCacheWhere(query: MapPointsQueryDto): Prisma.CacheWhereInput | undefined {
+function mapCacheWhere(query: MapPointsQueryDto, userId: string): Prisma.CacheWhereInput | undefined {
   const filters: Prisma.CacheWhereInput[] = [];
   const text = query.query?.trim();
   if (text) {
@@ -337,12 +337,30 @@ function mapCacheWhere(query: MapPointsQueryDto): Prisma.CacheWhereInput | undef
   if (filters.length === 0) {
     return undefined;
   }
-  return filters.length === 1 ? filters[0] : { AND: filters };
+  const privateFilters: Prisma.UserCacheDataWhereInput[] = [];
+  if (text) privateFilters.push({ OR: [
+    { cache: { gcCode: { contains: text, mode: "insensitive" } } },
+    { raw: { path: ["geostatsMetadata", "name"], string_contains: text, mode: "insensitive" } }
+  ] });
+  for (const [field, value] of exactFields) {
+    if (value?.trim()) privateFilters.push({ raw: { path: ["geostatsMetadata", field], equals: value.trim() } });
+  }
+  for (const [field, min, max] of [["difficulty", difficultyMin, difficultyMax], ["terrain", terrainMin, terrainMax]] as const) {
+    if (min !== undefined || max !== undefined) privateFilters.push({ raw: {
+      path: ["geostatsMetadata", field],
+      ...(min !== undefined ? { gte: min } : {}),
+      ...(max !== undefined ? { lte: max } : {})
+    } });
+  }
+  return { OR: [
+    { AND: [{ metadataTrusted: true }, ...filters] },
+    { metadataTrusted: false, userData: { some: { userId, AND: privateFilters } } }
+  ] };
 }
 
-function findMapWhere(base: Prisma.FindWhereInput, query: MapPointsQueryDto, snapshot: Date): Prisma.FindWhereInput {
+function findMapWhere(base: Prisma.FindWhereInput, query: MapPointsQueryDto, snapshot: Date, userId: string): Prisma.FindWhereInput {
   const conditions: Prisma.FindWhereInput[] = [base, { createdAt: { lte: snapshot } }];
-  const cache = mapCacheWhere(query);
+  const cache = mapCacheWhere(query, userId);
   const dateRange = mapDateRange(query);
   if (cache) {
     conditions.push({ cache });
@@ -353,9 +371,9 @@ function findMapWhere(base: Prisma.FindWhereInput, query: MapPointsQueryDto, sna
   return { AND: conditions };
 }
 
-function hideMapWhere(base: Prisma.HideWhereInput, query: MapPointsQueryDto, snapshot: Date): Prisma.HideWhereInput {
+function hideMapWhere(base: Prisma.HideWhereInput, query: MapPointsQueryDto, snapshot: Date, userId: string): Prisma.HideWhereInput {
   const conditions: Prisma.HideWhereInput[] = [base, { createdAt: { lte: snapshot } }];
-  const cache = mapCacheWhere(query);
+  const cache = mapCacheWhere(query, userId);
   const dateRange = mapDateRange(query);
   if (cache) {
     conditions.push({ cache });
@@ -497,7 +515,7 @@ export class MapController {
     const cursor = query.cursor?.trim() || undefined;
     const snapshotRevision = await this.validateMapSnapshot(user.id, query, cursor);
     const snapshot = mapSnapshot(query.snapshot);
-    const where = findMapWhere(await this.countableFindWhereForUser(user.id), query, snapshot);
+    const where = findMapWhere(await this.countableFindWhereForUser(user.id), query, snapshot, user.id);
     const totalCount = cursor ? undefined : await this.prisma.find.count({ where });
     let finds: any[];
     try {
@@ -520,7 +538,9 @@ export class MapController {
               country: true,
               region: true,
               county: true,
-              hiddenDate: true
+              hiddenDate: true,
+              metadataTrusted: true,
+              userData: { where: { userId: user.id }, take: 1, select: { raw: true } }
             }
           }
         },
@@ -539,7 +559,9 @@ export class MapController {
       throw new ConflictException("map snapshot expired");
     }
     const truncated = finds.length > MAP_CACHE_LIMIT;
-    const visibleFinds = truncated ? finds.slice(0, MAP_CACHE_LIMIT) : finds;
+    const visibleFinds = (truncated ? finds.slice(0, MAP_CACHE_LIMIT) : finds).map((find) => ({
+      ...find, cache: { ...find.cache, ...personalCacheMetadata(find.cache, find.cache.userData?.[0]?.raw) }
+    }));
 
     return {
       truncated,
@@ -572,7 +594,7 @@ export class MapController {
     const cursor = query.cursor?.trim() || undefined;
     const snapshotRevision = await this.validateMapSnapshot(user.id, query, cursor);
     const snapshot = mapSnapshot(query.snapshot);
-    const where = hideMapWhere({ userId: user.id }, query, snapshot);
+    const where = hideMapWhere({ userId: user.id }, query, snapshot, user.id);
     const totalCount = cursor ? undefined : await this.prisma.hide.count({ where });
     let hides: any[];
     try {
@@ -595,7 +617,9 @@ export class MapController {
               country: true,
               region: true,
               county: true,
-              hiddenDate: true
+              hiddenDate: true,
+              metadataTrusted: true,
+              userData: { where: { userId: user.id }, take: 1, select: { raw: true } }
             }
           }
         },
@@ -614,7 +638,9 @@ export class MapController {
       throw new ConflictException("map snapshot expired");
     }
     const truncated = hides.length > MAP_CACHE_LIMIT;
-    const visibleHides = truncated ? hides.slice(0, MAP_CACHE_LIMIT) : hides;
+    const visibleHides = (truncated ? hides.slice(0, MAP_CACHE_LIMIT) : hides).map((hide) => ({
+      ...hide, cache: { ...hide.cache, ...personalCacheMetadata(hide.cache, hide.cache.userData?.[0]?.raw) }
+    }));
 
     return {
       truncated,
@@ -654,7 +680,9 @@ export class MapController {
             region: true,
             county: true,
             latitude: true,
-            longitude: true
+            longitude: true,
+            metadataTrusted: true,
+            userData: { where: { userId: user.id }, take: 1, select: { raw: true } }
           }
         }
       },
@@ -662,7 +690,9 @@ export class MapController {
       take: MAP_CACHE_LIMIT + 1
     });
     const truncated = finds.length > MAP_CACHE_LIMIT;
-    const visibleFinds = truncated ? finds.slice(0, MAP_CACHE_LIMIT) : finds;
+    const visibleFinds = (truncated ? finds.slice(0, MAP_CACHE_LIMIT) : finds).map((find) => ({
+      ...find, cache: { ...find.cache, ...personalCacheMetadata(find.cache, find.cache.userData?.[0]?.raw) }
+    }));
 
     const continents = new Map<string, number>();
     const countries = new Map<

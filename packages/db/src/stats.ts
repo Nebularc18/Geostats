@@ -1,4 +1,5 @@
 import { Prisma, PrismaClient } from "@prisma/client";
+import { personalCacheMetadata } from "./personal-cache-metadata";
 import {
   calculateHideStats,
   calculateStats,
@@ -31,11 +32,16 @@ export function countableFindWhere(
     filters.push({
       cache: {
         OR: [
+          { metadataTrusted: false },
           { ownerName: null },
           { ownerName: { not: gcUsername, mode: "insensitive" } },
         ],
       },
     });
+    filters.push({ cache: { OR: [
+      { metadataTrusted: true },
+      { userData: { none: { userId, raw: { path: ["geostatsMetadata", "ownerNameNormalized"], equals: gcUsername.trim().toLowerCase() } } } }
+    ] } });
   }
   return { userId, AND: filters };
 }
@@ -54,20 +60,21 @@ function elevationFromRaw(raw: unknown): number | null {
 }
 
 function statsCache(cache: CacheWithUserData) {
+  const metadata = { ...cache, ...personalCacheMetadata(cache, cache.userData[0]?.raw) };
   return {
-    latitude: Number(cache.corrections[0]?.latitude ?? cache.latitude),
-    longitude: Number(cache.corrections[0]?.longitude ?? cache.longitude),
+    latitude: Number(cache.corrections[0]?.latitude ?? metadata.latitude),
+    longitude: Number(cache.corrections[0]?.longitude ?? metadata.longitude),
     gcCode: cache.gcCode,
-    name: cache.name,
-    cacheType: cache.cacheType,
-    difficulty: cache.difficulty ? Number(cache.difficulty) : null,
-    terrain: cache.terrain ? Number(cache.terrain) : null,
-    size: cache.size,
-    country: cache.country,
-    region: cache.region,
-    county: cache.county,
-    hiddenDate: cache.hiddenDate,
-    ownerName: cache.ownerName,
+    name: metadata.name,
+    cacheType: metadata.cacheType,
+    difficulty: metadata.difficulty == null ? null : Number(metadata.difficulty),
+    terrain: metadata.terrain == null ? null : Number(metadata.terrain),
+    size: metadata.size,
+    country: metadata.country,
+    region: metadata.region,
+    county: metadata.county,
+    hiddenDate: metadata.hiddenDate,
+    ownerName: metadata.ownerName,
     elevationMeters: elevationFromRaw(cache.userData[0]?.raw),
     raw: cache.userData[0]?.raw,
   };
@@ -116,7 +123,7 @@ export async function calculateUserStats(
       isFtf: find.isFtf,
       logText: find.logText,
       cache: statsCache(find.cache),
-    })),
+    })).filter((find) => !gcUsername || find.cache.ownerName?.trim().toLowerCase() !== gcUsername),
     {
       homeLatitude:
         profile?.homeLatitude == null ? null : Number(profile.homeLatitude),

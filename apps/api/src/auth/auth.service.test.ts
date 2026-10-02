@@ -131,17 +131,18 @@ test("password auth is the default mode", () => {
   });
 });
 
-test("admin access follows the configured email allowlist", () => {
+test("Clerk admin access follows the immutable user-ID allowlist", () => {
   withEnv(
     {
-      AUTH_MODE: "password",
+      AUTH_MODE: "clerk",
       NODE_ENV: "development",
+      ADMIN_USER_IDS: "user-1",
       ADMIN_EMAILS: " Owner@Example.com,second@example.com "
     },
     () => {
       const { service } = authServiceWithUsers();
-      assert.equal(service.isAdmin({ email: "owner@example.com" }), true);
-      assert.equal(service.isAdmin({ email: "other@example.com" }), false);
+      assert.equal(service.isAdmin({ id: "user-1", email: "owner@example.com" }), true);
+      assert.equal(service.isAdmin({ id: "user-2", email: "other@example.com" }), false);
     }
   );
 });
@@ -156,7 +157,7 @@ test("the local development account is an admin only in development mode", () =>
     },
     () => {
       const { service } = authServiceWithUsers();
-      assert.equal(service.isAdmin({ email: "dev-admin@example.com" }), true);
+      assert.equal(service.isAdmin({ id: "user-1", email: "dev-admin@example.com" }), true);
     }
   );
 
@@ -169,7 +170,7 @@ test("the local development account is an admin only in development mode", () =>
     },
     () => {
       const { service } = authServiceWithUsers();
-      assert.equal(service.isAdmin({ email: "dev-admin@example.com" }), false);
+      assert.equal(service.isAdmin({ id: "user-1", email: "dev-admin@example.com" }), false);
     }
   );
 });
@@ -472,4 +473,43 @@ test("upsertOAuthUser skips account update when provider username is unchanged",
 
   assert.equal(result, user);
   assert.equal(updateCount, 0);
+});
+
+
+test("registering an administrator email never grants password-mode admin access", async () => {
+  await withEnv({ AUTH_MODE: "password", NODE_ENV: "production", ADMIN_EMAILS: "owner@example.com", ADMIN_USER_IDS: "trusted-existing-id" }, async () => {
+    const { service } = authServiceWithUsers();
+    const attacker = await service.register("owner@example.com", "attacker", "correct-horse-battery");
+    assert.equal(service.isAdmin(attacker), false);
+    assert.equal(service.isAdmin({ id: "trusted-existing-id", email: "different@example.com" }), true);
+    assert.equal(service.isAdmin({ id: "TRUSTED-EXISTING-ID", email: "owner@example.com" }), false);
+  });
+});
+
+test("password mode does not inherit the development administrator email", () => {
+  withEnv({ AUTH_MODE: "password", NODE_ENV: "development", ADMIN_EMAILS: "dev-admin@example.com", ADMIN_USER_IDS: undefined, DEV_AUTH_EMAIL: "dev-admin@example.com" }, () => {
+    const { service } = authServiceWithUsers();
+    assert.equal(service.isAdmin({ id: "self-registered", email: "dev-admin@example.com" }), false);
+  });
+});
+
+
+test("password JWTs cannot gain email-admin access after switching to Clerk", async () => {
+  await withEnv({ AUTH_MODE: "password", NODE_ENV: "production", ADMIN_EMAILS: "owner@example.com", ADMIN_USER_IDS: undefined }, async () => {
+    const user = { id: "attacker", email: "owner@example.com", username: "attacker" };
+    let payload: any;
+    const service = new AuthService({ user: { findUnique: async () => user } } as any, {
+      sign: (value: unknown) => { payload = value; return "signed"; },
+      verifyAsync: async () => payload,
+    } as any);
+    service.sign(user);
+    process.env.AUTH_MODE = "clerk";
+    assert.equal(service.isAdmin(await service.verify("signed")), false);
+    process.env.ADMIN_USER_IDS = user.id;
+    assert.equal(service.isAdmin(await service.verify("signed")), true);
+    user.email = "new@example.com";
+    delete process.env.ADMIN_USER_IDS;
+    process.env.ADMIN_EMAILS = user.email;
+    assert.equal(service.isAdmin(await service.verify("signed")), false);
+  });
 });

@@ -465,10 +465,10 @@ test("process uses the user's existing cache metadata without overwriting it", a
   assert.equal(cacheUpserts.length, 1);
   assert.deepEqual(cacheUpserts[0].where, { gcCode: "GC12345" });
   assert.equal(cacheUpserts[0].create.userId, undefined);
-  assert.equal(cacheUpserts[0].create.name, "Attacker Cache Name");
-  assert.equal(cacheUpserts[0].create.latitude, 56.1612);
-  assert.equal(cacheUpserts[0].create.longitude, 15.5869);
-  assert.equal(cacheUpserts[0].create.metadataTrusted, true);
+  assert.equal(cacheUpserts[0].create.name, "GC12345");
+  assert.equal(cacheUpserts[0].create.latitude, 0);
+  assert.equal(cacheUpserts[0].create.longitude, 0);
+  assert.equal(cacheUpserts[0].create.metadataTrusted, false);
   assert.deepEqual(cacheUpserts[0].update, {});
   assert.equal(userCacheUpserts.length, 1);
   assert.deepEqual(userCacheUpserts[0].where, {
@@ -647,10 +647,10 @@ test("process creates missing cache metadata before the import transaction", asy
     },
     cache: {
       upsert: async ({ create, update }: any) => {
-        assert.equal(create.name, "Attacker Cache Name");
-        assert.equal(create.latitude, 56.1612);
-        assert.equal(create.longitude, 15.5869);
-        assert.equal(create.metadataTrusted, true);
+        assert.equal(create.name, "GC12345");
+        assert.equal(create.latitude, 0);
+        assert.equal(create.longitude, 0);
+        assert.equal(create.metadataTrusted, false);
         assert.deepEqual(update, {});
         cacheCreateCompleted = true;
         return createdCache;
@@ -694,7 +694,7 @@ test("process creates missing cache metadata before the import transaction", asy
   assert.equal(importTransactionStarted, true);
 });
 
-test("process stores source-specific cache-type spellings under one canonical name", async () => {
+test("process does not publish source-specific cache types to the shared catalog", async () => {
   const shortTypeGpx = `<?xml version="1.0" encoding="UTF-8"?>
 <gpx version="1.0">
   <wpt lat="56.161200" lon="15.586900">
@@ -780,7 +780,7 @@ test("process stores source-specific cache-type spellings under one canonical na
     source: ImportSource.MY_HIDES_GPX
   });
 
-  assert.equal(storedCacheType, "Mystery Cache");
+  assert.equal(storedCacheType, undefined);
 });
 
 test("process marks a committed import failed when stats recalculation fails", async () => {
@@ -1798,36 +1798,36 @@ test("process preserves a manually cleared FTF mark during re-import", async () 
   assert.equal(recalculationFindsLoaded, false);
 });
 
-test("GPX import repairs existing placeholders and returns metadata for statistics", async () => {
-  const placeholder = { id: "cache-1", gcCode: "GC12345", metadataTrusted: false };
-  const incoming = {
-    gcCode: "GC12345", name: "Swedish cache", latitude: 56.1, longitude: 15.6,
-    country: "Sweden", cacheType: "Traditional Cache", difficulty: 2, terrain: 2.5,
-    size: "Small", raw: { privateNote: "Only this user" }
-  };
-  let stored: any = placeholder;
-  const prisma = {
-    cache: {
-      upsert: async () => stored,
-      updateMany: async ({ where, data }: any) => {
-        assert.deepEqual(where, { id: "cache-1", metadataTrusted: false });
-        assert.equal("raw" in data, false);
-        stored = { ...stored, ...data };
-        return { count: 1 };
+for (const metadataTrusted of [false, true]) {
+  test(`GPX import preserves shared metadata (trusted=${metadataTrusted}) and stores private raw`, async () => {
+    const shared = { id: "cache-1", gcCode: "GC12345", name: "Existing metadata", latitude: 1, longitude: 2, metadataTrusted };
+    const incoming = {
+      gcCode: "GC12345", name: "Attacker metadata", latitude: 56.1, longitude: 15.6,
+      ownerName: "victim", raw: { privateNote: "Only this user", lat: "56.1" }
+    };
+    const prisma = {
+      cache: {
+        upsert: async ({ create, update }: any) => {
+          assert.deepEqual(create, { gcCode: "GC12345", name: "GC12345", latitude: 0, longitude: 0, metadataTrusted: false });
+          assert.deepEqual(update, {});
+          return shared;
+        },
+        updateMany: async () => { throw new Error("Personal import must not modify shared metadata"); }
       },
-      findUnique: async () => stored
-    },
-    userCacheData: {
-      upsert: async ({ create }: any) => {
-        assert.equal(create.userId, "user-1");
-        assert.deepEqual(create.raw, incoming.raw);
+      userCacheData: {
+        upsert: async ({ where, create, update }: any) => {
+          assert.deepEqual(where, { userId_cacheId: { userId: "attacker", cacheId: shared.id } });
+          assert.equal(create.userId, "attacker");
+          assert.deepEqual({ ...create.raw, geostatsMetadata: undefined }, { ...incoming.raw, geostatsMetadata: undefined });
+          assert.equal(create.raw.geostatsMetadata.name, incoming.name);
+          assert.deepEqual(update, { raw: create.raw });
+        }
       }
-    }
-  };
-  const processor = new ImportProcessor(prisma as any, {} as any);
-  const result = await (processor as any).findOrCreateCache("user-1", incoming);
-  assert.equal(result.country, "Sweden");
-  assert.equal(result.difficulty, 2);
-  assert.equal(result.latitude, 56.1);
-  assert.equal(result.metadataTrusted, true);
-});
+    };
+    const processor = new ImportProcessor(prisma as any, {} as any);
+    const result = await (processor as any).findOrCreateCache("attacker", incoming);
+    assert.equal(result, shared);
+    assert.equal(shared.name, "Existing metadata");
+    assert.equal(shared.metadataTrusted, metadataTrusted);
+  });
+}
