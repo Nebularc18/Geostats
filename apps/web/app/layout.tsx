@@ -4,6 +4,9 @@ import "flag-icons/css/flag-icons.min.css";
 import "maplibre-gl/dist/maplibre-gl.css";
 import "./globals.css";
 import { ClerkSessionGate } from "../components/clerk-session-gate";
+import { getPublicRuntimeConfig, isClerkEnabled, RUNTIME_CONFIG_ID, serializePublicRuntimeConfig } from "../lib/runtime-config";
+
+export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
   title: "Geostats",
@@ -21,15 +24,17 @@ export const metadata: Metadata = {
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
-  const publishableKey = process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY?.trim();
-  const configuredAuthMode = process.env.NEXT_PUBLIC_AUTH_MODE?.trim();
-  const clerkEnabled = Boolean(publishableKey) && configuredAuthMode !== "password" && configuredAuthMode !== "dev";
+  const runtimeConfig = getPublicRuntimeConfig();
+  const clerkEnabled = isClerkEnabled(runtimeConfig);
 
   return (
     <html lang="en">
+      <head>
+        <script id={RUNTIME_CONFIG_ID} type="application/json" dangerouslySetInnerHTML={{ __html: serializePublicRuntimeConfig(runtimeConfig) }} />
+      </head>
       <body>
         {clerkEnabled ? (
-          <ClerkProvider publishableKey={publishableKey}>
+          <ClerkProvider publishableKey={runtimeConfig.clerkPublishableKey}>
             <ClerkSessionGate>{children}</ClerkSessionGate>
           </ClerkProvider>
         ) : (

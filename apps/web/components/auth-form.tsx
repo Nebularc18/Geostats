@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { SignIn, SignUp } from "@clerk/nextjs";
 import { LogIn } from "lucide-react";
 import { API_URL, apiFetch } from "../lib/api";
+import { getPublicRuntimeConfig } from "../lib/runtime-config";
 
 type AuthMode = "dev" | "clerk" | "password";
 type AuthConfig = {
@@ -22,7 +23,8 @@ export function AuthForm({ mode }: { mode: "login" | "register" }) {
   const authMode = config?.mode;
   const isDevMode = authMode === "dev";
   const isClerkMode = authMode === "clerk";
-  const clerkIsConfigured = Boolean(process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY);
+  const runtimeConfig = getPublicRuntimeConfig();
+  const clerkIsConfigured = Boolean(runtimeConfig.clerkPublishableKey);
 
   useEffect(() => {
     let cancelled = false;
@@ -33,15 +35,15 @@ export function AuthForm({ mode }: { mode: "login" | "register" }) {
       .catch(() => {
         if (!cancelled) {
           setConfig({
-            mode: (process.env.NEXT_PUBLIC_AUTH_MODE as AuthMode | undefined) ?? (process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY ? "clerk" : "password"),
-            providerName: process.env.NEXT_PUBLIC_AUTH_PROVIDER_NAME ?? "Clerk"
+            mode: runtimeConfig.authMode as AuthMode,
+            providerName: runtimeConfig.authProviderName
           });
         }
       });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [runtimeConfig.authMode, runtimeConfig.authProviderName]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
