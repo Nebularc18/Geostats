@@ -100,7 +100,7 @@ issues Geostats' own cookie or bearer token. Existing local IDs and application
 data therefore remain stable.
 
 The web app reads the auth mode from `GET /auth/config`; `NEXT_PUBLIC_AUTH_MODE`
-is the build-time fallback when that request fails. Keep it aligned with
+is the runtime fallback when that request fails. Keep it aligned with
 `AUTH_MODE`. The provider label is controlled by
 `NEXT_PUBLIC_AUTH_PROVIDER_NAME`.
 
@@ -123,10 +123,11 @@ clerk env pull --instance dev
 Alternatively, copy the values from your Clerk Dashboard into the environment
 file. Never commit that file or share the secret key.
 
-Set the publishable key in the web build and the secret key in the API runtime:
+Set the publishable key and API URL in the web container environment, and the secret key in the web and API container environments:
 
 ```env
 AUTH_MODE=clerk
+NEXT_PUBLIC_API_URL=https://geostats-api.example.com
 NEXT_PUBLIC_AUTH_MODE=clerk
 NEXT_PUBLIC_AUTH_PROVIDER_NAME=Clerk
 NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_live_or_pk_test_...
@@ -148,7 +149,7 @@ the default production mode.
 
 ### Development authentication
 
-For local Docker development where you want the app to boot without signing in, enable dev auth and rebuild the web image so its public auth flags are baked in:
+For local Docker development where you want the app to boot without signing in, enable dev auth and recreate the web container with its new environment:
 
 ```env
 AUTH_MODE=dev
@@ -313,17 +314,24 @@ atomic across images; a failed publishing job may leave partial tags. Keep
 using the previous successful release until publishing succeeds, and pin all
 services to the shared release tag instead of `latest`.
 
-The workflow accepts these GitHub Actions repository variables as web-image
-build settings:
+The web image is independent of deployment configuration. GitHub Actions does
+not embed an API address or Clerk keys. Set these environment variables on each
+web container, including when using the prebuilt `latest` image:
 
-- `NEXT_PUBLIC_API_URL` — public API URL embedded in the web image; defaults to
-  `http://localhost:3001` and must be changed for a remote deployment.
-- `NEXT_PUBLIC_AUTH_MODE` — fallback login mode if `/auth/config` cannot be
-  reached; defaults to `clerk`.
-- `NEXT_PUBLIC_AUTH_PROVIDER_NAME` — fallback provider label; defaults to
-  `Clerk`.
-- `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` — Clerk publishable key embedded in the
-  web image.
+- `NEXT_PUBLIC_API_URL` — browser-accessible API URL, such as
+  `https://geostats-api.example.com`.
+- `NEXT_PUBLIC_AUTH_MODE` — fallback login mode; keep aligned with API `AUTH_MODE`.
+- `NEXT_PUBLIC_AUTH_PROVIDER_NAME` — fallback provider label; defaults to `Clerk`.
+- `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` — your Clerk application's publishable key.
+- `CLERK_SECRET_KEY` — the same application's secret key, used only by the server.
+- `NEXT_PUBLIC_DEV_AUTO_LOGIN` — defaults to `false`; enable only for development.
+
+The existing `NEXT_PUBLIC_` names are retained for compatibility, but these
+values are read at runtime. Only the explicitly listed public settings are
+sent to the browser. The secret key is never included in that configuration.
+Changing settings requires recreating the container, not rebuilding the image.
+Both Compose files pass the settings to the web container. Each installation
+must also configure its own API origins, CORS, and Clerk allowed domains.
 
 On deployment hardware, set the image prefix and pull the prebuilt app images before starting Compose:
 
@@ -395,13 +403,10 @@ slow and memory-hungry there. The prebuilt multi-arch (`linux/amd64`,
 
 Two Pi-specific caveats:
 
-- The prebuilt `web` image bakes in `NEXT_PUBLIC_API_URL` at build time
-  (default `http://localhost:3001`). If you open the web UI from another
-  machine on your LAN, the browser will try to reach the API on its own
-  localhost and fail. Either browse from the Pi itself (or over an SSH tunnel
-  to it), or dispatch a **Docker Images** run with the `NEXT_PUBLIC_API_URL`
-  repository variable set to the Pi's LAN address (for example
-  `http://192.168.1.50:3001`) and deploy that tag.
+- Set `NEXT_PUBLIC_API_URL` in the web container to an address reachable by
+  your browser, such as `http://192.168.1.50:3001`. `localhost` refers to the
+  browser's own machine. The same prebuilt image supports any API address
+  without a new GitHub build.
 - The web and API ports bind to `127.0.0.1` by default. To reach the Pi over
   the LAN, set `WEB_BIND_ADDRESS=0.0.0.0` and `API_BIND_ADDRESS=0.0.0.0` and
   restrict ports 3000 and 3001 with the host firewall (see

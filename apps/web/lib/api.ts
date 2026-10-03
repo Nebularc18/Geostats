@@ -1,6 +1,8 @@
 "use client";
 
-const CONFIGURED_API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
+import { getPublicRuntimeConfig } from "./runtime-config.ts";
+
+const CONFIGURED_API_URL = getPublicRuntimeConfig().apiUrl;
 
 function apiUrl() {
   if (typeof window === "undefined") {
