@@ -4,7 +4,7 @@ import { locationFromCachePageMetadata } from "./mystery-area.ts";
 import { locationFromPageSources } from "./mystery-page-location.ts";
 import { personalCacheNoteEditorFromPage, personalCacheNoteFromPage } from "./mystery-personal-note.ts";
 
-export const MYSTERY_USERSCRIPT_VERSION = "2.8.0";
+export const MYSTERY_USERSCRIPT_VERSION = "2.9.0";
 
 export function userscript(appOrigin: string) {
   return `// ==UserScript==
@@ -46,7 +46,40 @@ export function userscript(appOrigin: string) {
   const personalCacheNoteFromPage = ${personalCacheNoteFromPage.toString()};
   const personalCacheNoteEditorFromPage = ${personalCacheNoteEditorFromPage.toString()};
 
+  function validNoteRequest(value) {
+    return value &&
+      typeof value.cacheId === "string" &&
+      /^GC[A-Z0-9]+$/i.test(value.gcCode || "") &&
+      value.noteTarget === "fieldNotes" &&
+      typeof value.notes === "string" &&
+      value.notes.length <= 100000 &&
+      Number.isFinite(value.issuedAt);
+  }
+
+  function pendingNoteSyncPayloads() {
+    try {
+      const stored = JSON.parse(GM_getValue(PENDING_NOTE_SYNC_KEY, "null"));
+      return (Array.isArray(stored) ? stored : [stored]).filter(Boolean);
+    } catch {
+      return [];
+    }
+  }
+
+  function continueNoteSync() {
+    const pending = pendingNoteSyncPayloads();
+    if (!pending.length) return false;
+    // Start each note request when its cache is visited, so long batches do not expire.
+    const next = { ...pending[0], issuedAt: Date.now() };
+    pending[0] = next;
+    GM_setValue(PENDING_NOTE_SYNC_KEY, JSON.stringify(pending));
+    window.setTimeout(() => {
+      window.location.assign("https://coord.info/" + encodeURIComponent(next.gcCode) + "#geostats-note-sync=" + encodeURIComponent(JSON.stringify(next)));
+    }, 500);
+    return true;
+  }
+
   if (location.origin === GEOSTATS_ORIGIN) {
+    document.documentElement.setAttribute("data-geostats-note-batch-support", "1");
     document.addEventListener("geostats-sync-request", () => {
       try {
         const request = document.documentElement.getAttribute("data-geostats-sync-request");
@@ -66,8 +99,11 @@ export function userscript(appOrigin: string) {
           Number.isFinite(item.issuedAt)
         );
         const acknowledgement = Array.isArray(value?.requests) ? value.batchId : value?.attemptId + ":" + value?.issuedAt;
-        if (valid && typeof acknowledgement === "string" && acknowledgement) {
+        const noteRequests = value?.noteRequests ?? [];
+        const notesValid = Array.isArray(noteRequests) && noteRequests.every(validNoteRequest);
+        if (valid && notesValid && typeof acknowledgement === "string" && acknowledgement) {
           GM_setValue(PENDING_SYNC_KEY, JSON.stringify(values));
+          if (noteRequests.length) GM_setValue(PENDING_NOTE_SYNC_KEY, JSON.stringify(noteRequests));
           document.documentElement.setAttribute("data-geostats-sync-ready", acknowledgement);
           document.dispatchEvent(new Event("geostats-sync-ready"));
         }
@@ -79,16 +115,11 @@ export function userscript(appOrigin: string) {
       try {
         const request = document.documentElement.getAttribute("data-geostats-note-sync-request");
         const value = JSON.parse(request || "null");
-        const valid = value &&
-          typeof value.cacheId === "string" &&
-          /^GC[A-Z0-9]+$/i.test(value.gcCode || "") &&
-          value.noteTarget === "fieldNotes" &&
-          typeof value.notes === "string" &&
-          value.notes.length <= 100000 &&
-          Number.isFinite(value.issuedAt);
-        const acknowledgement = value?.cacheId + ":" + value?.issuedAt;
-        if (valid && acknowledgement) {
-          GM_setValue(PENDING_NOTE_SYNC_KEY, JSON.stringify(value));
+        const values = Array.isArray(value?.requests) ? value.requests : [value];
+        const valid = values.length > 0 && values.every(validNoteRequest);
+        const acknowledgement = Array.isArray(value?.requests) ? value.batchId : value?.cacheId + ":" + value?.issuedAt;
+        if (valid && typeof acknowledgement === "string" && acknowledgement) {
+          GM_setValue(PENDING_NOTE_SYNC_KEY, JSON.stringify(values));
           document.documentElement.setAttribute("data-geostats-note-sync-ready", acknowledgement);
           document.dispatchEvent(new Event("geostats-note-sync-ready"));
         }
@@ -153,6 +184,7 @@ export function userscript(appOrigin: string) {
         pending.latitude !== value.latitude ||
         pending.longitude !== value.longitude ||
         pending.coordinateText !== value.coordinateText ||
+        pending.includeNotes !== value.includeNotes ||
         pending.issuedAt !== value.issuedAt
       ) return null;
       return value;
@@ -166,7 +198,7 @@ export function userscript(appOrigin: string) {
     if (!encoded) return null;
     try {
       const value = JSON.parse(encoded);
-      const pending = JSON.parse(GM_getValue(PENDING_NOTE_SYNC_KEY, "null"));
+      const pending = pendingNoteSyncPayloads().find((item) => item.cacheId === value.cacheId);
       const pageCode = (location.pathname.match(/\\/geocache\\/(GC[A-Z0-9]+)/i)?.[1] || new URLSearchParams(location.search).get("wp") || "").toUpperCase();
       if (
         !pending ||
@@ -507,7 +539,13 @@ export function userscript(appOrigin: string) {
       syncedAt: new Date().toISOString()
     };
     GM_setValue(NOTE_SYNC_RECEIPT_PREFIX + noteSyncPayload.cacheId, JSON.stringify(receipt));
-    GM_deleteValue(PENDING_NOTE_SYNC_KEY);
+    const remaining = pendingNoteSyncPayloads().filter((item) => item.cacheId !== noteSyncPayload.cacheId);
+    if (remaining.length) GM_setValue(PENDING_NOTE_SYNC_KEY, JSON.stringify(remaining));
+    else GM_deleteValue(PENDING_NOTE_SYNC_KEY);
+    if (continueNoteSync()) {
+      setNoteSyncPanelState("Field note synced. Moving to the next cache…", "success");
+      return;
+    }
     setNoteSyncPanelState("Field note synced to Geocaching. Returning to Geostats…", "success");
     toast("Personal cache note synced", false);
     window.setTimeout(() => window.close(), 700);
@@ -777,6 +815,10 @@ export function userscript(appOrigin: string) {
         const target = "https://coord.info/" + encodeURIComponent(nextPayload.gcCode) + "#geostats-sync=" + encodeURIComponent(JSON.stringify(nextPayload));
         window.location.assign(target);
       }, 500);
+      return;
+    }
+    if (syncPayload.includeNotes && continueNoteSync()) {
+      setSyncPanelState("Coordinates synced. Moving to field notes…", "success");
       return;
     }
     setSyncPanelState("Sync complete. Closing this temporary tab…", "success");

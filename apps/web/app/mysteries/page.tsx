@@ -37,7 +37,7 @@ import {
 import { normalizeMysteryArea } from "../../lib/mystery-area";
 import { MYSTERY_USERSCRIPT_VERSION } from "../../lib/mystery-userscript";
 import { bulkAttemptKey, parseBulkFailedAttempts, parseFailedCoordinateCsv } from "../../lib/mystery-bulk-attempts";
-import { automaticSyncRetryDelay } from "../../lib/mystery-sync-policy";
+import { automaticSyncRetryDelay, helperSupportsNoteBatches } from "../../lib/mystery-sync-policy";
 import { normalizeMysteryImageUrl } from "../../lib/mystery-image";
 import { mysteryStorageKeys, safeRecipientMysteryImage, type MysteryStorageKeys } from "../../lib/mystery-storage";
 import {
@@ -236,6 +236,7 @@ type GeocachingSyncPayload = {
   longitude: number;
   coordinateText: string;
   solved: true;
+  includeNotes?: boolean;
   issuedAt: number;
 };
 
@@ -1319,10 +1320,14 @@ export default function MysteriesPage() {
     const solved = finalCoordinate(cache);
     return solved && !solved.attempt.geocachingSyncedAt ? [{ cache, ...solved }] : [];
   }), [caches]);
-  const selectedFieldNotesNeedSync = Boolean(
-    selected && !selected.sharedBy && selected.status !== "archived" &&
-    selected.geocachingFieldNotesFingerprint !== mysteryFieldFingerprint(selected.fieldNotes ?? "")
+  const fieldNotesToSync = caches.filter((cache) =>
+    !cache.sharedBy && cache.status !== "archived" &&
+    cache.geocachingFieldNotesFingerprint !== mysteryFieldFingerprint(cache.fieldNotes ?? "")
   );
+  const pendingGeocachingSyncCount = new Set([
+    ...syncableCaches.map(({ cache }) => cache.id),
+    ...fieldNotesToSync.map((cache) => cache.id)
+  ]).size;
   const filteredCaches = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     const compare = compareMysteryCaches(listSort);
@@ -1500,7 +1505,7 @@ export default function MysteriesPage() {
     });
   }
 
-  function syncAttempts(items: Array<{ cache: MysteryCache } & SolvedCoordinate>) {
+  function syncAttempts(items: Array<{ cache: MysteryCache } & SolvedCoordinate>, noteCaches: MysteryCache[] = []) {
     const eligible = items.filter(({ cache, attempt }) =>
       cache.status === "solved" &&
       attempt.state === "correct" &&
@@ -1512,6 +1517,10 @@ export default function MysteriesPage() {
       return;
     }
 
+    if (noteCaches.length && !helperSupportsNoteBatches(document.documentElement)) {
+      setNotice("Update the Geocaching helper, then reload this page to sync field-note batches.");
+      return;
+    }
     const issuedAt = Date.now();
     const payloads: GeocachingSyncPayload[] = eligible.map(({ cache, attempt, latitude, longitude }) => ({
       cacheId: cache.id,
@@ -1521,10 +1530,12 @@ export default function MysteriesPage() {
       longitude,
       coordinateText: formatCoordinate(latitude, longitude),
       solved: true,
+      includeNotes: noteCaches.length > 0,
       issuedAt
     }));
-    const batchId = payloads.length > 1 ? newId("sync-batch") : "";
-    const request = JSON.stringify(batchId ? { batchId, requests: payloads } : payloads[0]);
+    const batchId = payloads.length > 1 || noteCaches.length ? newId("sync-batch") : "";
+    const noteRequests = noteCaches.map((cache) => fieldNotePayload(cache, issuedAt));
+    const request = JSON.stringify(batchId ? { batchId, requests: payloads, noteRequests } : payloads[0]);
     const acknowledgement = batchId || `${payloads[0].attemptId}:${payloads[0].issuedAt}`;
     const root = document.documentElement;
     let finished = false;
@@ -1561,17 +1572,29 @@ export default function MysteriesPage() {
     if (solved) syncAttempts([{ cache, ...solved }]);
   }
 
-  function syncFieldNotes(cache: MysteryCache) {
-    if (cache.sharedBy || cache.status === "archived") return;
-    const payload: GeocachingFieldNoteSyncPayload = {
+  function fieldNotePayload(cache: MysteryCache, issuedAt: number): GeocachingFieldNoteSyncPayload {
+    return {
       cacheId: cache.id,
       gcCode: cache.gcCode,
       noteTarget: "fieldNotes",
       notes: cache.fieldNotes ?? "",
-      issuedAt: Date.now()
+      issuedAt
     };
-    const request = JSON.stringify(payload);
-    const acknowledgement = `${payload.cacheId}:${payload.issuedAt}`;
+  }
+
+  function syncFieldNotes(cacheOrCaches: MysteryCache | MysteryCache[]) {
+    const eligible = (Array.isArray(cacheOrCaches) ? cacheOrCaches : [cacheOrCaches])
+      .filter((cache) => !cache.sharedBy && cache.status !== "archived");
+    if (!eligible.length) return;
+    if (eligible.length > 1 && !helperSupportsNoteBatches(document.documentElement)) {
+      setNotice("Update the Geocaching helper, then reload this page to sync field-note batches.");
+      return;
+    }
+    const payloads = eligible.map((cache) => fieldNotePayload(cache, Date.now()));
+    const payload = payloads[0];
+    const batchId = payloads.length > 1 ? newId("note-sync-batch") : "";
+    const request = JSON.stringify(batchId ? { batchId, requests: payloads } : payload);
+    const acknowledgement = batchId || `${payload.cacheId}:${payload.issuedAt}`;
     const root = document.documentElement;
     let finished = false;
     const cleanup = () => {
@@ -1583,9 +1606,11 @@ export default function MysteriesPage() {
       if (finished || root.getAttribute("data-geostats-note-sync-ready") !== acknowledgement) return;
       finished = true;
       cleanup();
-      const target = `https://coord.info/${encodeURIComponent(payload.gcCode)}#geostats-note-sync=${encodeURIComponent(request)}`;
+      const target = `https://coord.info/${encodeURIComponent(payload.gcCode)}#geostats-note-sync=${encodeURIComponent(JSON.stringify(payload))}`;
       window.open(target, "_blank", "noopener,noreferrer");
-      setNotice("Geocaching opened. Choose which field note to keep there.");
+      setNotice(payloads.length === 1
+        ? "Geocaching opened. Choose which field note to keep there."
+        : `Syncing field notes for ${payloads.length} caches in one Geocaching tab. Choose which note to keep for each cache.`);
     };
     document.addEventListener("geostats-note-sync-ready", handleReady);
     root.setAttribute("data-geostats-note-sync-request", request);
@@ -1599,9 +1624,9 @@ export default function MysteriesPage() {
   }
 
   function syncFromHeader() {
-    if (syncableCaches.length) syncAttempts(syncableCaches);
-    if (selectedFieldNotesNeedSync && selected) syncFieldNotes(selected);
-    if (!syncableCaches.length && !selectedFieldNotesNeedSync) setNotice("Everything is already synced with Geocaching");
+    if (syncableCaches.length) syncAttempts(syncableCaches, fieldNotesToSync);
+    else if (fieldNotesToSync.length) syncFieldNotes(fieldNotesToSync);
+    else setNotice("Everything is already synced with Geocaching");
   }
 
   function addCache(event: FormEvent<HTMLFormElement>) {
@@ -2028,7 +2053,7 @@ export default function MysteriesPage() {
         </div>
         <div className="mystery-header-actions">
           <span className="offline-pill"><WifiOff size={14} /> Available offline</span>
-          <button className="secondary-button" type="button" disabled={!syncableCaches.length && !selectedFieldNotesNeedSync} onClick={syncFromHeader}><ExternalLink size={17} /> Sync solved{syncableCaches.length ? ` (${syncableCaches.length})` : ""}</button>
+          <button className="secondary-button" type="button" disabled={!pendingGeocachingSyncCount} onClick={syncFromHeader}><ExternalLink size={17} /> Sync solved{pendingGeocachingSyncCount ? ` (${pendingGeocachingSyncCount})` : ""}</button>
           <button className="secondary-button" type="button" onClick={() => setShowBrowserImport(true)}><Import size={17} /> Browser import</button>
           <button className="secondary-button" type="button" onClick={exportGpx}><Download size={17} /> Export GPX</button>
           <button className="secondary-button" type="button" onClick={openSharingSettings}><Settings2 size={17} /> Sharing settings</button>

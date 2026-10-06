@@ -9,3 +9,7 @@ export function automaticSyncRetryDelay(failureCount: number) {
     Math.min(normalizedCount, AUTOMATIC_SYNC_RETRY_DELAYS_MS.length - 1)
   ];
 }
+
+export function helperSupportsNoteBatches(root: { getAttribute(name: string): string | null }) {
+  return root.getAttribute("data-geostats-note-batch-support") === "1";
+}
