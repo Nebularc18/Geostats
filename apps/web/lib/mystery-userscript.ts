@@ -79,6 +79,7 @@ export function userscript(appOrigin: string) {
   }
 
   if (location.origin === GEOSTATS_ORIGIN) {
+    document.documentElement.setAttribute("data-geostats-note-batch-support", "1");
     document.addEventListener("geostats-sync-request", () => {
       try {
         const request = document.documentElement.getAttribute("data-geostats-sync-request");
@@ -103,7 +104,6 @@ export function userscript(appOrigin: string) {
         if (valid && notesValid && typeof acknowledgement === "string" && acknowledgement) {
           GM_setValue(PENDING_SYNC_KEY, JSON.stringify(values));
           if (noteRequests.length) GM_setValue(PENDING_NOTE_SYNC_KEY, JSON.stringify(noteRequests));
-          else GM_deleteValue(PENDING_NOTE_SYNC_KEY);
           document.documentElement.setAttribute("data-geostats-sync-ready", acknowledgement);
           document.dispatchEvent(new Event("geostats-sync-ready"));
         }
@@ -184,6 +184,7 @@ export function userscript(appOrigin: string) {
         pending.latitude !== value.latitude ||
         pending.longitude !== value.longitude ||
         pending.coordinateText !== value.coordinateText ||
+        pending.includeNotes !== value.includeNotes ||
         pending.issuedAt !== value.issuedAt
       ) return null;
       return value;
@@ -816,7 +817,7 @@ export function userscript(appOrigin: string) {
       }, 500);
       return;
     }
-    if (continueNoteSync()) {
+    if (syncPayload.includeNotes && continueNoteSync()) {
       setSyncPanelState("Coordinates synced. Moving to field notes…", "success");
       return;
     }

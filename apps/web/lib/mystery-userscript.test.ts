@@ -240,7 +240,7 @@ test("the last coordinate hands off to the field-note queue in the same tab", ()
     PENDING_SYNC_KEY: "coordinates",
     PENDING_NOTE_SYNC_KEY: "notes",
     SYNC_RECEIPT_PREFIX: "receipt:",
-    syncPayload: coordinateRequest,
+    syncPayload: { ...coordinateRequest, includeNotes: true },
     syncReceiptReturned: false,
     GM_getValue: (key: string, fallback: string) => storage.get(key) ?? fallback,
     GM_setValue: (key: string, value: string) => storage.set(key, value),
@@ -258,4 +258,44 @@ test("the last coordinate hands off to the field-note queue in the same tab", ()
   assert.equal(destinations.length, 1);
   assert.equal(new URL(destinations[0]).pathname, "/GC123");
   assert.ok(destinations[0].includes("#geostats-note-sync="));
+});
+
+
+test("the helper advertises support for note batches", () => {
+  assert.equal(runGeostatsScript().attributes.get("data-geostats-note-batch-support"), "1");
+});
+
+test("coordinate-only requests leave an existing note batch untouched", () => {
+  const requests = [noteRequest, { ...noteRequest, cacheId: "cache-2", gcCode: "GC456" }];
+  const script = runGeostatsScript({ "geostats-pending-note-sync": JSON.stringify(requests) });
+  script.request("geostats-sync-request", coordinateRequest);
+  assert.deepEqual(JSON.parse(script.storage.get("geostats-pending-note-sync")!), requests);
+  assert.equal(script.attributes.get("data-geostats-sync-ready"), "attempt-1:12345");
+});
+
+test("coordinate-only completion does not take over an active note batch", () => {
+  const storage = new Map([
+    ["coordinates", JSON.stringify([coordinateRequest])],
+    ["notes", JSON.stringify([noteRequest])],
+  ]);
+  let closed = false;
+  runInNewContext([
+    generatedFunction("pendingSyncPayloads"),
+    generatedFunction("removePendingSyncPayload"),
+    generatedFunction("returnSyncReceipt"),
+    "returnSyncReceipt();",
+  ].join("\n"), {
+    PENDING_SYNC_KEY: "coordinates",
+    SYNC_RECEIPT_PREFIX: "receipt:",
+    syncPayload: coordinateRequest,
+    syncReceiptReturned: false,
+    GM_getValue: (key: string, fallback: string) => storage.get(key) ?? fallback,
+    GM_setValue: (key: string, value: string) => storage.set(key, value),
+    GM_deleteValue: (key: string) => storage.delete(key),
+    continueNoteSync: () => { assert.fail("A coordinate-only sync must not advance the note queue"); },
+    setSyncPanelState: () => {},
+    window: { close: () => { closed = true; } },
+  });
+  assert.equal(closed, true);
+  assert.deepEqual(JSON.parse(storage.get("notes")!), [noteRequest]);
 });

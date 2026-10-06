@@ -37,7 +37,7 @@ import {
 import { normalizeMysteryArea } from "../../lib/mystery-area";
 import { MYSTERY_USERSCRIPT_VERSION } from "../../lib/mystery-userscript";
 import { bulkAttemptKey, parseBulkFailedAttempts, parseFailedCoordinateCsv } from "../../lib/mystery-bulk-attempts";
-import { automaticSyncRetryDelay } from "../../lib/mystery-sync-policy";
+import { automaticSyncRetryDelay, helperSupportsNoteBatches } from "../../lib/mystery-sync-policy";
 import { normalizeMysteryImageUrl } from "../../lib/mystery-image";
 import { mysteryStorageKeys, safeRecipientMysteryImage, type MysteryStorageKeys } from "../../lib/mystery-storage";
 import {
@@ -236,6 +236,7 @@ type GeocachingSyncPayload = {
   longitude: number;
   coordinateText: string;
   solved: true;
+  includeNotes?: boolean;
   issuedAt: number;
 };
 
@@ -1516,6 +1517,10 @@ export default function MysteriesPage() {
       return;
     }
 
+    if (noteCaches.length && !helperSupportsNoteBatches(document.documentElement)) {
+      setNotice("Update the Geocaching helper, then reload this page to sync field-note batches.");
+      return;
+    }
     const issuedAt = Date.now();
     const payloads: GeocachingSyncPayload[] = eligible.map(({ cache, attempt, latitude, longitude }) => ({
       cacheId: cache.id,
@@ -1525,6 +1530,7 @@ export default function MysteriesPage() {
       longitude,
       coordinateText: formatCoordinate(latitude, longitude),
       solved: true,
+      includeNotes: noteCaches.length > 0,
       issuedAt
     }));
     const batchId = payloads.length > 1 || noteCaches.length ? newId("sync-batch") : "";
@@ -1580,6 +1586,10 @@ export default function MysteriesPage() {
     const eligible = (Array.isArray(cacheOrCaches) ? cacheOrCaches : [cacheOrCaches])
       .filter((cache) => !cache.sharedBy && cache.status !== "archived");
     if (!eligible.length) return;
+    if (eligible.length > 1 && !helperSupportsNoteBatches(document.documentElement)) {
+      setNotice("Update the Geocaching helper, then reload this page to sync field-note batches.");
+      return;
+    }
     const payloads = eligible.map((cache) => fieldNotePayload(cache, Date.now()));
     const payload = payloads[0];
     const batchId = payloads.length > 1 ? newId("note-sync-batch") : "";
