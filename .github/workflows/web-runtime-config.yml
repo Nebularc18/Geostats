@@ -30,5 +30,6 @@ jobs:
           cache: pnpm
       - run: pnpm --filter @geostats/web --filter @geostats/shared install --frozen-lockfile
       - run: pnpm --filter @geostats/web exec playwright install --with-deps chromium
+      - run: pnpm --filter @geostats/shared build
       - run: pnpm --filter @geostats/web test
       - run: pnpm --filter @geostats/web test:runtime-browser
