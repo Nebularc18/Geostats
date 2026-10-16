@@ -6,6 +6,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { BarChart3, BookOpen, Code2, Database, Flag, Footprints, Globe2, Home, LogOut, Map, Navigation, PanelLeftClose, PanelLeftOpen, Puzzle, Settings, Shield, ShieldCheck, Trophy, Upload, Users } from "lucide-react";
 import { API_URL, apiFetch, invalidateStatsSummaryCache, setStatsSummaryAccount } from "../lib/api";
 import { ClerkSignOutButton } from "./clerk-sign-out-button";
+import { getPublicRuntimeConfig, isClerkEnabled } from "../lib/runtime-config";
 
 const nav = [
   { href: "/dashboard", label: "Dashboard", icon: Home },
@@ -34,12 +35,12 @@ const nav = [
 
 let hasCompletedProfileCheck = false;
 
-const DEV_AUTO_LOGIN = process.env.NEXT_PUBLIC_DEV_AUTO_LOGIN === "true";
+const RUNTIME_CONFIG = getPublicRuntimeConfig();
+const DEV_AUTO_LOGIN = RUNTIME_CONFIG.devAutoLogin;
 const DEV_OFFLINE = process.env.NODE_ENV === "development" && process.env.NEXT_PUBLIC_DEV_OFFLINE === "true";
 const DEV_AUTO_LOGIN_ATTEMPT_KEY = "geostats_dev_auto_login_attempted";
 const SIDEBAR_COLLAPSED_STORAGE_KEY = "geostats_sidebar_collapsed";
-const CONFIGURED_AUTH_MODE = process.env.NEXT_PUBLIC_AUTH_MODE?.trim();
-const CLERK_ENABLED = Boolean(process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY) && CONFIGURED_AUTH_MODE !== "password" && CONFIGURED_AUTH_MODE !== "dev";
+const CLERK_ENABLED = isClerkEnabled(RUNTIME_CONFIG);
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();

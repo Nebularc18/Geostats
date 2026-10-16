@@ -1,11 +1,14 @@
 import { clerkMiddleware } from "@clerk/nextjs/server";
-import { NextResponse } from "next/server";
+import { getPublicRuntimeConfig, isClerkEnabled } from "./lib/runtime-config";
+import { NextResponse, type NextMiddleware } from "next/server";
 
-const publishableKey = process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY?.trim();
-const authMode = process.env.NEXT_PUBLIC_AUTH_MODE?.trim();
-const clerkEnabled = Boolean(publishableKey) && authMode !== "password" && authMode !== "dev";
+const middleware: NextMiddleware = (request, event) => {
+  const runtimeConfig = getPublicRuntimeConfig();
+  if (!isClerkEnabled(runtimeConfig)) return NextResponse.next();
+  return clerkMiddleware({ publishableKey: runtimeConfig.clerkPublishableKey })(request, event);
+};
 
-export default clerkEnabled ? clerkMiddleware() : () => NextResponse.next();
+export default middleware;
 
 export const config = {
   matcher: [
