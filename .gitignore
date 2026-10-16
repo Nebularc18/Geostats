@@ -34,3 +34,7 @@ credentials.json
 artifacts/
 .DS_Store
 Thumbs.db
+
+# Playwright artifacts
+playwright-report/
+test-results/

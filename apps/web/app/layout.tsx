@@ -6,6 +6,8 @@ import "./globals.css";
 import { ClerkSessionGate } from "../components/clerk-session-gate";
 import { getPublicRuntimeConfig, isClerkEnabled, RUNTIME_CONFIG_ID, serializePublicRuntimeConfig } from "../lib/runtime-config";
 
+// The initial HTML and ClerkProvider must use container settings, never build settings.
+// Keep this dynamic even without Clerk; static output would freeze the public config.
 export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {

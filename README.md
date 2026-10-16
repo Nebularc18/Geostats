@@ -286,7 +286,7 @@ GEOSTATS_IMAGE_PREFIX=ghcr.io/owner/repo
 GEOSTATS_IMAGE_TAG=release-YYYYMMDD-HHMMSS-utc
 ```
 
-Prebuilt `web` images must be built with the public API URL you deploy with. The login page reads auth mode and provider name from the API at runtime.
+Set `NEXT_PUBLIC_API_URL` and the public auth settings in the `web` container environment when deploying prebuilt images. Recreate the container after changing them. The login page reads auth mode and provider name from the API at runtime.
 
 The Dockhand Compose file includes a one-shot `migrate` service, so fresh databases run Prisma migrations before `api`, `worker`, and `web` start.
 
@@ -332,6 +332,23 @@ sent to the browser. The secret key is never included in that configuration.
 Changing settings requires recreating the container, not rebuilding the image.
 Both Compose files pass the settings to the web container. Each installation
 must also configure its own API origins, CORS, and Clerk allowed domains.
+
+The root layout renders at request time so the initial HTML and Clerk provider
+use the container settings rather than values captured during the image build.
+This disables full-page prerendering for web routes and adds server rendering
+work on each request. Static JavaScript, CSS, and images remain cacheable.
+
+To verify configuration bootstrapping in a real browser, run:
+
+```bash
+corepack pnpm --filter @geostats/web exec playwright install chromium
+corepack pnpm --filter @geostats/web test:runtime-browser
+```
+
+The check builds once without deployment settings, then starts two production
+servers with different runtime API URLs, public Clerk keys, and auth modes. It
+checks initial HTML, the first browser API request, and the resulting login UI
+without contacting a real API or Clerk application.
 
 On deployment hardware, set the image prefix and pull the prebuilt app images before starting Compose:
 

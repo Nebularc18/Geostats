@@ -8,7 +8,8 @@
     "start": "next start -p 3000",
     "lint": "tsc -p tsconfig.json --noEmit",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --test lib/*.test.ts"
+    "test": "node --test lib/*.test.ts",
+    "test:runtime-browser": "node e2e/run-runtime-browser.mjs"
   },
   "dependencies": {
     "@clerk/nextjs": "^7.8.3",
@@ -22,6 +23,7 @@
     "recharts": "^2.15.0"
   },
   "devDependencies": {
+    "@playwright/test": "1.60.0",
     "@types/node": "^22.10.2",
     "@types/react": "^19.0.2",
     "@types/react-dom": "^19.0.2",
