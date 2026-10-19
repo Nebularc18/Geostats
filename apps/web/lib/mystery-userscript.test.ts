@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
-import { userscript } from "./mystery-userscript.ts";
+import { MYSTERY_USERSCRIPT_VERSION, userscript } from "./mystery-userscript.ts";
 
 function runGeostatsScript(initialStorage: Record<string, string> = {}) {
   const attributes = new Map<string, string>();
@@ -298,4 +298,10 @@ test("coordinate-only completion does not take over an active note batch", () =>
   });
   assert.equal(closed, true);
   assert.deepEqual(JSON.parse(storage.get("notes")!), [noteRequest]);
+});
+
+
+test("the installed helper reports the same version as its Tampermonkey metadata", () => {
+  assert.equal(runGeostatsScript().attributes.get("data-geostats-helper-version"), MYSTERY_USERSCRIPT_VERSION);
+  assert.ok(userscript("https://geostats.example").includes(`// @version      ${MYSTERY_USERSCRIPT_VERSION}`));
 });

@@ -74,6 +74,8 @@ const COLLECTOR_CSV_MIME_TYPES = new Set([
   "application/csv",
   "text/plain",
 ]);
+// Bump this whenever the user-facing GSAK macro changes.
+export const GSAK_IMPORT_SCRIPT_VERSION = "1.9";
 const GSAK_IMPORT_SCOPE = "GSAK_IMPORT";
 const GSAK_ADMIN_IMPORT_SCOPE = "GSAK_ADMIN_IMPORT";
 
@@ -182,7 +184,7 @@ export function gsakImportMacro(serverUrl: string, token: string) {
   const server = gsakString(serverUrl);
   const credential = gsakString(token);
   return `# MacDescription = Send found, owned, and trackable journey caches from GSAK to Geostats
-# MacVersion = 1.9
+# MacVersion = ${GSAK_IMPORT_SCRIPT_VERSION}
 # NoVersionCheck
 
 $server = ${server}
@@ -1162,6 +1164,7 @@ export class CollectorController {
           userId: user.id,
           name: "GSAK import",
           scope: GSAK_IMPORT_SCOPE,
+          scriptVersion: GSAK_IMPORT_SCRIPT_VERSION,
           tokenPrefix: token.slice(0, 12),
           tokenHash: tokenHash(token),
           tokenCiphertext: encryptToken(token),
@@ -1205,7 +1208,7 @@ export class CollectorController {
     const token = await this.prisma.collectorToken.findFirst({
       where: { userId: user.id, scope: GSAK_IMPORT_SCOPE },
       orderBy: { createdAt: "desc" },
-      select: { createdAt: true },
+      select: { createdAt: true, scriptVersion: true },
     });
     const latestImport = token
       ? await this.prisma.import.findFirst({
@@ -1221,6 +1224,11 @@ export class CollectorController {
       : null;
     return {
       connected: Boolean(token),
+      scriptVersion: token?.scriptVersion ?? null,
+      latestScriptVersion: GSAK_IMPORT_SCRIPT_VERSION,
+      updateAvailable: Boolean(
+        token && token.scriptVersion !== GSAK_IMPORT_SCRIPT_VERSION,
+      ),
       createdAt: token?.createdAt ?? null,
       lastImportedAt: latestImport?.createdAt ?? null,
     };

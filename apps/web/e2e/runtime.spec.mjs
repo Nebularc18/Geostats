@@ -56,3 +56,88 @@ for (const installation of installations) {
     }
   });
 }
+
+
+test("GSAK script update banner clears after downloading the current connector", async ({ page }) => {
+  const installation = installations[0];
+  const origin = `http://127.0.0.1:${installation.port}`;
+  let updated = false;
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await page.route(`${installation.apiUrl}/**`, async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    const responses = {
+      "/profile": { profile: { userId: "user-1" } },
+      "/admin/access": { isAdmin: false },
+      "/imports": { imports: [] },
+      "/collector/gsak/status": {
+        connected: true, lastImportedAt: null,
+        scriptVersion: updated ? "1.9" : "1.8",
+        latestScriptVersion: "1.9", updateAvailable: !updated,
+      },
+      "/collector/gsak/setup": { fileName: "GeostatsImport.gsk", macro: "# MacVersion = 1.9" },
+    };
+    if (path === "/collector/gsak/setup" && route.request().method() === "POST") updated = true;
+    await route.fulfill({
+      headers: {
+        "access-control-allow-origin": origin,
+        "access-control-allow-credentials": "true",
+        "access-control-allow-methods": "GET, POST, OPTIONS",
+        "access-control-allow-headers": "content-type",
+      },
+      json: responses[path] ?? {},
+    });
+  });
+  await page.goto(`${origin}/imports`);
+  const banner = page.getByRole("status").filter({ hasText: "GSAK import script update available" });
+  await expect(banner).toBeVisible();
+  await expect(banner).toContainText("Your last download was version 1.8");
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Download updated script" }).click();
+  expect((await downloadPromise).suggestedFilename()).toBe("GeostatsImport.gsk");
+  await expect(banner).toHaveCount(0);
+  await expect(page.getByText("Connector downloaded. Open GeostatsImport.gsk", { exact: false })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Download a new connector" })).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+
+test("Geocaching helper update banner detects legacy and outdated helpers and clears for the current version", async ({ page, request }) => {
+  const installation = installations[0];
+  const origin = `http://127.0.0.1:${installation.port}`;
+  const scriptResponse = await request.get(`${origin}/mysteries/tampermonkey.user.js`);
+  expect(scriptResponse.ok()).toBe(true);
+  const script = await scriptResponse.text();
+  const latestVersion = script.match(/@version\s+(\S+)/)[1];
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await page.route(`${installation.apiUrl}/**`, async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    const responses = {
+      "/profile": { profile: { userId: "user-1" } },
+      "/auth/me": { user: { id: "user-1" } },
+      "/admin/access": { isAdmin: false },
+      "/mysteries/owned": { mysteries: [], deletedClientIds: [] },
+      "/mysteries/shared": { mysteries: [] },
+    };
+    await route.fulfill({
+      headers: { "access-control-allow-origin": origin, "access-control-allow-credentials": "true" },
+      json: responses[path] ?? {},
+    });
+  });
+  await page.goto(`${origin}/mysteries`);
+  const banner = page.getByRole("status", { name: "Geocaching helper update" });
+  await expect(page.getByRole("heading", { name: "Mysteries", exact: true })).toBeVisible();
+  await expect(banner).toHaveCount(0);
+  // The existing released helper reports capabilities but has no version marker.
+  await page.evaluate(() => document.documentElement.setAttribute("data-geostats-note-batch-support", "1"));
+  await expect(banner).toBeVisible();
+  await expect(banner).toContainText("Your helper does not report its version");
+  await expect(banner.getByRole("link", { name: "Update browser script" })).toHaveAttribute("href", `/mysteries/tampermonkey.user.js?v=${latestVersion}`);
+  await page.evaluate(() => document.documentElement.setAttribute("data-geostats-helper-version", "2.8.0"));
+  await expect(banner).toContainText("Your helper is version 2.8.0");
+  // Only a helper reporting the current installed version clears the notice.
+  await page.evaluate((version) => document.documentElement.setAttribute("data-geostats-helper-version", version), latestVersion);
+  await expect(banner).toHaveCount(0);
+  expect(errors).toEqual([]);
+});

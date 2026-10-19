@@ -4,7 +4,7 @@ import { locationFromCachePageMetadata } from "./mystery-area.ts";
 import { locationFromPageSources } from "./mystery-page-location.ts";
 import { personalCacheNoteEditorFromPage, personalCacheNoteFromPage } from "./mystery-personal-note.ts";
 
-export const MYSTERY_USERSCRIPT_VERSION = "2.9.0";
+export const MYSTERY_USERSCRIPT_VERSION = "2.9.1";
 
 export function userscript(appOrigin: string) {
   return `// ==UserScript==
@@ -79,6 +79,7 @@ export function userscript(appOrigin: string) {
   }
 
   if (location.origin === GEOSTATS_ORIGIN) {
+    document.documentElement.setAttribute("data-geostats-helper-version", ${JSON.stringify(MYSTERY_USERSCRIPT_VERSION)});
     document.documentElement.setAttribute("data-geostats-note-batch-support", "1");
     document.addEventListener("geostats-sync-request", () => {
       try {

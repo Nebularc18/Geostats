@@ -4,15 +4,20 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Database, Download } from "lucide-react";
 import { apiFetch } from "../lib/api";
 
+type GsakImportStatus = {
+  connected: boolean;
+  lastImportedAt: string | null;
+  scriptVersion: string | null;
+  latestScriptVersion: string;
+  updateAvailable: boolean;
+};
+
 type GsakImportPanelProps = {
   onImportActivity?: () => void | Promise<unknown>;
 };
 
 export function GsakImportPanel({ onImportActivity }: GsakImportPanelProps) {
-  const [status, setStatus] = useState<{
-    connected: boolean;
-    lastImportedAt: string | null;
-  } | null>(null);
+  const [status, setStatus] = useState<GsakImportStatus | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const lastImportedAtRef = useRef<string | null | undefined>(undefined);
@@ -22,10 +27,9 @@ export function GsakImportPanel({ onImportActivity }: GsakImportPanelProps) {
     if (statusRequestInFlightRef.current) return;
     statusRequestInFlightRef.current = true;
     try {
-      const nextStatus = await apiFetch<{
-        connected: boolean;
-        lastImportedAt: string | null;
-      }>("/collector/gsak/status");
+      const nextStatus = await apiFetch<GsakImportStatus>(
+        "/collector/gsak/status",
+      );
       const previousLastImportedAt = lastImportedAtRef.current;
       lastImportedAtRef.current = nextStatus.lastImportedAt;
       setStatus(nextStatus);
@@ -74,7 +78,7 @@ export function GsakImportPanel({ onImportActivity }: GsakImportPanelProps) {
       link.remove();
       URL.revokeObjectURL(url);
       lastImportedAtRef.current = null;
-      setStatus({ connected: true, lastImportedAt: null });
+      await refreshStatus();
       setMessage(
         "Connector downloaded. Open GeostatsImport.gsk and let GSAK install it, then run the macro from GSAK.",
       );
@@ -103,6 +107,18 @@ export function GsakImportPanel({ onImportActivity }: GsakImportPanelProps) {
             in the cache import above.
           </p>
         </div>
+        {status?.updateAvailable ? (
+          <div className="gsak-update-banner" role="status">
+            <strong>GSAK import script update available</strong>
+            <p>
+              {status.scriptVersion
+                ? `Version ${status.latestScriptVersion} is available. Your last download was version ${status.scriptVersion}.`
+                : "Download the latest script to bring your GSAK connector up to date."}{" "}
+              Open GeostatsImport.gsk to install it in GSAK and replace your
+              existing macro before your next import.
+            </p>
+          </div>
+        ) : null}
         <button
           className="secondary-button"
           type="button"
@@ -112,9 +128,11 @@ export function GsakImportPanel({ onImportActivity }: GsakImportPanelProps) {
           <Download size={18} />
           {busy
             ? "Preparing connector…"
-            : status?.connected
-              ? "Download a new connector"
-              : "Set up GSAK import"}
+            : status?.updateAvailable
+              ? "Download updated script"
+              : status?.connected
+                ? "Download a new connector"
+                : "Set up GSAK import"}
         </button>
         {status?.lastImportedAt ? (
           <p className="muted">
