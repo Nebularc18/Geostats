@@ -22,14 +22,17 @@ export function GsakImportPanel({ onImportActivity }: GsakImportPanelProps) {
   const [busy, setBusy] = useState(false);
   const lastImportedAtRef = useRef<string | null | undefined>(undefined);
   const statusRequestInFlightRef = useRef(false);
+  const statusGenerationRef = useRef(0);
 
   const refreshStatus = useCallback(async () => {
     if (statusRequestInFlightRef.current) return;
     statusRequestInFlightRef.current = true;
+    const generation = statusGenerationRef.current;
     try {
       const nextStatus = await apiFetch<GsakImportStatus>(
         "/collector/gsak/status",
       );
+      if (generation !== statusGenerationRef.current) return;
       const previousLastImportedAt = lastImportedAtRef.current;
       lastImportedAtRef.current = nextStatus.lastImportedAt;
       setStatus(nextStatus);
@@ -63,7 +66,7 @@ export function GsakImportPanel({ onImportActivity }: GsakImportPanelProps) {
     setBusy(true);
     setMessage(null);
     try {
-      const data = await apiFetch<{ fileName: string; macro: string }>(
+      const data = await apiFetch<{ fileName: string; macro: string; scriptVersion: string }>(
         "/collector/gsak/setup",
         { method: "POST" },
       );
@@ -77,8 +80,16 @@ export function GsakImportPanel({ onImportActivity }: GsakImportPanelProps) {
       link.click();
       link.remove();
       URL.revokeObjectURL(url);
+      // Setup committed this version. Ignore any poll started before the download.
+      statusGenerationRef.current += 1;
       lastImportedAtRef.current = null;
-      await refreshStatus();
+      setStatus({
+        connected: true,
+        lastImportedAt: null,
+        scriptVersion: data.scriptVersion,
+        latestScriptVersion: data.scriptVersion,
+        updateAvailable: false,
+      });
       setMessage(
         "Connector downloaded. Open GeostatsImport.gsk and let GSAK install it, then run the macro from GSAK.",
       );

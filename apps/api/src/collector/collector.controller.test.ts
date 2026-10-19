@@ -259,6 +259,7 @@ test("GSAK setup replaces only the dedicated scoped token", async () => {
         { headers: {}, protocol: "https" },
       );
       assert.equal(result.fileName, "GeostatsImport.gsk");
+      assert.equal(result.scriptVersion, GSAK_IMPORT_SCRIPT_VERSION);
       assert.match(result.macro, /http:\/\/gsak\.geostats\.example/);
     },
   );

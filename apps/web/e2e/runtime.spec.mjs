@@ -75,7 +75,7 @@ test("GSAK script update banner clears after downloading the current connector",
         scriptVersion: updated ? "1.9" : "1.8",
         latestScriptVersion: "1.9", updateAvailable: !updated,
       },
-      "/collector/gsak/setup": { fileName: "GeostatsImport.gsk", macro: "# MacVersion = 1.9" },
+      "/collector/gsak/setup": { fileName: "GeostatsImport.gsk", scriptVersion: "1.9", macro: "# MacVersion = 1.9" },
     };
     if (path === "/collector/gsak/setup" && route.request().method() === "POST") updated = true;
     await route.fulfill({
@@ -140,4 +140,89 @@ test("Geocaching helper update banner detects legacy and outdated helpers and cl
   await page.evaluate((version) => document.documentElement.setAttribute("data-geostats-helper-version", version), latestVersion);
   await expect(banner).toHaveCount(0);
   expect(errors).toEqual([]);
+});
+
+
+test("GSAK download clears the banner despite an older in-flight poll and later poll failures", async ({ page }) => {
+  const installation = installations[0];
+  const origin = `http://127.0.0.1:${installation.port}`;
+  let statusRequests = 0;
+  let releaseOldPoll;
+  const oldPoll = new Promise((resolve) => { releaseOldPoll = resolve; });
+  await page.route(`${installation.apiUrl}/**`, async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/collector/gsak/status") {
+      statusRequests++;
+      if (statusRequests === 2) await oldPoll;
+      if (statusRequests > 2) return route.abort();
+    }
+    const responses = {
+      "/profile": { profile: { userId: "user-1" } },
+      "/admin/access": { isAdmin: false },
+      "/imports": { imports: [] },
+      "/collector/gsak/status": { connected: true, lastImportedAt: null, scriptVersion: "1.8", latestScriptVersion: "1.9", updateAvailable: true },
+      "/collector/gsak/setup": { fileName: "GeostatsImport.gsk", macro: "# MacVersion = 1.9", scriptVersion: "1.9" },
+    };
+    await route.fulfill({
+      headers: {
+        "access-control-allow-origin": origin,
+        "access-control-allow-credentials": "true",
+        "access-control-allow-methods": "GET, POST, OPTIONS",
+        "access-control-allow-headers": "content-type",
+      },
+      json: responses[path] ?? {},
+    });
+  });
+  await page.goto(`${origin}/imports`);
+  const banner = page.getByRole("status").filter({ hasText: "GSAK import script update available" });
+  await expect(banner).toBeVisible();
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await expect.poll(() => statusRequests).toBe(2);
+  const download = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Download updated script" }).click();
+  await download;
+  await expect(banner).toHaveCount(0);
+  const staleResponse = page.waitForResponse(`${installation.apiUrl}/collector/gsak/status`);
+  releaseOldPoll();
+  await staleResponse;
+  // A later failing poll must also keep the successful download state.
+  await expect.poll(() => statusRequests).toBeGreaterThan(2);
+  await expect(page.getByRole("button", { name: "Download a new connector" })).toBeEnabled();
+  await expect(banner).toHaveCount(0);
+});
+
+
+test("sidebar entry to Mysteries loads a new document so the legacy helper can run", async ({ page }) => {
+  const installation = installations[0];
+  const origin = `http://127.0.0.1:${installation.port}`;
+  await page.route(`${installation.apiUrl}/**`, async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    const responses = {
+      "/profile": { profile: { userId: "user-1" } },
+      "/auth/me": { user: { id: "user-1" } },
+      "/admin/access": { isAdmin: false },
+      "/imports": { imports: [] },
+      "/collector/gsak/status": { connected: false, lastImportedAt: null, updateAvailable: false },
+      "/mysteries/owned": { mysteries: [], deletedClientIds: [] },
+      "/mysteries/shared": { mysteries: [] },
+    };
+    await route.fulfill({
+      headers: { "access-control-allow-origin": origin, "access-control-allow-credentials": "true" },
+      json: responses[path] ?? {},
+    });
+  });
+  // Simulate Tampermonkey's document-scoped URL matching for an existing helper.
+  await page.addInitScript(() => {
+    if (location.pathname.startsWith("/mysteries")) {
+      document.addEventListener("DOMContentLoaded", () => {
+        document.documentElement.setAttribute("data-geostats-note-batch-support", "1");
+      });
+    }
+  });
+  await page.goto(`${origin}/imports`);
+  await expect(page.getByRole("heading", { name: "Import history" })).toBeVisible();
+  const navigation = page.waitForEvent("request", (request) => request.isNavigationRequest() && request.url() === `${origin}/mysteries`);
+  await page.getByRole("navigation", { name: "Primary", exact: true }).getByRole("link", { name: "Mysteries", exact: true }).click();
+  await navigation;
+  await expect(page.getByRole("status", { name: "Geocaching helper update" })).toBeVisible();
 });

@@ -1173,6 +1173,7 @@ export class CollectorController {
     });
     return {
       fileName: "GeostatsImport.gsk",
+      scriptVersion: GSAK_IMPORT_SCRIPT_VERSION,
       macro: gsakImportMacro(gsakImportBaseUrl(request), token),
     };
   }

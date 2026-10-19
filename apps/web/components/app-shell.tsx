@@ -208,12 +208,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <nav id="primary-navigation" aria-label="Primary">
           {nav.filter((item) => !item.adminOnly || adminAccess).map((item) => {
             const Icon = item.icon;
+            // A full navigation lets Tampermonkey run helpers matched to /mysteries.
+            const NavigationLink = item.href === "/mysteries" ? "a" : Link;
             const active = pathname === item.href || (item.adminOnly && pathname.startsWith(`${item.href}/`));
             return (
-              <Link key={item.href} className={active ? "active" : ""} href={item.href} aria-label={item.label} title={sidebarCollapsed ? item.label : undefined}>
+              <NavigationLink key={item.href} className={active ? "active" : ""} href={item.href} aria-label={item.label} title={sidebarCollapsed ? item.label : undefined}>
                 <Icon size={18} aria-hidden="true" />
                 <span className="nav-label">{item.label}</span>
-              </Link>
+              </NavigationLink>
             );
           })}
         </nav>
