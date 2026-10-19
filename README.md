@@ -563,3 +563,19 @@ builds do not create a release.
 - Owner maintenance board with disabled-cache reminders, maintenance history,
   supply notes, and a route across caches that need attention.
 - Opt-in group challenges and small leaderboards for clubs, trips, and events.
+
+### GSAK connector update notices
+
+The GSAK import panel compares the version last downloaded by the user with
+`GSAK_IMPORT_SCRIPT_VERSION` in `apps/api/src/collector/collector.controller.ts`.
+Bump that constant whenever the user-facing macro changes; it also sets the
+macro's `MacVersion`. Older downloads and connectors with an unknown version
+show an update banner. Downloading the current connector clears the banner;
+the user must then open the downloaded file to replace the macro in GSAK.
+
+The Mysteries page also detects the installed Geocaching browser helper and
+shows an update banner when its version is older than `MYSTERY_USERSCRIPT_VERSION`
+in `apps/web/lib/mystery-userscript.ts`. Bump that constant when the helper changes.
+Legacy helpers that advertise note support but do not report a version also get
+an update notice. The banner clears when the current helper is active after
+installation and a page reload.

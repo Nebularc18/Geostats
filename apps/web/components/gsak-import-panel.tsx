@@ -4,28 +4,35 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Database, Download } from "lucide-react";
 import { apiFetch } from "../lib/api";
 
+type GsakImportStatus = {
+  connected: boolean;
+  lastImportedAt: string | null;
+  scriptVersion: string | null;
+  latestScriptVersion: string;
+  updateAvailable: boolean;
+};
+
 type GsakImportPanelProps = {
   onImportActivity?: () => void | Promise<unknown>;
 };
 
 export function GsakImportPanel({ onImportActivity }: GsakImportPanelProps) {
-  const [status, setStatus] = useState<{
-    connected: boolean;
-    lastImportedAt: string | null;
-  } | null>(null);
+  const [status, setStatus] = useState<GsakImportStatus | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const lastImportedAtRef = useRef<string | null | undefined>(undefined);
   const statusRequestInFlightRef = useRef(false);
+  const statusGenerationRef = useRef(0);
 
   const refreshStatus = useCallback(async () => {
     if (statusRequestInFlightRef.current) return;
     statusRequestInFlightRef.current = true;
+    const generation = statusGenerationRef.current;
     try {
-      const nextStatus = await apiFetch<{
-        connected: boolean;
-        lastImportedAt: string | null;
-      }>("/collector/gsak/status");
+      const nextStatus = await apiFetch<GsakImportStatus>(
+        "/collector/gsak/status",
+      );
+      if (generation !== statusGenerationRef.current) return;
       const previousLastImportedAt = lastImportedAtRef.current;
       lastImportedAtRef.current = nextStatus.lastImportedAt;
       setStatus(nextStatus);
@@ -59,7 +66,7 @@ export function GsakImportPanel({ onImportActivity }: GsakImportPanelProps) {
     setBusy(true);
     setMessage(null);
     try {
-      const data = await apiFetch<{ fileName: string; macro: string }>(
+      const data = await apiFetch<{ fileName: string; macro: string; scriptVersion: string }>(
         "/collector/gsak/setup",
         { method: "POST" },
       );
@@ -73,8 +80,16 @@ export function GsakImportPanel({ onImportActivity }: GsakImportPanelProps) {
       link.click();
       link.remove();
       URL.revokeObjectURL(url);
+      // Setup committed this version. Ignore any poll started before the download.
+      statusGenerationRef.current += 1;
       lastImportedAtRef.current = null;
-      setStatus({ connected: true, lastImportedAt: null });
+      setStatus({
+        connected: true,
+        lastImportedAt: null,
+        scriptVersion: data.scriptVersion,
+        latestScriptVersion: data.scriptVersion,
+        updateAvailable: false,
+      });
       setMessage(
         "Connector downloaded. Open GeostatsImport.gsk and let GSAK install it, then run the macro from GSAK.",
       );
@@ -103,6 +118,18 @@ export function GsakImportPanel({ onImportActivity }: GsakImportPanelProps) {
             in the cache import above.
           </p>
         </div>
+        {status?.updateAvailable ? (
+          <div className="gsak-update-banner" role="status">
+            <strong>GSAK import script update available</strong>
+            <p>
+              {status.scriptVersion
+                ? `Version ${status.latestScriptVersion} is available. Your last download was version ${status.scriptVersion}.`
+                : "Download the latest script to bring your GSAK connector up to date."}{" "}
+              Open GeostatsImport.gsk to install it in GSAK and replace your
+              existing macro before your next import.
+            </p>
+          </div>
+        ) : null}
         <button
           className="secondary-button"
           type="button"
@@ -112,9 +139,11 @@ export function GsakImportPanel({ onImportActivity }: GsakImportPanelProps) {
           <Download size={18} />
           {busy
             ? "Preparing connector…"
-            : status?.connected
-              ? "Download a new connector"
-              : "Set up GSAK import"}
+            : status?.updateAvailable
+              ? "Download updated script"
+              : status?.connected
+                ? "Download a new connector"
+                : "Set up GSAK import"}
         </button>
         {status?.lastImportedAt ? (
           <p className="muted">

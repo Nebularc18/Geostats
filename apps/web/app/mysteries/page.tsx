@@ -25,6 +25,7 @@ import {
   X
 } from "lucide-react";
 import { AppShell } from "../../components/app-shell";
+import { MysteryHelperUpdateBanner } from "../../components/mystery-helper-update-banner";
 import { API_URL, apiFetch } from "../../lib/api";
 import {
   fieldMergeDecision,
@@ -2061,6 +2062,8 @@ export default function MysteriesPage() {
           <button className="primary-button icon-button" type="button" onClick={() => setShowAdd(true)}><Plus size={18} /> Add mystery</button>
         </div>
       </header>
+
+      <MysteryHelperUpdateBanner />
 
       <section className="mystery-overview" aria-label="Mystery overview">
         <div><span>In your workspace</span><strong>{caches.length}</strong><small>mystery caches</small></div>

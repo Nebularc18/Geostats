@@ -8777,3 +8777,43 @@ select:focus {
     display: none;
   }
 }
+
+.gsak-update-banner {
+  padding: 14px 16px;
+  border: 1px solid var(--ochre);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--ochre) 10%, transparent);
+  text-align: left;
+}
+
+.gsak-update-banner strong {
+  color: var(--ochre);
+}
+
+.gsak-update-banner p {
+  margin: 6px 0 0;
+}
+
+.mystery-helper-update-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 20px;
+  padding: 14px 16px;
+  border: 1px solid var(--ochre);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--ochre) 10%, transparent);
+}
+
+.mystery-helper-update-banner > div {
+  flex: 1 1 280px;
+}
+
+.mystery-helper-update-banner strong {
+  color: var(--ochre);
+}
+
+.mystery-helper-update-banner p {
+  margin: 6px 0 0;
+}

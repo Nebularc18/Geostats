@@ -4,6 +4,7 @@ import { BadRequestException } from "@nestjs/common";
 import {
   cacheLogs,
   CollectorController,
+  GSAK_IMPORT_SCRIPT_VERSION,
   gsakImportBaseUrl,
   gsakImportMacro,
   gsakMissingCacheMacro,
@@ -258,6 +259,7 @@ test("GSAK setup replaces only the dedicated scoped token", async () => {
         { headers: {}, protocol: "https" },
       );
       assert.equal(result.fileName, "GeostatsImport.gsk");
+      assert.equal(result.scriptVersion, GSAK_IMPORT_SCRIPT_VERSION);
       assert.match(result.macro, /http:\/\/gsak\.geostats\.example/);
     },
   );
@@ -268,6 +270,7 @@ test("GSAK setup replaces only the dedicated scoped token", async () => {
   ]);
   assert.equal(actions[1][0], "create");
   assert.equal(actions[1][1].data.scope, "GSAK_IMPORT");
+  assert.equal(actions[1][1].data.scriptVersion, GSAK_IMPORT_SCRIPT_VERSION);
 });
 
 test("admin GSAK setup keeps the normal connector token separate", async () => {
@@ -384,7 +387,7 @@ test("GSAK status advances only after a completed import exists", async () => {
         assert.deepEqual(input, {
           where: { userId: "user-1", scope: "GSAK_IMPORT" },
           orderBy: { createdAt: "desc" },
-          select: { createdAt: true },
+          select: { createdAt: true, scriptVersion: true },
         });
         return { createdAt: tokenCreatedAt, lastUsedAt: tokenLastUsedAt };
       },
@@ -416,6 +419,9 @@ test("GSAK status advances only after a completed import exists", async () => {
 
   assert.deepEqual(afterCompletion, {
     connected: true,
+    scriptVersion: null,
+    latestScriptVersion: GSAK_IMPORT_SCRIPT_VERSION,
+    updateAvailable: true,
     createdAt: tokenCreatedAt,
     lastImportedAt: importCreatedAt,
   });
@@ -1142,4 +1148,31 @@ test("owner-log CSV allows a full batch with blank records before between and af
   const csv = '\n  , ,\r\ngcCode,date,finder\n' + 'GC123,2024-01-15,Finder\n\n"  ","\t",\r\n'.repeat(RECEIVED_LOG_MAX_ROWS) + '\n';
   assert.equal(parseReceivedLogsCsv(csv).length, RECEIVED_LOG_MAX_ROWS);
   assert.throws(() => parseReceivedLogsCsv(csv + '"unterminated'), /Too many owner-log rows/);
+});
+
+test("GSAK update status compares the downloaded script with the current release", async () => {
+  for (const [token, expectedUpdate] of [
+    [null, false],
+    [{ createdAt: new Date(), scriptVersion: null }, true],
+    [{ createdAt: new Date(), scriptVersion: "1.8" }, true],
+    [
+      { createdAt: new Date(), scriptVersion: GSAK_IMPORT_SCRIPT_VERSION },
+      false,
+    ],
+  ] as const) {
+    const prisma = {
+      collectorToken: { findFirst: async () => token },
+      import: { findFirst: async () => null },
+    };
+    const controller = new CollectorController(prisma as any, {} as any);
+    const status = await controller.gsakStatus({
+      id: "user-1",
+      email: "user@example.com",
+      username: "user",
+    });
+    assert.equal(status.connected, Boolean(token));
+    assert.equal(status.updateAvailable, expectedUpdate);
+    assert.equal(status.scriptVersion, token?.scriptVersion ?? null);
+    assert.equal(status.latestScriptVersion, GSAK_IMPORT_SCRIPT_VERSION);
+  }
 });
