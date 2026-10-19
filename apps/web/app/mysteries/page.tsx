@@ -1322,6 +1322,7 @@ export default function MysteriesPage() {
   }), [caches]);
   const fieldNotesToSync = caches.filter((cache) =>
     !cache.sharedBy && cache.status !== "archived" &&
+    Boolean(cache.fieldNotes?.trim()) &&
     cache.geocachingFieldNotesFingerprint !== mysteryFieldFingerprint(cache.fieldNotes ?? "")
   );
   const pendingGeocachingSyncCount = new Set([
