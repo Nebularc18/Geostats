@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
-import { evaluateChallenge, type CheckerFind } from "./challenge-checker.evaluator";
+import { evaluateChallenge, proofText, type CheckerFind } from "./challenge-checker.evaluator";
 import { ChallengeCheckersService } from "./challenge-checkers.service";
 import { importProjectGcCountryScript, isProjectGcCountryScript } from "./project-gc-importer";
 
@@ -70,4 +70,33 @@ test("country rules survive saving and loading, and exclude the challenge itself
   assert.equal((await service.runOwned("owner", "country-checker")).passed, true);
   history = [finds[0]!, finds[1]!, find("GCSELF", "Norway")];
   assert.equal((await service.runOwned("owner", "country-checker")).passed, false);
+});
+
+
+test("country date filters apply before repeat logs are removed", () => {
+  const rules = importProjectGcCountryScript(script, JSON.stringify({ countries: 1, minVisitDate: "2025-02-01" })).rules;
+  const before = find("GCREPEAT", "Sweden");
+  const after = { ...before, foundAt: new Date("2025-03-01T00:00:00Z"), foundDate: new Date("2025-03-01T00:00:00Z") };
+  const result = evaluateChallenge(rules, [before, after, after]);
+  assert.equal(result.passed, true);
+  assert.equal(result.rules[0]!.current, 1);
+  assert.deepEqual(result.rules[0]!.evidence, [{ date: "2025-03-01", gcCode: "GCREPEAT", name: "GCREPEAT" }]);
+  const needsTwo = importProjectGcCountryScript(script, JSON.stringify({ countries: 1, findsPerCountry: 2, minVisitDate: "2025-02-01" })).rules;
+  assert.equal(evaluateChallenge(needsTwo, [before, after, after]).passed, false);
+});
+
+test("copied country proofs retain the total requirement and bookmark limitation", () => {
+  const rules = importProjectGcCountryScript(script, JSON.stringify({ ...config, findsTotal: 5 })).rules;
+  const result = evaluateChallenge(rules, finds);
+  const proof = proofText("Geocacher", "Three countries", result);
+  assert.equal(result.passed, false);
+  assert.match(proof, /3 countries; 3 required/);
+  assert.match(proof, /3 total finds; 5 required/);
+  assert.match(proof, /bookmark exclusions are unavailable and are not applied/);
+  const passing = importProjectGcCountryScript(script, JSON.stringify(config)).rules;
+  const passingProof = proofText("Geocacher", "Three countries", evaluateChallenge(passing, finds));
+  assert.match(passingProof, /3 total finds; 1 required/);
+  assert.match(passingProof, /bookmark exclusions are unavailable and are not applied/);
+  const noBookmark = importProjectGcCountryScript(script, JSON.stringify({ ...config, ignoreBookmark: false })).rules;
+  assert.doesNotMatch(proofText("Geocacher", "Three countries", evaluateChallenge(noBookmark, finds)), /bookmark exclusions/);
 });

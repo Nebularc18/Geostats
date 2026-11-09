@@ -358,10 +358,11 @@ export function evaluateChallenge(rules: ChallengeRule[], finds: CheckerFind[], 
       label = `Project-GC count: ${rule.filterLabel}`;
     } else if (rule.type === "COUNTRIES") {
       const excluded = new Set(rule.excludedGcCodes.map((code) => code.trim().toUpperCase()));
-      const eligible = dedupedByCache(finds).filter((find) =>
+      // PGC.GetFinds applies tag filters before the Lua loop removes repeats.
+      const filtered = finds.filter((find) => rule.filters.some((filter) => projectGcFilterMatches(filter, find)));
+      const eligible = dedupedByCache(filtered).filter((find) =>
         find.cache.gcCode.trim() && find.cache.country?.trim() &&
-        !excluded.has(find.cache.gcCode.trim().toUpperCase()) &&
-        rule.filters.some((filter) => projectGcFilterMatches(filter, find)));
+        !excluded.has(find.cache.gcCode.trim().toUpperCase()));
       const countries = new Map<string, CheckerFind[]>();
       for (const find of eligible) {
         const country = find.cache.country!.trim();
@@ -564,6 +565,6 @@ export function evaluateChallenge(rules: ChallengeRule[], finds: CheckerFind[], 
 
 export function proofText(username: string, name: string, result: ReturnType<typeof evaluateChallenge>) {
   const status = result.passed ? "qualifies" : "does not yet qualify";
-  const lines = result.rules.map((item) => `- ${item.label}: ${item.current}/${item.required} ${item.passed ? "✓" : "✗"}`);
+  const lines = result.rules.map((item) => `- ${item.label}: ${item.current}/${item.required} ${item.passed ? "✓" : "✗"}${item.rule.type === "COUNTRIES" ? ` ${item.detail}` : ""}`);
   return [`${username} ${status} for “${name}”.`, ...lines, "Checked with Geostats using the user's imported find data."].join("\n");
 }
