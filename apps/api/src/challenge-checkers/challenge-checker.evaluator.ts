@@ -38,6 +38,18 @@ export type DistinctTypesRule = {
   filterLabel: string;
 };
 
+export type CountriesRule = {
+  type: "COUNTRIES";
+  minimum: number;
+  findsPerCountry: number;
+  findsTotal: number;
+  filters: ProjectGcFindFilter[];
+  filterLabel: string;
+  excludedGcCodes: string[];
+  excludeSelf: boolean;
+  bookmarkExclusionsUnavailable: boolean;
+};
+
 export type MonthlyAttributeRule = {
   type: "MONTHLY_ATTRIBUTE";
   months: Array<{ month: number; minimum: number }>;
@@ -88,6 +100,7 @@ export type ChallengeRule =
   | ProjectGcNumberRule
   | CalendarFillRule
   | DistinctTypesRule
+  | CountriesRule
   | MonthlyAttributeRule
   | BirthdayRule
   | AlphabetRule;
@@ -343,6 +356,30 @@ export function evaluateChallenge(rules: ChallengeRule[], finds: CheckerFind[], 
       matchingFinds = finds.filter((find) => rule.filters.some((filter) => projectGcFilterMatches(filter, find)));
       current = matchingFinds.length;
       label = `Project-GC count: ${rule.filterLabel}`;
+    } else if (rule.type === "COUNTRIES") {
+      const excluded = new Set(rule.excludedGcCodes.map((code) => code.trim().toUpperCase()));
+      const eligible = dedupedByCache(finds).filter((find) =>
+        find.cache.gcCode.trim() && find.cache.country?.trim() &&
+        !excluded.has(find.cache.gcCode.trim().toUpperCase()) &&
+        rule.filters.some((filter) => projectGcFilterMatches(filter, find)));
+      const countries = new Map<string, CheckerFind[]>();
+      for (const find of eligible) {
+        const country = find.cache.country!.trim();
+        const group = countries.get(country) ?? [];
+        group.push(find);
+        countries.set(country, group);
+      }
+      const qualified = [...countries.values()].filter((group) => group.length >= rule.findsPerCountry);
+      current = qualified.length;
+      matchingFinds = qualified.flatMap((group) => group.slice(0, rule.findsPerCountry));
+      const passed = current >= rule.minimum && eligible.length >= rule.findsTotal;
+      return {
+        rule, passed, current, required: rule.minimum,
+        label: `Countries with at least ${rule.findsPerCountry} finds (${rule.filterLabel})`,
+        detail: `${current.toLocaleString()} countries; ${rule.minimum.toLocaleString()} required. ${eligible.length.toLocaleString()} total finds; ${rule.findsTotal.toLocaleString()} required.${rule.bookmarkExclusionsUnavailable ? " Official Project-GC bookmark exclusions are unavailable and are not applied." : ""}`,
+        evidence: matchingFinds.slice(0, MAX_EVIDENCE_ROWS).map((find) => ({ date: loggedEvidenceDate(find), gcCode: find.cache.gcCode, name: find.cache.name })),
+        evidenceLimited: matchingFinds.length > MAX_EVIDENCE_ROWS
+      };
     } else if (rule.type === "DISTINCT_TYPES") {
       // Canonical cache-type ids: alias spellings ("Unknown" vs "Mystery")
       // merge instead of splitting, so this count never exceeds a

@@ -1,7 +1,8 @@
+import { createHash } from "node:crypto";
 import { BadRequestException } from "@nestjs/common";
 import { cacheTypeIdentity, cacheTypeLabel } from "./cache-type-catalog";
 import { geocacheAttributeLabel } from "./geocache-attribute-catalog";
-import type { AlphabetRule, BirthdayRule, CalendarFillRule, DistinctTypesRule, MonthlyAttributeRule, ProjectGcFindFilter, ProjectGcNumberRule } from "./challenge-checker.evaluator";
+import type { AlphabetRule, BirthdayRule, CalendarFillRule, CountriesRule, DistinctTypesRule, MonthlyAttributeRule, ProjectGcFindFilter, ProjectGcNumberRule } from "./challenge-checker.evaluator";
 
 const MAX_SCRIPT_LENGTH = 250_000;
 const MAX_CONFIG_LENGTH = 25_000;
@@ -2830,5 +2831,60 @@ export function importProjectGcBirthdayScript(scriptValue: unknown, configTextVa
       uniqueDates: parsed.uniqueDates, filters: parsed.filters, filterLabel: parsed.filterLabel
     }],
     summary: `${parsed.minimumCaches.toLocaleString()} birthday finds (${ages}, total ${parsed.minimumTotalAge.toLocaleString()}, ${parsed.minimumDifferentAges.toLocaleString()} ages), ${parsed.filterLabel}`
+  };
+}
+
+// This adapter translates the reviewed Generic Country release, without executing
+// uploaded Lua. Pin the entire source, including literals, so changed verdicts or
+// filters cannot silently inherit the reviewed script's semantics.
+const GENERIC_COUNTRY_SHA256 = "363f687cbd4d66a9595df071413346a28569dc26e920cfb7e410674cb52cc214";
+
+export function isProjectGcCountryScript(source: string) {
+  return source.length <= MAX_SCRIPT_LENGTH && createHash("sha256").update(source.replace(/\r\n?/g, "\n").trim()).digest("hex") === GENERIC_COUNTRY_SHA256;
+}
+
+export function importProjectGcCountryScript(scriptValue: unknown, configTextValue: unknown): { rules: CountriesRule[]; summary: string } {
+  if (typeof scriptValue !== "string" || !isProjectGcCountryScript(scriptValue)) {
+    throw new BadRequestException("This version of the Generic Country script is not supported");
+  }
+  if (typeof configTextValue !== "string" || configTextValue.length > MAX_CONFIG_LENGTH) throw new BadRequestException("Paste a Project-GC tag config JSON object");
+  let config: Record<string, unknown>;
+  try { config = objectValue(JSON.parse(configTextValue), "Project-GC tag config"); }
+  catch { throw new BadRequestException("Project-GC tag config must be a JSON object"); }
+  const allowed = new Set(["countries", "findsPerCountry", "findsTotal", "list", "ignoreBookmark", "excludeLocationless",
+    "country", "types", "sizes", "difficulties", "terrains", "minVisitDate",
+    "ExcludedTypes", "excludedTypes", "ExcludedGCCodes", "TExcludedGCCodes", "excludedCaches",
+    "showCountriesInList", "showCachesInList", "showProgressWhenQualified", "showCachesOnMap", "showCountriesOnMap",
+    "colorCountryPassed", "colorCountryMissing", "opacityCountry"]);
+  for (const key of Object.keys(config)) {
+    if (!allowed.has(key)) throw new BadRequestException(`Generic Country parameter '${key}' is not supported`);
+  }
+  for (const key of ["ignoreBookmark", "excludeLocationless"]) {
+    if (config[key] !== undefined && typeof config[key] !== "boolean") throw new BadRequestException(`${key} must be a boolean`);
+  }
+  const positive = (key: string) => {
+    const value = config[key] === undefined ? 1 : Number(config[key]);
+    if (!Number.isInteger(value) || value < 1 || value > 1_000_000) throw new BadRequestException(`${key} must be a positive integer`);
+    return value;
+  };
+  const minimum = positive("countries");
+  const findsPerCountry = positive("findsPerCountry");
+  const findsTotal = positive("findsTotal");
+  const filterConfig = Object.fromEntries(Object.entries(config).filter(([key]) => ["country", "types", "sizes", "difficulties", "terrains", "minVisitDate"].includes(key)));
+  // Country groups require Project-GC definitions; do not treat macro names as countries.
+  const groups = new Set(["Europe", "North America", "South America", "Africa", "Asia", "Oceania", "Antarctica", "European Union"]);
+  for (const country of strings(config.country, "country") ?? []) {
+    if (groups.has(country) || country.startsWith("PGC.")) throw new BadRequestException("Country groups are not supported by this importer");
+  }
+  const excludedTypes = [...(strings(config.ExcludedTypes, "ExcludedTypes") ?? []), ...(strings(config.excludedTypes, "excludedTypes") ?? [])];
+  if (config.excludeLocationless !== false) excludedTypes.push("Locationless Cache");
+  if (excludedTypes.length) filterConfig.excludeTypes = excludedTypes;
+  const filters = [compactFilter(parseFilter(filterConfig))];
+  const excludedGcCodes = [...new Set(["ExcludedGCCodes", "TExcludedGCCodes", "excludedCaches"].flatMap((key) => strings(config[key], key) ?? []).map((code) => code.toUpperCase()))];
+  if (excludedGcCodes.length > 256 || excludedGcCodes.some((code) => !/^GC[A-Z0-9]+$/.test(code))) throw new BadRequestException("Excluded GC codes must be valid, with at most 256 entries");
+  const filterLabel = projectGcFilterLabel(filters);
+  return {
+    rules: [{ type: "COUNTRIES", minimum, findsPerCountry, findsTotal, filters, filterLabel, excludedGcCodes, excludeSelf: true, bookmarkExclusionsUnavailable: config.ignoreBookmark !== false }],
+    summary: `${minimum} countries with at least ${findsPerCountry} ${findsPerCountry === 1 ? "find" : "finds"} each, ${findsTotal} total finds, ${filterLabel}.${config.ignoreBookmark !== false ? " Project-GC's official bookmark exclusion list is unavailable here and is not applied." : ""}`
   };
 }
