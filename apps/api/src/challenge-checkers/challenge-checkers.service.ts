@@ -6,7 +6,7 @@ import { PrismaService } from "../common/prisma.service";
 import { attributesFromRaw, ChallengeRule, evaluateChallenge, ProjectGcFindFilter, proofText, sameLocationText } from "./challenge-checker.evaluator";
 import { cacheTypeIdentity, cacheTypeOptions } from "./cache-type-catalog";
 import { BoundaryGeometry, GeographicBoundariesService, pointInBoundary } from "./geographic-boundaries";
-import { importProjectGcAlphabetScript, importProjectGcBirthdayScript, importProjectGcCalendarScript, importProjectGcMatrixScript, importProjectGcMonthlyScript, importProjectGcNumberScript, isProjectGcAlphabetScript, isProjectGcBirthdayScript, isProjectGcCalendarScript, isProjectGcMatrixScript, isProjectGcMonthlyScript, projectGcFilterLabel } from "./project-gc-importer";
+import { importProjectGcCountryScript, isProjectGcCountryScript, importProjectGcAlphabetScript, importProjectGcBirthdayScript, importProjectGcCalendarScript, importProjectGcMatrixScript, importProjectGcMonthlyScript, importProjectGcNumberScript, isProjectGcAlphabetScript, isProjectGcBirthdayScript, isProjectGcCalendarScript, isProjectGcMatrixScript, isProjectGcMonthlyScript, projectGcFilterLabel } from "./project-gc-importer";
 
 type CheckerInput = { name?: unknown; gcCode?: unknown; description?: unknown; rules?: unknown };
 
@@ -150,6 +150,17 @@ function parseRules(value: unknown, { enforceComplexityLimits = true }: { enforc
       const filterLabel = cleanOptionalText(rule.filterLabel, "filterLabel", 200) ?? projectGcFilterLabel(filters);
       return { type: rule.type, minimum, perDay, allowLeapDaySkip: rule.allowLeapDaySkip, filters, filterLabel };
     }
+    if (rule.type === "COUNTRIES") {
+      const findsPerCountry = Number(rule.findsPerCountry);
+      const findsTotal = Number(rule.findsTotal);
+      if (![findsPerCountry, findsTotal].every((value) => Number.isInteger(value) && value >= 1 && value <= 1_000_000)) throw new BadRequestException("Country find requirements must be positive integers");
+      if (!Array.isArray(rule.filters) || rule.filters.length !== 1) throw new BadRequestException("Country rule must contain exactly one filter");
+      const filters = rule.filters.map((filter) => validateStoredProjectGcFilter(filter, enforceComplexityLimits));
+      if (!Array.isArray(rule.excludedGcCodes) || rule.excludedGcCodes.length > MAX_FILTER_CHOICES || rule.excludedGcCodes.some((code) => typeof code !== "string" || !/^GC[A-Z0-9]{1,38}$/i.test(code))) throw new BadRequestException("Invalid excluded GC codes");
+      if (rule.excludeSelf !== true) throw new BadRequestException("Country rules must exclude the challenge cache");
+      if (typeof rule.bookmarkExclusionsUnavailable !== "boolean") throw new BadRequestException("Country rule must specify bookmark exclusion availability");
+      return { type: rule.type, minimum, findsPerCountry, findsTotal, filters, filterLabel: projectGcFilterLabel(filters), excludedGcCodes: rule.excludedGcCodes, excludeSelf: true, bookmarkExclusionsUnavailable: rule.bookmarkExclusionsUnavailable };
+    }
     if (rule.type === "DISTINCT_TYPES") {
       if (minimum < 1 || minimum > 100) throw new BadRequestException("Distinct-types minimum must be between 1 and 100");
       if (!Array.isArray(rule.filters) || rule.filters.length !== 1) throw new BadRequestException("Imported distinct-types rule must contain exactly one filter");
@@ -286,6 +297,9 @@ export class ChallengeCheckersService {
   }
 
   importProjectGc(input: Record<string, unknown>) {
+    if (typeof input.script === "string" && isProjectGcCountryScript(input.script)) {
+      return importProjectGcCountryScript(input.script, input.config);
+    }
     if (typeof input.script === "string" && isProjectGcCalendarScript(input.script)) {
       return importProjectGcCalendarScript(input.script, input.config);
     }
@@ -444,9 +458,9 @@ export class ChallengeCheckersService {
       throw new PayloadTooLargeException("Challenge evaluation exceeds the work limit. Reduce the number of filters or choices.");
     }
     const checkerFinds = finds.map((find) => ({ ...find, cache: { ...find.cache, ...personalCacheMetadata(find.cache, find.cache.userData?.[0]?.raw), raw: find.cache.userData?.[0]?.raw } }));
-    // Monthly challenge checkers exclude the challenge cache itself (and any
+    // Imported country and monthly checkers exclude the challenge cache itself (and any
     // configured codes), mirroring the engine's default exclusion.
-    const effectiveRules = rules.map((rule) => rule.type === "MONTHLY_ATTRIBUTE" && rule.excludeSelf && checker.gcCode
+    const effectiveRules = rules.map((rule) => (rule.type === "MONTHLY_ATTRIBUTE" || rule.type === "COUNTRIES") && rule.excludeSelf && checker.gcCode
       ? { ...rule, excludedGcCodes: [...rule.excludedGcCodes, checker.gcCode.toUpperCase()] }
       : rule);
     const geometries = new Map<ChallengeRule, BoundaryGeometry>();
