@@ -1,22 +1,12 @@
-type PageNode = {
-  textContent?: string | null;
-  innerText?: string;
-  getAttribute(name: string): string | null;
-};
-type CacheDocument = {
-  title?: string;
-  querySelector(selector: string): PageNode | null;
-  querySelectorAll(selector: string): ArrayLike<PageNode>;
-};
-
-// Keep this function self-contained: it is serialized into the on-device browser.
-// It reads page content only, never cookies, local storage, passwords, or tokens.
-export function captureMysteryDocument(document: CacheDocument, href: string) {
+// Keep browser code as source text. Hermes strips function source from bytecode,
+// so Function.toString() cannot serialize a function for WebView injection.
+// This source reads page content only, never credentials or browser storage.
+export const MYSTERY_BROWSER_CAPTURE_SOURCE = String.raw`function captureMysteryDocument(document, href) {
   const url = new URL(href);
   if (url.protocol !== "https:" || !["www.geocaching.com", "geocaching.com"].includes(url.hostname)) return null;
   const gcCode = (url.pathname.match(/\/geocache\/(GC[A-Z0-9]+)/i)?.[1] || url.searchParams.get("wp") || "").toUpperCase();
   if (!/^GC[A-Z0-9]+$/.test(gcCode)) return null;
-  const read = (selector: string) => {
+  const read = (selector) => {
     const node = document.querySelector(selector);
     return (node?.innerText ?? node?.textContent ?? "").trim();
   };
@@ -30,7 +20,7 @@ export function captureMysteryDocument(document: CacheDocument, href: string) {
   const short = read("#ctl00_ContentBody_ShortDescription") || read("[data-testid='cache-short-description']");
   const long = read("#ctl00_ContentBody_LongDescription") || read("[data-testid='cache-long-description']");
   const hint = read("#div_hint") || read("[data-testid='cache-hint']");
-  const images: string[] = [];
+  const images = [];
   for (const node of Array.from(document.querySelectorAll("#ctl00_ContentBody_ShortDescription img, #ctl00_ContentBody_LongDescription img, [data-testid='cache-long-description'] img"))) {
     try {
       const src = node.getAttribute("src");
@@ -42,11 +32,11 @@ export function captureMysteryDocument(document: CacheDocument, href: string) {
   if (!short && !long && !images.length) return null;
   return {
     gcCode, name, latitude, longitude, area: read("[data-testid='cache-location']"), country: "",
-    clues: [short ? `Short description:\n${short}` : "", long ? `Puzzle listing:\n${long}` : "", hint ? `Listing hint as shown on Geocaching:\n${hint}` : "", images.length ? `Puzzle images:\n${images.join("\n")}` : ""].filter(Boolean),
+    clues: [short ? "Short description:\n" + short : "", long ? "Puzzle listing:\n" + long : "", hint ? "Listing hint as shown on Geocaching:\n" + hint : "", images.length ? "Puzzle images:\n" + images.join("\n") : ""].filter(Boolean),
     listingImageUrls: images
   };
-}
+}`;
 
 export function mysteryBrowserCaptureScript() {
-  return `(function(){try{var data=(${captureMysteryDocument.toString()})(document,location.href);window.ReactNativeWebView.postMessage(JSON.stringify({type:"geostats-mystery-page",data:data}));}catch(e){window.ReactNativeWebView.postMessage(JSON.stringify({type:"geostats-mystery-page",data:null}));}})();true;`;
+  return `(function(){try{var data=(${MYSTERY_BROWSER_CAPTURE_SOURCE})(document,location.href);window.ReactNativeWebView.postMessage(JSON.stringify({type:"geostats-mystery-page",data:data}));}catch(e){window.ReactNativeWebView.postMessage(JSON.stringify({type:"geostats-mystery-page",data:null}));}})();true;`;
 }
