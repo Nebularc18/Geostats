@@ -32,3 +32,12 @@ test("the serialized browser script works without reading browser credentials", 
   assert.equal(message.data.latitude, 59.25);
   assert.equal(message.data.longitude, 18.5);
 });
+
+test("image-only puzzle descriptions are valid, while empty listings remain unavailable", () => {
+  const base = page();
+  const document = { ...base, querySelector: (selector: string) => selector.includes("Description") || selector.includes("description") ? null : base.querySelector(selector) };
+  const captured = captureMysteryDocument(document, "https://www.geocaching.com/geocache/GC12345");
+  assert.ok(captured?.clues.some((clue) => clue.includes("Puzzle images:")));
+  assert.equal(captured?.listingImageUrls.length, 1);
+  assert.equal(captureMysteryDocument({ ...document, querySelectorAll: () => [] }, "https://www.geocaching.com/geocache/GC12345"), null);
+});

@@ -468,7 +468,7 @@ Geostats does not require or use Geocaching API partner access. For a new GC cod
 
 The Geocaching session stays on the phone. The capture reads cache-page content, not cookies, passwords, tokens, or browser storage. Only the selected cache data is saved through your existing private mystery sync. On the web, enter a GC code to open its Geocaching page and use **Import to Geostats** from the browser helper. Existing mysteries open without replacing solutions or previous attempts.
 
-For bulk imports, expand **Import a GPX file** and tap **Choose GPX file**. Use a downloaded Geocaching GPX or an extracted Pocket Query GPX. Mystery/Unknown caches, published coordinates, puzzle text, and hints are imported. Existing GC codes are skipped. Files must be under 10 MB; listings that exceed the account sync limit are skipped.
+For bulk imports, expand **Import a GPX file** and tap **Choose GPX file**. Use a downloaded Geocaching GPX or an extracted Pocket Query GPX. Mystery/Unknown caches, published coordinates, puzzle text, and hints are imported. Existing GC codes are skipped. Files must be under 10 MB; listings that exceed the account sync limit are skipped. Bulk import waits for account sync to load and uses only the remaining space within the 500 owned-mystery limit. Excess entries are reported and are not queued for endless sync retries.
 
 Open a mystery and tap **Share with AI** to choose an installed app from the phone's share menu, or **Copy for AI** to copy and paste. Both include cache details, clues, notes, and previous attempts. Attach puzzle images separately.
 

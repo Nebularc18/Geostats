@@ -1,6 +1,6 @@
 import { BadRequestException, Body, ConflictException, Controller, Delete, Get, Header, NotFoundException, Param, Post, Put, UseGuards } from "@nestjs/common";
 import { personalCacheMetadata, Prisma } from "@geostats/db";
-import { AuthUser } from "@geostats/shared";
+import { AuthUser, MAX_MYSTERY_WORKSPACES_PER_OWNER } from "@geostats/shared";
 import { AuthGuard } from "../auth/auth.guard";
 import { CurrentUser } from "../auth/current-user.decorator";
 import { PrismaService } from "../common/prisma.service";
@@ -25,9 +25,8 @@ type MysteryStatus = typeof MYSTERY_STATUSES[number];
 
 const MAX_MYSTERY_NAME_LENGTH = 300;
 const MAX_MYSTERY_SNAPSHOT_BYTES = 256 * 1024;
-const MAX_MYSTERY_WORKSPACES_PER_OWNER = 500;
 
-function importedListingClues(value: unknown): string[] {
+function importedListingContext(value: unknown) {
   const record = (input: unknown): Record<string, unknown> => input && typeof input === "object" && !Array.isArray(input) ? input as Record<string, unknown> : {};
   const raw = record(value);
   const extensions = record(raw.extensions);
@@ -35,11 +34,13 @@ function importedListingClues(value: unknown): string[] {
   const text = (key: string) => {
     const field = cache[`groundspeak:${key}`] ?? cache[key];
     const candidate = typeof field === "string" ? field : record(field).text;
-    return typeof candidate === "string" ? candidate.slice(0, 12_000).replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "").replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, "").replace(/<\s*(?:br\s*\/|br|\/p|\/div)>/gi, "\n").replace(/<[^>]+>/g, "").trim() : "";
+    return typeof candidate === "string" ? candidate.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "").replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, "").replace(/<\s*(?:br\s*\/|br|\/p|\/div)>/gi, "\n").replace(/<[^>]+>/g, "").trim() : "";
   };
   const description = [text("short_description"), text("long_description")].filter(Boolean).join("\n\n");
   const hint = text("encoded_hints");
-  return [description ? `Puzzle listing:\n${description}` : "", hint ? `Listing hint:\n${hint}` : ""].filter(Boolean);
+  const clues = [description ? `Puzzle listing:\n${description}` : "", hint ? `Listing hint:\n${hint}` : ""].filter(Boolean);
+  const fits = Buffer.byteLength(JSON.stringify(clues), "utf8") <= MAX_MYSTERY_SNAPSHOT_BYTES - 4000;
+  return { clues: fits ? clues : [], listingComplete: Boolean(description) && fits };
 }
 
 async function ensureSharedCacheMetadata(tx: Prisma.TransactionClient, gcCode: string) {
@@ -158,11 +159,11 @@ export class MysteriesController {
     if (type && !["unknown cache", "mystery cache", "mystery", "unknown", "mystery/unknown cache"].includes(type)) {
       throw new BadRequestException("This cache is not a Mystery or Unknown cache.");
     }
-    const clues = importedListingClues(cache.userData[0]?.raw);
+    const listing = importedListingContext(cache.userData[0]?.raw);
     return { cache: {
       gcCode, name: data.name, area: data.county ?? data.region ?? "", country: data.country ?? "",
       region: data.region ?? "", publishedLatitude: Number(data.latitude), publishedLongitude: Number(data.longitude),
-      clues
+      ...listing
     } };
   }
 

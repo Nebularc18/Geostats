@@ -1,3 +1,4 @@
+import { MAX_MYSTERY_WORKSPACES_PER_OWNER } from "@geostats/shared";
 import { XMLParser, XMLValidator } from "fast-xml-parser";
 
 export const MAX_MYSTERY_GPX_BYTES = 10 * 1024 * 1024;
@@ -11,6 +12,7 @@ type ImportedMystery = {
   publishedLatitude: number;
   publishedLongitude: number;
   clues: string[];
+  listingComplete?: boolean;
 };
 
 function text(value: unknown): string {
@@ -40,7 +42,7 @@ export function parseMysteryGpx(xml: string): { mysteries: ImportedMystery[]; sk
   const codes = new Set<string>();
   let skipped = 0;
   for (const point of points) {
-    const cache = point.cache ?? {};
+    const cache = point.cache ?? point.extensions?.cache ?? {};
     const gcCode = text(point.name).toUpperCase();
     const name = text(cache.name) || text(point.desc) || gcCode;
     const type = text(cache.type) || text(point.type);
@@ -60,6 +62,7 @@ export function parseMysteryGpx(xml: string): { mysteries: ImportedMystery[]; sk
     const hint = plainText(cache.encoded_hints);
     mysteries.push({ gcCode, name, area: text(cache.county) || text(cache.state), country: text(cache.country), region: text(cache.state),
       publishedLatitude, publishedLongitude,
+      listingComplete: Boolean(description),
       clues: [description ? `Puzzle listing:\n${description}` : "", hint ? `Listing hint:\n${hint}` : ""].filter(Boolean) });
   }
   return { mysteries, skipped };
@@ -132,4 +135,23 @@ export function browserCapturedMystery(value: unknown, expectedCode: string): (I
   }).slice(0, 30) : [];
   return { gcCode, name, area: typeof data.area === "string" ? data.area : "", country: typeof data.country === "string" ? data.country : "", region: typeof data.region === "string" ? data.region : "",
     publishedLatitude: data.latitude, publishedLongitude: data.longitude, clues, listingImageUrls };
+}
+
+
+export function selectMysteryImports<T extends { gcCode: string; sharedBy?: unknown }>(existing: Array<{ gcCode: string; sharedBy?: unknown }>, candidates: T[], accountLoaded: boolean) {
+  if (!accountLoaded) throw new Error("Wait for your account mysteries to finish loading before importing.");
+  const codes = new Set(existing.map((cache) => cache.gcCode.toUpperCase()));
+  let capacity = Math.max(0, MAX_MYSTERY_WORKSPACES_PER_OWNER - existing.filter((cache) => !cache.sharedBy).length);
+  const added: T[] = [];
+  let duplicates = 0;
+  let excess = 0;
+  for (const candidate of candidates) {
+    const code = candidate.gcCode.toUpperCase();
+    if (codes.has(code)) { duplicates++; continue; }
+    if (!capacity) { excess++; continue; }
+    added.push(candidate);
+    codes.add(code);
+    capacity--;
+  }
+  return { added, duplicates, excess };
 }

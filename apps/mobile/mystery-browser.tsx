@@ -7,7 +7,7 @@ import { browserCapturedMystery } from "./mystery-tools";
 import { MAX_MYSTERY_SNAPSHOT_BYTES, mysterySnapshotByteLength } from "./mystery-storage";
 
 type BrowserListing = NonNullable<ReturnType<typeof browserCapturedMystery>>;
-export function MysteryBrowser({ gcCode, onImport, onClose }: { gcCode: string; onImport: (listing: BrowserListing) => void; onClose: () => void }) {
+export function MysteryBrowser({ gcCode, onImport, onClose }: { gcCode: string; onImport: (listing: BrowserListing) => boolean; onClose: () => void }) {
   const browser = useRef<WebView>(null);
   const manualCapture = useRef(false);
   const imported = useRef(false);
@@ -51,8 +51,8 @@ export function MysteryBrowser({ gcCode, onImport, onClose }: { gcCode: string; 
               return;
             }
             if (mysterySnapshotByteLength(listing) > MAX_MYSTERY_SNAPSHOT_BYTES - 2000) { setNotice("This listing is too large to sync. Use a GPX with a shorter description."); return; }
-            imported.current = true;
-            onImport(listing);
+            if (onImport(listing)) imported.current = true;
+            else setNotice("Could not save this listing. Close the browser to review the import message.");
           } catch { setNotice("Could not read this listing. Try Import this page again."); }
         }} />
     </SafeAreaView>

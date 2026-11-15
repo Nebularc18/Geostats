@@ -15,9 +15,9 @@ import * as Linking from "expo-linking";
 import { ClerkProvider, useAuth } from "@clerk/expo";
 import { useHostedAuth } from "@clerk/expo/hosted-auth";
 import { tokenCache } from "@clerk/expo/token-cache";
-import { parseCoordinate } from "@geostats/shared";
+import { MAX_MYSTERY_WORKSPACES_PER_OWNER, parseCoordinate } from "@geostats/shared";
 import { pickAndUploadDocument, type UploadKind } from "./upload";
-import { MAX_MYSTERY_GPX_BYTES, mysteryAiPrompt, mysteryCodeFromText, parseMysteryGpx } from "./mystery-tools";
+import { MAX_MYSTERY_GPX_BYTES, mysteryAiPrompt, mysteryCodeFromText, parseMysteryGpx, selectMysteryImports } from "./mystery-tools";
 import { groupTrackableJourneyPoints, hasNativeMapSupport, scratchMapGeometryBudget, SCRATCH_WORLD_REGION, selectNativeMapPoints } from "./mobile-map";
 import { formatShortDt, ftfRowToListPoint, ftfRowToMapPoint, hasDtData } from "./ftf-points";
 import { schedulePostImportStatsRefresh } from "./import-refresh";
@@ -89,6 +89,7 @@ type MysteryCache = {
   clues: string[];
   image?: string;
   listingImageUrls?: string[];
+  listingComplete?: boolean;
   sharedWith: AppUser[];
   attempts: CoordinateAttempt[];
   sharedBy?: AppUser;
@@ -1321,6 +1322,8 @@ export default function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [booting, setBooting] = useState(true);
   const [needsOnboarding, setNeedsOnboarding] = useState(false);
+  const [profileChecked, setProfileChecked] = useState(false);
+  const [profileLoadError, setProfileLoadError] = useState<string | null>(null);
   const [screen, setScreen] = useState<ScreenId>("dashboard");
   const [incomingMysteryShare, setIncomingMysteryShare] = useState<IncomingMysteryShare | null>(null);
   const lastIncomingShare = useRef("");
@@ -1342,8 +1345,8 @@ export default function App() {
     return () => subscription.remove();
   }, []);
   useEffect(() => {
-    if (incomingMysteryShare && session && !needsOnboarding) setScreen("mysteries");
-  }, [incomingMysteryShare?.id, session?.user.id, needsOnboarding]);
+    if (incomingMysteryShare && session && profileChecked && !needsOnboarding) setScreen("mysteries");
+  }, [incomingMysteryShare?.id, session?.user.id, profileChecked, needsOnboarding]);
   function finishIncomingShare(id: number) {
     if (incomingMysteryShare?.id !== id || lastIncomingShare.current !== incomingMysteryShare.text) return;
     lastIncomingShare.current = "";
@@ -1378,15 +1381,18 @@ export default function App() {
   }, []);
   async function acceptSession(nextSession: Session, baseUrl = apiBaseUrl) {
     const sessionGeneration = ++sessionGenerationRef.current;
+    setProfileChecked(false);
+    setProfileLoadError(null);
     setSession(nextSession);
     setNeedsOnboarding(false);
     try {
       const profile = await apiFetch<{ profile: any }>(baseUrl, "/profile", nextSession.token);
       if (sessionGenerationRef.current !== sessionGeneration) return;
       setNeedsOnboarding(!profile.profile);
+      setProfileChecked(true);
     } catch {
       if (sessionGenerationRef.current !== sessionGeneration) return;
-      setNeedsOnboarding(false);
+      setProfileLoadError("Could not check your profile. Retry before continuing.");
     }
   }
   useEffect(() => {
@@ -1413,14 +1419,16 @@ export default function App() {
     clearImportStatusTracking();
     sessionGenerationRef.current += 1;
     setSession(null);
+    setProfileChecked(false);
+    setProfileLoadError(null);
     setNeedsOnboarding(false);
     // Unmount authenticated screens before waiting on storage so their
     // schedulers cannot start another request with the old token.
     await SecureStore.deleteItemAsync(TOKEN_KEY);
   }
   let content;
-  if (booting) {
-    content = <SafeAreaView style={styles.safeCenter}><ActivityIndicator color="#f3b34d" /></SafeAreaView>;
+  if (booting || (session && !profileChecked)) {
+    content = <SafeAreaView style={styles.safeCenter}>{profileLoadError && session ? <><Text style={styles.note}>{profileLoadError}</Text><PrimaryButton label="Retry profile check" onPress={() => { void acceptSession(session); }} /><SecondaryButton label="Sign out" onPress={logout} /></> : <ActivityIndicator color="#f3b34d" />}</SafeAreaView>;
   } else if (!session) {
     content = <AuthScreen apiBaseUrl={apiBaseUrl} onApiBaseUrlChange={changeApiBaseUrl} onSession={acceptSession} />;
   } else if (needsOnboarding) {
@@ -2458,7 +2466,7 @@ function badgeTierSummary(badges: Array<{ current: number | null; thresholds: nu
 function MysteriesScreen({ incomingShare, onIncomingShareHandled, apiBaseUrl, token, userId, onRequestScrollTop }: { incomingShare: IncomingMysteryShare | null; onIncomingShareHandled: (id: number) => void; apiBaseUrl: string; token: string; userId: string; onRequestScrollTop: () => void }) {
   const [caches, setCaches] = useState<MysteryCache[]>([]);
   const [ready, setReady] = useState(false);
-  const latestMysteries = useRef({ caches, ready });
+  const latestMysteries = useRef({ caches, ready, accountLoaded: false });
   const serverSnapshots = useRef(new Map<string, string>());
   const snapshotRevisions = useRef(new Map<string, number>());
   const syncMetadata = useRef(new Map<string, MysterySyncMetadata>());
@@ -2499,7 +2507,7 @@ function MysteriesScreen({ incomingShare, onIncomingShareHandled, apiBaseUrl, to
   const [users, setUsers] = useState<AppUser[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
 
-  latestMysteries.current = { caches, ready };
+  latestMysteries.current = { caches, ready, accountLoaded };
 
   function rememberSnapshotRevision(cacheId: string, revision: number) {
     if (!Number.isSafeInteger(revision) || revision < 0) return;
@@ -2527,7 +2535,7 @@ function MysteriesScreen({ incomingShare, onIncomingShareHandled, apiBaseUrl, to
     if (identityChanged) {
       activeMysteryNamespace.current = namespace;
       loadedMysteryNamespace.current = "";
-      latestMysteries.current = { caches: [], ready: false };
+      latestMysteries.current = { caches: [], ready: false, accountLoaded: false };
       serverSnapshots.current.clear();
       snapshotRevisions.current.clear();
       syncMetadata.current.clear();
@@ -2782,17 +2790,29 @@ function MysteriesScreen({ incomingShare, onIncomingShareHandled, apiBaseUrl, to
     setBrowserGcCode(code);
   }
 
-  function saveImportedListing(listing: { gcCode: string; name: string; area: string; country: string; region?: string; publishedLatitude: number; publishedLongitude: number; clues?: string[]; listingImageUrls?: string[] }) {
+  function saveImportedListing(listing: { gcCode: string; name: string; area: string; country: string; region?: string; publishedLatitude: number; publishedLongitude: number; clues?: string[]; listingImageUrls?: string[]; listingComplete?: boolean }): boolean {
+    if (!latestMysteries.current.accountLoaded) { setNotice("Wait for your account mysteries to finish loading before importing."); return false; }
     const existing = latestMysteries.current.caches.find((cache) => cache.gcCode.toUpperCase() === listing.gcCode);
-    if (existing) { showMystery(existing.id); setBrowserGcCode(""); return; }
-    const cache: MysteryCache = { ...listing, id: newId("mystery"), status: "solving", statusUpdatedAt: new Date().toISOString(), notes: "", fieldNotes: "", clues: listing.clues ?? [], sharedWith: [], attempts: [] };
-    if (mysterySnapshotByteLength(cache) > MAX_MYSTERY_SNAPSHOT_BYTES) { setNotice("This listing is too large to sync. Use a smaller GPX."); return; }
-    setCaches((current) => [cache, ...current]);
+    if (existing?.sharedBy) { showMystery(existing.id); setBrowserGcCode(""); return true; }
+    const cache: MysteryCache = existing ? {
+      ...existing,
+      clues: [...new Set([...existing.clues, ...(listing.clues ?? [])])],
+      listingImageUrls: [...new Set([...(existing.listingImageUrls ?? []), ...(listing.listingImageUrls ?? [])])],
+      listingComplete: true
+    } : { ...listing, id: newId("mystery"), listingComplete: true, status: "solving", statusUpdatedAt: new Date().toISOString(), notes: "", fieldNotes: "", clues: listing.clues ?? [], sharedWith: [], attempts: [] };
+    if (mysterySnapshotByteLength(cache) > MAX_MYSTERY_SNAPSHOT_BYTES) { setNotice("This listing is too large to sync. Use a smaller GPX."); return false; }
+    if (!existing && !selectMysteryImports(latestMysteries.current.caches, [cache], true).added.length) {
+      setNotice(`Your account can hold ${MAX_MYSTERY_WORKSPACES_PER_OWNER} mysteries. Remove one before importing another.`); return false;
+    }
+    const next = existing ? latestMysteries.current.caches.map((item) => item.id === existing.id ? cache : item) : [cache, ...latestMysteries.current.caches];
+    latestMysteries.current = { ...latestMysteries.current, caches: next };
+    setCaches(next);
     setBrowserGcCode("");
     setCacheLink("");
     setShowAdd(false);
     showMystery(cache.id);
     setNotice(`${listing.gcCode} imported. Listing text and image links are included for AI sharing.`);
+    return true;
   }
 
   async function importFromText(value: string): Promise<boolean> {
@@ -2805,8 +2825,13 @@ function MysteriesScreen({ incomingShare, onIncomingShareHandled, apiBaseUrl, to
     setCacheLink(code);
     const existing = latestMysteries.current.caches.find((cache) => cache.gcCode.toUpperCase() === code);
     if (existing) {
-      showMystery(existing.id);
-      setNotice(`${code} is already in your list. Your saved work is unchanged.`);
+      if (!existing.sharedBy && existing.listingComplete !== true) {
+        openBrowserCapture(code);
+        setNotice(`${code} is already saved. Capture its listing to add puzzle context while keeping your notes and attempts.`);
+      } else {
+        showMystery(existing.id);
+        setNotice(`${code} is already in your list. Your saved work is unchanged.`);
+      }
       return true;
     }
     if (!accountLoaded) {
@@ -2817,11 +2842,11 @@ function MysteriesScreen({ incomingShare, onIncomingShareHandled, apiBaseUrl, to
     setLookingUpCache(true);
     const namespace = activeMysteryNamespace.current;
     try {
-      type ListingResponse = { cache: { gcCode: string; name: string; area: string; country: string; region: string; publishedLatitude: number; publishedLongitude: number; clues?: string[]; listingImageUrls?: string[] } };
+      type ListingResponse = { cache: { gcCode: string; name: string; area: string; country: string; region: string; publishedLatitude: number; publishedLongitude: number; clues?: string[]; listingImageUrls?: string[]; listingComplete: boolean } };
       const lookup = () => apiFetch<ListingResponse>(apiBaseUrl, `/mysteries/lookup/${encodeURIComponent(code)}`, token);
       const response = await lookup();
       if (!mounted.current || activeMysteryNamespace.current !== namespace) return false;
-      if (response.cache.clues?.length) saveImportedListing(response.cache);
+      if (response.cache.listingComplete === true) saveImportedListing(response.cache);
       else openBrowserCapture(code);
       return true;
     } catch (error) {
@@ -2871,7 +2896,7 @@ function MysteriesScreen({ incomingShare, onIncomingShareHandled, apiBaseUrl, to
   }
 
   async function importMysteries() {
-    if (!ready || mysteryImportInFlight.current) return;
+    if (!ready || !accountLoaded || mysteryImportInFlight.current) return;
     mysteryImportInFlight.current = true;
     setImportingMysteries(true);
     const namespace = activeMysteryNamespace.current;
@@ -2882,24 +2907,23 @@ function MysteriesScreen({ incomingShare, onIncomingShareHandled, apiBaseUrl, to
       if ((asset.size ?? 0) > MAX_MYSTERY_GPX_BYTES) throw new Error("Choose a GPX file smaller than 10 MB.");
       const { mysteries, skipped } = parseMysteryGpx(await new File(asset.uri).text());
       if (activeMysteryNamespace.current !== namespace) return;
-      const existing = new Set(latestMysteries.current.caches.map((cache) => cache.gcCode.toUpperCase()));
-      let duplicates = 0;
       let oversized = 0;
-      const added: MysteryCache[] = [];
+      const candidates: MysteryCache[] = [];
       for (const listing of mysteries) {
-        if (existing.has(listing.gcCode)) { duplicates++; continue; }
         const cache: MysteryCache = { ...listing, id: newId("mystery"), status: "solving", statusUpdatedAt: new Date().toISOString(), notes: "", fieldNotes: "", clues: listing.clues, sharedWith: [], attempts: [] };
         if (mysterySnapshotByteLength(cache) > MAX_MYSTERY_SNAPSHOT_BYTES || cache.name.length > 300) { oversized++; continue; }
-        added.push(cache);
-        existing.add(cache.gcCode);
+        candidates.push(cache);
       }
+      const { added, duplicates, excess } = selectMysteryImports(latestMysteries.current.caches, candidates, latestMysteries.current.accountLoaded);
       if (added.length) {
-        setCaches((current) => [...added, ...current]);
+        const next = [...added, ...latestMysteries.current.caches];
+        latestMysteries.current = { ...latestMysteries.current, caches: next };
+        setCaches(next);
         setQuery("");
         setFilter("all");
         setShowAdd(false);
       }
-      setNotice(`Imported ${added.length} mysteries.${duplicates ? ` ${duplicates} already in your list.` : ""}${skipped ? ` Skipped ${skipped} other, duplicate, or invalid waypoints.` : ""}${oversized ? ` ${oversized} listings were too large to sync.` : ""}${!mysteries.length ? " Choose a GPX containing Mystery or Unknown caches." : ""}`);
+      setNotice(`Imported ${added.length} mysteries.${duplicates ? ` ${duplicates} already in your list.` : ""}${skipped ? ` Skipped ${skipped} other, duplicate, or invalid waypoints.` : ""}${oversized ? ` ${oversized} listings were too large to sync.` : ""}${excess ? ` Skipped ${excess} caches because your account can hold ${MAX_MYSTERY_WORKSPACES_PER_OWNER} mysteries. Remove some mysteries before importing more.` : ""}${!mysteries.length ? " Choose a GPX containing Mystery or Unknown caches." : ""}`);
     } catch (error) {
       if (activeMysteryNamespace.current === namespace) setNotice(error instanceof Error ? error.message : "Could not import mysteries.");
     } finally {
@@ -2919,6 +2943,10 @@ function MysteriesScreen({ incomingShare, onIncomingShareHandled, apiBaseUrl, to
   }
 
   function addCache() {
+    if (!latestMysteries.current.accountLoaded) { setNotice("Wait for your account mysteries to finish loading before adding a cache."); return; }
+    const existing = latestMysteries.current.caches.find((cache) => cache.gcCode.toUpperCase() === gcCode.trim().toUpperCase());
+    if (existing) { showMystery(existing.id); setNotice("This cache is already in your list. Your saved work is unchanged."); return; }
+    if (latestMysteries.current.caches.filter((cache) => !cache.sharedBy).length >= MAX_MYSTERY_WORKSPACES_PER_OWNER) { setNotice(`Your account can hold ${MAX_MYSTERY_WORKSPACES_PER_OWNER} mysteries. Remove one before adding another.`); return; }
     const coordinate = parseCoordinate(published);
     if (!/^GC[A-Z0-9]+$/i.test(gcCode.trim()) || !name.trim() || !coordinate) {
       setNotice("Enter a GC code, name, and valid decimal or geocaching coordinate.");
@@ -2940,7 +2968,9 @@ function MysteriesScreen({ incomingShare, onIncomingShareHandled, apiBaseUrl, to
       sharedWith: [],
       attempts: []
     };
-    setCaches((current) => [cache, ...current]);
+    const next = [cache, ...latestMysteries.current.caches];
+    latestMysteries.current = { ...latestMysteries.current, caches: next };
+    setCaches(next);
     setSelectedId(cache.id);
     setDetailOpen(true);
     requestAnimationFrame(onRequestScrollTop);
@@ -3090,7 +3120,7 @@ function MysteriesScreen({ incomingShare, onIncomingShareHandled, apiBaseUrl, to
       </View>
       <SecondaryButton label={showImportOptions ? "Hide file import" : "Import a GPX file"} onPress={() => setShowImportOptions((value) => !value)} />
       {showImportOptions ? <Panel title="Import mysteries" subtitle="Download a cache GPX or Pocket Query GPX from Geocaching, then choose it from your phone's Files. Mystery caches, puzzle text, and hints are imported. Existing caches keep their notes and solutions.">
-        <SecondaryButton label={importingMysteries ? "Importing..." : "Choose GPX file"} disabled={!ready || importingMysteries} onPress={importMysteries} />
+        <SecondaryButton label={importingMysteries ? "Importing..." : "Choose GPX file"} disabled={!ready || !accountLoaded || importingMysteries} onPress={importMysteries} />
       </Panel> : null}
       {showAdd ? <Panel title="Add a mystery cache">
         {gcCode ? <SecondaryButton label="Open cache on Geocaching" onPress={() => { void Linking.openURL(`https://coord.info/${gcCode}`).catch(() => setNotice("Could not open Geocaching.")); }} /> : null}
@@ -3159,7 +3189,7 @@ function MysteriesScreen({ incomingShare, onIncomingShareHandled, apiBaseUrl, to
       </Panel>
       </> : null}
       {detailOpen && notice ? <Text accessibilityRole="alert" style={styles.note}>{notice}</Text> : null}
-      {browserGcCode && Platform.OS !== "web" ? <MysteryBrowser key={`${apiBaseUrl}:${userId}:${browserGcCode}`} gcCode={browserGcCode} onClose={() => setBrowserGcCode("")} onImport={(listing) => { if (browserCaptureNamespace.current === activeMysteryNamespace.current) saveImportedListing(listing); else setBrowserGcCode(""); }} /> : null}
+      {browserGcCode && Platform.OS !== "web" ? <MysteryBrowser key={`${apiBaseUrl}:${userId}:${browserGcCode}`} gcCode={browserGcCode} onClose={() => setBrowserGcCode("")} onImport={(listing) => { if (browserCaptureNamespace.current === activeMysteryNamespace.current) return saveImportedListing(listing); setBrowserGcCode(""); return false; }} /> : null}
       <LoadState loading={!ready} error={null} />
     </>
   );

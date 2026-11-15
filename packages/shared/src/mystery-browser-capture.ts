@@ -29,7 +29,6 @@ export function captureMysteryDocument(document: CacheDocument, href: string) {
   if (!name || name.length > 300 || !Number.isFinite(latitude) || !Number.isFinite(longitude) || Math.abs(latitude) > 90 || Math.abs(longitude) > 180 || (dmm && (Number(dmm[3].replace(",", ".")) >= 60 || Number(dmm[6].replace(",", ".")) >= 60))) return null;
   const short = read("#ctl00_ContentBody_ShortDescription") || read("[data-testid='cache-short-description']");
   const long = read("#ctl00_ContentBody_LongDescription") || read("[data-testid='cache-long-description']");
-  if (!short && !long) return null;
   const hint = read("#div_hint") || read("[data-testid='cache-hint']");
   const images: string[] = [];
   for (const node of Array.from(document.querySelectorAll("#ctl00_ContentBody_ShortDescription img, #ctl00_ContentBody_LongDescription img, [data-testid='cache-long-description'] img"))) {
@@ -40,6 +39,7 @@ export function captureMysteryDocument(document: CacheDocument, href: string) {
       if (image.protocol === "https:" && !image.username && !image.password && !images.includes(image.href) && images.length < 30) images.push(image.href);
     } catch { /* Ignore malformed image sources. */ }
   }
+  if (!short && !long && !images.length) return null;
   return {
     gcCode, name, latitude, longitude, area: read("[data-testid='cache-location']"), country: "",
     clues: [short ? `Short description:\n${short}` : "", long ? `Puzzle listing:\n${long}` : "", hint ? `Listing hint as shown on Geocaching:\n${hint}` : "", images.length ? `Puzzle images:\n${images.join("\n")}` : ""].filter(Boolean),

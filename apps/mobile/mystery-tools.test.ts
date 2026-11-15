@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { browserCapturedMystery, mysteryAiPrompt, mysteryCodeFromText, parseMysteryGpx } from "./mystery-tools";
+import { browserCapturedMystery, mysteryAiPrompt, mysteryCodeFromText, parseMysteryGpx, selectMysteryImports } from "./mystery-tools";
 
 const waypoint = (code = "GC123", type = "Unknown Cache", lat = "59.123") => `<wpt lat="${lat}" lon="18.456"><name>${code}</name><desc>Fallback</desc><groundspeak:cache><groundspeak:name>Puzzle &amp; name</groundspeak:name><groundspeak:type>${type}</groundspeak:type><groundspeak:country>Sweden</groundspeak:country><groundspeak:state>Stockholm</groundspeak:state><groundspeak:long_description><![CDATA[<p>Find the number</p><p>Then decode it.</p>]]></groundspeak:long_description><groundspeak:encoded_hints>Look up</groundspeak:encoded_hints></groundspeak:cache></wpt>`;
 const gpx = (points: string) => `<gpx xmlns:groundspeak="http://www.groundspeak.com/cache/1/0/1">${points}</gpx>`;
@@ -71,4 +71,34 @@ test("browser captures are bound to the requested cache and cannot set sharing o
   assert.equal("attempts" in result, false);
   assert.equal(browserCapturedMystery(value, "GC999"), null);
   assert.equal(browserCapturedMystery({ ...value, latitude: NaN }, "GC12345"), null);
+});
+
+test("nested GPX extensions retain mystery type, description, and hints", () => {
+  const xml = gpx(waypoint().replace("<groundspeak:cache>", "<extensions><groundspeak:cache>").replace("</groundspeak:cache>", "</groundspeak:cache></extensions>"));
+  const result = parseMysteryGpx(xml);
+  assert.equal(result.mysteries.length, 1);
+  assert.equal(result.mysteries[0].listingComplete, true);
+  assert.match(result.mysteries[0].clues.join("\n"), /Find the number/);
+  assert.match(result.mysteries[0].clues.join("\n"), /Look up/);
+});
+
+test("import planning waits for account load and preserves existing cache records", () => {
+  const saved = { gcCode: "GC12345", notes: "Saved solution", sharedBy: undefined };
+  const incoming = [{ gcCode: "gc12345", notes: "", sharedBy: undefined }, { gcCode: "GC999", notes: "", sharedBy: undefined }];
+  assert.throws(() => selectMysteryImports([saved], incoming, false), /finish loading/);
+  const result = selectMysteryImports([saved], incoming, true);
+  assert.equal(result.duplicates, 1);
+  assert.deepEqual(result.added.map((cache) => cache.gcCode), ["GC999"]);
+  assert.equal(saved.notes, "Saved solution");
+});
+
+test("import planning respects remaining owned workspace capacity without counting received shares", () => {
+  const existing = Array.from({ length: 499 }, (_, index) => ({ gcCode: `GC${index}`, sharedBy: undefined as unknown }));
+  existing.push({ gcCode: "GCSHARED", sharedBy: { id: "owner" } });
+  const result = selectMysteryImports(existing, [{ gcCode: "GCNEW1" }, { gcCode: "GCNEW2" }], true);
+  assert.equal(result.added.length, 1);
+  assert.equal(result.excess, 1);
+  const full = selectMysteryImports([...existing, ...result.added], [{ gcCode: "GCNEW2" }], true);
+  assert.equal(full.added.length, 0);
+  assert.equal(full.excess, 1);
 });

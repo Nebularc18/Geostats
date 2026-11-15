@@ -862,3 +862,26 @@ test("lookup rejects missing caches, invalid codes, and other cache types", asyn
   const traditional = new MysteriesController({ cache: { findUnique: async () => ({ metadataTrusted: true, cacheType: "Traditional Cache", userData: [] }) } } as any);
   await assert.rejects(traditional.lookup(owner, "GC12345"), /not a Mystery/);
 });
+
+test("lookup distinguishes puzzle descriptions from hints and does not silently shorten text", async () => {
+  async function lookup(description: string, hint = "A hint") {
+    const controller = new MysteriesController({ cache: { findUnique: async () => ({
+      gcCode: "GC12345", name: "Puzzle", cacheType: "Unknown Cache", latitude: 59, longitude: 18, metadataTrusted: true,
+      userData: [{ raw: { "groundspeak:cache": { "groundspeak:long_description": { text: description }, "groundspeak:encoded_hints": hint } } }]
+    }) } } as any);
+    return (await controller.lookup(owner, "GC12345")).cache;
+  }
+  const hintOnly = await lookup("");
+  assert.equal(hintOnly.listingComplete, false);
+  assert.equal(hintOnly.clues.length, 1);
+  const longPuzzle = "<div>" + "All puzzle text. ".repeat(2000) + "Important final line</div>";
+  const complete = await lookup(longPuzzle);
+  assert.equal(complete.listingComplete, true);
+  assert.match(complete.clues[0], /Important final line$/);
+  const htmlHeavy = await lookup("<span class='long-markup'></span>".repeat(1000) + "Puzzle at the end");
+  assert.equal(htmlHeavy.listingComplete, true);
+  assert.match(htmlHeavy.clues[0], /Puzzle at the end$/);
+  const tooLarge = await lookup("Puzzle".repeat(50_000));
+  assert.equal(tooLarge.listingComplete, false);
+  assert.deepEqual(tooLarge.clues, []);
+});
