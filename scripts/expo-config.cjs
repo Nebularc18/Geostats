@@ -30,7 +30,7 @@ module.exports = function expoConfig(assetRoot) {
       name: "Geostats",
       slug: "geostats",
       scheme: "geostats",
-      version: "0.2.0",
+      version: "0.3.0",
       runtimeVersion: { policy: "appVersion" },
       updates: {
         url: `https://u.expo.dev/${projectId}`,
@@ -41,10 +41,11 @@ module.exports = function expoConfig(assetRoot) {
       userInterfaceStyle: "dark",
       ios: {
         supportsTablet: true,
+        bundleIdentifier: "com.hampu.geostats",
       },
       android: {
         package: "com.hampu.geostats",
-        versionCode: 5,
+        versionCode: 6,
         adaptiveIcon: {
           backgroundColor: "#07110d",
           foregroundImage: `${assetRoot}/android-icon-foreground.png`,
@@ -63,6 +64,19 @@ module.exports = function expoConfig(assetRoot) {
       plugins: [
         "@clerk/expo",
         "expo-secure-store",
+        [
+          "expo-sharing",
+          {
+            android: {
+              enabled: true,
+              singleShareMimeTypes: ["text/plain", "text/uri-list"],
+            },
+            ios: {
+              enabled: true,
+              activationRule: { supportsText: true, supportsWebUrlWithMaxCount: 1 },
+            },
+          },
+        ],
         [
           "react-native-maps",
           {

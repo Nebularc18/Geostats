@@ -1,7 +1,7 @@
 import { StatusBar } from "expo-status-bar";
 import { fetch as expoFetch } from "expo/fetch";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Alert, AppState, FlatList, Image, Platform, Pressable, ScrollView, SectionList, StyleSheet, Text, TextInput, View } from "react-native";
+import { useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
+import { ActivityIndicator, Alert, AppState, FlatList, Image, Platform, Pressable, ScrollView, SectionList, Share, StyleSheet, Text, TextInput, View } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import * as DocumentPicker from "expo-document-picker";
 import { File, Paths } from "expo-file-system";
@@ -9,13 +9,15 @@ import * as SecureStore from "expo-secure-store";
 import * as Clipboard from "expo-clipboard";
 import * as Sharing from "expo-sharing";
 import * as Updates from "expo-updates";
+import { MysteryBrowser } from "./mystery-browser";
 import MapView, { Callout, Marker, Polygon, Polyline, PROVIDER_GOOGLE, type MapStyleElement, type Region } from "react-native-maps";
 import * as Linking from "expo-linking";
 import { ClerkProvider, useAuth } from "@clerk/expo";
 import { useHostedAuth } from "@clerk/expo/hosted-auth";
 import { tokenCache } from "@clerk/expo/token-cache";
-import { parseCoordinate } from "@geostats/shared";
+import { MAX_MYSTERY_WORKSPACES_PER_OWNER, parseCoordinate } from "@geostats/shared";
 import { pickAndUploadDocument, type UploadKind } from "./upload";
+import { MAX_MYSTERY_GPX_BYTES, mysteryAiPrompt, mysteryCodeFromText, parseMysteryGpx, selectMysteryImports } from "./mystery-tools";
 import { groupTrackableJourneyPoints, hasNativeMapSupport, scratchMapGeometryBudget, SCRATCH_WORLD_REGION, selectNativeMapPoints } from "./mobile-map";
 import { formatShortDt, ftfRowToListPoint, ftfRowToMapPoint, hasDtData } from "./ftf-points";
 import { schedulePostImportStatsRefresh } from "./import-refresh";
@@ -86,6 +88,8 @@ type MysteryCache = {
   fieldNotes: string;
   clues: string[];
   image?: string;
+  listingImageUrls?: string[];
+  listingComplete?: boolean;
   sharedWith: AppUser[];
   attempts: CoordinateAttempt[];
   sharedBy?: AppUser;
@@ -103,6 +107,7 @@ type OwnedMysterySnapshot = {
   revision: number;
   sharedWith: AppUser[];
 };
+type IncomingMysteryShare = { id: number; text: string };
 type MysterySyncMetadata = { revision: number; fingerprint: string };
 type Position = [number, number];
 type PolygonCoordinates = Position[][];
@@ -247,7 +252,8 @@ const scratchGeoJsonCache = new Map<string, Promise<BoundaryFeatureCollection>>(
 class ApiError extends Error {
   constructor(
     message: string,
-    readonly status: number
+    readonly status: number,
+    readonly code?: string
   ) {
     super(message);
   }
@@ -377,7 +383,7 @@ async function apiFetch<T>(baseUrl: string, path: string, token: string | null, 
   const response = await expoFetch(`${baseUrl}${path}`, { ...options, headers });
   if (!response.ok) {
     const body = await response.json().catch(() => ({ message: response.statusText }));
-    throw new ApiError(body.message ?? "Request failed", response.status);
+    throw new ApiError(body.message ?? "Request failed", response.status, body.code);
   }
   const method = (options.method ?? "GET").toUpperCase();
   if (token && !["GET", "HEAD", "OPTIONS"].includes(method)) invalidateStatsSummary(baseUrl, token);
@@ -1316,7 +1322,37 @@ export default function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [booting, setBooting] = useState(true);
   const [needsOnboarding, setNeedsOnboarding] = useState(false);
+  const [profileChecked, setProfileChecked] = useState(false);
+  const [profileLoadError, setProfileLoadError] = useState<string | null>(null);
   const [screen, setScreen] = useState<ScreenId>("dashboard");
+  const [incomingMysteryShare, setIncomingMysteryShare] = useState<IncomingMysteryShare | null>(null);
+  const lastIncomingShare = useRef("");
+  useEffect(() => {
+    if (Platform.OS === "web") return;
+    function receiveShare() {
+      try {
+        const payloads = Sharing.getSharedPayloads().filter((item) => item.shareType === "text" || item.shareType === "url");
+        const text = payloads.map((item) => item.value).join("\n").trim();
+        if (!text || text === lastIncomingShare.current) return;
+        lastIncomingShare.current = text;
+        setIncomingMysteryShare({ id: Date.now(), text });
+      } catch {
+        // Older native builds and Expo Go may not support incoming shares.
+      }
+    }
+    receiveShare();
+    const subscription = AppState.addEventListener("change", (state) => { if (state === "active") receiveShare(); });
+    return () => subscription.remove();
+  }, []);
+  useEffect(() => {
+    if (incomingMysteryShare && session && profileChecked && !needsOnboarding) setScreen("mysteries");
+  }, [incomingMysteryShare?.id, session?.user.id, profileChecked, needsOnboarding]);
+  function finishIncomingShare(id: number) {
+    if (incomingMysteryShare?.id !== id || lastIncomingShare.current !== incomingMysteryShare.text) return;
+    lastIncomingShare.current = "";
+    try { Sharing.clearSharedPayloads(); } catch { /* Unsupported native build. */ }
+    setIncomingMysteryShare((pending) => pending?.id === id ? null : pending);
+  }
   const contentScrollRef = useRef<ScrollView>(null);
   const sessionGenerationRef = useRef(0);
   function changeApiBaseUrl(nextUrl: string) {
@@ -1345,15 +1381,18 @@ export default function App() {
   }, []);
   async function acceptSession(nextSession: Session, baseUrl = apiBaseUrl) {
     const sessionGeneration = ++sessionGenerationRef.current;
+    setProfileChecked(false);
+    setProfileLoadError(null);
     setSession(nextSession);
     setNeedsOnboarding(false);
     try {
       const profile = await apiFetch<{ profile: any }>(baseUrl, "/profile", nextSession.token);
       if (sessionGenerationRef.current !== sessionGeneration) return;
       setNeedsOnboarding(!profile.profile);
+      setProfileChecked(true);
     } catch {
       if (sessionGenerationRef.current !== sessionGeneration) return;
-      setNeedsOnboarding(false);
+      setProfileLoadError("Could not check your profile. Retry before continuing.");
     }
   }
   useEffect(() => {
@@ -1380,14 +1419,16 @@ export default function App() {
     clearImportStatusTracking();
     sessionGenerationRef.current += 1;
     setSession(null);
+    setProfileChecked(false);
+    setProfileLoadError(null);
     setNeedsOnboarding(false);
     // Unmount authenticated screens before waiting on storage so their
     // schedulers cannot start another request with the old token.
     await SecureStore.deleteItemAsync(TOKEN_KEY);
   }
   let content;
-  if (booting) {
-    content = <SafeAreaView style={styles.safeCenter}><ActivityIndicator color="#f3b34d" /></SafeAreaView>;
+  if (booting || (session && !profileChecked)) {
+    content = <SafeAreaView style={styles.safeCenter}>{profileLoadError && session ? <><Text style={styles.note}>{profileLoadError}</Text><PrimaryButton label="Retry profile check" onPress={() => { void acceptSession(session); }} /><SecondaryButton label="Sign out" onPress={logout} /></> : <ActivityIndicator color="#f3b34d" />}</SafeAreaView>;
   } else if (!session) {
     content = <AuthScreen apiBaseUrl={apiBaseUrl} onApiBaseUrlChange={changeApiBaseUrl} onSession={acceptSession} />;
   } else if (needsOnboarding) {
@@ -1409,11 +1450,11 @@ export default function App() {
         </View>
         {ownsScrollRoot ? (
           <View style={styles.content}>
-            <ScreenSwitch apiBaseUrl={apiBaseUrl} screen={screen} token={session.token} userId={session.user.id} username={session.user.username} onNavigate={setScreen} onLogout={logout} onRequestScrollTop={() => contentScrollRef.current?.scrollTo({ y: 0, animated: false })} />
+            <ScreenSwitch incomingMysteryShare={incomingMysteryShare} onIncomingShareHandled={finishIncomingShare} apiBaseUrl={apiBaseUrl} screen={screen} token={session.token} userId={session.user.id} username={session.user.username} onNavigate={setScreen} onLogout={logout} onRequestScrollTop={() => contentScrollRef.current?.scrollTo({ y: 0, animated: false })} />
           </View>
         ) : (
           <ScrollView ref={contentScrollRef} key={screen} style={styles.content} contentContainerStyle={styles.contentInner} showsVerticalScrollIndicator={false}>
-            <ScreenSwitch apiBaseUrl={apiBaseUrl} screen={screen} token={session.token} userId={session.user.id} username={session.user.username} onNavigate={setScreen} onLogout={logout} onRequestScrollTop={() => contentScrollRef.current?.scrollTo({ y: 0, animated: false })} />
+            <ScreenSwitch incomingMysteryShare={incomingMysteryShare} onIncomingShareHandled={finishIncomingShare} apiBaseUrl={apiBaseUrl} screen={screen} token={session.token} userId={session.user.id} username={session.user.username} onNavigate={setScreen} onLogout={logout} onRequestScrollTop={() => contentScrollRef.current?.scrollTo({ y: 0, animated: false })} />
           </ScrollView>
         )}
         <View style={styles.bottomNav}>
@@ -1434,7 +1475,7 @@ export default function App() {
   return <SafeAreaProvider>{content}</SafeAreaProvider>;
 }
 
-function ScreenSwitch({ apiBaseUrl, screen, token, userId, username, onNavigate, onLogout, onRequestScrollTop }: { apiBaseUrl: string; screen: ScreenId; token: string; userId: string; username: string; onNavigate: (screen: ScreenId) => void; onLogout: () => void; onRequestScrollTop: () => void }) {
+function ScreenSwitch({ incomingMysteryShare, onIncomingShareHandled, apiBaseUrl, screen, token, userId, username, onNavigate, onLogout, onRequestScrollTop }: { incomingMysteryShare: IncomingMysteryShare | null; onIncomingShareHandled: (id: number) => void; apiBaseUrl: string; screen: ScreenId; token: string; userId: string; username: string; onNavigate: (screen: ScreenId) => void; onLogout: () => void; onRequestScrollTop: () => void }) {
   if (screen === "dashboard") return <DashboardScreen apiBaseUrl={apiBaseUrl} token={token} username={username} onNavigate={onNavigate} />;
   if (screen === "explore") return <ExploreScreen username={username} onNavigate={onNavigate} />;
   if (screen === "stats") return <StatsScreen apiBaseUrl={apiBaseUrl} token={token} />;
@@ -1444,7 +1485,7 @@ function ScreenSwitch({ apiBaseUrl, screen, token, userId, username, onNavigate,
   if (screen === "ftf") return <FtfScreen apiBaseUrl={apiBaseUrl} token={token} />;
   if (screen === "hides") return <HidesScreen apiBaseUrl={apiBaseUrl} token={token} />;
   if (screen === "trackables") return <TrackablesScreen apiBaseUrl={apiBaseUrl} token={token} />;
-  if (screen === "mysteries") return <MysteriesScreen apiBaseUrl={apiBaseUrl} token={token} userId={userId} onRequestScrollTop={onRequestScrollTop} />;
+  if (screen === "mysteries") return <MysteriesScreen incomingShare={incomingMysteryShare} onIncomingShareHandled={onIncomingShareHandled} apiBaseUrl={apiBaseUrl} token={token} userId={userId} onRequestScrollTop={onRequestScrollTop} />;
   if (screen === "challenges") return <ChallengesScreen apiBaseUrl={apiBaseUrl} token={token} />;
   if (screen === "travel") return <TravelScreen apiBaseUrl={apiBaseUrl} token={token} userId={userId} />;
   if (screen === "upload") return <UploadScreen apiBaseUrl={apiBaseUrl} token={token} />;
@@ -2422,10 +2463,10 @@ function badgeTierSummary(badges: Array<{ current: number | null; thresholds: nu
   return badgeTiers.map((tier, index) => ({ tier, count: counts[index] ?? 0 })).reverse();
 }
 
-function MysteriesScreen({ apiBaseUrl, token, userId, onRequestScrollTop }: { apiBaseUrl: string; token: string; userId: string; onRequestScrollTop: () => void }) {
+function MysteriesScreen({ incomingShare, onIncomingShareHandled, apiBaseUrl, token, userId, onRequestScrollTop }: { incomingShare: IncomingMysteryShare | null; onIncomingShareHandled: (id: number) => void; apiBaseUrl: string; token: string; userId: string; onRequestScrollTop: () => void }) {
   const [caches, setCaches] = useState<MysteryCache[]>([]);
   const [ready, setReady] = useState(false);
-  const latestMysteries = useRef({ caches, ready });
+  const latestMysteries = useRef({ caches, ready, accountLoaded: false });
   const serverSnapshots = useRef(new Map<string, string>());
   const snapshotRevisions = useRef(new Map<string, number>());
   const syncMetadata = useRef(new Map<string, MysterySyncMetadata>());
@@ -2440,6 +2481,20 @@ function MysteriesScreen({ apiBaseUrl, token, userId, onRequestScrollTop }: { ap
   const [filter, setFilter] = useState<"all" | MysteryStatus>("all");
   const [query, setQuery] = useState("");
   const [showAdd, setShowAdd] = useState(false);
+  const [importingMysteries, setImportingMysteries] = useState(false);
+  const mysteryImportInFlight = useRef(false);
+  const [cacheLink, setCacheLink] = useState("");
+  const [lookingUpCache, setLookingUpCache] = useState(false);
+  const [browserGcCode, setBrowserGcCode] = useState("");
+  const browserCaptureNamespace = useRef("");
+  const [showImportOptions, setShowImportOptions] = useState(false);
+  const linkImportInFlight = useRef(false);
+  const incomingShareHandled = useRef<number | null>(null);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
   const [gcCode, setGcCode] = useState("");
   const [name, setName] = useState("");
   const [location, setLocation] = useState("");
@@ -2452,7 +2507,7 @@ function MysteriesScreen({ apiBaseUrl, token, userId, onRequestScrollTop }: { ap
   const [users, setUsers] = useState<AppUser[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
 
-  latestMysteries.current = { caches, ready };
+  latestMysteries.current = { caches, ready, accountLoaded };
 
   function rememberSnapshotRevision(cacheId: string, revision: number) {
     if (!Number.isSafeInteger(revision) || revision < 0) return;
@@ -2480,12 +2535,14 @@ function MysteriesScreen({ apiBaseUrl, token, userId, onRequestScrollTop }: { ap
     if (identityChanged) {
       activeMysteryNamespace.current = namespace;
       loadedMysteryNamespace.current = "";
-      latestMysteries.current = { caches: [], ready: false };
+      latestMysteries.current = { caches: [], ready: false, accountLoaded: false };
       serverSnapshots.current.clear();
       snapshotRevisions.current.clear();
       syncMetadata.current.clear();
       persistedMysteriesFingerprint.current = null;
       setCaches([]);
+      setBrowserGcCode("");
+      browserCaptureNamespace.current = "";
       setSelectedId("");
       setDetailOpen(false);
       setAccountLoaded(false);
@@ -2727,7 +2784,169 @@ function MysteriesScreen({ apiBaseUrl, token, userId, onRequestScrollTop }: { ap
     return true;
   }
 
+  function openBrowserCapture(code: string) {
+    if (Platform.OS === "web") { setNotice("Open the cache in your signed-in browser and use the Geostats helper, or import a GPX."); return; }
+    browserCaptureNamespace.current = activeMysteryNamespace.current;
+    setBrowserGcCode(code);
+  }
+
+  function saveImportedListing(listing: { gcCode: string; name: string; area: string; country: string; region?: string; publishedLatitude: number; publishedLongitude: number; clues?: string[]; listingImageUrls?: string[]; listingComplete?: boolean }): boolean {
+    if (!latestMysteries.current.accountLoaded) { setNotice("Wait for your account mysteries to finish loading before importing."); return false; }
+    const existing = latestMysteries.current.caches.find((cache) => cache.gcCode.toUpperCase() === listing.gcCode);
+    if (existing?.sharedBy) { showMystery(existing.id); setBrowserGcCode(""); return true; }
+    const cache: MysteryCache = existing ? {
+      ...existing,
+      clues: [...new Set([...existing.clues, ...(listing.clues ?? [])])],
+      listingImageUrls: [...new Set([...(existing.listingImageUrls ?? []), ...(listing.listingImageUrls ?? [])])],
+      listingComplete: true
+    } : { ...listing, id: newId("mystery"), listingComplete: true, status: "solving", statusUpdatedAt: new Date().toISOString(), notes: "", fieldNotes: "", clues: listing.clues ?? [], sharedWith: [], attempts: [] };
+    if (mysterySnapshotByteLength(cache) > MAX_MYSTERY_SNAPSHOT_BYTES) { setNotice("This listing is too large to sync. Use a smaller GPX."); return false; }
+    if (!existing && !selectMysteryImports(latestMysteries.current.caches, [cache], true).added.length) {
+      setNotice(`Your account can hold ${MAX_MYSTERY_WORKSPACES_PER_OWNER} mysteries. Remove one before importing another.`); return false;
+    }
+    const next = existing ? latestMysteries.current.caches.map((item) => item.id === existing.id ? cache : item) : [cache, ...latestMysteries.current.caches];
+    latestMysteries.current = { ...latestMysteries.current, caches: next };
+    setCaches(next);
+    setBrowserGcCode("");
+    setCacheLink("");
+    setShowAdd(false);
+    showMystery(cache.id);
+    setNotice(`${listing.gcCode} imported. Listing text and image links are included for AI sharing.`);
+    return true;
+  }
+
+  async function importFromText(value: string): Promise<boolean> {
+    if (!ready || linkImportInFlight.current) return false;
+    const code = mysteryCodeFromText(value);
+    if (!code) {
+      setNotice("Share a Geocaching cache link, or paste a link or GC code such as GC12345.");
+      return true;
+    }
+    setCacheLink(code);
+    const existing = latestMysteries.current.caches.find((cache) => cache.gcCode.toUpperCase() === code);
+    if (existing) {
+      if (!existing.sharedBy && existing.listingComplete !== true) {
+        openBrowserCapture(code);
+        setNotice(`${code} is already saved. Capture its listing to add puzzle context while keeping your notes and attempts.`);
+      } else {
+        showMystery(existing.id);
+        setNotice(`${code} is already in your list. Your saved work is unchanged.`);
+      }
+      return true;
+    }
+    if (!accountLoaded) {
+      setNotice("Loading your mysteries. Try again in a moment.");
+      return false;
+    }
+    linkImportInFlight.current = true;
+    setLookingUpCache(true);
+    const namespace = activeMysteryNamespace.current;
+    try {
+      type ListingResponse = { cache: { gcCode: string; name: string; area: string; country: string; region: string; publishedLatitude: number; publishedLongitude: number; clues?: string[]; listingImageUrls?: string[]; listingComplete: boolean } };
+      const lookup = () => apiFetch<ListingResponse>(apiBaseUrl, `/mysteries/lookup/${encodeURIComponent(code)}`, token);
+      const response = await lookup();
+      if (!mounted.current || activeMysteryNamespace.current !== namespace) return false;
+      if (response.cache.listingComplete === true) saveImportedListing(response.cache);
+      else openBrowserCapture(code);
+      return true;
+    } catch (error) {
+      if (!mounted.current || activeMysteryNamespace.current !== namespace) return false;
+      setCacheLink(code);
+      setDetailOpen(false);
+      if (error instanceof ApiError && error.code === "MYSTERY_BROWSER_IMPORT_REQUIRED") {
+        openBrowserCapture(code);
+      } else setNotice(error instanceof Error ? error.message : "Could not load this cache. Try again or import a GPX.");
+      return true;
+    } finally {
+      linkImportInFlight.current = false;
+      if (mounted.current) setLookingUpCache(false);
+    }
+  }
+
+  const importSharedMystery = useEffectEvent(async (share: IncomingMysteryShare) => {
+    const handled = await importFromText(share.text);
+    if (handled) onIncomingShareHandled(share.id);
+    else incomingShareHandled.current = null;
+  });
+  useEffect(() => {
+    if (!incomingShare || !ready || !accountLoaded || linkImportInFlight.current || incomingShareHandled.current === incomingShare.id) return;
+    incomingShareHandled.current = incomingShare.id;
+    void importSharedMystery(incomingShare);
+  }, [incomingShare, ready, accountLoaded, lookingUpCache]);
+
+  async function pasteCacheLink() {
+    try {
+      const value = await Clipboard.getStringAsync();
+      if (!mounted.current) return;
+      if (!value.trim()) { setNotice("Copy a cache link from Geocaching first, then tap Paste."); return; }
+      setCacheLink(value.trim());
+      await importFromText(value);
+    } catch {
+      setNotice("Could not read the clipboard. Paste a cache link into the box above.");
+    }
+  }
+
+  async function shareForAi() {
+    if (!selected) return;
+    try {
+      await Share.share({ title: `${selected.gcCode} - ${selected.name}`, message: mysteryAiPrompt(selected) });
+    } catch {
+      setNotice("Could not open sharing. Use Copy for AI, then paste into your AI app.");
+    }
+  }
+
+  async function importMysteries() {
+    if (!ready || !accountLoaded || mysteryImportInFlight.current) return;
+    mysteryImportInFlight.current = true;
+    setImportingMysteries(true);
+    const namespace = activeMysteryNamespace.current;
+    try {
+      const result = await DocumentPicker.getDocumentAsync({ type: "*/*", copyToCacheDirectory: true });
+      if (result.canceled) return;
+      const asset = result.assets[0];
+      if ((asset.size ?? 0) > MAX_MYSTERY_GPX_BYTES) throw new Error("Choose a GPX file smaller than 10 MB.");
+      const { mysteries, skipped } = parseMysteryGpx(await new File(asset.uri).text());
+      if (activeMysteryNamespace.current !== namespace) return;
+      let oversized = 0;
+      const candidates: MysteryCache[] = [];
+      for (const listing of mysteries) {
+        const cache: MysteryCache = { ...listing, id: newId("mystery"), status: "solving", statusUpdatedAt: new Date().toISOString(), notes: "", fieldNotes: "", clues: listing.clues, sharedWith: [], attempts: [] };
+        if (mysterySnapshotByteLength(cache) > MAX_MYSTERY_SNAPSHOT_BYTES || cache.name.length > 300) { oversized++; continue; }
+        candidates.push(cache);
+      }
+      const { added, duplicates, excess } = selectMysteryImports(latestMysteries.current.caches, candidates, latestMysteries.current.accountLoaded);
+      if (added.length) {
+        const next = [...added, ...latestMysteries.current.caches];
+        latestMysteries.current = { ...latestMysteries.current, caches: next };
+        setCaches(next);
+        setQuery("");
+        setFilter("all");
+        setShowAdd(false);
+      }
+      setNotice(`Imported ${added.length} mysteries.${duplicates ? ` ${duplicates} already in your list.` : ""}${skipped ? ` Skipped ${skipped} other, duplicate, or invalid waypoints.` : ""}${oversized ? ` ${oversized} listings were too large to sync.` : ""}${excess ? ` Skipped ${excess} caches because your account can hold ${MAX_MYSTERY_WORKSPACES_PER_OWNER} mysteries. Remove some mysteries before importing more.` : ""}${!mysteries.length ? " Choose a GPX containing Mystery or Unknown caches." : ""}`);
+    } catch (error) {
+      if (activeMysteryNamespace.current === namespace) setNotice(error instanceof Error ? error.message : "Could not import mysteries.");
+    } finally {
+      mysteryImportInFlight.current = false;
+      setImportingMysteries(false);
+    }
+  }
+
+  async function copyForAi() {
+    if (!selected) return;
+    try {
+      await Clipboard.setStringAsync(mysteryAiPrompt(selected));
+      setNotice("Copied cache details, clues, notes, and attempts. Paste into your AI app and attach any puzzle images separately.");
+    } catch {
+      setNotice("Could not copy. Try again.");
+    }
+  }
+
   function addCache() {
+    if (!latestMysteries.current.accountLoaded) { setNotice("Wait for your account mysteries to finish loading before adding a cache."); return; }
+    const existing = latestMysteries.current.caches.find((cache) => cache.gcCode.toUpperCase() === gcCode.trim().toUpperCase());
+    if (existing) { showMystery(existing.id); setNotice("This cache is already in your list. Your saved work is unchanged."); return; }
+    if (latestMysteries.current.caches.filter((cache) => !cache.sharedBy).length >= MAX_MYSTERY_WORKSPACES_PER_OWNER) { setNotice(`Your account can hold ${MAX_MYSTERY_WORKSPACES_PER_OWNER} mysteries. Remove one before adding another.`); return; }
     const coordinate = parseCoordinate(published);
     if (!/^GC[A-Z0-9]+$/i.test(gcCode.trim()) || !name.trim() || !coordinate) {
       setNotice("Enter a GC code, name, and valid decimal or geocaching coordinate.");
@@ -2749,7 +2968,9 @@ function MysteriesScreen({ apiBaseUrl, token, userId, onRequestScrollTop }: { ap
       sharedWith: [],
       attempts: []
     };
-    setCaches((current) => [cache, ...current]);
+    const next = [cache, ...latestMysteries.current.caches];
+    latestMysteries.current = { ...latestMysteries.current, caches: next };
+    setCaches(next);
     setSelectedId(cache.id);
     setDetailOpen(true);
     requestAnimationFrame(onRequestScrollTop);
@@ -2883,12 +3104,26 @@ function MysteriesScreen({ apiBaseUrl, token, userId, onRequestScrollTop }: { ap
     <>
       {!detailOpen || !selected ? <>
       <PageTitle eyebrow="Offline solving workspace" title="Mysteries" />
+      <Panel title="Add from Geocaching" subtitle="Enter a GC code, paste a link, or share from Geocaching. New listings open in the built-in browser. Sign in there once if needed.">
+        <Field label="Cache link or GC code" value={cacheLink} onChangeText={setCacheLink} autoCapitalize="none" autoCorrect={false} placeholder="https://coord.info/GC12345" />
+        <View style={styles.actionRow}>
+          <View style={styles.flex}><PrimaryButton label={lookingUpCache ? "Adding cache..." : "Add cache"} disabled={!accountLoaded || lookingUpCache || !cacheLink.trim()} onPress={() => { void importFromText(cacheLink); }} /></View>
+          <View style={styles.flex}><SecondaryButton label="Paste" disabled={!accountLoaded || lookingUpCache} onPress={pasteCacheLink} /></View>
+        </View>
+        {!accountLoaded ? <Text style={styles.muted}>Loading your mysteries before adding a cache...</Text> : null}
+        {notice ? <Text accessibilityRole="alert" style={styles.note}>{notice}</Text> : null}
+      </Panel>
       <StatGrid rows={[["Caches", caches.length], ["Solved", caches.filter((cache) => cache.status === "solved").length], ["Planned", caches.filter((cache) => cache.status === "planned").length], ["Archived", caches.filter((cache) => cache.status === "archived").length], ["Shared", caches.filter((cache) => cache.sharedBy || cache.sharedWith.length).length]]} />
       <View style={styles.actionRow}>
-        <View style={styles.flex}><PrimaryButton label={showAdd ? "Close add form" : "Add mystery"} onPress={() => setShowAdd((value) => !value)} /></View>
+        <View style={styles.flex}><SecondaryButton label={showAdd ? "Close add form" : "Add manually"} onPress={() => setShowAdd((value) => !value)} /></View>
         <View style={styles.flex}><SecondaryButton label="Export solved GPX" onPress={exportSolved} /></View>
       </View>
+      <SecondaryButton label={showImportOptions ? "Hide file import" : "Import a GPX file"} onPress={() => setShowImportOptions((value) => !value)} />
+      {showImportOptions ? <Panel title="Import mysteries" subtitle="Download a cache GPX or Pocket Query GPX from Geocaching, then choose it from your phone's Files. Mystery caches, puzzle text, and hints are imported. Existing caches keep their notes and solutions.">
+        <SecondaryButton label={importingMysteries ? "Importing..." : "Choose GPX file"} disabled={!ready || !accountLoaded || importingMysteries} onPress={importMysteries} />
+      </Panel> : null}
       {showAdd ? <Panel title="Add a mystery cache">
+        {gcCode ? <SecondaryButton label="Open cache on Geocaching" onPress={() => { void Linking.openURL(`https://coord.info/${gcCode}`).catch(() => setNotice("Could not open Geocaching.")); }} /> : null}
         <Field label="GC code" value={gcCode} onChangeText={setGcCode} autoCapitalize="characters" />
         <Field label="Name" value={name} onChangeText={setName} />
         <Field label="Area" value={location} onChangeText={setLocation} />
@@ -2913,9 +3148,18 @@ function MysteriesScreen({ apiBaseUrl, token, userId, onRequestScrollTop }: { ap
           const status = value as MysteryStatus;
           updateSelected(status === selected.status ? { status } : { status, statusUpdatedAt: new Date().toISOString() });
         }} />
+        <View style={styles.actionRow}>
+          <View style={styles.flex}><PrimaryButton label="Share with AI" onPress={shareForAi} /></View>
+          <View style={styles.flex}><SecondaryButton label="Copy for AI" onPress={copyForAi} /></View>
+        </View>
+        <Text style={styles.muted}>Choose your AI app from the share menu, or copy and paste. Includes clues, notes, and attempts. Attach puzzle images separately.</Text>
         <Field label="Trip / route" value={selected.trip ?? ""} editable={!selected.sharedBy} onChangeText={(value) => updateSelected({ trip: value })} />
         <Field label="Solution" value={selected.notes} editable={!selected.sharedBy} multiline style={styles.textArea} onChangeText={(value) => updateSelected({ notes: value })} />
         <Field label="Field notes" value={selected.fieldNotes ?? ""} editable={!selected.sharedBy} multiline style={styles.textArea} onChangeText={(value) => updateSelected({ fieldNotes: value })} />
+        {Array.isArray(selected.listingImageUrls) && selected.listingImageUrls.length ? <>
+          <Text style={styles.sectionLabel}>Puzzle images from Geocaching</Text>
+          {selected.listingImageUrls.filter((url) => typeof url === "string" && /^https:\/\//i.test(url)).map((url, index) => <SecondaryButton key={url} label={`Open puzzle image ${index + 1}`} onPress={() => { void Linking.openURL(url).catch(() => setNotice("Could not open this image.")); }} />)}
+        </> : null}
         <Text style={styles.sectionLabel}>Reference image</Text>
         {selected.image ? <Image source={{ uri: selected.image }} resizeMode="cover" style={styles.mysteryImage} /> : <Text style={styles.muted}>No image attached.</Text>}
         {!selected.sharedBy ? <View style={styles.actionRow}><View style={styles.flex}><SecondaryButton label="Choose image" onPress={attachImage} /></View>{selected.image ? <View style={styles.flex}><SecondaryButton label="Remove image" danger onPress={() => updateSelected({ image: undefined })} /></View> : null}</View> : null}
@@ -2944,7 +3188,8 @@ function MysteriesScreen({ apiBaseUrl, token, userId, onRequestScrollTop }: { ap
         </> : null}
       </Panel>
       </> : null}
-      {notice ? <Text style={styles.note}>{notice}</Text> : null}
+      {detailOpen && notice ? <Text accessibilityRole="alert" style={styles.note}>{notice}</Text> : null}
+      {browserGcCode && Platform.OS !== "web" ? <MysteryBrowser key={`${apiBaseUrl}:${userId}:${browserGcCode}`} gcCode={browserGcCode} onClose={() => setBrowserGcCode("")} onImport={(listing) => { if (browserCaptureNamespace.current === activeMysteryNamespace.current) return saveImportedListing(listing); setBrowserGcCode(""); return false; }} /> : null}
       <LoadState loading={!ready} error={null} />
     </>
   );
@@ -3168,12 +3413,12 @@ function Field(props: React.ComponentProps<typeof TextInput> & { label: string }
   return <View style={styles.field}><Text style={styles.fieldLabel}>{label}</Text><TextInput placeholderTextColor="#76827c" style={[styles.input, rest.multiline && styles.textArea, style]} {...rest} /></View>;
 }
 
-function PrimaryButton({ label, onPress }: { label: string; onPress: () => void }) {
-  return <Pressable onPress={onPress} style={styles.primaryButton}><Text style={styles.primaryButtonText}>{label}</Text></Pressable>;
+function PrimaryButton({ label, onPress, disabled = false }: { label: string; onPress: () => void; disabled?: boolean }) {
+  return <Pressable accessibilityRole="button" accessibilityState={{ disabled }} disabled={disabled} onPress={onPress} style={[styles.primaryButton, disabled && { opacity: 0.5 }]}><Text style={styles.primaryButtonText}>{label}</Text></Pressable>;
 }
 
-function SecondaryButton({ label, onPress, danger = false }: { label: string; onPress: () => void; danger?: boolean }) {
-  return <Pressable onPress={onPress} style={[styles.secondaryButton, danger && styles.secondaryButtonDanger]}><Text style={[styles.secondaryButtonText, danger && styles.danger]}>{label}</Text></Pressable>;
+function SecondaryButton({ label, onPress, danger = false, disabled = false }: { label: string; onPress: () => void; danger?: boolean; disabled?: boolean }) {
+  return <Pressable accessibilityRole="button" accessibilityState={{ disabled }} disabled={disabled} onPress={onPress} style={[styles.secondaryButton, danger && styles.secondaryButtonDanger, disabled && { opacity: 0.5 }]}><Text style={[styles.secondaryButtonText, danger && styles.danger]}>{label}</Text></Pressable>;
 }
 
 function Segmented({ values, active, onPress, disabled = false }: { values: readonly string[]; active: string; onPress: (value: string) => void; disabled?: boolean }) {
