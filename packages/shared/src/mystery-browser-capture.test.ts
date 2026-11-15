@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
-import { captureMysteryDocument, mysteryBrowserCaptureScript } from "./mystery-browser-capture";
+import { MYSTERY_BROWSER_CAPTURE_SOURCE, mysteryBrowserCaptureScript } from "./mystery-browser-capture";
+
+function captureMysteryDocument(document: unknown, href: string) {
+  return JSON.parse(JSON.stringify(runInNewContext(`(${MYSTERY_BROWSER_CAPTURE_SOURCE})(document, href)`, { document, href, URL })));
+}
 
 function page(coordinate = "N 59° 20.123 E 018° 04.321") {
   const values: Record<string, string> = { "#ctl00_ContentBody_CacheName": "Puzzle", "#uxLatLon": coordinate, "#ctl00_ContentBody_LongDescription": "Solve this puzzle", "#div_hint": "Hint shown on the page" };
@@ -37,7 +41,22 @@ test("image-only puzzle descriptions are valid, while empty listings remain unav
   const base = page();
   const document = { ...base, querySelector: (selector: string) => selector.includes("Description") || selector.includes("description") ? null : base.querySelector(selector) };
   const captured = captureMysteryDocument(document, "https://www.geocaching.com/geocache/GC12345");
-  assert.ok(captured?.clues.some((clue) => clue.includes("Puzzle images:")));
+  assert.ok(captured?.clues.some((clue: string) => clue.includes("Puzzle images:")));
   assert.equal(captured?.listingImageUrls.length, 1);
   assert.equal(captureMysteryDocument({ ...document, querySelectorAll: () => [] }, "https://www.geocaching.com/geocache/GC12345"), null);
+});
+
+
+test("browser injection does not rely on function source surviving Hermes bytecode", () => {
+  const original = Function.prototype.toString;
+  let script: string;
+  try {
+    Function.prototype.toString = () => "function captureMysteryDocument() { [bytecode] }";
+    script = mysteryBrowserCaptureScript();
+  } finally { Function.prototype.toString = original; }
+  assert.ok(!script.includes("[bytecode]"));
+  const messages: string[] = [];
+  runInNewContext(script, { document: page(), location: { href: "https://www.geocaching.com/geocache/GC12345" }, URL,
+    window: { ReactNativeWebView: { postMessage: (message: string) => messages.push(message) } } });
+  assert.equal(JSON.parse(messages[0]).data.gcCode, "GC12345");
 });
