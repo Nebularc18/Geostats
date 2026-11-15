@@ -825,3 +825,40 @@ test("unshare preserves revocation when a preference matches a future status", a
   assert.deepEqual(operations, ["lock", "lock", "workspace", "revoke-explicit", "preference", "exclude"]);
   assert.deepEqual((exclusionInput as any).create, { mysteryId: "workspace-1", recipientId: recipient.id });
 });
+
+test("lookup returns trusted listing details with only the requesting user's puzzle text", async () => {
+  let query: any;
+  const controller = new MysteriesController({ cache: { findUnique: async (input: any) => {
+    query = input;
+    return { gcCode: "GC12345", name: "Puzzle", cacheType: "Unknown Cache", latitude: 59.1, longitude: 18.2, country: "Sweden", region: "Stockholm", county: null, metadataTrusted: true,
+      userData: [{ raw: { "groundspeak:cache": { "groundspeak:long_description": { text: "<p>My puzzle</p>" } } } }] };
+  } } } as any);
+  const result = await controller.lookup(owner, "gc12345");
+  assert.deepEqual(query.select.userData.where, { userId: owner.id });
+  assert.equal(result.cache.gcCode, "GC12345");
+  assert.equal(result.cache.publishedLatitude, 59.1);
+  assert.deepEqual(result.cache.clues, ["Puzzle listing:\nMy puzzle"]);
+  assert.equal("userData" in result.cache, false);
+});
+
+test("lookup uses private imported metadata without exposing another user's placeholder", async () => {
+  const controller = new MysteriesController({ cache: { findUnique: async () => ({
+    gcCode: "GC12345", name: "GC12345", cacheType: null, latitude: 0, longitude: 0, country: null, region: null, county: null, metadataTrusted: false,
+    userData: [{ raw: { geostatsMetadata: { name: "My private puzzle", cacheType: "Unknown Cache", latitude: 12, longitude: 34 } } }]
+  }) } } as any);
+  const result = await controller.lookup(owner, "GC12345");
+  assert.equal(result.cache.name, "My private puzzle");
+  assert.equal(result.cache.publishedLatitude, 12);
+  const unavailable = new MysteriesController({ cache: { findUnique: async () => ({ metadataTrusted: false, userData: [] }) } } as any);
+  await assert.rejects(unavailable.lookup(owner, "GC12345"), /signed-in Geocaching browser/);
+});
+
+test("lookup rejects missing caches, invalid codes, and other cache types", async () => {
+  let calls = 0;
+  const controller = new MysteriesController({ cache: { findUnique: async () => { calls++; return null; } } } as any);
+  await assert.rejects(controller.lookup(owner, "https://example.com"), /valid GC code/);
+  assert.equal(calls, 0);
+  await assert.rejects(controller.lookup(owner, "GC12345"), /signed-in Geocaching browser/);
+  const traditional = new MysteriesController({ cache: { findUnique: async () => ({ metadataTrusted: true, cacheType: "Traditional Cache", userData: [] }) } } as any);
+  await assert.rejects(traditional.lookup(owner, "GC12345"), /not a Mystery/);
+});

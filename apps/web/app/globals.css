@@ -8817,3 +8817,11 @@ select:focus {
 .mystery-helper-update-banner p {
   margin: 6px 0 0;
 }
+
+
+.mystery-code-import { margin-bottom: 20px; }
+.mystery-code-import > h2 { margin: 0 0 8px; }
+.mystery-code-import > p { color: var(--muted); }
+.mystery-code-import-form { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; }
+.mystery-code-import-form label { display: grid; gap: 6px; flex: 1 1 220px; }
+.mystery-code-import-form input { width: 100%; min-height: 44px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-strong); color: inherit; padding: 10px 12px; }

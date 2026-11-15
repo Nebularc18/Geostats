@@ -213,6 +213,8 @@ type BrowserImport = {
   latitude?: unknown;
   longitude?: unknown;
   notes?: unknown;
+  clues?: unknown;
+  listingImageUrls?: unknown;
 };
 
 type GeocachingSyncReceipt = {
@@ -494,7 +496,7 @@ function importedMystery(value: BrowserImport): MysteryCache | null {
     publishedLongitude,
     notes: typeof value.notes === "string" ? value.notes : "",
     fieldNotes: "",
-    clues: [],
+    clues: Array.isArray(value.clues) ? value.clues.filter((clue): clue is string => typeof clue === "string").slice(0, 64) : [],
     sharedWith: [],
     attempts: []
   };
@@ -599,6 +601,7 @@ export default function MysteriesPage() {
   const [finalCoordinateText, setFinalCoordinateText] = useState("");
   const [coordinateError, setCoordinateError] = useState("");
   const [showAdd, setShowAdd] = useState(false);
+  const [quickGcCode, setQuickGcCode] = useState("");
   const [showBrowserImport, setShowBrowserImport] = useState(false);
   const [showImagePicker, setShowImagePicker] = useState(false);
   const [imageUrl, setImageUrl] = useState("");
@@ -1631,6 +1634,16 @@ export default function MysteriesPage() {
     else setNotice("Everything is already synced with Geocaching");
   }
 
+  function importGcCode(value: string) {
+    const gcCode = value.trim().toUpperCase();
+    if (!/^GC[A-Z0-9]+$/.test(gcCode) || gcCode.length > 20) { setNotice("Enter a GC code such as GC12345."); return; }
+    const existing = latestCaches.current.find((cache) => cache.gcCode.toUpperCase() === gcCode);
+    if (existing) { setSelectedId(existing.id); setNotice(`${gcCode} is already in your workspace. Your saved work is unchanged.`); return; }
+    window.open(`https://www.geocaching.com/geocache/${gcCode}`, "_blank", "noopener,noreferrer");
+    setShowBrowserImport(true);
+    setNotice(`Open ${gcCode} in your signed-in browser, then choose Import to Geostats in the helper. Your Geocaching session stays in your browser.`);
+  }
+
   function addCache(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
@@ -2063,6 +2076,16 @@ export default function MysteriesPage() {
         </div>
       </header>
 
+      <section className="panel mystery-code-import" aria-labelledby="gc-import-heading">
+        <h2 id="gc-import-heading">Add with a GC code</h2>
+        <p>Open a cache in your signed-in browser, then use Import to Geostats in the browser helper.</p>
+        <form className="mystery-code-import-form" onSubmit={(event) => { event.preventDefault(); void importGcCode(quickGcCode); }}>
+          <label htmlFor="quick-gc-code">GC code<input id="quick-gc-code" value={quickGcCode} onChange={(event) => setQuickGcCode(event.target.value)} placeholder="GC12345" autoCapitalize="characters" autoCorrect="off" required maxLength={20} /></label>
+          <button className="primary-button" type="submit">Open cache to import</button>
+          <button className="secondary-button" type="button" onClick={() => setShowBrowserImport(true)}>Set up browser helper</button>
+        </form>
+      </section>
+
       <MysteryHelperUpdateBanner />
 
       <section className="mystery-overview" aria-label="Mystery overview">
@@ -2365,7 +2388,7 @@ export default function MysteriesPage() {
         <div className="mystery-modal-backdrop" role="presentation" onMouseDown={() => setShowBrowserImport(false)}>
           <div className="mystery-modal browser-import-modal" role="dialog" aria-modal="true" aria-labelledby="browser-import-title" onMouseDown={(event) => event.stopPropagation()}>
             <div className="section-heading"><div><p className="eyebrow">One-click capture</p><h2 id="browser-import-title">Import from geocaching.com</h2></div><button className="row-delete" type="button" aria-label="Close" onClick={() => setShowBrowserImport(false)}><X /></button></div>
-            <p className="browser-import-lead">The helper imports the cache name, published coordinates and every location level the page exposes—country, region/state, county/area and locality—and automatically saves corrected coordinates using your signed-in Geocaching session. Use the install button to add it or update your existing copy.</p>
+            <p className="browser-import-lead">The helper imports the cache name, coordinates, puzzle text, hints, image links, and location from the page you are viewing. Your Geocaching session stays in your browser. It also syncs corrected coordinates and field notes. Install or update it once, then open a cache and choose Import to Geostats.</p>
             <ol className="browser-import-steps">
               <li><span>1</span><div><strong>Install Tampermonkey</strong><small>Available for Chrome, Edge, Firefox and Safari.</small></div></li>
               <li><span>2</span><div><strong>Install or update the helper</strong><small>Use the button below and confirm the installation in Tampermonkey.</small></div></li>

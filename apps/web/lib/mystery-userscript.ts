@@ -1,10 +1,11 @@
+import { captureMysteryDocument } from "@geostats/shared";
 import { cachePageShowsCoordinate } from "./mystery-coordinate-confirmation.ts";
 import { solvedCoordinateEditorFromPage } from "./mystery-coordinate-editor.ts";
 import { locationFromCachePageMetadata } from "./mystery-area.ts";
 import { locationFromPageSources } from "./mystery-page-location.ts";
 import { personalCacheNoteEditorFromPage, personalCacheNoteFromPage } from "./mystery-personal-note.ts";
 
-export const MYSTERY_USERSCRIPT_VERSION = "2.9.1";
+export const MYSTERY_USERSCRIPT_VERSION = "2.10.0";
 
 export function userscript(appOrigin: string) {
   return `// ==UserScript==
@@ -32,6 +33,7 @@ export function userscript(appOrigin: string) {
   "use strict";
 
   const GEOSTATS_ORIGIN = ${JSON.stringify(appOrigin)};
+  const captureMysteryDocument = ${captureMysteryDocument.toString()};
   const GEOSTATS_URL = ${JSON.stringify(`${appOrigin}/mysteries`)};
   const PENDING_SYNC_KEY = "geostats-pending-coordinate-sync";
   const SYNC_RECEIPT_KEY = "geostats-coordinate-sync-receipt";
@@ -285,8 +287,10 @@ export function userscript(appOrigin: string) {
     const coordinates = parseCoordinates(coordinateText);
     const pageLocationData = pageLocation();
     const personalNote = personalCacheNoteFromPage(document);
+    const captured = captureMysteryDocument(document, location.href);
+    const listing = captured ? { clues: captured.clues, listingImageUrls: captured.listingImageUrls } : {};
     const notes = personalNote.available ? { notes: personalNote.note } : {};
-    return coordinates ? { gcCode, name, ...pageLocationData, ...coordinates, ...notes } : { gcCode, name, ...pageLocationData, ...notes };
+    return coordinates ? { gcCode, name, ...pageLocationData, ...coordinates, ...listing, ...notes } : { gcCode, name, ...pageLocationData, ...notes };
   }
 
   function toast(message, error) {

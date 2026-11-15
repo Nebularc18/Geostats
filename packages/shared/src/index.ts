@@ -107,3 +107,5 @@ export {
   canonicalCacheTypeName,
   type CacheTypeOption
 } from "./cache-types";
+
+export { captureMysteryDocument, mysteryBrowserCaptureScript } from "./mystery-browser-capture";

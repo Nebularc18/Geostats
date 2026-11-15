@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  ApiError,
   apiFetch,
   getApiSessionEpoch,
   getStatsSummary,
@@ -249,4 +250,13 @@ test("does not reset a known account for a username-only /auth/me response", asy
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+
+test("API errors preserve browser-import codes for the capture flow", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ message: "Open Geocaching in your browser", code: "MYSTERY_BROWSER_IMPORT_REQUIRED" }), { status: 404, headers: { "Content-Type": "application/json" } });
+  try {
+    await assert.rejects(apiFetch("/mysteries/lookup/GC12345"), (error: unknown) => error instanceof ApiError && error.status === 404 && error.code === "MYSTERY_BROWSER_IMPORT_REQUIRED");
+  } finally { globalThis.fetch = originalFetch; }
 });

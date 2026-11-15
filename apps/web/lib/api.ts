@@ -226,6 +226,16 @@ function observeImportStatuses(value: unknown) {
   }
 }
 
+export class ApiError extends Error {
+  readonly status: number;
+  readonly code?: string;
+  constructor(message: string, status: number, code?: string) {
+    super(message);
+    this.status = status;
+    this.code = code;
+  }
+}
+
 export async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
   const method = (options.method ?? "GET").toUpperCase();
   const requestSessionEpoch = statsSummarySessionEpoch;
@@ -240,7 +250,7 @@ export async function apiFetch<T>(path: string, options: RequestInit = {}): Prom
 
   if (!response.ok) {
     const body = await response.json().catch(() => ({ message: response.statusText }));
-    throw new Error(body.message ?? "Request failed");
+    throw new ApiError(body.message ?? "Request failed", response.status, body.code);
   }
 
   const data = (await response.json()) as T;

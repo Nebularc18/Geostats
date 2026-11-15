@@ -462,8 +462,28 @@ corepack pnpm mobile:start
 
 The Expo app lives in `apps/mobile`.
 
+The quickest way to add a mystery on your phone is **Geocaching → Share → Geostats**. Geostats opens Mysteries and looks up the shared cache. You can also paste an official Geocaching link or GC code in **Add from Geocaching**. Existing caches open without replacing any saved work. Shared links remain pending while you sign in and complete onboarding.
+
+Geostats does not require or use Geocaching API partner access. For a new GC code, the phone app opens the cache in an on-device browser. Sign in on Geocaching there if needed. The listing imports automatically when its name, coordinates, and description are available, or you can tap **Import this page**. Puzzle text, hints as shown, and image links are included for AI sharing. Sign-in and membership restrictions remain in effect; the app never invents missing coordinates.
+
+The Geocaching session stays on the phone. The capture reads cache-page content, not cookies, passwords, tokens, or browser storage. Only the selected cache data is saved through your existing private mystery sync. On the web, enter a GC code to open its Geocaching page and use **Import to Geostats** from the browser helper. Existing mysteries open without replacing solutions or previous attempts.
+
+For bulk imports, expand **Import a GPX file** and tap **Choose GPX file**. Use a downloaded Geocaching GPX or an extracted Pocket Query GPX. Mystery/Unknown caches, published coordinates, puzzle text, and hints are imported. Existing GC codes are skipped. Files must be under 10 MB; listings that exceed the account sync limit are skipped.
+
+Open a mystery and tap **Share with AI** to choose an installed app from the phone's share menu, or **Copy for AI** to copy and paste. Both include cache details, clues, notes, and previous attempts. Attach puzzle images separately.
+
+Incoming sharing requires a new native build of mobile version **0.3.0**, plus the API containing `GET /mysteries/lookup/:gcCode`. It cannot be enabled through an OTA update to 0.2.0. Android accepts text and URL shares; the iOS build includes a text/URL share extension. Paste and copy do not depend on incoming-share support.
+
 - By default it targets the Android emulator alias `http://10.0.2.2:3001`, so a local `expo start` works against a local API without extra config.
 - To point a device or Expo Go session at the hosted API instead, set `EXPO_PUBLIC_API_URL=https://geostats-api.hampusek.com` before starting Expo.
+
+### Cache data without partner API access
+
+Geostats will not have approved Geocaching API partner access. This permanent constraint is recorded in `AGENTS.md`. Features must work with GPX/Pocket Query files, GSAK imports, browser-helper capture, or the user's own on-device browser session. No consumer keys, partner OAuth, shared Geocaching account, or server-side session cookies are required.
+
+`GET /mysteries/lookup/:gcCode` requires Geostats sign-in and reads trusted catalog metadata plus only the requesting user's imported data. It does not fetch restricted listings remotely. An unknown code returns `MYSTERY_BROWSER_IMPORT_REQUIRED`, which opens the on-device capture flow. A known code without puzzle text also opens browser capture on the phone. The server receives the captured cache through existing mystery sync.
+
+The native phone build includes `react-native-webview` for on-device capture. This needs a new native app build, rather than an OTA update to an older binary. The web browser helper is version 2.10.0 or later and now includes puzzle text and image links. Premium-only listings remain available only when the user's Geocaching session has access. If Geocaching blocks an embedded browser or requires an unsupported sign-in method, use a GPX or the browser helper.
 
 ### Android production builds
 

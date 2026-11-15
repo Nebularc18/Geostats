@@ -1,5 +1,5 @@
-import { BadRequestException, Body, ConflictException, Controller, Delete, Get, NotFoundException, Param, Post, Put, UseGuards } from "@nestjs/common";
-import { Prisma } from "@geostats/db";
+import { BadRequestException, Body, ConflictException, Controller, Delete, Get, Header, NotFoundException, Param, Post, Put, UseGuards } from "@nestjs/common";
+import { personalCacheMetadata, Prisma } from "@geostats/db";
 import { AuthUser } from "@geostats/shared";
 import { AuthGuard } from "../auth/auth.guard";
 import { CurrentUser } from "../auth/current-user.decorator";
@@ -26,6 +26,21 @@ type MysteryStatus = typeof MYSTERY_STATUSES[number];
 const MAX_MYSTERY_NAME_LENGTH = 300;
 const MAX_MYSTERY_SNAPSHOT_BYTES = 256 * 1024;
 const MAX_MYSTERY_WORKSPACES_PER_OWNER = 500;
+
+function importedListingClues(value: unknown): string[] {
+  const record = (input: unknown): Record<string, unknown> => input && typeof input === "object" && !Array.isArray(input) ? input as Record<string, unknown> : {};
+  const raw = record(value);
+  const extensions = record(raw.extensions);
+  const cache = record(raw["groundspeak:cache"] ?? raw.cache ?? extensions["groundspeak:cache"] ?? extensions.cache);
+  const text = (key: string) => {
+    const field = cache[`groundspeak:${key}`] ?? cache[key];
+    const candidate = typeof field === "string" ? field : record(field).text;
+    return typeof candidate === "string" ? candidate.slice(0, 12_000).replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "").replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, "").replace(/<\s*(?:br\s*\/|br|\/p|\/div)>/gi, "\n").replace(/<[^>]+>/g, "").trim() : "";
+  };
+  const description = [text("short_description"), text("long_description")].filter(Boolean).join("\n\n");
+  const hint = text("encoded_hints");
+  return [description ? `Puzzle listing:\n${description}` : "", hint ? `Listing hint:\n${hint}` : ""].filter(Boolean);
+}
 
 async function ensureSharedCacheMetadata(tx: Prisma.TransactionClient, gcCode: string) {
   // A personal mystery snapshot must not establish metadata consumed by every
@@ -119,6 +134,37 @@ export async function lockMystery(tx: Prisma.TransactionClient, ownerId: string,
 @UseGuards(AuthGuard)
 export class MysteriesController {
   constructor(private readonly prisma: PrismaService) {}
+
+  @Get("lookup/:gcCode")
+  @Header("Cache-Control", "private, no-store")
+  async lookup(@CurrentUser() user: AuthUser, @Param("gcCode") input: string) {
+    const gcCode = input.trim().toUpperCase();
+    if (!/^GC[A-Z0-9]+$/.test(gcCode) || gcCode.length > 20) throw new BadRequestException("Enter a valid GC code.");
+    const cache = await this.prisma.cache.findUnique({
+      where: { gcCode },
+      select: {
+        gcCode: true, name: true, cacheType: true, latitude: true, longitude: true,
+        country: true, region: true, county: true, metadataTrusted: true,
+        userData: { where: { userId: user.id }, take: 1, select: { raw: true } }
+      }
+    });
+    if (!cache) throw new NotFoundException({ code: "MYSTERY_BROWSER_IMPORT_REQUIRED", message: "Open this cache in your signed-in Geocaching browser to import its listing, or choose a GPX file." });
+    const personal = personalCacheMetadata(cache, cache.userData[0]?.raw);
+    if (!cache.metadataTrusted && (personal.latitude === undefined || personal.longitude === undefined || !personal.name)) {
+      throw new NotFoundException({ code: "MYSTERY_BROWSER_IMPORT_REQUIRED", message: "Open this cache in your signed-in Geocaching browser to import its listing, or choose a GPX file." });
+    }
+    const data = { ...cache, ...personal };
+    const type = data.cacheType?.toLowerCase();
+    if (type && !["unknown cache", "mystery cache", "mystery", "unknown", "mystery/unknown cache"].includes(type)) {
+      throw new BadRequestException("This cache is not a Mystery or Unknown cache.");
+    }
+    const clues = importedListingClues(cache.userData[0]?.raw);
+    return { cache: {
+      gcCode, name: data.name, area: data.county ?? data.region ?? "", country: data.country ?? "",
+      region: data.region ?? "", publishedLatitude: Number(data.latitude), publishedLongitude: Number(data.longitude),
+      clues
+    } };
+  }
 
   @Get("owned")
   async owned(@CurrentUser() user: AuthUser) {
