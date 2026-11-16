@@ -1,19 +1,13 @@
 name: Released Android startup smoke test
 
 on:
-  push:
-    branches: [t3/fix-mobile-startup-crash]
   workflow_dispatch:
     inputs:
       release_tag:
-        description: GitHub mobile release tag to test
-        default: mobile-v0.3.0-preview.9
-        required: true
+        description: GitHub mobile release tag to test; leave empty for the latest mobile release
+        default: ''
+        required: false
         type: string
-  pull_request:
-    paths:
-      - '.github/workflows/mobile-startup-smoke.yml'
-      - 'apps/mobile/e2e/**'
 
 permissions:
   contents: read
@@ -23,50 +17,27 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
-      RELEASE_TAG: ${{ inputs.release_tag || 'mobile-v0.3.0-preview.9' }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
       APK_PATH: ${{ github.workspace }}/startup-apk/geostats.apk
       SMOKE_OUTPUT: ${{ github.workspace }}/startup-results
       MAESTRO_CLI_NO_ANALYTICS: '1'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - name: Use Java 17
-        run: |
-          echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
-          echo "$JAVA_HOME_17_X64/bin" >> "$GITHUB_PATH"
-      - name: Install pinned Maestro CLI
-        shell: bash
-        run: |
-          cd "$RUNNER_TEMP"
-          curl --fail --location --retry 3 https://github.com/mobile-dev-inc/Maestro/releases/download/cli-2.12.1/maestro.zip --output maestro.zip
-          curl --fail --location --retry 3 https://github.com/mobile-dev-inc/Maestro/releases/download/cli-2.12.1/checksums_sha256.txt --output checksums_sha256.txt
-          sha256sum --check --ignore-missing checksums_sha256.txt
-          unzip -q maestro.zip -d maestro-cli
-          echo "$RUNNER_TEMP/maestro-cli/maestro/bin" >> "$GITHUB_PATH"
       - name: Download released APK
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p startup-apk
-          gh release download "$RELEASE_TAG" --pattern '*.apk' --dir startup-apk
+          smoke_release_tag="$RELEASE_TAG"
+          if [ -z "$smoke_release_tag" ]; then
+            smoke_release_tag="$(gh release list --limit 50 --json tagName --jq 'map(select(.tagName | startswith("mobile-")))[0].tagName')"
+          fi
+          test -n "$smoke_release_tag" && test "$smoke_release_tag" != "null"
+          gh release download "$smoke_release_tag" --pattern '*.apk' --dir startup-apk
           mv startup-apk/*.apk "$RUNNER_TEMP/released-geostats.apk"
           mv "$RUNNER_TEMP/released-geostats.apk" "$APK_PATH"
-      - name: Enable KVM for the test runner
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-      - name: Run startup test on Android
-        uses: reactivecircus/android-emulator-runner@4c44018e59b437e86cdfc41da381398f93ed8808 # v2
+      - name: Verify released APK startup
+        uses: ./.github/actions/android-startup-smoke
         with:
-          api-level: 35
-          target: google_apis
-          arch: x86_64
-          disable-animations: true
-          script: bash apps/mobile/e2e/run-startup-smoke.sh
-      - name: Upload startup logs and screenshots
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: android-startup-results
-          path: startup-results
-          if-no-files-found: warn
+          apk_path: ${{ env.APK_PATH }}
+          output_directory: ${{ env.SMOKE_OUTPUT }}

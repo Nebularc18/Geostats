@@ -9,3 +9,10 @@ appId: com.hampu.geostats
 - waitForAnimationToEnd
 - assertVisible: "Geostats"
 - takeScreenshot: startup
+- stopApp
+- launchApp
+- extendedWaitUntil:
+    visible: "Geostats"
+    timeout: 60000
+- assertVisible: "Sign in"
+- takeScreenshot: reopened

@@ -541,6 +541,8 @@ The **Mobile Release** workflow in GitHub Actions provides three manually select
 - `production-update`: publishes a JavaScript/assets update to installed production builds.
 - `play-internal`: builds an Android App Bundle and submits it to Google Play internal testing.
 
+Preview publication now requires an Android emulator smoke test of the candidate APK. The test checks fresh launch and reopening, and preserves screenshots and logcat on failure. A failing startup blocks both the downloadable prerelease and the preview OTA update. The release configuration check also resolves React and React DOM from the app, Expo, and Clerk module scopes; their versions must match exactly. Root pnpm overrides keep transitive renderers on the declared React version.
+
 Preview releases may be dispatched from any branch. `production-update` and
 `play-internal` are accepted only when dispatched from `main`.
 

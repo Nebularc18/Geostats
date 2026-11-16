@@ -41,6 +41,23 @@ assert.match(
   "Mobile version must use X.Y.Z format",
 );
 
+// Expo and Clerk may resolve nested peer dependencies instead of the root copy.
+// React DOM validates exact React versions when imported, including native startup.
+const mobileRequire = createRequire(new URL("../apps/mobile/package.json", import.meta.url));
+const expoRuntimeVersions = mobileRequire("expo/bundledNativeModules.json");
+const runtimeScopes = [
+  ["workspace root", require],
+  ["mobile app", mobileRequire],
+  ...["expo", "@clerk/expo"].map((name) => [name, createRequire(mobileRequire.resolve(name))])
+];
+for (const [scope, scopedRequire] of runtimeScopes) {
+  const reactVersion = scopedRequire("react/package.json").version;
+  const rendererVersion = scopedRequire("react-dom/package.json").version;
+  assert.equal(reactVersion, expoRuntimeVersions.react, `${scope} must use the React version required by this Expo SDK.`);
+  assert.equal(rendererVersion, reactVersion, `${scope} resolves React ${reactVersion} and React DOM ${rendererVersion}. Native startup requires identical versions.`);
+  scopedRequire("react-dom/client");
+}
+
 console.log(
   `Mobile release configuration is consistent (v${rootConfig.version}).`,
 );

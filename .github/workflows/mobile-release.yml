@@ -1,6 +1,17 @@
 name: Mobile Release
 
 on:
+  pull_request:
+    paths:
+      - 'apps/mobile/**'
+      - 'packages/shared/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'eas.json'
+      - 'scripts/check-mobile-release.mjs'
+      - 'scripts/expo-config.cjs'
+      - '.github/workflows/mobile-release.yml'
+      - '.github/actions/android-startup-smoke/**'
   workflow_dispatch:
     inputs:
       release_kind:
@@ -72,6 +83,9 @@ jobs:
       - name: Test shared mobile contracts
         run: pnpm --filter @geostats/shared test
 
+      - name: Test mobile app
+        run: pnpm --filter @geostats/mobile test
+
       - name: Bundle Android app
         run: pnpm --filter @geostats/mobile exec expo export --platform android --output-dir /tmp/geostats-mobile-export
 
@@ -79,7 +93,7 @@ jobs:
     name: Publish downloadable APK and automatic preview update
     if: inputs.release_kind == 'preview-release'
     needs: quality
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment:
       name: mobile-preview
       url: ${{ steps.release.outputs.url }}
@@ -118,6 +132,12 @@ jobs:
           build_url="$(jq -r '.[0].artifacts.buildUrl' eas-build.json)"
           test -n "$build_url" && test "$build_url" != "null"
           curl --fail --location --retry 3 "$build_url" --output geostats-preview.apk
+
+      - name: Verify APK startup before publishing
+        uses: ./.github/actions/android-startup-smoke
+        with:
+          apk_path: ${{ github.workspace }}/geostats-preview.apk
+          output_directory: ${{ github.workspace }}/startup-results
 
       - name: Create downloadable GitHub prerelease
         id: release
