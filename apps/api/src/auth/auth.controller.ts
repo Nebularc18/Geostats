@@ -86,7 +86,7 @@ export class AuthController {
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Post("mobile/clerk")
   async mobileClerk(@Req() request: Request) {
-    const user = await this.auth.loginWithClerkToken(this.bearerToken(request));
+    const user = await this.auth.loginWithClerkToken(this.bearerToken(request), "native");
     return { user, token: this.auth.sign(user) };
   }
 
