@@ -1,0 +1,18 @@
+appId: com.hampu.geostats
+---
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: "Geostats"
+    timeout: 60000
+- assertVisible: "Sign in"
+- waitForAnimationToEnd
+- assertVisible: "Geostats"
+- takeScreenshot: startup
+- stopApp
+- launchApp
+- extendedWaitUntil:
+    visible: "Geostats"
+    timeout: 60000
+- assertVisible: "Sign in"
+- takeScreenshot: reopened

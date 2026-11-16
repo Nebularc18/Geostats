@@ -1,0 +1,43 @@
+name: Released Android startup smoke test
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: GitHub mobile release tag to test; leave empty for the latest mobile release
+        default: ''
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  startup:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      APK_PATH: ${{ github.workspace }}/startup-apk/geostats.apk
+      SMOKE_OUTPUT: ${{ github.workspace }}/startup-results
+      MAESTRO_CLI_NO_ANALYTICS: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Download released APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p startup-apk
+          smoke_release_tag="$RELEASE_TAG"
+          if [ -z "$smoke_release_tag" ]; then
+            smoke_release_tag="$(gh release list --limit 50 --json tagName --jq 'map(select(.tagName | startswith("mobile-")))[0].tagName')"
+          fi
+          test -n "$smoke_release_tag" && test "$smoke_release_tag" != "null"
+          gh release download "$smoke_release_tag" --pattern '*.apk' --dir startup-apk
+          mv startup-apk/*.apk "$RUNNER_TEMP/released-geostats.apk"
+          mv "$RUNNER_TEMP/released-geostats.apk" "$APK_PATH"
+      - name: Verify released APK startup
+        uses: ./.github/actions/android-startup-smoke
+        with:
+          apk_path: ${{ env.APK_PATH }}
+          output_directory: ${{ env.SMOKE_OUTPUT }}
