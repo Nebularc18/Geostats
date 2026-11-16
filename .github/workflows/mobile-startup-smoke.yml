@@ -1,6 +1,8 @@
 name: Released Android startup smoke test
 
 on:
+  push:
+    branches: [t3/fix-mobile-startup-crash]
   workflow_dispatch:
     inputs:
       release_tag:
