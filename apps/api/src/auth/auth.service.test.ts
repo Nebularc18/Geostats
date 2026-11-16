@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { generateKeyPairSync, sign } from "node:crypto";
 import { UnauthorizedException } from "@nestjs/common";
 import { Prisma } from "@geostats/db";
 import bcrypt from "bcryptjs";
@@ -291,7 +292,8 @@ test("Clerk token exchange verifies the session and links the local account", as
         "clerk-session",
         "sk_test_secret",
         undefined,
-        ["http://localhost:3000"]
+        ["http://localhost:3000"],
+        "web"
       ]);
       assert.deepEqual(user, { id: "user-1", email: "user@example.com", username: "geo-user" });
       assert.deepEqual(users, [
@@ -512,4 +514,46 @@ test("password JWTs cannot gain email-admin access after switching to Clerk", as
     process.env.ADMIN_EMAILS = user.email;
     assert.equal(service.isAdmin(await service.verify("signed")), false);
   });
+});
+
+
+// Exercise the real Clerk verifier with locally signed tokens, without network calls.
+const clerkTestKeys = generateKeyPairSync("rsa", { modulusLength: 2048 });
+const clerkTestPublicKey = clerkTestKeys.publicKey.export({ type: "spki", format: "pem" }).toString();
+function signedClerkToken(overrides: Record<string, unknown> = {}, key = clerkTestKeys.privateKey) {
+  const now = Math.floor(Date.now() / 1000);
+  const header = Buffer.from(JSON.stringify({ alg: "RS256", typ: "JWT", kid: "test-key" })).toString("base64url");
+  const payload = Buffer.from(JSON.stringify({
+    iss: "https://test.clerk.accounts.dev", sub: "clerk-user", sid: "sess_test",
+    iat: now, nbf: now - 1, exp: now + 60, ...overrides
+  })).toString("base64url");
+  const data = `${header}.${payload}`;
+  return `${data}.${sign("RSA-SHA256", Buffer.from(data), key).toString("base64url")}`;
+}
+function verifyTestClerkToken(token: string, source: "web" | "native") {
+  const { service } = authServiceWithUsers();
+  return (service as any).verifyClerkSessionToken(token, "", clerkTestPublicKey, ["https://geostats.example.com"], source);
+}
+
+test("mobile Clerk exchange accepts a verified token without a browser origin", async () => {
+  const verified = await verifyTestClerkToken(signedClerkToken(), "native");
+  assert.equal(verified.sub, "clerk-user");
+});
+
+test("browser Clerk exchange still requires a trusted origin", async () => {
+  await assert.rejects(() => verifyTestClerkToken(signedClerkToken(), "web"), UnauthorizedException);
+  assert.equal((await verifyTestClerkToken(signedClerkToken({ azp: "https://geostats.example.com" }), "web")).sub, "clerk-user");
+});
+
+test("mobile Clerk exchange rejects an untrusted origin when one is present", async () => {
+  for (const azp of ["https://attacker.example", "", null]) {
+    await assert.rejects(() => verifyTestClerkToken(signedClerkToken({ azp }), "native"), UnauthorizedException);
+  }
+  assert.equal((await verifyTestClerkToken(signedClerkToken({ azp: "https://geostats.example.com" }), "native")).sub, "clerk-user");
+});
+
+test("mobile Clerk exchange still rejects expired and incorrectly signed tokens", async () => {
+  await assert.rejects(() => verifyTestClerkToken(signedClerkToken({ exp: Math.floor(Date.now() / 1000) - 120 }), "native"), UnauthorizedException);
+  const otherKey = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey;
+  await assert.rejects(() => verifyTestClerkToken(signedClerkToken({}, otherKey), "native"), UnauthorizedException);
 });

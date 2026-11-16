@@ -117,7 +117,8 @@ test("Clerk exchange requires a bearer token", async () => {
 
 test("mobile Clerk exchange returns the local bearer token", async () => {
   const auth = {
-    loginWithClerkToken: async (token: string) => {
+    loginWithClerkToken: async (token: string, source: string) => {
+      assert.equal(source, "native");
       assert.equal(token, "clerk-session-token");
       return { id: "user-1", email: "a@example.com", username: "a" };
     },

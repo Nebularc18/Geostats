@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
   ServiceUnavailableException,
   UnauthorizedException
 } from "@nestjs/common";
@@ -36,6 +37,8 @@ const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwt: JwtService
@@ -116,7 +119,7 @@ export class AuthService {
     });
   }
 
-  async loginWithClerkToken(token: string): Promise<AuthUser> {
+  async loginWithClerkToken(token: string, source: "web" | "native" = "web"): Promise<AuthUser> {
     if (this.authMode() !== "clerk") {
       throw new ServiceUnavailableException("Clerk auth is disabled");
     }
@@ -131,7 +134,7 @@ export class AuthService {
       .map((value) => value.trim())
       .filter(Boolean);
 
-    const verifiedToken = await this.verifyClerkSessionToken(token.trim(), secretKey, jwtKey, authorizedParties);
+    const verifiedToken = await this.verifyClerkSessionToken(token.trim(), secretKey, jwtKey, authorizedParties, source);
 
     if (!verifiedToken.sub) {
       throw new UnauthorizedException("Clerk session token has no user id");
@@ -214,14 +217,26 @@ export class AuthService {
     token: string,
     secretKey: string,
     jwtKey: string | undefined,
-    authorizedParties: string[]
+    authorizedParties: string[],
+    source: "web" | "native" = "web"
   ) {
     try {
-      return await verifyToken(token, {
+      const verified = await verifyToken(token, {
         ...(jwtKey ? { jwtKey } : { secretKey }),
-        ...(authorizedParties.length ? { authorizedParties } : {})
+        ...(source === "web" && authorizedParties.length ? { authorizedParties } : {})
       });
-    } catch {
+      // Native SDK requests have no browser Origin and may omit azp. Check any
+      // origin that is present only after the signature and time claims verify.
+      if (source === "native" && authorizedParties.length && verified.azp !== undefined &&
+          !authorizedParties.includes(verified.azp)) {
+        throw Object.assign(new Error("Untrusted Clerk token origin"), { reason: "token-invalid-authorized-parties" });
+      }
+      return verified;
+    } catch (error) {
+      // Never log the token or SDK message: verification messages can contain claims.
+      const reason = error && typeof error === "object" && "reason" in error && typeof error.reason === "string"
+        ? error.reason : "verification-failed";
+      this.logger.warn({ event: "clerk_token_rejected", source, reason });
       throw new UnauthorizedException("Invalid Clerk session token");
     }
   }

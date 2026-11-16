@@ -533,6 +533,17 @@ included in the app config. The selected Geostats server supplies its public
 Clerk publishable key through `/auth/config`, so the same mobile build can
 connect to different self-hosted Clerk applications.
 
+Enable the Native API in that Clerk instance and authorize the mobile callback
+`clerk://com.hampu.geostats.hosted-callback` in its redirect URL settings. These
+settings belong to each server's Clerk instance; distributing an APK does not
+configure them automatically.
+
+`CLERK_AUTHORIZED_PARTIES` continues to restrict browser session origins. The
+mobile token exchange also checks any origin present in a signed token, while
+allowing native tokens without an `azp` browser-origin claim. Signature and token
+expiry verification apply to both exchanges. Verification failures log a reason
+code on the API without logging tokens or claims.
+
 ### GitHub mobile releases
 
 The **Mobile Release** workflow in GitHub Actions provides three manually selected release paths. `preview-release` is the default and handles both preview distribution paths with one button:
