@@ -2192,6 +2192,14 @@ export default function MysteriesPage() {
                     <button className="secondary-button copy-ai-button" type="button" onClick={() => void copyAttemptsForAi()}><Copy size={15} /> Copy for AI</button>
                   </div>
                 </div>
+                <form className="coordinate-form" onSubmit={addAttempt}>
+                  <label className="attempt-type-field"><span>Try type</span><select value={attemptType} onChange={(event) => { setAttemptType(event.target.value as AttemptKind); setCoordinate(""); setCoordinateError(""); }}><option value="coordinate">Coordinate</option><option value="keyword">Keyword</option><option value="approach">Solving approach</option></select></label>
+                  <label className="attempt-answer-field"><span>{attemptType === "keyword" ? "Keyword" : attemptType === "approach" ? "Approach" : "Coordinate tried"}</span><input value={coordinate} onChange={(event) => setCoordinate(event.target.value)} placeholder={attemptType === "keyword" ? "Enter checker keyword" : attemptType === "approach" ? "Example: Decode title as ROT13" : "59.40582, 18.36120"} /></label>
+                  <label className="checker-result-field"><span>Status</span><select value={coordinateState} onChange={(event) => setCoordinateState(event.target.value as CheckState)}><option value="wrong">Didn't work</option><option value="correct">Worked</option><option value="planned">Not tried yet</option><option value="unchecked">Result unknown</option></select></label>
+                  <label className="final-coordinate-field"><span>Final coordinates <small>{coordinateState === "correct" && attemptType === "keyword" ? "(required)" : "(if revealed)"}</small></span><input value={finalCoordinateText} onChange={(event) => setFinalCoordinateText(event.target.value)} placeholder="Coordinates returned by checker" /></label>
+                  <button className="primary-button" type="submit"><Plus size={17} /> Save try</button>
+                </form>
+                {coordinateError && <p className="coordinate-error"><AlertTriangle size={15} /> {coordinateError}</p>}
                 <div className="attempt-overview">
                   <div className="attempt-overview-counts" aria-label="Checker result summary">
                     <span><strong>{selected.attempts.length}</strong><small>Recorded</small></span>
@@ -2209,14 +2217,6 @@ export default function MysteriesPage() {
                     </div>
                   ) : <p className="attempt-search-result"><MapPin size={15} />Nothing has been tested for {selected.gcCode} yet.</p>}
                 </div>
-                <form className="coordinate-form" onSubmit={addAttempt}>
-                  <label className="attempt-type-field"><span>Try type</span><select value={attemptType} onChange={(event) => { setAttemptType(event.target.value as AttemptKind); setCoordinate(""); setCoordinateError(""); }}><option value="coordinate">Coordinate</option><option value="keyword">Keyword</option><option value="approach">Solving approach</option></select></label>
-                  <label className="attempt-answer-field"><span>{attemptType === "keyword" ? "Keyword" : attemptType === "approach" ? "Approach" : "Coordinate tried"}</span><input value={coordinate} onChange={(event) => setCoordinate(event.target.value)} placeholder={attemptType === "keyword" ? "Enter checker keyword" : attemptType === "approach" ? "Example: Decode title as ROT13" : "59.40582, 18.36120"} /></label>
-                  <label className="checker-result-field"><span>Status</span><select value={coordinateState} onChange={(event) => setCoordinateState(event.target.value as CheckState)}><option value="wrong">Didn't work</option><option value="correct">Worked</option><option value="planned">Not tried yet</option><option value="unchecked">Result unknown</option></select></label>
-                  <label className="final-coordinate-field"><span>Final coordinates <small>{coordinateState === "correct" && attemptType === "keyword" ? "(required)" : "(if revealed)"}</small></span><input value={finalCoordinateText} onChange={(event) => setFinalCoordinateText(event.target.value)} placeholder="Coordinates returned by checker" /></label>
-                  <button className="primary-button" type="submit"><Plus size={17} /> Save try</button>
-                </form>
-                {coordinateError && <p className="coordinate-error"><AlertTriangle size={15} /> {coordinateError}</p>}
                 <div className="attempt-list">
                   {selected.attempts.map((attempt) => {
                     const final = solvedCoordinateForAttempt(attempt);
