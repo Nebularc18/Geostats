@@ -1,7 +1,19 @@
 export type MysteryListing = {
   listingText?: string;
+  listingTextUpdatedAt?: string;
   listingImageUrls?: string[];
 };
+
+export const MAX_MYSTERY_SNAPSHOT_BYTES = 256 * 1024;
+
+export function mysterySnapshotByteLength(value: unknown) {
+  let bytes = 0;
+  for (const character of JSON.stringify(value)) {
+    const codePoint = character.codePointAt(0)!;
+    bytes += codePoint <= 0x7f ? 1 : codePoint <= 0x7ff ? 2 : codePoint <= 0xffff ? 3 : 4;
+  }
+  return bytes;
+}
 
 function isListingImageUrl(item: unknown): item is string {
   if (typeof item !== "string") return false;

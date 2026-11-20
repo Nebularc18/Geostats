@@ -2799,13 +2799,16 @@ function MysteriesScreen({ incomingShare, onIncomingShareHandled, apiBaseUrl, to
     if (existing?.sharedBy) { showMystery(existing.id); setBrowserGcCode(""); return true; }
     const incoming = normalizeMysteryListing(listing);
     const previous = existing ? normalizeMysteryListing(existing) : null;
+    const listingTextUpdatedAt = incoming.listingText && incoming.listingText !== previous?.listingText
+      ? new Date().toISOString() : existing?.listingTextUpdatedAt;
     const cache: MysteryCache = existing && previous ? {
       ...existing,
       listingText: incoming.listingText || previous.listingText,
+      listingTextUpdatedAt,
       clues: [...new Set([...previous.clues, ...incoming.clues])],
       listingImageUrls: [...new Set([...previous.listingImageUrls, ...incoming.listingImageUrls])],
       listingComplete: true
-    } : { ...listing, ...incoming, id: newId("mystery"), listingComplete: true, status: "solving", statusUpdatedAt: new Date().toISOString(), notes: "", fieldNotes: "", sharedWith: [], attempts: [] };
+    } : { ...listing, ...incoming, listingTextUpdatedAt, id: newId("mystery"), listingComplete: true, status: "solving", statusUpdatedAt: new Date().toISOString(), notes: "", fieldNotes: "", sharedWith: [], attempts: [] };
     if (mysterySnapshotByteLength(cache) > MAX_MYSTERY_SNAPSHOT_BYTES) { setNotice("This listing is too large to sync. Use a smaller GPX."); return false; }
     if (!existing && !selectMysteryImports(latestMysteries.current.caches, [cache], true).added.length) {
       setNotice(`Your account can hold ${MAX_MYSTERY_WORKSPACES_PER_OWNER} mysteries. Remove one before importing another.`); return false;
@@ -2916,7 +2919,8 @@ function MysteriesScreen({ incomingShare, onIncomingShareHandled, apiBaseUrl, to
       let oversized = 0;
       const candidates: MysteryCache[] = [];
       for (const listing of mysteries) {
-        const cache: MysteryCache = { ...listing, id: newId("mystery"), status: "solving", statusUpdatedAt: new Date().toISOString(), notes: "", fieldNotes: "", clues: listing.clues, sharedWith: [], attempts: [] };
+        const now = new Date().toISOString();
+        const cache: MysteryCache = { ...listing, id: newId("mystery"), status: "solving", statusUpdatedAt: now, listingTextUpdatedAt: listing.listingText ? now : undefined, notes: "", fieldNotes: "", clues: listing.clues, sharedWith: [], attempts: [] };
         if (mysterySnapshotByteLength(cache) > MAX_MYSTERY_SNAPSHOT_BYTES || cache.name.length > 300) { oversized++; continue; }
         candidates.push(cache);
       }

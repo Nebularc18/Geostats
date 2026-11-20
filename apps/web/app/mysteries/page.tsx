@@ -1,7 +1,7 @@
 "use client";
 
 import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import { normalizeMysteryListing, parseCoordinate, type MysteryListing as MysteryListingData } from "@geostats/shared";
+import { MAX_MYSTERY_SNAPSHOT_BYTES, mysterySnapshotByteLength, normalizeMysteryListing, parseCoordinate, type MysteryListing as MysteryListingData } from "@geostats/shared";
 import { MysteryListing } from "./mystery-listing";
 import {
   AlertTriangle,
@@ -464,6 +464,10 @@ function shareableMystery(cache: MysteryCache) {
   return mystery;
 }
 
+function canSyncMystery(cache: MysteryCache) {
+  return mysterySnapshotByteLength(shareableMystery(cache)) <= MAX_MYSTERY_SNAPSHOT_BYTES;
+}
+
 function importedMystery(value: BrowserImport): MysteryCache | null {
   const gcCode = typeof value.gcCode === "string" ? value.gcCode.trim().toUpperCase() : "";
   const name = typeof value.name === "string" ? value.name.trim() : "";
@@ -481,6 +485,7 @@ function importedMystery(value: BrowserImport): MysteryCache | null {
     return null;
   }
   const now = new Date().toISOString();
+  const listing = normalizeMysteryListing(value);
   return {
     id: newId(),
     gcCode,
@@ -498,7 +503,8 @@ function importedMystery(value: BrowserImport): MysteryCache | null {
     publishedLongitude,
     notes: typeof value.notes === "string" ? value.notes : "",
     fieldNotes: "",
-    ...normalizeMysteryListing(value),
+    ...listing,
+    listingTextUpdatedAt: listing.listingText ? now : undefined,
     sharedWith: [],
     attempts: []
   };
@@ -789,23 +795,35 @@ export default function MysteriesPage() {
         const imported = importedMystery(JSON.parse(encodedImport) as BrowserImport);
         if (imported) {
           const existing = initial.find((cache) => cache.gcCode.toUpperCase() === imported.gcCode);
-          if (existing) {
-            initial = initial.map((cache) => cache.id === existing.id && !cache.sharedBy ? {
-              ...cache,
-              listingText: imported.listingText || cache.listingText,
-              listingImageUrls: [...new Set([...(cache.listingImageUrls ?? []), ...(imported.listingImageUrls ?? [])])],
-              clues: [...new Set([...cache.clues, ...imported.clues])],
-              area: imported.area || cache.area,
-              county: imported.county || cache.county,
-              country: imported.country || cache.country,
-              region: imported.region || cache.region,
-              locality: imported.locality || cache.locality,
+          if (existing?.sharedBy) {
+            setSelectedId(existing.id);
+            setNotice(`${imported.gcCode} is already shared with you`);
+          } else if (existing) {
+            const refreshed = {
+              ...existing,
+              listingText: imported.listingText || existing.listingText,
+              listingTextUpdatedAt: imported.listingText && imported.listingText !== existing.listingText
+                ? imported.listingTextUpdatedAt : existing.listingTextUpdatedAt,
+              listingImageUrls: [...new Set([...(existing.listingImageUrls ?? []), ...(imported.listingImageUrls ?? [])])],
+              clues: [...new Set([...existing.clues, ...imported.clues])],
+              area: imported.area || existing.area,
+              county: imported.county || existing.county,
+              country: imported.country || existing.country,
+              region: imported.region || existing.region,
+              locality: imported.locality || existing.locality,
               locationHierarchy: imported.locationHierarchy?.length
                 ? imported.locationHierarchy
-                : cache.locationHierarchy
-            } : cache);
+                : existing.locationHierarchy
+            };
             setSelectedId(existing.id);
-            setNotice(existing.sharedBy ? `${imported.gcCode} is already shared with you` : `${imported.gcCode} listing refreshed`);
+            if (canSyncMystery(refreshed)) {
+              initial = initial.map((cache) => cache.id === existing.id ? refreshed : cache);
+              setNotice(`${imported.gcCode} listing refreshed`);
+            } else {
+              setNotice("Listing not refreshed. It would make this mystery too large to sync.");
+            }
+          } else if (!canSyncMystery(imported)) {
+            setNotice("Listing not imported. This mystery is too large to sync.");
           } else {
             initial = [imported, ...initial];
             setSelectedId(imported.id);
@@ -1714,13 +1732,19 @@ export default function MysteriesPage() {
 
   function saveClue(clue: string) {
     const text = clue.trim();
-    if (!selected || selected.sharedBy || !text) return;
+    if (!selected || selected.sharedBy || !text) return false;
     if (selected.clues.includes(text)) {
       setNotice("This clue is already saved.");
-      return;
+      return false;
     }
-    updateSelected({ clues: [...selected.clues, text] });
+    const clues = [...selected.clues, text];
+    if (!canSyncMystery({ ...selected, clues })) {
+      setNotice("Clue not saved. Choose a shorter excerpt to keep this mystery small enough to sync.");
+      return false;
+    }
+    updateSelected({ clues });
     setNotice("Clue saved.");
+    return true;
   }
 
   function addClue() {

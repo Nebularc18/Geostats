@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Plus } from "lucide-react";
 
-export function MysteryListing({ text, imageUrls, onSaveClue }: { text?: string; imageUrls?: string[]; onSaveClue?: (clue: string) => void }) {
+export function MysteryListing({ text, imageUrls, onSaveClue }: { text?: string; imageUrls?: string[]; onSaveClue?: (clue: string) => boolean }) {
   const [selection, setSelection] = useState<{ source: string; excerpt: string }>();
   const excerpt = selection?.source === text ? selection?.excerpt : undefined;
 
@@ -14,9 +14,7 @@ export function MysteryListing({ text, imageUrls, onSaveClue }: { text?: string;
         setSelection({ source: text, excerpt: value.slice(selectionStart, selectionEnd).trim() });
       }} />
       {onSaveClue && <button className="secondary-button" type="button" disabled={!excerpt} onClick={() => {
-        if (!excerpt) return;
-        onSaveClue(excerpt);
-        setSelection(undefined);
+        if (excerpt && onSaveClue(excerpt)) setSelection(undefined);
       }}><Plus size={13} /> Add selection to clues</button>}
     </> : <p>No listing text imported.</p>}
     {imageUrls?.map((url, index) => <a className="text-button" href={url} key={url} target="_blank" rel="noreferrer">Open listing image {index + 1}</a>)}

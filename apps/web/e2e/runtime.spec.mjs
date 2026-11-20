@@ -156,11 +156,31 @@ test("mystery listing excerpts can be saved as clues without copying the whole d
   await expect(clues).toContainText("Remember the rabbits");
 
   const refreshed = { ...payload, listingText: "The circus returns next year.", clues: [] };
+  const saved = [...owned.values()][0];
+  owned.set(saved.clientId, { ...saved, revision: saved.revision + 1, mystery: { ...saved.mystery, notes: "Notes edited on another device." } });
   await page.goto(`${origin}/mysteries?refresh=1#mystery-import=${encodeURIComponent(JSON.stringify(refreshed))}`);
   await expect(clues).toContainText("Count the hats.");
   await expect(clues).toContainText("Remember the rabbits");
   await page.getByText("Listing", { exact: true }).click();
   await expect(listingText).toHaveValue(refreshed.listingText);
+  await expect.poll(() => owned.get(saved.clientId)?.mystery).toMatchObject({
+    listingText: refreshed.listingText, notes: "Notes edited on another device."
+  });
+
+  const large = { ...refreshed, listingText: "å".repeat(70 * 1024) };
+  await page.goto(`${origin}/mysteries?refresh=2#mystery-import=${encodeURIComponent(JSON.stringify(large))}`);
+  await page.getByText("Listing", { exact: true }).click();
+  await expect(listingText).toHaveValue(large.listingText);
+  await listingText.press("Control+a");
+  await save.click();
+  await expect(page.getByRole("status").filter({ hasText: "Clue not saved" })).toBeVisible();
+  await expect(clues.getByRole("button")).toHaveCount(4);
+
+  const oversized = { ...large, listingText: "å".repeat(128 * 1024 - 50) };
+  await page.goto(`${origin}/mysteries?refresh=3#mystery-import=${encodeURIComponent(JSON.stringify(oversized))}`);
+  await expect(page.getByRole("status").filter({ hasText: "Listing not refreshed" })).toBeVisible();
+  await page.getByText("Listing", { exact: true }).click();
+  await expect(listingText).toHaveValue(large.listingText);
 });
 
 

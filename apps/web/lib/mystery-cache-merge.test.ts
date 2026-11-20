@@ -405,3 +405,26 @@ test("preserves ambiguous legacy device fields without overwriting the server", 
     image: { server: "data:image/png;base64,server", device: null }
   });
 });
+
+test("keeps the most recently refreshed listing independently of solution notes", () => {
+  const server: MergeableMysteryCache = {
+    id: "cache-1",
+    gcCode: "GC1234",
+    name: "Mystery",
+    area: "",
+    country: "",
+    status: "solving",
+    notes: "Server notes",
+    listingText: "Old listing",
+    clues: [],
+    sharedWith: [],
+    attempts: []
+  };
+  const device = { ...server, notes: "Stale notes", listingText: "New listing", listingTextUpdatedAt: "2026-11-20T12:00:00Z" };
+  const merged = mergeMysteryCaches(server, device, { preferIncomingNotes: false });
+  assert.equal(merged.notes, server.notes);
+  assert.equal(merged.listingText, device.listingText);
+  assert.equal(merged.listingTextUpdatedAt, device.listingTextUpdatedAt);
+  assert.equal(mergeMysteryCaches(merged, server).listingText, device.listingText);
+  assert.equal(mergeMysteryCaches(merged, { ...server, listingText: "", listingTextUpdatedAt: "2026-11-21T12:00:00Z" }).listingText, device.listingText);
+});

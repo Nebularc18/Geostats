@@ -1,6 +1,6 @@
 import { BadRequestException, Body, ConflictException, Controller, Delete, Get, Header, NotFoundException, Param, Post, Put, UseGuards } from "@nestjs/common";
 import { personalCacheMetadata, Prisma } from "@geostats/db";
-import { AuthUser, MAX_MYSTERY_WORKSPACES_PER_OWNER } from "@geostats/shared";
+import { AuthUser, MAX_MYSTERY_SNAPSHOT_BYTES, MAX_MYSTERY_WORKSPACES_PER_OWNER } from "@geostats/shared";
 import { AuthGuard } from "../auth/auth.guard";
 import { CurrentUser } from "../auth/current-user.decorator";
 import { PrismaService } from "../common/prisma.service";
@@ -24,7 +24,6 @@ const MYSTERY_STATUSES = ["solving", "solved", "planned", "archived"] as const;
 type MysteryStatus = typeof MYSTERY_STATUSES[number];
 
 const MAX_MYSTERY_NAME_LENGTH = 300;
-const MAX_MYSTERY_SNAPSHOT_BYTES = 256 * 1024;
 
 function importedListingContext(value: unknown) {
   const record = (input: unknown): Record<string, unknown> => input && typeof input === "object" && !Array.isArray(input) ? input as Record<string, unknown> : {};
