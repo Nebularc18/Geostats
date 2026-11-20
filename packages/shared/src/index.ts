@@ -109,5 +109,6 @@ export {
 } from "./cache-types";
 
 export { MYSTERY_BROWSER_CAPTURE_SOURCE, mysteryBrowserCaptureScript } from "./mystery-browser-capture";
+export { MAX_MYSTERY_SNAPSHOT_BYTES, mysterySnapshotByteLength, normalizeMysteryListing, type MysteryListing } from "./mystery-listing";
 
 export const MAX_MYSTERY_WORKSPACES_PER_OWNER = 500;

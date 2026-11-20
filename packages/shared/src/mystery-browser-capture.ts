@@ -32,7 +32,8 @@ export const MYSTERY_BROWSER_CAPTURE_SOURCE = String.raw`function captureMystery
   if (!short && !long && !images.length) return null;
   return {
     gcCode, name, latitude, longitude, area: read("[data-testid='cache-location']"), country: "",
-    clues: [short ? "Short description:\n" + short : "", long ? "Puzzle listing:\n" + long : "", hint ? "Listing hint as shown on Geocaching:\n" + hint : "", images.length ? "Puzzle images:\n" + images.join("\n") : ""].filter(Boolean),
+    listingText: [short, long].filter(Boolean).join("\n\n"),
+    clues: hint ? ["Listing hint as shown on Geocaching:\n" + hint] : [],
     listingImageUrls: images
   };
 }`;

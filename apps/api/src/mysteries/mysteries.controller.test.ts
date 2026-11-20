@@ -831,13 +831,14 @@ test("lookup returns trusted listing details with only the requesting user's puz
   const controller = new MysteriesController({ cache: { findUnique: async (input: any) => {
     query = input;
     return { gcCode: "GC12345", name: "Puzzle", cacheType: "Unknown Cache", latitude: 59.1, longitude: 18.2, country: "Sweden", region: "Stockholm", county: null, metadataTrusted: true,
-      userData: [{ raw: { "groundspeak:cache": { "groundspeak:long_description": { text: "<p>My puzzle</p>" } } } }] };
+      userData: [{ raw: { "groundspeak:cache": { "groundspeak:long_description": { text: "<p>My puzzle</p>" }, "groundspeak:encoded_hints": "Look up" } } }] };
   } } } as any);
   const result = await controller.lookup(owner, "gc12345");
   assert.deepEqual(query.select.userData.where, { userId: owner.id });
   assert.equal(result.cache.gcCode, "GC12345");
   assert.equal(result.cache.publishedLatitude, 59.1);
-  assert.deepEqual(result.cache.clues, ["Puzzle listing:\nMy puzzle"]);
+  assert.equal(result.cache.listingText, "My puzzle");
+  assert.deepEqual(result.cache.clues, ["Listing hint:\nLook up"]);
   assert.equal("userData" in result.cache, false);
 });
 
@@ -873,15 +874,18 @@ test("lookup distinguishes puzzle descriptions from hints and does not silently 
   }
   const hintOnly = await lookup("");
   assert.equal(hintOnly.listingComplete, false);
-  assert.equal(hintOnly.clues.length, 1);
+  assert.equal(hintOnly.listingText, "");
+  assert.deepEqual(hintOnly.clues, ["Listing hint:\nA hint"]);
   const longPuzzle = "<div>" + "All puzzle text. ".repeat(2000) + "Important final line</div>";
   const complete = await lookup(longPuzzle);
   assert.equal(complete.listingComplete, true);
-  assert.match(complete.clues[0], /Important final line$/);
+  assert.match(complete.listingText, /Important final line$/);
+  assert.deepEqual(complete.clues, hintOnly.clues);
   const htmlHeavy = await lookup("<span class='long-markup'></span>".repeat(1000) + "Puzzle at the end");
   assert.equal(htmlHeavy.listingComplete, true);
-  assert.match(htmlHeavy.clues[0], /Puzzle at the end$/);
+  assert.match(htmlHeavy.listingText, /Puzzle at the end$/);
   const tooLarge = await lookup("Puzzle".repeat(50_000));
   assert.equal(tooLarge.listingComplete, false);
+  assert.equal(tooLarge.listingText, "");
   assert.deepEqual(tooLarge.clues, []);
 });

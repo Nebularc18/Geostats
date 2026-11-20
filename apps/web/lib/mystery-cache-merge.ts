@@ -32,6 +32,9 @@ export type MergeableMysteryCache = {
   notes: string;
   fieldNotes?: string;
   clues: string[];
+  listingText?: string;
+  listingTextUpdatedAt?: string;
+  listingImageUrls?: string[];
   sharedWith: Array<{ id: string }>;
   attempts: MergeableMysteryAttempt[];
   image?: string;
@@ -174,6 +177,11 @@ export function mergeMysteryCaches<T extends MergeableMysteryCache>(
   options: MysteryCacheMergeOptions = {}
 ): T {
   const sharedWith = new Map([...existing.sharedWith, ...incoming.sharedWith].map((user) => [user.id, user]));
+  const existingListingTime = Date.parse(existing.listingTextUpdatedAt ?? "");
+  const incomingListingTime = Date.parse(incoming.listingTextUpdatedAt ?? "");
+  const listing = incoming.listingText && (!existing.listingText ||
+    (Number.isFinite(incomingListingTime) && (!Number.isFinite(existingListingTime) || incomingListingTime > existingListingTime)))
+    ? incoming : existing;
   const statusRank = { solving: 0, planned: 1, solved: 2, archived: 3 } as const;
   // Status conflicts resolve by recency: every explicit (un)archive stamps
   // statusUpdatedAt, so the newest intent wins and neither an unarchive nor
@@ -240,6 +248,9 @@ export function mergeMysteryCaches<T extends MergeableMysteryCache>(
     tripUpdatedAt: preferIncomingTrip ? incoming.tripUpdatedAt : existing.tripUpdatedAt,
     notes: options.preferIncomingNotes === false ? existing.notes : incoming.notes,
     fieldNotes: options.preferIncomingFieldNotes === false ? existingFieldNotes : incomingFieldNotes,
+    listingText: listing.listingText,
+    listingTextUpdatedAt: listing.listingTextUpdatedAt,
+    listingImageUrls: [...new Set([...(existing.listingImageUrls ?? []), ...(incoming.listingImageUrls ?? [])])],
     clues: [...new Set([...existing.clues, ...incoming.clues])],
     attempts: mergeMysteryAttempts([...existing.attempts, ...incoming.attempts]),
     sharedWith: [...sharedWith.values()],

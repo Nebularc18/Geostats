@@ -1,7 +1,8 @@
 "use client";
 
 import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import { parseCoordinate } from "@geostats/shared";
+import { MAX_MYSTERY_SNAPSHOT_BYTES, mysterySnapshotByteLength, normalizeMysteryListing, parseCoordinate, type MysteryListing as MysteryListingData } from "@geostats/shared";
+import { MysteryListing } from "./mystery-listing";
 import {
   AlertTriangle,
   Check,
@@ -138,7 +139,7 @@ function compareMysteryCaches(sort: MysteryListSort) {
   };
 }
 
-type MysteryCache = {
+type MysteryCache = MysteryListingData & {
   id: string;
   gcCode: string;
   name: string;
@@ -214,6 +215,7 @@ type BrowserImport = {
   longitude?: unknown;
   notes?: unknown;
   clues?: unknown;
+  listingText?: unknown;
   listingImageUrls?: unknown;
 };
 
@@ -418,7 +420,7 @@ function verifiedStoredShares(caches: MysteryCache[], mergeOptions?: MysteryCach
       locationHierarchy: Array.isArray(cache.locationHierarchy)
         ? cache.locationHierarchy.map(normalizeMysteryArea).filter(Boolean)
         : [],
-      clues: Array.isArray(cache.clues) ? cache.clues.filter((clue): clue is string => typeof clue === "string") : [],
+      ...normalizeMysteryListing(cache),
       attempts: Array.isArray(cache.attempts)
         ? mergeMysteryAttempts(cache.attempts.map((attempt): CoordinateAttempt => ({
             ...attempt,
@@ -462,6 +464,10 @@ function shareableMystery(cache: MysteryCache) {
   return mystery;
 }
 
+function canSyncMystery(cache: MysteryCache) {
+  return mysterySnapshotByteLength(shareableMystery(cache)) <= MAX_MYSTERY_SNAPSHOT_BYTES;
+}
+
 function importedMystery(value: BrowserImport): MysteryCache | null {
   const gcCode = typeof value.gcCode === "string" ? value.gcCode.trim().toUpperCase() : "";
   const name = typeof value.name === "string" ? value.name.trim() : "";
@@ -479,6 +485,7 @@ function importedMystery(value: BrowserImport): MysteryCache | null {
     return null;
   }
   const now = new Date().toISOString();
+  const listing = normalizeMysteryListing(value);
   return {
     id: newId(),
     gcCode,
@@ -496,7 +503,8 @@ function importedMystery(value: BrowserImport): MysteryCache | null {
     publishedLongitude,
     notes: typeof value.notes === "string" ? value.notes : "",
     fieldNotes: "",
-    clues: Array.isArray(value.clues) ? value.clues.filter((clue): clue is string => typeof clue === "string").slice(0, 64) : [],
+    ...listing,
+    listingTextUpdatedAt: listing.listingText ? now : undefined,
     sharedWith: [],
     attempts: []
   };
@@ -787,20 +795,35 @@ export default function MysteriesPage() {
         const imported = importedMystery(JSON.parse(encodedImport) as BrowserImport);
         if (imported) {
           const existing = initial.find((cache) => cache.gcCode.toUpperCase() === imported.gcCode);
-          if (existing) {
-            initial = initial.map((cache) => cache.id === existing.id ? {
-              ...cache,
-              area: imported.area || cache.area,
-              county: imported.county || cache.county,
-              country: imported.country || cache.country,
-              region: imported.region || cache.region,
-              locality: imported.locality || cache.locality,
+          if (existing?.sharedBy) {
+            setSelectedId(existing.id);
+            setNotice(`${imported.gcCode} is already shared with you`);
+          } else if (existing) {
+            const refreshed = {
+              ...existing,
+              listingText: imported.listingText || existing.listingText,
+              listingTextUpdatedAt: imported.listingText && imported.listingText !== existing.listingText
+                ? imported.listingTextUpdatedAt : existing.listingTextUpdatedAt,
+              listingImageUrls: [...new Set([...(existing.listingImageUrls ?? []), ...(imported.listingImageUrls ?? [])])],
+              clues: [...new Set([...existing.clues, ...imported.clues])],
+              area: imported.area || existing.area,
+              county: imported.county || existing.county,
+              country: imported.country || existing.country,
+              region: imported.region || existing.region,
+              locality: imported.locality || existing.locality,
               locationHierarchy: imported.locationHierarchy?.length
                 ? imported.locationHierarchy
-                : cache.locationHierarchy
-            } : cache);
+                : existing.locationHierarchy
+            };
             setSelectedId(existing.id);
-            setNotice(`${imported.gcCode} location refreshed`);
+            if (canSyncMystery(refreshed)) {
+              initial = initial.map((cache) => cache.id === existing.id ? refreshed : cache);
+              setNotice(`${imported.gcCode} listing refreshed`);
+            } else {
+              setNotice("Listing not refreshed. It would make this mystery too large to sync.");
+            }
+          } else if (!canSyncMystery(imported)) {
+            setNotice("Listing not imported. This mystery is too large to sync.");
           } else {
             initial = [imported, ...initial];
             setSelectedId(imported.id);
@@ -968,6 +991,7 @@ export default function MysteriesPage() {
               ?? new Date().toISOString();
             return [{
               ...grant.mystery,
+              ...normalizeMysteryListing(grant.mystery),
               area: normalizeMysteryArea(grant.mystery.area),
               county: normalizeMysteryArea(grant.mystery.county),
               country: normalizeMysteryArea(grant.mystery.country),
@@ -1666,6 +1690,7 @@ export default function MysteriesPage() {
       publishedLongitude: published.longitude,
       notes: "",
       fieldNotes: "",
+      listingText: "",
       clues: [],
       sharedWith: [],
       attempts: []
@@ -1705,10 +1730,26 @@ export default function MysteriesPage() {
     setNotice(`${deleting.gcCode} deleted`);
   }
 
+  function saveClue(clue: string) {
+    const text = clue.trim();
+    if (!selected || selected.sharedBy || !text) return false;
+    if (selected.clues.includes(text)) {
+      setNotice("This clue is already saved.");
+      return false;
+    }
+    const clues = [...selected.clues, text];
+    if (!canSyncMystery({ ...selected, clues })) {
+      setNotice("Clue not saved. Choose a shorter excerpt to keep this mystery small enough to sync.");
+      return false;
+    }
+    updateSelected({ clues });
+    setNotice("Clue saved.");
+    return true;
+  }
+
   function addClue() {
-    if (!selected) return;
     const clue = window.prompt("Add a short clue");
-    if (clue?.trim()) updateSelected({ clues: [...selected.clues, clue.trim()] });
+    if (clue) saveClue(clue);
   }
 
   function openBulkImport() {
@@ -2009,6 +2050,8 @@ export default function MysteriesPage() {
       `WORKED (${worked.length})\n${worked.length ? worked.map(lineForAttempt).join("\n") : "- None"}`,
       selected.attempts.some((attempt) => attempt.state === "planned") ? `NOT TRIED YET\n${selected.attempts.filter((attempt) => attempt.state === "planned").map(lineForAttempt).join("\n")}` : "",
       unknown.length ? `RESULT UNKNOWN (${unknown.length})\n${unknown.map(lineForAttempt).join("\n")}` : "",
+      selected.listingText ? `LISTING\n${selected.listingText}` : "",
+      selected.listingImageUrls?.length ? `LISTING IMAGE LINKS\n${selected.listingImageUrls.join("\n")}` : "",
       selected.clues.length ? `CLUES\n${selected.clues.map((clue) => `- ${clue}`).join("\n")}` : "",
       selected.notes.trim() ? `SOLUTION\n${selected.notes.trim()}` : "",
       (selected.fieldNotes ?? "").trim() ? `FIELD NOTES\n${(selected.fieldNotes ?? "").trim()}` : "",
@@ -2177,10 +2220,12 @@ export default function MysteriesPage() {
               <div className="mystery-sync-conflict-row"><span><strong>Field note returned by Geocaching</strong><small>{selected.geocachingFieldNoteConflict.geocaching || "The Geocaching note is empty."}</small></span><button className="secondary-button" type="button" onClick={() => resolveGeocachingFieldNoteConflict(true)}>Use Geocaching</button><button className="text-button" type="button" onClick={() => resolveGeocachingFieldNoteConflict(false)}>Keep Geostats</button></div>
             </section>}
 
+            <MysteryListing key={selected.id} text={selected.listingText} imageUrls={selected.listingImageUrls} onSaveClue={selected.sharedBy ? undefined : saveClue} />
+
             <div className="clue-strip">
               <span><Sparkles size={15} /> Clues</span>
-              {selected.clues.map((clue) => <button title="Remove clue" type="button" key={clue} onClick={() => updateSelected({ clues: selected.clues.filter((item) => item !== clue) })}>{clue}<X size={12} /></button>)}
-              <button className="add-clue" type="button" onClick={addClue}><Plus size={13} /> Add clue</button>
+              {selected.clues.map((clue) => <button title={selected.sharedBy ? undefined : "Remove clue"} type="button" key={clue} disabled={Boolean(selected.sharedBy)} onClick={() => updateSelected({ clues: selected.clues.filter((item) => item !== clue) })}>{clue}{!selected.sharedBy && <X size={12} />}</button>)}
+              {!selected.sharedBy && <button className="add-clue" type="button" onClick={addClue}><Plus size={13} /> Add clue</button>}
             </div>
 
             <div className="mystery-detail-grid">

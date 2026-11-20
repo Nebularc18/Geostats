@@ -5,7 +5,7 @@ import { locationFromCachePageMetadata } from "./mystery-area.ts";
 import { locationFromPageSources } from "./mystery-page-location.ts";
 import { personalCacheNoteEditorFromPage, personalCacheNoteFromPage } from "./mystery-personal-note.ts";
 
-export const MYSTERY_USERSCRIPT_VERSION = "2.10.0";
+export const MYSTERY_USERSCRIPT_VERSION = "2.11.0";
 
 export function userscript(appOrigin: string) {
   return `// ==UserScript==
@@ -288,7 +288,7 @@ export function userscript(appOrigin: string) {
     const pageLocationData = pageLocation();
     const personalNote = personalCacheNoteFromPage(document);
     const captured = captureMysteryDocument(document, location.href);
-    const listing = captured ? { clues: captured.clues, listingImageUrls: captured.listingImageUrls } : {};
+    const listing = captured ? { listingText: captured.listingText, clues: captured.clues, listingImageUrls: captured.listingImageUrls } : {};
     const notes = personalNote.available ? { notes: personalNote.note } : {};
     return coordinates ? { gcCode, name, ...pageLocationData, ...coordinates, ...listing, ...notes } : { gcCode, name, ...pageLocationData, ...notes };
   }

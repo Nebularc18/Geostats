@@ -1,6 +1,6 @@
 import type { File } from "expo-file-system";
 
-export const MAX_MYSTERY_SNAPSHOT_BYTES = 256 * 1024;
+export { MAX_MYSTERY_SNAPSHOT_BYTES, mysterySnapshotByteLength } from "@geostats/shared";
 
 export function safeRecipientMysteryImage(value: unknown) {
   return typeof value === "string" && /^data:image\/(?:png|jpe?g|gif|webp);base64,[a-z0-9+/=\s]+$/i.test(value)
@@ -27,22 +27,6 @@ export function mysteryStorageNamespace(apiBaseUrl: string, userId: string) {
   const host = new URL(origin).hostname.replace(/[^a-z0-9.-]/gi, "_").slice(0, 48) || "server";
   const user = identity.replace(/[^a-z0-9_-]/gi, "_").slice(0, 32) || "user";
   return `${host}-${user}-${identityFingerprint(`${origin}\0${identity}`)}`;
-}
-
-function utf8ByteLength(value: string) {
-  let bytes = 0;
-  for (const character of value) {
-    const codePoint = character.codePointAt(0) ?? 0;
-    if (codePoint <= 0x7f) bytes += 1;
-    else if (codePoint <= 0x7ff) bytes += 2;
-    else if (codePoint <= 0xffff) bytes += 3;
-    else bytes += 4;
-  }
-  return bytes;
-}
-
-export function mysterySnapshotByteLength(value: unknown) {
-  return utf8ByteLength(JSON.stringify(value));
 }
 
 export function replaceJsonFile<T>(

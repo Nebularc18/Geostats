@@ -1,6 +1,6 @@
 import { BadRequestException, Body, ConflictException, Controller, Delete, Get, Header, NotFoundException, Param, Post, Put, UseGuards } from "@nestjs/common";
 import { personalCacheMetadata, Prisma } from "@geostats/db";
-import { AuthUser, MAX_MYSTERY_WORKSPACES_PER_OWNER } from "@geostats/shared";
+import { AuthUser, MAX_MYSTERY_SNAPSHOT_BYTES, MAX_MYSTERY_WORKSPACES_PER_OWNER } from "@geostats/shared";
 import { AuthGuard } from "../auth/auth.guard";
 import { CurrentUser } from "../auth/current-user.decorator";
 import { PrismaService } from "../common/prisma.service";
@@ -24,7 +24,6 @@ const MYSTERY_STATUSES = ["solving", "solved", "planned", "archived"] as const;
 type MysteryStatus = typeof MYSTERY_STATUSES[number];
 
 const MAX_MYSTERY_NAME_LENGTH = 300;
-const MAX_MYSTERY_SNAPSHOT_BYTES = 256 * 1024;
 
 function importedListingContext(value: unknown) {
   const record = (input: unknown): Record<string, unknown> => input && typeof input === "object" && !Array.isArray(input) ? input as Record<string, unknown> : {};
@@ -36,11 +35,11 @@ function importedListingContext(value: unknown) {
     const candidate = typeof field === "string" ? field : record(field).text;
     return typeof candidate === "string" ? candidate.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "").replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, "").replace(/<\s*(?:br\s*\/|br|\/p|\/div)>/gi, "\n").replace(/<[^>]+>/g, "").trim() : "";
   };
-  const description = [text("short_description"), text("long_description")].filter(Boolean).join("\n\n");
+  const listingText = [text("short_description"), text("long_description")].filter(Boolean).join("\n\n");
   const hint = text("encoded_hints");
-  const clues = [description ? `Puzzle listing:\n${description}` : "", hint ? `Listing hint:\n${hint}` : ""].filter(Boolean);
-  const fits = Buffer.byteLength(JSON.stringify(clues), "utf8") <= MAX_MYSTERY_SNAPSHOT_BYTES - 4000;
-  return { clues: fits ? clues : [], listingComplete: Boolean(description) && fits };
+  const clues = hint ? [`Listing hint:\n${hint}`] : [];
+  const fits = Buffer.byteLength(JSON.stringify({ listingText, clues }), "utf8") <= MAX_MYSTERY_SNAPSHOT_BYTES - 4000;
+  return { listingText: fits ? listingText : "", clues: fits ? clues : [], listingComplete: Boolean(listingText) && fits };
 }
 
 async function ensureSharedCacheMetadata(tx: Prisma.TransactionClient, gcCode: string) {

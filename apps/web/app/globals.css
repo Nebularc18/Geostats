@@ -5200,6 +5200,36 @@ select:focus {
   white-space: pre-wrap;
 }
 
+.mystery-listing summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.mystery-listing p {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.mystery-listing textarea {
+  display: block;
+  width: 100%;
+  margin: 10px 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.mystery-listing a {
+  display: block;
+  width: fit-content;
+  margin-top: 10px;
+}
+
 .clue-strip {
   display: flex;
   flex-wrap: wrap;
@@ -5220,6 +5250,8 @@ select:focus {
 }
 
 .clue-strip button {
+  max-width: 100%;
+  overflow-wrap: anywhere;
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -5230,6 +5262,10 @@ select:focus {
   background: rgba(217, 145, 69, 0.07);
   cursor: pointer;
   font-size: 0.68rem;
+}
+
+.clue-strip button svg {
+  flex-shrink: 0;
 }
 
 .clue-strip button.add-clue {
