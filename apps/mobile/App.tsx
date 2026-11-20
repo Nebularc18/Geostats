@@ -15,7 +15,7 @@ import * as Linking from "expo-linking";
 import { ClerkProvider, useAuth } from "@clerk/expo";
 import { useHostedAuth } from "@clerk/expo/hosted-auth";
 import { tokenCache } from "@clerk/expo/token-cache";
-import { MAX_MYSTERY_WORKSPACES_PER_OWNER, parseCoordinate } from "@geostats/shared";
+import { MAX_MYSTERY_WORKSPACES_PER_OWNER, normalizeMysteryListing, parseCoordinate, type MysteryListing } from "@geostats/shared";
 import { pickAndUploadDocument, type UploadKind } from "./upload";
 import { MAX_MYSTERY_GPX_BYTES, mysteryAiPrompt, mysteryCodeFromText, parseMysteryGpx, selectMysteryImports } from "./mystery-tools";
 import { groupTrackableJourneyPoints, hasNativeMapSupport, scratchMapGeometryBudget, SCRATCH_WORLD_REGION, selectNativeMapPoints } from "./mobile-map";
@@ -70,7 +70,7 @@ type CoordinateAttempt = {
   createdAt: string;
   geocachingSyncedAt?: string;
 };
-type MysteryCache = {
+type MysteryCache = MysteryListing & {
   id: string;
   gcCode: string;
   name: string;
@@ -88,7 +88,6 @@ type MysteryCache = {
   fieldNotes: string;
   clues: string[];
   image?: string;
-  listingImageUrls?: string[];
   listingComplete?: boolean;
   sharedWith: AppUser[];
   attempts: CoordinateAttempt[];
@@ -2503,6 +2502,7 @@ function MysteriesScreen({ incomingShare, onIncomingShareHandled, apiBaseUrl, to
   const [attemptText, setAttemptText] = useState("");
   const [attemptState, setAttemptState] = useState<CheckState>("unchecked");
   const [clue, setClue] = useState("");
+  const [showListing, setShowListing] = useState(false);
   const [shareQuery, setShareQuery] = useState("");
   const [users, setUsers] = useState<AppUser[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
@@ -2754,7 +2754,8 @@ function MysteriesScreen({ incomingShare, onIncomingShareHandled, apiBaseUrl, to
     const normalized = query.trim().toLowerCase();
     return matchesFilter && (!normalized || `${cache.gcCode} ${cache.name} ${mysteryLocation(cache)} ${cache.trip ?? ""}`.toLowerCase().includes(normalized));
   });
-  const selected = caches.find((cache) => cache.id === selectedId);
+  const selectedCache = caches.find((cache) => cache.id === selectedId);
+  const selected = useMemo(() => selectedCache ? { ...selectedCache, ...normalizeMysteryListing(selectedCache) } : undefined, [selectedCache]);
 
   useEffect(() => {
     if (!detailOpen || selected) return;
@@ -2763,6 +2764,8 @@ function MysteriesScreen({ incomingShare, onIncomingShareHandled, apiBaseUrl, to
   }, [detailOpen, onRequestScrollTop, selected]);
 
   function showMystery(cacheId: string) {
+    setClue("");
+    setShowListing(false);
     setSelectedId(cacheId);
     setDetailOpen(true);
     requestAnimationFrame(onRequestScrollTop);
@@ -2790,16 +2793,19 @@ function MysteriesScreen({ incomingShare, onIncomingShareHandled, apiBaseUrl, to
     setBrowserGcCode(code);
   }
 
-  function saveImportedListing(listing: { gcCode: string; name: string; area: string; country: string; region?: string; publishedLatitude: number; publishedLongitude: number; clues?: string[]; listingImageUrls?: string[]; listingComplete?: boolean }): boolean {
+  function saveImportedListing(listing: MysteryListing & { gcCode: string; name: string; area: string; country: string; region?: string; publishedLatitude: number; publishedLongitude: number; clues?: string[]; listingComplete?: boolean }): boolean {
     if (!latestMysteries.current.accountLoaded) { setNotice("Wait for your account mysteries to finish loading before importing."); return false; }
     const existing = latestMysteries.current.caches.find((cache) => cache.gcCode.toUpperCase() === listing.gcCode);
     if (existing?.sharedBy) { showMystery(existing.id); setBrowserGcCode(""); return true; }
-    const cache: MysteryCache = existing ? {
+    const incoming = normalizeMysteryListing(listing);
+    const previous = existing ? normalizeMysteryListing(existing) : null;
+    const cache: MysteryCache = existing && previous ? {
       ...existing,
-      clues: [...new Set([...existing.clues, ...(listing.clues ?? [])])],
-      listingImageUrls: [...new Set([...(existing.listingImageUrls ?? []), ...(listing.listingImageUrls ?? [])])],
+      listingText: incoming.listingText || previous.listingText,
+      clues: [...new Set([...previous.clues, ...incoming.clues])],
+      listingImageUrls: [...new Set([...previous.listingImageUrls, ...incoming.listingImageUrls])],
       listingComplete: true
-    } : { ...listing, id: newId("mystery"), listingComplete: true, status: "solving", statusUpdatedAt: new Date().toISOString(), notes: "", fieldNotes: "", clues: listing.clues ?? [], sharedWith: [], attempts: [] };
+    } : { ...listing, ...incoming, id: newId("mystery"), listingComplete: true, status: "solving", statusUpdatedAt: new Date().toISOString(), notes: "", fieldNotes: "", sharedWith: [], attempts: [] };
     if (mysterySnapshotByteLength(cache) > MAX_MYSTERY_SNAPSHOT_BYTES) { setNotice("This listing is too large to sync. Use a smaller GPX."); return false; }
     if (!existing && !selectMysteryImports(latestMysteries.current.caches, [cache], true).added.length) {
       setNotice(`Your account can hold ${MAX_MYSTERY_WORKSPACES_PER_OWNER} mysteries. Remove one before importing another.`); return false;
@@ -2842,7 +2848,7 @@ function MysteriesScreen({ incomingShare, onIncomingShareHandled, apiBaseUrl, to
     setLookingUpCache(true);
     const namespace = activeMysteryNamespace.current;
     try {
-      type ListingResponse = { cache: { gcCode: string; name: string; area: string; country: string; region: string; publishedLatitude: number; publishedLongitude: number; clues?: string[]; listingImageUrls?: string[]; listingComplete: boolean } };
+      type ListingResponse = { cache: Parameters<typeof saveImportedListing>[0] };
       const lookup = () => apiFetch<ListingResponse>(apiBaseUrl, `/mysteries/lookup/${encodeURIComponent(code)}`, token);
       const response = await lookup();
       if (!mounted.current || activeMysteryNamespace.current !== namespace) return false;
@@ -3156,16 +3162,23 @@ function MysteriesScreen({ incomingShare, onIncomingShareHandled, apiBaseUrl, to
         <Field label="Trip / route" value={selected.trip ?? ""} editable={!selected.sharedBy} onChangeText={(value) => updateSelected({ trip: value })} />
         <Field label="Solution" value={selected.notes} editable={!selected.sharedBy} multiline style={styles.textArea} onChangeText={(value) => updateSelected({ notes: value })} />
         <Field label="Field notes" value={selected.fieldNotes ?? ""} editable={!selected.sharedBy} multiline style={styles.textArea} onChangeText={(value) => updateSelected({ fieldNotes: value })} />
-        {Array.isArray(selected.listingImageUrls) && selected.listingImageUrls.length ? <>
-          <Text style={styles.sectionLabel}>Puzzle images from Geocaching</Text>
-          {selected.listingImageUrls.filter((url) => typeof url === "string" && /^https:\/\//i.test(url)).map((url, index) => <SecondaryButton key={url} label={`Open puzzle image ${index + 1}`} onPress={() => { void Linking.openURL(url).catch(() => setNotice("Could not open this image.")); }} />)}
-        </> : null}
+        <Text style={styles.sectionLabel}>Listing</Text>
+        {selected.listingText || selected.listingImageUrls.length ? <>
+          <SecondaryButton label={showListing ? "Hide listing" : "Show listing"} onPress={() => setShowListing((value) => !value)} />
+          {showListing ? <>
+            {selected.listingText ? <>
+              {!selected.sharedBy ? <Text style={styles.muted}>Select and copy listing text, then paste it into Clues to save it.</Text> : null}
+              <Text selectable style={styles.rowTitle}>{selected.listingText}</Text>
+            </> : null}
+            {selected.listingImageUrls.map((url, index) => <SecondaryButton key={url} label={`Open listing image ${index + 1}`} onPress={() => { void Linking.openURL(url).catch(() => setNotice("Could not open this image.")); }} />)}
+          </> : null}
+        </> : <Text style={styles.muted}>No listing text imported.</Text>}
         <Text style={styles.sectionLabel}>Reference image</Text>
         {selected.image ? <Image source={{ uri: selected.image }} resizeMode="cover" style={styles.mysteryImage} /> : <Text style={styles.muted}>No image attached.</Text>}
         {!selected.sharedBy ? <View style={styles.actionRow}><View style={styles.flex}><SecondaryButton label="Choose image" onPress={attachImage} /></View>{selected.image ? <View style={styles.flex}><SecondaryButton label="Remove image" danger onPress={() => updateSelected({ image: undefined })} /></View> : null}</View> : null}
         <Text style={styles.sectionLabel}>Clues</Text>
         {selected.clues.map((item) => <Pressable disabled={Boolean(selected.sharedBy)} key={item} onPress={() => updateSelected({ clues: selected.clues.filter((value) => value !== item) })}><Text style={styles.chip}>× {item}</Text></Pressable>)}
-        {!selected.sharedBy ? <View style={styles.inlineForm}><TextInput style={[styles.input, styles.flex]} value={clue} onChangeText={setClue} placeholder="Add a clue" placeholderTextColor="#668074" /><Pressable style={styles.smallButton} onPress={() => { if (clue.trim() && updateSelected({ clues: [...selected.clues, clue.trim()] })) setClue(""); }}><Text style={styles.smallButtonText}>Add</Text></Pressable></View> : null}
+        {!selected.sharedBy ? <View style={styles.inlineForm}><TextInput style={[styles.input, styles.flex]} value={clue} onChangeText={setClue} multiline accessibilityLabel="Clue text" placeholder="Add a clue" placeholderTextColor="#668074" /><Pressable style={styles.smallButton} onPress={() => { if (clue.trim() && updateSelected({ clues: [...new Set([...selected.clues, clue.trim()])] })) setClue(""); }}><Text style={styles.smallButtonText}>Add</Text></Pressable></View> : null}
         <Text style={styles.sectionLabel}>Coordinate attempts</Text>
         {!selected.sharedBy ? <>
           <Field label="Coordinate" value={attemptText} onChangeText={setAttemptText} placeholder="N 59° 20.123' E 018° 04.321'" />

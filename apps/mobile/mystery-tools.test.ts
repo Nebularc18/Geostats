@@ -12,8 +12,8 @@ test("imports namespaced mysteries with puzzle text and hints", () => {
   assert.equal(result.mysteries[0].name, "Puzzle & name");
   assert.equal(result.mysteries[0].publishedLatitude, 59.123);
   assert.equal(result.mysteries[0].country, "Sweden");
-  assert.match(result.mysteries[0].clues[0], /Find the number\nThen decode it/);
-  assert.equal(result.mysteries[0].clues[1], "Listing hint:\nLook up");
+  assert.equal(result.mysteries[0].listingText, "Find the number\nThen decode it.");
+  assert.deepEqual(result.mysteries[0].clues, ["Listing hint:\nLook up"]);
 });
 
 test("skips other types, duplicates, and invalid coordinates", () => {
@@ -33,13 +33,14 @@ test("rejects malformed XML, non-GPX files, DTDs, and oversized input", () => {
 });
 
 test("AI copy preserves failed, successful, keyword, and unknown attempts with notes", () => {
-  const prompt = mysteryAiPrompt({ gcCode: "GC123", name: "Puzzle", publishedLatitude: 0, publishedLongitude: 0, notes: "Use a cipher", fieldNotes: "Bring a torch", clues: ["Puzzle text"], attempts: [
+  const prompt = mysteryAiPrompt({ gcCode: "GC123", name: "Puzzle", publishedLatitude: 0, publishedLongitude: 0, notes: "Use a cipher", fieldNotes: "Bring a torch", listingText: "Puzzle text", clues: ["Saved excerpt"], attempts: [
     { latitude: 1, longitude: 2, state: "wrong" },
     { kind: "keyword", answer: "answer", state: "correct", finalLatitude: 3, finalLongitude: 4 },
     { answer: "maybe", state: "unchecked" },
     { answer: "next", state: "planned", note: "Test later" }
   ] });
   for (const fragment of ["https://coord.info/GC123", "DIDN'T WORK: 1.00000, 2.00000", "WORKED: answer", "revealed final: 3.00000, 4.00000", "RESULT UNKNOWN: maybe", "NOT TRIED YET: next; Test later", "Use a cipher", "Bring a torch", "Puzzle text"]) assert.ok(prompt.includes(fragment), fragment);
+  assert.match(prompt, /LISTING\nPuzzle text\n\nCLUES\nSaved excerpt/);
 });
 
 test("AI copy explains missing listing text and images", () => {
@@ -62,9 +63,11 @@ test("rejects unrelated links, misleading hosts, incomplete codes, and private a
 });
 
 test("browser captures are bound to the requested cache and cannot set sharing or solution fields", () => {
-  const value = { gcCode: "GC12345", name: "Puzzle", latitude: 59, longitude: 18, clues: ["Puzzle text"], listingImageUrls: ["https://img.geocaching.com/puzzle.jpg", "javascript:bad()"], sharedBy: { id: "other" }, notes: "Not imported", attempts: [{ state: "correct" }] };
+  const value = { gcCode: "GC12345", name: "Puzzle", latitude: 59, longitude: 18, listingText: "Puzzle text", clues: ["Listing hint:\nLook up"], listingImageUrls: ["https://img.geocaching.com/puzzle.jpg", "javascript:bad()"], sharedBy: { id: "other" }, notes: "Not imported", attempts: [{ state: "correct" }] };
   const result = browserCapturedMystery(value, "GC12345")!;
   assert.equal(result.publishedLatitude, 59);
+  assert.equal(result.listingText, "Puzzle text");
+  assert.deepEqual(result.clues, ["Listing hint:\nLook up"]);
   assert.deepEqual(result.listingImageUrls, ["https://img.geocaching.com/puzzle.jpg"]);
   assert.equal("sharedBy" in result, false);
   assert.equal("notes" in result, false);
@@ -78,7 +81,7 @@ test("nested GPX extensions retain mystery type, description, and hints", () => 
   const result = parseMysteryGpx(xml);
   assert.equal(result.mysteries.length, 1);
   assert.equal(result.mysteries[0].listingComplete, true);
-  assert.match(result.mysteries[0].clues.join("\n"), /Find the number/);
+  assert.match(result.mysteries[0].listingText ?? "", /Find the number/);
   assert.match(result.mysteries[0].clues.join("\n"), /Look up/);
 });
 

@@ -32,6 +32,8 @@ export type MergeableMysteryCache = {
   notes: string;
   fieldNotes?: string;
   clues: string[];
+  listingText?: string;
+  listingImageUrls?: string[];
   sharedWith: Array<{ id: string }>;
   attempts: MergeableMysteryAttempt[];
   image?: string;
@@ -240,6 +242,8 @@ export function mergeMysteryCaches<T extends MergeableMysteryCache>(
     tripUpdatedAt: preferIncomingTrip ? incoming.tripUpdatedAt : existing.tripUpdatedAt,
     notes: options.preferIncomingNotes === false ? existing.notes : incoming.notes,
     fieldNotes: options.preferIncomingFieldNotes === false ? existingFieldNotes : incomingFieldNotes,
+    listingText: existing.listingText || incoming.listingText,
+    listingImageUrls: [...new Set([...(existing.listingImageUrls ?? []), ...(incoming.listingImageUrls ?? [])])],
     clues: [...new Set([...existing.clues, ...incoming.clues])],
     attempts: mergeMysteryAttempts([...existing.attempts, ...incoming.attempts]),
     sharedWith: [...sharedWith.values()],

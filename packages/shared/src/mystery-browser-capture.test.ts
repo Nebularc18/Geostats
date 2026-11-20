@@ -8,7 +8,7 @@ function captureMysteryDocument(document: unknown, href: string) {
 }
 
 function page(coordinate = "N 59° 20.123 E 018° 04.321") {
-  const values: Record<string, string> = { "#ctl00_ContentBody_CacheName": "Puzzle", "#uxLatLon": coordinate, "#ctl00_ContentBody_LongDescription": "Solve this puzzle", "#div_hint": "Hint shown on the page" };
+  const values: Record<string, string> = { "#ctl00_ContentBody_CacheName": "Puzzle", "#uxLatLon": coordinate, "#ctl00_ContentBody_ShortDescription": "Puzzle introduction", "#ctl00_ContentBody_LongDescription": "Solve this puzzle", "#div_hint": "Hint shown on the page" };
   return { querySelector: (selector: string) => values[selector] ? { innerText: values[selector], getAttribute: () => null } : null, querySelectorAll: () => [{ getAttribute: () => "https://img.geocaching.com/puzzle.jpg" }] };
 }
 
@@ -16,7 +16,8 @@ test("captures only the cache content visible in the user's browser", () => {
   const result = captureMysteryDocument(page(), "https://www.geocaching.com/geocache/GC12345_puzzle");
   assert.equal(result?.gcCode, "GC12345");
   assert.ok(Math.abs(result!.latitude - (59 + 20.123 / 60)) < 0.000001);
-  assert.ok(result!.clues.join("\n").includes("Solve this puzzle"));
+  assert.equal(result.listingText, "Puzzle introduction\n\nSolve this puzzle");
+  assert.deepEqual(result.clues, ["Listing hint as shown on Geocaching:\nHint shown on the page"]);
   assert.deepEqual(result!.listingImageUrls, ["https://img.geocaching.com/puzzle.jpg"]);
 });
 
@@ -41,7 +42,8 @@ test("image-only puzzle descriptions are valid, while empty listings remain unav
   const base = page();
   const document = { ...base, querySelector: (selector: string) => selector.includes("Description") || selector.includes("description") ? null : base.querySelector(selector) };
   const captured = captureMysteryDocument(document, "https://www.geocaching.com/geocache/GC12345");
-  assert.ok(captured?.clues.some((clue: string) => clue.includes("Puzzle images:")));
+  assert.equal(captured?.listingText, "");
+  assert.deepEqual(captured?.clues, ["Listing hint as shown on Geocaching:\nHint shown on the page"]);
   assert.equal(captured?.listingImageUrls.length, 1);
   assert.equal(captureMysteryDocument({ ...document, querySelectorAll: () => [] }, "https://www.geocaching.com/geocache/GC12345"), null);
 });

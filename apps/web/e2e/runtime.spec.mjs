@@ -101,6 +101,68 @@ test("GSAK script update banner clears after downloading the current connector",
   expect(errors).toEqual([]);
 });
 
+test("mystery listing excerpts can be saved as clues without copying the whole description", async ({ page }) => {
+  const installation = installations[0];
+  const origin = `http://127.0.0.1:${installation.port}`;
+  const owned = new Map();
+  await page.route(`${installation.apiUrl}/**`, async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    const headers = {
+      "access-control-allow-origin": origin,
+      "access-control-allow-credentials": "true",
+      "access-control-allow-methods": "GET, PUT, OPTIONS",
+      "access-control-allow-headers": "content-type",
+    };
+    if (request.method() === "OPTIONS") return route.fulfill({ status: 204, headers });
+    if (request.method() === "PUT" && path.startsWith("/mysteries/")) {
+      const { mystery, revision } = request.postDataJSON();
+      owned.set(mystery.id, { clientId: mystery.id, mystery, revision, sharedWith: [] });
+      return route.fulfill({ headers, json: { mystery, revision } });
+    }
+    const responses = {
+      "/auth/me": { user: { id: "user-1" } },
+      "/profile": { profile: { userId: "user-1" } },
+      "/admin/access": { isAdmin: false },
+      "/mysteries/owned": { mysteries: [...owned.values()], deletedClientIds: [] },
+      "/mysteries/shared": { mysteries: [] }
+    };
+    await route.fulfill({ headers, json: responses[path] ?? {} });
+  });
+  const listing = "Count the hats.\n\nThe circus comes to town.";
+  const payload = { gcCode: "GC123", name: "Circus puzzle", latitude: 59, longitude: 18,
+    clues: [`Puzzle listing:\n${listing}`, "Listing hint:\nLook up", "Remember the rabbits"] };
+  await page.goto(`${origin}/mysteries#mystery-import=${encodeURIComponent(JSON.stringify(payload))}`);
+  const clues = page.locator(".clue-strip");
+  await expect(clues).toContainText("Look up");
+  await expect(clues).toContainText("Remember the rabbits");
+  await expect(clues).not.toContainText("The circus comes to town.");
+  await page.getByText("Listing", { exact: true }).click();
+  const listingText = page.getByRole("textbox", { name: "Cache listing text" });
+  await expect(listingText).toHaveValue(listing);
+  const save = page.getByRole("button", { name: "Add selection to clues" });
+  await expect(save).toBeDisabled();
+  await listingText.click({ clickCount: 3, position: { x: 24, y: 18 } });
+  await expect(save).toBeEnabled();
+  await save.click();
+  await expect(clues).toContainText("Count the hats.");
+  await expect(clues).not.toContainText("The circus comes to town.");
+  await expect.poll(() => [...owned.values()][0]?.mystery).toMatchObject({
+    listingText: listing,
+    clues: ["Listing hint:\nLook up", "Remember the rabbits", "Count the hats."]
+  });
+  await page.reload();
+  await expect(clues).toContainText("Count the hats.");
+  await expect(clues).toContainText("Remember the rabbits");
+
+  const refreshed = { ...payload, listingText: "The circus returns next year.", clues: [] };
+  await page.goto(`${origin}/mysteries?refresh=1#mystery-import=${encodeURIComponent(JSON.stringify(refreshed))}`);
+  await expect(clues).toContainText("Count the hats.");
+  await expect(clues).toContainText("Remember the rabbits");
+  await page.getByText("Listing", { exact: true }).click();
+  await expect(listingText).toHaveValue(refreshed.listingText);
+});
+
 
 test("Geocaching helper update banner detects legacy and outdated helpers and clears for the current version", async ({ page, request }) => {
   const installation = installations[0];
