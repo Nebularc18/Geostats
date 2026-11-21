@@ -74,10 +74,10 @@ test("share persists both the owner snapshot and recipient grant", async () => {
   const result = await controller.share(owner, "local-1", { recipientId: recipient.id, mystery, revision: 1 });
 
   assert.deepEqual(result, { recipient, revision: 1 });
-  assert.deepEqual(calls.map(({ operation }) => operation), ["lock", "lock", "deletion", "duplicate", "existing", "count", "cache", "workspace", "snapshot", "grant", "clear-exclusion", "readback"]);
+  assert.deepEqual(calls.map(({ operation }) => operation), ["lock", "lock", "deletion", "duplicate", "existing", "count", "cache", "workspace", "snapshot", "readback", "grant", "clear-exclusion"]);
   assert.deepEqual((calls[7].input as any).where, { ownerId_clientId: { ownerId: owner.id, clientId: "local-1" } });
   assert.equal((calls[7].input as any).create.gcCode, mystery.gcCode);
-  assert.deepEqual((calls[9].input as any).create, { mysteryId: "workspace-1", recipientId: recipient.id });
+  assert.deepEqual((calls[10].input as any).create, { mysteryId: "workspace-1", recipientId: recipient.id });
 });
 
 test("shared returns the granted snapshot through the recipient lookup", async () => {

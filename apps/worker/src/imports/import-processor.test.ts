@@ -31,7 +31,7 @@ function importTestClient<T extends Record<string, any>>(prisma: T): T {
             ? prisma.find.findMany(query)
             : (tx.find?.findMany ?? prisma.find.findMany)(query)
         },
-        import: { update: async () => ({}), ...prisma.import, ...tx.import }
+        import: { update: async () => ({}), ...prisma.import, updateMany: async () => ({ count: 1 }), ...tx.import }
       }))
   };
 }
@@ -334,7 +334,7 @@ test("process leaves a failed attempt queued when BullMQ will retry it", async (
     /temporary storage failure/,
   );
 
-  assert.deepEqual(statusUpdates, [{ status: ImportStatus.QUEUED, errorMessage: null }]);
+  assert.deepEqual(statusUpdates, [{ status: ImportStatus.QUEUED, errorMessage: null, leaseToken: null, leaseExpiresAt: null }]);
 });
 
 test("process uses the user's existing cache metadata without overwriting it", async () => {
@@ -829,7 +829,7 @@ test("process marks a committed import failed when stats recalculation fails", a
     import: {
       update: async ({ where, data }: any) => {
         assert.deepEqual(where, { id: "import-1" });
-        assert.ok(data.updatedAt instanceof Date);
+        assert.equal(data.receipt.hides, 1);
         events.push("MAP_REVISION");
         return {};
       }

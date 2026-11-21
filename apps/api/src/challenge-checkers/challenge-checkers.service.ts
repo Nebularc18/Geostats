@@ -54,7 +54,7 @@ function cleanOptionalText(value: unknown, label: string, maximum: number) {
   return value.trim();
 }
 
-function parseRules(value: unknown, { enforceComplexityLimits = true }: { enforceComplexityLimits?: boolean } = {}): ChallengeRule[] {
+export function parseRules(value: unknown, { enforceComplexityLimits = true }: { enforceComplexityLimits?: boolean } = {}): ChallengeRule[] {
   if (!Array.isArray(value) || value.length < 1 || value.length > 10) {
     throw new BadRequestException("rules must contain between 1 and 10 rules");
   }

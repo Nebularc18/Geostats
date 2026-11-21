@@ -1,5 +1,7 @@
 "use client";
 
+import Link from "next/link";
+import { CACHE_IMPORT_MODES, ImportStatus, formatImportReceipt } from "@geostats/shared";
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { Database, Download, FileUp, Route, UploadCloud } from "lucide-react";
 import { AppShell } from "../../components/app-shell";
@@ -7,6 +9,7 @@ import { apiFetch } from "../../lib/api";
 import { hasActiveImports, type ImportListItem, type ImportsResponse } from "../../lib/imports";
 
 export default function UploadPage() {
+  const [mode, setMode] = useState("");
   const [message, setMessage] = useState<string | null>(null);
   const [travelMessage, setTravelMessage] = useState<string | null>(null);
   const [csvMessage, setCsvMessage] = useState<string | null>(null);
@@ -22,7 +25,7 @@ export default function UploadPage() {
   }, []);
 
   useEffect(() => {
-    void refresh();
+    void refresh().catch(() => setMessage("Could not load recent imports."));
     void apiFetch<{ connected: boolean; lastImportedAt: string | null }>("/collector/gsak/status").then(setGsakStatus);
   }, [refresh]);
 
@@ -32,7 +35,7 @@ export default function UploadPage() {
     }
 
     const interval = window.setInterval(() => {
-      void refresh();
+      void refresh().catch(() => setMessage("Could not load recent imports."));
     }, 3000);
 
     return () => window.clearInterval(interval);
@@ -44,8 +47,8 @@ export default function UploadPage() {
     const form = new FormData(formElement);
     setMessage("Uploading...");
     try {
-      await apiFetch("/imports/upload", { method: "POST", body: form });
-      setMessage("Import queued.");
+      const { import: job } = await apiFetch<{ import: { status: ImportStatus } }>("/imports/upload", { method: "POST", body: form });
+      setMessage(job.status === ImportStatus.FAILED ? "The import could not queue. Retry it from history." : "Import queued.");
       formElement.reset();
       await refresh();
     } catch (error) {
@@ -60,8 +63,8 @@ export default function UploadPage() {
     form.set("purpose", "travel");
     setTravelMessage("Uploading cache list…");
     try {
-      await apiFetch("/imports/upload", { method: "POST", body: form });
-      setTravelMessage("Import queued. The caches will appear in Travel when processing finishes.");
+      const { import: job } = await apiFetch<{ import: { status: ImportStatus } }>("/imports/upload", { method: "POST", body: form });
+      setTravelMessage(job.status === ImportStatus.FAILED ? "The import could not queue. Retry it from history." : "Import queued. The caches will appear in Travel when processing finishes.");
       formElement.reset();
       await refresh();
     } catch (error) {
@@ -136,7 +139,22 @@ export default function UploadPage() {
           <p className="muted">Upload a My Finds GPX, My Hides GPX, or an existing ZIP import.</p>
         </div>
         <form onSubmit={submit} className="form">
-          <input name="file" type="file" accept=".gpx,.zip,application/gpx+xml,application/zip" required />
+          <label>
+            GPX or ZIP file
+            <input name="file" type="file" accept=".gpx,.zip,application/gpx+xml,application/zip" required onChange={(event) => {
+              const name = event.target.files?.[0]?.name ?? "";
+              if (/my[ _-]hides/i.test(name)) setMode("hides");
+              else if (/my[ _-]finds/i.test(name)) setMode("finds");
+              else setMode("");
+            }} />
+          </label>
+          <label>
+            What does the file contain?
+            <select name="purpose" value={mode} required onChange={(event) => setMode(event.target.value)}>
+              <option value="">Choose an import type</option>
+              {CACHE_IMPORT_MODES.map(({ value, label }) => <option key={value} value={value}>{label}</option>)}
+            </select>
+          </label>
           <button className="primary-button" type="submit">
             Queue import
           </button>
@@ -182,10 +200,11 @@ export default function UploadPage() {
       </section>
       <section className="panel">
         <h2>Latest imports</h2>
+        <Link href="/imports">View import history</Link>
         <div className="table-list">
           {imports.map((item) => (
             <div key={item.id} className="table-row">
-              <span>{item.fileName}</span>
+              <span>{item.fileName}{item.status === ImportStatus.COMPLETED && item.receipt ? <small>{formatImportReceipt(item.receipt)}</small> : null}</span>
               <strong>{item.status}</strong>
             </div>
           ))}

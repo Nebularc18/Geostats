@@ -22,6 +22,32 @@ export enum ImportFileType {
   JSON = "JSON"
 }
 
+export const CACHE_IMPORT_MODES = [
+  { value: "finds", label: "My Finds" },
+  { value: "hides", label: "My Hides" },
+  { value: "cache-list", label: "Cache list" }
+] as const;
+
+export type CacheImportMode = (typeof CACHE_IMPORT_MODES)[number]["value"];
+
+export type ImportReceipt = {
+  caches: number;
+  finds: number;
+  hides: number;
+  skippedWaypoints: number;
+  unmatchedFinds: number;
+};
+
+export function formatImportReceipt(receipt: ImportReceipt) {
+  const countLabel = (value: number, singular: string, plural: string) => `${value} ${value === 1 ? singular : plural}`;
+  const counts = [countLabel(receipt.caches, "cache", "caches"), countLabel(receipt.finds, "find", "finds"), countLabel(receipt.hides, "hide", "hides")];
+  if (receipt.skippedWaypoints) counts.push(`${receipt.skippedWaypoints} invalid or unsupported ${receipt.skippedWaypoints === 1 ? "waypoint" : "waypoints"} skipped`);
+  if (receipt.unmatchedFinds) counts.push(`${receipt.unmatchedFinds} without a verified find. Check your Geocaching username or file type.`);
+  return counts.join(" · ");
+}
+
+export const IMPORT_LEASE_MS = 120_000;
+export const MAX_IMPORT_CRASH_RECOVERIES = 3;
 export const IMPORT_QUEUE_NAME = "imports";
 
 export interface ImportJobPayload {
@@ -112,3 +138,6 @@ export { MYSTERY_BROWSER_CAPTURE_SOURCE, mysteryBrowserCaptureScript } from "./m
 export { MAX_MYSTERY_SNAPSHOT_BYTES, mysterySnapshotByteLength, normalizeMysteryListing, type MysteryListing } from "./mystery-listing";
 
 export const MAX_MYSTERY_WORKSPACES_PER_OWNER = 500;
+
+export * from "./mystery-cache-merge";
+export * from "./travel-plans";

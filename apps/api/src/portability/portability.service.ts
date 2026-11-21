@@ -12,16 +12,19 @@ import {
   ImportFileType,
   ImportSource,
   ImportStatus,
+  normalizeTravelPlan,
+  type TravelPlan,
 } from "@geostats/shared";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { PrismaService } from "../common/prisma.service";
+import { parseRules } from "../challenge-checkers/challenge-checkers.service";
 import { StorageService } from "../storage/storage.service";
 import { MAX_ELEVATION_METERS, MAX_ELEVATION_TEXT_LENGTH, MIN_ELEVATION_METERS } from "../common/elevation";
 
 const FORMAT = "geostats-portable-data";
-const VERSION = 1;
-// Version 1 portable archives may contain at most one million records in total.
+const VERSION = 2;
+// Portable archives may contain at most one million records in total.
 export const MAX_PORTABLE_ARCHIVE_RECORDS = 1_000_000;
 const IMPORT_SOURCES = new Set([
   "MY_FINDS_GPX",
@@ -38,9 +41,17 @@ const OBJECT_CLEANUP_BATCH_SIZE = 100;
 const TRACKABLE_STATES = new Set(["OWNED", "DISCOVERED", "RETRIEVED", "DROPPED", "VISITED", "MISSING"]);
 const TRACKABLE_LOG_TYPES = new Set(["DISCOVERED", "RETRIEVED", "DROPPED", "VISITED", "GRABBED", "NOTE", "MISSING"]);
 
+type PortableChallengeChecker = {
+  sourceId: string;
+  name: string;
+  gcCode: string | null;
+  description: string | null;
+  rules: Prisma.InputJsonValue;
+};
+
 type PortableArchive = {
   format: typeof FORMAT;
-  version: 1;
+  version: 1 | 2;
   exportedAt: string;
   account: { username: string; email: string; createdAt: string };
   data: {
@@ -54,6 +65,8 @@ type PortableArchive = {
     mysteryWorkspaces: any[];
     trackables: any[];
     trackableLogs: any[];
+    challengeCheckers: PortableChallengeChecker[];
+    travelPlans: TravelPlan[];
   };
 };
 
@@ -179,6 +192,20 @@ function normalizedCacheRaw(raw: unknown, label: string): unknown {
   };
 }
 
+function portableChecker(row: unknown, index: number): PortableChallengeChecker {
+  const label = `challengeCheckers[${index}]`;
+  const data = object(row, label);
+  const gcCode = optionalText(data.gcCode, `${label}.gcCode`, 20)?.trim().toUpperCase() || null;
+  if (gcCode && !/^GC[A-Z0-9]+$/.test(gcCode)) throw new BadRequestException(`${label}.gcCode is invalid`);
+  return {
+    sourceId: requiredText(data.sourceId, `${label}.sourceId`, 200),
+    name: requiredText(data.name, `${label}.name`, 120),
+    gcCode,
+    description: optionalText(data.description, `${label}.description`, 1000),
+    rules: parseRules(data.rules, { enforceComplexityLimits: false }) as unknown as Prisma.InputJsonValue
+  };
+}
+
 export function parsePortableArchive(input: Buffer | string): PortableArchive {
   let raw: unknown;
   try {
@@ -193,7 +220,7 @@ export function parsePortableArchive(input: Buffer | string): PortableArchive {
     throw new BadRequestException(
       "This is not a Geostats portable data export",
     );
-  if (archive.version !== VERSION)
+  if (archive.version !== 1 && archive.version !== VERSION)
     throw new BadRequestException(
       `Unsupported Geostats export version: ${String(archive.version)}`,
     );
@@ -217,6 +244,8 @@ export function parsePortableArchive(input: Buffer | string): PortableArchive {
     ),
     trackables: recordArray(data.trackables ?? [], "data.trackables"),
     trackableLogs: recordArray(data.trackableLogs ?? [], "data.trackableLogs"),
+    challengeCheckers: archive.version === 2 ? recordArray(data.challengeCheckers, "data.challengeCheckers") : [],
+    travelPlans: archive.version === 2 ? recordArray(data.travelPlans, "data.travelPlans") : [],
   };
   const totalRecords = Object.values(recordArrays).reduce(
     (total, values) => total + values.length,
@@ -256,6 +285,12 @@ export function parsePortableArchive(input: Buffer | string): PortableArchive {
       ),
       trackables: records(recordArrays.trackables, "data.trackables"),
       trackableLogs: records(recordArrays.trackableLogs, "data.trackableLogs"),
+      challengeCheckers: recordArrays.challengeCheckers.map(portableChecker),
+      travelPlans: recordArrays.travelPlans.map((row, index) => {
+        const plan = normalizeTravelPlan(row);
+        if (!plan) throw new BadRequestException(`travelPlans[${index}] is invalid`);
+        return plan;
+      }),
     },
   } as PortableArchive;
   if (parsed.data.mysteryWorkspaces.length > MAX_MYSTERY_WORKSPACES) {
@@ -303,6 +338,8 @@ export class PortabilityService implements OnModuleInit, OnModuleDestroy {
       mysteryWorkspaces,
       trackables,
       trackableLogs,
+      challengeCheckers,
+      travelPlans,
     ] = await Promise.all([
       this.prisma.user.findUniqueOrThrow({
         where: { id: user.id },
@@ -345,6 +382,16 @@ export class PortabilityService implements OnModuleInit, OnModuleDestroy {
         include: { trackable: true, cache: true },
         orderBy: [{ loggedAt: "asc" }, { id: "asc" }],
       }) ?? Promise.resolve([]),
+      this.prisma.challengeChecker.findMany({
+        where: { userId: user.id },
+        orderBy: { id: "asc" },
+        select: { id: true, portableId: true, name: true, gcCode: true, description: true, rules: true }
+      }),
+      this.prisma.travelPlan.findMany({
+        where: { userId: user.id, deletedAt: null },
+        orderBy: { id: "asc" },
+        select: { data: true }
+      }),
     ]);
 
     const caches = new Map<string, any>();
@@ -427,6 +474,13 @@ export class PortabilityService implements OnModuleInit, OnModuleDestroy {
           createdAt: row.createdAt,
           updatedAt: row.updatedAt,
         })),
+        challengeCheckers: challengeCheckers.map(({ id, portableId, rules, ...checker }) => ({
+          ...checker, sourceId: portableId ?? id, rules: rules as Prisma.InputJsonValue
+        })),
+        travelPlans: travelPlans.flatMap(({ data: planData }) => {
+          const plan = normalizeTravelPlan(planData);
+          return plan ? [plan] : [];
+        }),
         trackables: trackables.map((row) => ({
           trackingCode: row.trackingCode,
           name: row.name,
@@ -881,6 +935,28 @@ export class PortabilityService implements OnModuleInit, OnModuleDestroy {
               where: { ownerId: user.id, clientId: { in: batch } },
             });
           }
+          let restoredCheckers = 0;
+          for (const batch of batches(data.challengeCheckers)) {
+            // Existing account records keep their publication state and content.
+            const originalIds = new Set((await tx.challengeChecker.findMany({
+              where: { userId: user.id, id: { in: batch.map(({ sourceId }) => sourceId) } },
+              select: { id: true }
+            })).map(({ id }) => id));
+            const drafts = batch.flatMap(({ sourceId, ...checker }) =>
+              originalIds.has(sourceId) ? [] : [{ ...checker, userId: user.id, portableId: sourceId }]
+            );
+            if (drafts.length) {
+              restoredCheckers += (await tx.challengeChecker.createMany({ data: drafts, skipDuplicates: true })).count;
+            }
+          }
+          let restoredPlans = 0;
+          for (const batch of batches(data.travelPlans)) {
+            restoredPlans += (await tx.travelPlan.createMany({
+              data: batch.map((plan) => ({ id: plan.id, userId: user.id, data: plan as Prisma.InputJsonObject })),
+              skipDuplicates: true
+            })).count;
+          }
+
           await tx.import.create({
             data: {
               userId: user.id,
@@ -899,6 +975,7 @@ export class PortabilityService implements OnModuleInit, OnModuleDestroy {
             mysteryWorkspaces: data.mysteryWorkspaces.length,
             ...(data.trackables.length > 0 ? { trackables: trackables.length } : {}),
             ...(data.trackableLogs.length > 0 ? { trackableLogs: trackableLogs.length } : {}),
+            ...(archive.version === 2 ? { challengeCheckers: restoredCheckers, travelPlans: restoredPlans } : {}),
           };
           return { imported };
         },

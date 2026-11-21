@@ -1,11 +1,15 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import {
+  MAX_TRAVEL_DIRECTIONS_STOPS, moveTravelStop, normalizeAccountTravelPlan, normalizeTravelPlan, travelPlanDirectionsUrl,
+  travelPlanGpx, type AccountTravelPlan, type TravelPlace, type TravelPlan
+} from "@geostats/shared";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Check, CircleDot, Database, ExternalLink, LoaderCircle, MapPin, Navigation, Pencil, Plus, Puzzle, Route, Search, Trash2, X } from "lucide-react";
 import { AppShell } from "../../components/app-shell";
 import { PlaceAutocomplete, type SelectedPlace } from "../../components/place-autocomplete";
-import { API_URL, apiFetch, getApiSessionEpoch, subscribeStatsSummaryCache } from "../../lib/api";
+import { API_URL, ApiError, apiFetch, getApiSessionEpoch, subscribeStatsSummaryCache } from "../../lib/api";
 import { normalizeMysteryArea } from "../../lib/mystery-area";
 import { createTravelSessionBoundary, hasLegacyTravelPlans, keepTravelSessionAfterNetworkFailure, readTravelStorage, type TravelSession } from "../../lib/travel-storage";
 import {
@@ -43,12 +47,6 @@ type OwnedMysterySnapshot = {
   revision: number;
 };
 
-type TravelPlace = {
-  label: string;
-  latitude: number;
-  longitude: number;
-};
-
 type TravelRecommendation = {
   id: string;
   gcCode: string;
@@ -77,7 +75,9 @@ type TravelSearchResult = {
   mysteryCacheCount: number;
   searchedCacheCount: number;
   poolTruncated: boolean;
+  resultsTruncated?: boolean;
   resultLimit: number;
+  radiusKm?: number;
 };
 
 type TravelPoolSummary = {
@@ -88,44 +88,11 @@ type TravelPoolSummary = {
   types: Array<{ name: string; count: number }>;
 };
 
-type SavedTravelPlan = {
-  id: string;
-  name: string;
-  createdAt: string;
-  mode: "nearby" | "route";
-  origin: TravelPlace;
-  destination?: TravelPlace;
-  route?: { distanceMeters: number; durationSeconds: number };
-  radiusKm: number;
-  caches: TravelRecommendation[];
-};
-
-function coordinateText(place: Pick<TravelPlace, "latitude" | "longitude">) {
-  return `${place.latitude},${place.longitude}`;
-}
-
-function savedPlanDirectionsUrl(plan: SavedTravelPlan) {
-  if (!plan.caches.length) return "";
-  const params = new URLSearchParams({ api: "1", origin: coordinateText(plan.origin), travelmode: "driving" });
-  if (plan.mode === "route" && plan.destination) {
-    params.set("destination", coordinateText(plan.destination));
-    params.set("waypoints", plan.caches.slice(0, 8).map(coordinateText).join("|"));
-  } else {
-    params.set("destination", coordinateText(plan.caches.at(-1)!));
-    const waypoints = plan.caches.slice(0, -1).slice(0, 8);
-    if (waypoints.length) params.set("waypoints", waypoints.map(coordinateText).join("|"));
-  }
-  return `https://www.google.com/maps/dir/?${params.toString()}`;
-}
-
-function validSavedPlans(value: unknown): SavedTravelPlan[] {
+function validSavedPlans(value: unknown) {
   if (!Array.isArray(value)) return [];
-  return value.filter((item): item is SavedTravelPlan => {
-    if (!item || typeof item !== "object" || Array.isArray(item)) return false;
-    const plan = item as Partial<SavedTravelPlan>;
-    return typeof plan.id === "string" && typeof plan.name === "string"
-      && (plan.mode === "nearby" || plan.mode === "route")
-      && Boolean(plan.origin) && Array.isArray(plan.caches);
+  return value.flatMap((item) => {
+    const plan = normalizeTravelPlan(item);
+    return plan ? [plan] : [];
   });
 }
 
@@ -133,7 +100,7 @@ function shortPlace(label: string) {
   return label.split(",").slice(0, 2).join(",");
 }
 
-function routeSummary(route?: SavedTravelPlan["route"]) {
+function routeSummary(route?: AccountTravelPlan["route"]) {
   if (!route) return "";
   const distance = Math.round(route.distanceMeters / 1000);
   const hours = Math.floor(route.durationSeconds / 3600);
@@ -266,7 +233,14 @@ function TravelWorkspace({ session }: { session: TravelSession }) {
   const [searchResult, setSearchResult] = useState<TravelSearchResult | null>(null);
   const [selectedRecommendations, setSelectedRecommendations] = useState<Set<string>>(new Set());
   const [planName, setPlanName] = useState("");
-  const [savedPlans, setSavedPlans] = useState<SavedTravelPlan[]>([]);
+  const [savedPlans, setSavedPlans] = useState<AccountTravelPlan[]>([]);
+  const [browserPlans, setBrowserPlans] = useState<ReturnType<typeof validSavedPlans>>([]);
+  const [plansError, setPlansError] = useState("");
+  const [planActionError, setPlanActionError] = useState("");
+  const [plansReload, setPlansReload] = useState(0);
+  const [plansBusy, setPlansBusy] = useState(false);
+  const plansRequestSequence = useRef(0);
+  const [showMigration, setShowMigration] = useState(false);
   const [plansReady, setPlansReady] = useState(false);
   const [legacyPlansPresent, setLegacyPlansPresent] = useState(false);
   const [poolSummary, setPoolSummary] = useState<TravelPoolSummary | null>(null);
@@ -292,16 +266,16 @@ function TravelWorkspace({ session }: { session: TravelSession }) {
       let pending = cache;
       for (let attempt = 0; attempt < 4; attempt += 1) {
         if (!await confirmSession()) return;
-        const revision = (revisions.current.get(cache.id) ?? 0) + 1;
-        revisions.current.set(cache.id, revision);
+        const baseRevision = revisions.current.get(cache.id) ?? 0;
+        const revision = baseRevision + 1;
         const response = await apiFetch<{ revision: number; mystery: TravelCache }>(`/mysteries/${encodeURIComponent(cache.id)}`, {
           method: "PUT",
           signal: session.signal,
           headers: { "X-Geostats-Account-Id": session.userId },
-          body: JSON.stringify({ mystery: shareableCache(pending), revision })
+          body: JSON.stringify({ mystery: shareableCache(pending), revision, baseRevision })
         });
         if (!session.isCurrent()) return;
-        revisions.current.set(cache.id, Math.max(revisions.current.get(cache.id) ?? 0, response.revision));
+        revisions.current.set(cache.id, response.revision);
         const server = normalizedCaches([{ ...response.mystery, id: cache.id }])[0];
         if (!server) throw new Error("Account returned an invalid mystery snapshot");
         const assignmentMatches = normalizedTripName(server.trip) === normalizedTripName(pending.trip)
@@ -391,24 +365,58 @@ function TravelWorkspace({ session }: { session: TravelSession }) {
     return () => { active = false; };
   }, [session]);
 
-  useEffect(() => {
-    try {
-      setSavedPlans(validSavedPlans(readTravelStorage(localStorage, session).plans));
-      setLegacyPlansPresent(hasLegacyTravelPlans(localStorage, session));
-    } catch {
-      // Storage may be disabled; legacy plans remain unread.
-    }
-    setPlansReady(true);
+  const planRequest = useCallback(<T,>(path = "", options: RequestInit = {}) => {
+    return apiFetch<T>(`/travel-plans${path}`, {
+      ...options,
+      headers: { "X-Geostats-Account-Id": session.userId },
+      signal: session.signal
+    });
   }, [session]);
 
   useEffect(() => {
-    if (!plansReady || !session.isCurrent()) return;
     try {
-      localStorage.setItem(session.keys.plans, JSON.stringify(savedPlans));
+      setBrowserPlans(validSavedPlans(readTravelStorage(localStorage, session).plans));
+      setLegacyPlansPresent(hasLegacyTravelPlans(localStorage, session));
     } catch {
-      setNotice("Browser storage is full. The last travel plan could not be saved.");
+      // Some browsers disable local storage.
     }
-  }, [plansReady, savedPlans, session]);
+  }, [session]);
+
+  useEffect(() => {
+    if (plansBusy) return;
+    let active = true;
+    async function refreshPlans() {
+      const sequence = ++plansRequestSequence.current;
+      const isCurrent = () => active && session.isCurrent() && plansRequestSequence.current === sequence;
+      try {
+        const { plans } = await planRequest<{ plans: unknown[] }>();
+        if (!isCurrent()) return;
+        setSavedPlans(plans.flatMap((value) => {
+          const plan = normalizeAccountTravelPlan(value);
+          return plan ? [plan] : [];
+        }));
+        setPlansError("");
+      } catch (cause) {
+        if (isCurrent()) setPlansError(cause instanceof Error ? cause.message : "Could not load account trips.");
+      } finally {
+        if (isCurrent()) setPlansReady(true);
+      }
+    }
+    const onFocus = () => { void refreshPlans(); };
+    onFocus();
+    window.addEventListener("focus", onFocus);
+    return () => {
+      active = false;
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [session, plansBusy, plansReload, planRequest]);
+
+  function updateBrowserPlans(update: (raw: unknown[]) => unknown[]) {
+    const existing = readTravelStorage(localStorage, session).plans;
+    const next = update(Array.isArray(existing) ? existing : []);
+    localStorage.setItem(session.keys.plans, JSON.stringify(next));
+    setBrowserPlans(validSavedPlans(next));
+  }
 
   useEffect(() => {
     if (!ready) return;
@@ -537,40 +545,120 @@ function TravelWorkspace({ session }: { session: TravelSession }) {
     });
   }
 
-  function saveRecommendedPlan() {
-    if (!session.isCurrent()) return;
-    const name = normalizedTripName(planName);
-    const selected = searchResult?.recommendations.filter((cache) => selectedRecommendations.has(cache.id)) ?? [];
-    if (!name) {
-      setSearchError("Give this trip a name before saving it.");
-      return;
-    }
-    if (!searchResult || !selected.length) {
-      setSearchError("Choose at least one recommended cache.");
-      return;
-    }
+  async function saveRecommendedPlan() {
+    if (!session.isCurrent() || plansBusy) return;
     const id = typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `trip-${Date.now()}`;
-    setSavedPlans((current) => [{
-      id,
-      name,
-      createdAt: new Date().toISOString(),
-      mode: searchResult.mode,
-      origin: searchResult.origin,
-      destination: searchResult.destination,
-      route: searchResult.route,
-      radiusKm,
-      caches: selected
-    }, ...current]);
-    setNotice(`${name} saved with ${selected.length} ${selected.length === 1 ? "cache" : "caches"}`);
-    setSearchError("");
+    const plan = normalizeTravelPlan(searchResult && {
+      ...searchResult, id, name: normalizedTripName(planName), createdAt: new Date().toISOString(),
+      radiusKm: searchResult.radiusKm ?? radiusKm,
+      caches: searchResult.recommendations.filter((cache) => selectedRecommendations.has(cache.id))
+    });
+    if (!plan) {
+      setSearchError("Enter a trip name and choose at least one recommended cache.");
+      return;
+    }
+    plansRequestSequence.current += 1;
+    setPlansReady(true);
+    setPlansBusy(true);
+    try {
+      const result = await planRequest<{ plan: AccountTravelPlan }>(`/${plan.id}`, {
+        method: "PUT", body: JSON.stringify({ plan, version: 0 })
+      });
+      if (!session.isCurrent()) return;
+      setSavedPlans((current) => [result.plan, ...current.filter(({ id }) => id !== plan.id)]);
+      setPlanName("");
+      setSearchError("");
+      setNotice(`${plan.name} saved to your account.`);
+    } catch (cause) {
+      if (!session.isCurrent()) return;
+      if (cause instanceof ApiError && cause.status < 500) {
+        setSearchError(cause.message);
+        return;
+      }
+      try {
+        updateBrowserPlans((current) => [plan, ...current]);
+        setSearchError("");
+        setNotice(`${plan.name} is saved in this browser. Move it to your account when the connection returns.`);
+      } catch {
+        setSearchError("Could not save this trip. Keep this page open and retry.");
+      }
+    } finally {
+      if (session.isCurrent()) setPlansBusy(false);
+    }
   }
 
-  function deleteSavedPlan(plan: SavedTravelPlan) {
-    if (!session.isCurrent()) return;
-    if (!window.confirm(`Remove ${plan.name}?`)) return;
-    setSavedPlans((current) => current.filter(({ id }) => id !== plan.id));
-    setNotice(`${plan.name} removed`);
+  async function migrateBrowserPlans() {
+    if (plansBusy || !session.isCurrent()) return;
+    const batch = [...new Map(browserPlans.map((plan) => [plan.id, plan])).values()].slice(0, 100);
+    plansRequestSequence.current += 1;
+    setPlansReady(true);
+    setPlansBusy(true);
+    setPlanActionError("");
+    try {
+      const { plans } = await planRequest<{ plans: AccountTravelPlan[] }>("/migrate", {
+        method: "POST", body: JSON.stringify({ plans: batch })
+      });
+      if (!session.isCurrent()) return;
+      const migrated = new Map(plans.map((plan) => [plan.id, plan]));
+      setSavedPlans((current) => [...plans, ...current.filter(({ id }) => !migrated.has(id))]);
+      updateBrowserPlans((current) => current.filter((item) => {
+        const browserPlan = normalizeTravelPlan(item);
+        const accountPlan = browserPlan && normalizeTravelPlan(migrated.get(browserPlan.id));
+        return !browserPlan || !accountPlan || JSON.stringify(browserPlan) !== JSON.stringify(accountPlan);
+      }));
+      setNotice(plans.length === batch.length
+        ? `${plans.length} trips are now in your account.`
+        : "Trips with a different account copy or a saved deletion are still in this browser.");
+    } catch (cause) {
+      if (session.isCurrent()) setPlanActionError(cause instanceof Error ? cause.message : "Could not move the browser trips.");
+    } finally {
+      if (session.isCurrent()) setPlansBusy(false);
+    }
   }
+
+  async function changeSavedPlan(plan: AccountTravelPlan, options: { caches?: AccountTravelPlan["caches"]; remove?: boolean }) {
+    if (!session.isCurrent() || plansBusy) return;
+    if (options.remove && !window.confirm(`Remove ${plan.name}?`)) return;
+    plansRequestSequence.current += 1;
+    setPlansReady(true);
+    setPlansBusy(true);
+    setPlanActionError("");
+    try {
+      if (options.remove) {
+        await planRequest(`/${plan.id}`, { method: "DELETE", body: JSON.stringify({ version: plan.version }) });
+        if (session.isCurrent()) setSavedPlans((current) => current.filter(({ id }) => id !== plan.id));
+      } else {
+        const result = await planRequest<{ plan: AccountTravelPlan }>(`/${plan.id}`, {
+          method: "PUT", body: JSON.stringify({ plan: { ...plan, caches: options.caches }, version: plan.version })
+        });
+        if (session.isCurrent()) setSavedPlans((current) => current.map((item) => item.id === plan.id ? result.plan : item));
+      }
+    } catch (cause) {
+      if (session.isCurrent()) setPlanActionError(cause instanceof Error ? cause.message : "Could not update this trip.");
+    } finally {
+      if (session.isCurrent()) setPlansBusy(false);
+    }
+  }
+
+  function removeBrowserPlan(plan: TravelPlan) {
+    if (!session.isCurrent() || !window.confirm(`Remove ${plan.name} from this browser?`)) return;
+    try {
+      updateBrowserPlans((current) => current.filter((item) => normalizeTravelPlan(item)?.id !== plan.id));
+      setPlanActionError("");
+    } catch {
+      setPlanActionError("Could not remove this browser trip.");
+    }
+  }
+
+  function downloadTravelPlan(plan: TravelPlan) {
+    const url = URL.createObjectURL(new Blob([travelPlanGpx(plan)], { type: "application/gpx+xml" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${plan.name.replace(/[^a-z0-9_-]/gi, "-") || "geostats-trip"}.gpx`;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
 
   const visibleCaches = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase();
@@ -767,21 +855,59 @@ function TravelWorkspace({ session }: { session: TravelSession }) {
             </label>)}
           </div>}
 
-          {searchResult.recommendations.length > 0 && <div className="travel-save-row"><label><span>Trip name</span><input value={planName} maxLength={80} onChange={(event) => setPlanName(event.target.value)} placeholder="Saturday cache run" /></label><p>{selectedRecommendations.size} selected</p><button className="primary-button" type="button" onClick={saveRecommendedPlan}><Plus size={16} /> Save plan</button></div>}
-          <p className="travel-source-note">Searching {searchResult.importedCacheCount}{searchResult.poolTruncated ? "+" : ""} imported caches{searchResult.mysteryCacheCount ? ` and ${searchResult.mysteryCacheCount} solved mysteries` : ""}. Place search © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap contributors</a>{searchResult.mode === "route" ? <> · Routing by <a href="https://project-osrm.org/" target="_blank" rel="noreferrer">OSRM</a></> : null}.</p>
+          {searchResult.recommendations.length > 0 && <div className="travel-save-row"><label><span>Trip name</span><input value={planName} maxLength={80} onChange={(event) => setPlanName(event.target.value)} placeholder="Saturday cache run" /></label><p>{selectedRecommendations.size} selected</p><button className="primary-button" type="button" disabled={plansBusy} onClick={() => void saveRecommendedPlan()}><Plus size={16} /> Save plan</button></div>}
+          {searchResult.resultsTruncated ? <p className="muted">Showing the first {searchResult.resultLimit} matching caches.</p> : null}
+          <p className="travel-source-note">Searched {searchResult.importedCacheCount}{searchResult.poolTruncated ? "+" : ""} imported caches{searchResult.mysteryCacheCount ? ` and ${searchResult.mysteryCacheCount} solved mysteries` : ""}. Place search © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap contributors</a>{searchResult.mode === "route" ? <> · Routing by <a href="https://project-osrm.org/" target="_blank" rel="noreferrer">OSRM</a></> : null}.</p>
         </div>}
       </section>
 
-      {plansReady && savedPlans.length > 0 && <section className="travel-saved-section">
-        <div className="section-heading"><div><p className="eyebrow">Take them with you</p><h2>Saved travel plans</h2></div></div>
+      <section className="travel-saved-section" aria-labelledby="saved-travel-plans">
+        <div className="section-heading"><div><h2 id="saved-travel-plans">Saved travel plans</h2></div></div>
+        {plansError ? <p role="alert" className="error">{plansError} <button type="button" onClick={() => setPlansReload((value) => value + 1)}>Reload plans</button></p> : null}
+        {planActionError ? <p role="alert" className="error">{planActionError}</p> : null}
+        {!plansReady ? <p role="status">Loading account trips…</p> : null}
+        {plansReady && !plansError && !savedPlans.length ? <p className="muted">Save a route to open it on another device.</p> : null}
+        {browserPlans.length ? <div className="panel">
+          <p>{browserPlans.length} {browserPlans.length === 1 ? "trip is" : "trips are"} stored in this browser.</p>
+          <button className="secondary-button" type="button" aria-expanded={showMigration} onClick={() => setShowMigration((value) => !value)}>
+            {showMigration ? "Hide preview" : "Review browser trips"}
+          </button>
+          {showMigration ? <>
+            <ul>{browserPlans.slice(0, 100).map((plan) => <li key={plan.id}>{plan.name} · {plan.caches.length} stops · {shortPlace(plan.origin.label)}</li>)}</ul>
+            <button className="primary-button" type="button" disabled={plansBusy} onClick={() => void migrateBrowserPlans()}>
+              Move {Math.min(browserPlans.length, 100)} to my account
+            </button>
+          </> : null}
+        </div> : null}
         <div className="travel-route-grid">
-          {savedPlans.map((plan) => <article className="travel-route-card travel-saved-card" key={plan.id}>
-            <header><span>{plan.mode === "route" ? <Route size={17} /> : <MapPin size={17} />}<strong>{plan.name}</strong><small>{plan.caches.length} stops</small></span><div className="travel-route-actions"><a href={savedPlanDirectionsUrl(plan)} target="_blank" rel="noreferrer"><ExternalLink size={14} /> Route</a><button className="danger" type="button" onClick={() => deleteSavedPlan(plan)} title={`Remove ${plan.name}`}><Trash2 size={14} /></button></div></header>
+          {[
+            ...savedPlans.map((plan) => ({ plan, accountPlan: plan })),
+            ...browserPlans.map((plan) => ({ plan, accountPlan: null }))
+          ].map(({ plan, accountPlan }) => <article className="travel-route-card travel-saved-card" key={`${accountPlan ? "account" : "browser"}:${plan.id}`}>
+            <header>
+              <span>{plan.mode === "route" ? <Route size={17} /> : <MapPin size={17} />}<strong>{plan.name}</strong><small>{plan.caches.length} stops{accountPlan ? "" : " · This browser"}</small></span>
+              <div className="travel-route-actions">
+                <a href={travelPlanDirectionsUrl(plan)} target="_blank" rel="noreferrer"><ExternalLink size={14} /> Route</a>
+                <button type="button" onClick={() => downloadTravelPlan(plan)}>GPX</button>
+                <button className="danger" type="button" disabled={plansBusy} onClick={() => accountPlan ? void changeSavedPlan(accountPlan, { remove: true }) : removeBrowserPlan(plan)} aria-label={`Remove ${plan.name}`}><Trash2 size={14} /></button>
+              </div>
+            </header>
             <p className="travel-saved-meta">{shortPlace(plan.origin.label)}{plan.destination ? ` → ${shortPlace(plan.destination.label)}` : ` · ${plan.radiusKm} km radius`}{plan.route ? ` · ${routeSummary(plan.route)}` : ""}</p>
-            <div className="travel-cache-list">{plan.caches.map((cache) => <a href={`https://www.geocaching.com/geocache/${encodeURIComponent(cache.gcCode)}`} target="_blank" rel="noreferrer" className="travel-cache-row" key={cache.id}><span className="travel-cache-pin"><MapPin size={14} /></span><span><small>{cache.gcCode} · {cache.cacheType ?? "Unknown type"}</small><strong>{cache.name}</strong></span><em>{cache.distanceKm} km {plan.mode === "route" ? "off route" : "away"}</em></a>)}</div>
+            {plan.caches.length > MAX_TRAVEL_DIRECTIONS_STOPS + (plan.mode === "nearby" ? 1 : 0)
+              ? <p className="muted">Google Maps uses up to eight intermediate stops. The GPX includes every stop.</p> : null}
+            <div className="travel-cache-list">
+              {plan.caches.map((cache, index) => <div className="travel-cache-row" key={cache.id}>
+                <span className="travel-cache-pin">{index + 1}</span>
+                <span><small>{cache.gcCode} · {cache.cacheType ?? "Unknown type"}</small><strong><a href={`https://www.geocaching.com/geocache/${encodeURIComponent(cache.gcCode)}`} target="_blank" rel="noreferrer">{cache.name}</a></strong></span>
+                {accountPlan ? <div className="travel-route-actions">
+                  <button type="button" disabled={plansBusy || index === 0} aria-label={`Move ${cache.name} earlier`} onClick={() => void changeSavedPlan(accountPlan, { caches: moveTravelStop(plan.caches, index, -1) })}>↑</button>
+                  <button type="button" disabled={plansBusy || index === plan.caches.length - 1} aria-label={`Move ${cache.name} later`} onClick={() => void changeSavedPlan(accountPlan, { caches: moveTravelStop(plan.caches, index, 1) })}>↓</button>
+                </div> : null}
+              </div>)}
+            </div>
           </article>)}
         </div>
-      </section>}
+      </section>
 
       <section className="panel travel-workspace">
         <div className="section-heading travel-legacy-heading"><div><p className="eyebrow">Solved coordinates</p><h2>Mystery cache lists</h2><p>Keep organizing the mystery caches from your solving workspace.</p></div><button className="secondary-button" type="button" disabled={!caches.length} onClick={openNewTrip}><Plus size={17} /> New mystery list</button></div>

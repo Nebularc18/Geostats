@@ -1,5 +1,6 @@
 "use client";
 
+import { formatImportReceipt, ImportStatus } from "@geostats/shared";
 import { useCallback, useEffect, useState } from "react";
 import { AppShell } from "../../components/app-shell";
 import { GsakImportPanel } from "../../components/gsak-import-panel";
@@ -22,11 +23,21 @@ const sourceLabels: Record<string, string> = {
 
 export default function ImportsPage() {
   const [imports, setImports] = useState<ImportListItem[]>([]);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [retrying, setRetrying] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
-    const data = await apiFetch<ImportsResponse>("/imports");
-    setImports(data.imports);
-    return data.imports;
+    try {
+      const data = await apiFetch<ImportsResponse>("/imports");
+      setImports(data.imports);
+      setError("");
+      return data.imports;
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not load import history.");
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   useEffect(() => {
@@ -45,6 +56,19 @@ export default function ImportsPage() {
     return () => window.clearInterval(interval);
   }, [imports, refresh]);
 
+  async function retry(id: string) {
+    if (retrying) return;
+    setRetrying(id);
+    try {
+      await apiFetch(`/imports/${encodeURIComponent(id)}/retry`, { method: "POST" });
+      await refresh();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not retry the import.");
+    } finally {
+      setRetrying(null);
+    }
+  }
+
   return (
     <AppShell>
       <header className="page-header">
@@ -53,6 +77,8 @@ export default function ImportsPage() {
       </header>
       <GsakImportPanel onImportActivity={refresh} />
       <section className="panel">
+        {error ? <p className="error" role="alert">{error} <button type="button" onClick={() => void refresh()}>Reload</button></p> : null}
+        {loading ? <p role="status">Loading import history…</p> : null}
         <div className="table-list">
           {imports.map((item) => (
             <div key={item.id} className="table-row import-row">
@@ -61,15 +87,21 @@ export default function ImportsPage() {
                 <small>
                   {new Date(item.createdAt).toLocaleString("sv-SE")}
                 </small>
+                {item.status === ImportStatus.COMPLETED && item.receipt ? <small>{formatImportReceipt(item.receipt)}</small> : null}
                 {item.errorMessage ? (
                   <small className="error">{item.errorMessage}</small>
                 ) : null}
               </span>
               <span>{sourceLabels[item.source] ?? item.source}</span>
-              <strong>{item.status}</strong>
+              <div>
+                <strong>{item.status}</strong>
+                {item.retryable ? <button className="secondary-button" type="button" disabled={retrying !== null} onClick={() => void retry(item.id)}>
+                  {retrying === item.id ? "Retrying…" : "Retry"}
+                </button> : null}
+              </div>
             </div>
           ))}
-          {imports.length === 0 ? (
+          {!loading && !error && imports.length === 0 ? (
             <p className="muted">No import history yet.</p>
           ) : null}
         </div>

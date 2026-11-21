@@ -1,4 +1,4 @@
-import { ImportSource, ImportStatus } from "@geostats/shared";
+import { ImportSource, ImportStatus, type ImportReceipt } from "@geostats/shared";
 
 export type ImportListItem = {
   id: string;
@@ -7,6 +7,8 @@ export type ImportListItem = {
   status: ImportStatus;
   createdAt: string;
   errorMessage: string | null;
+  receipt?: ImportReceipt | null;
+  retryable?: boolean;
 };
 
 export type ImportsResponse = {

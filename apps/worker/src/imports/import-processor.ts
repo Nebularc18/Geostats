@@ -1,6 +1,6 @@
 import { Cache, calculateUserStats, privateCacheRaw, PrismaClient, Prisma } from "@geostats/db";
 import { DEFAULT_FTF_DETECTION_TERMS, detectFtfLog, parseImportFile, termRegex as ftfTermRegex } from "@geostats/gpx-parser";
-import { ImportFileType, ImportJobPayload, ImportSource, ImportStatus } from "@geostats/shared";
+import { IMPORT_LEASE_MS, ImportFileType, ImportJobPayload, ImportSource, ImportStatus, MAX_IMPORT_CRASH_RECOVERIES } from "@geostats/shared";
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { ObjectStorage } from "../storage/object-storage";
@@ -210,15 +210,43 @@ export class ImportProcessor {
       throw new Error(`Import ${payload.importId} was not found`);
     }
 
+    const now = new Date();
+    const recovered = importRecord.status === ImportStatus.PROCESSING;
+    const leaseToken = randomUUID();
+    const leaseExpiry = () => new Date(Date.now() + IMPORT_LEASE_MS);
+    const lease = { id: payload.importId, leaseToken };
+    const claimWhere = recovered ? {
+      status: ImportStatus.PROCESSING,
+      recoveryAttempts: { lt: MAX_IMPORT_CRASH_RECOVERIES },
+      OR: [
+        { leaseExpiresAt: { lte: now } },
+        { leaseExpiresAt: null, updatedAt: { lte: new Date(now.getTime() - IMPORT_LEASE_MS) } }
+      ]
+    } : { status: ImportStatus.QUEUED };
     const claimed = await this.prisma.import.updateMany({
-      where: {
-        id: payload.importId,
-        userId: payload.userId,
-        status: ImportStatus.QUEUED
-      },
-      data: { status: ImportStatus.PROCESSING, errorMessage: null }
+      where: { id: payload.importId, userId: payload.userId, ...claimWhere },
+      data: {
+        status: ImportStatus.PROCESSING,
+        errorMessage: null,
+        leaseToken,
+        leaseExpiresAt: leaseExpiry(),
+        ...(recovered ? { recoveryAttempts: { increment: 1 } } : {})
+      }
     });
     if (claimed.count !== 1) return;
+
+    let renewing = false;
+    const heartbeat = setInterval(() => {
+      if (renewing) return;
+      renewing = true;
+      void this.prisma.import.updateMany({
+        where: { ...lease, leaseExpiresAt: { gt: new Date() } },
+        data: { leaseExpiresAt: leaseExpiry() }
+      }).catch((error) => {
+        console.error(`Could not renew the processing lease for import ${payload.importId}`, error);
+      }).finally(() => { renewing = false; });
+    }, IMPORT_LEASE_MS / 4);
+    heartbeat.unref();
 
     try {
       const importSource = importRecord.source as ImportSource;
@@ -230,7 +258,11 @@ export class ImportProcessor {
               where: { userId: payload.userId },
               select: { gcUsername: true, ftfDetectionTerms: true, timeZone: true }
             });
-      const parsed = await parseImportFile(importRecord.fileName, content, importSource, { gcUsername: profile?.gcUsername });
+      const parsed = await parseImportFile(importRecord.fileName, content, importSource, {
+        gcUsername: profile?.gcUsername,
+        requireVerifiedFind: importRecord.purpose === "finds",
+        cacheOnly: importRecord.purpose === "cache-list" || importRecord.purpose === "travel"
+      });
       const ftfDetectionTerms = profile?.ftfDetectionTerms ?? DEFAULT_FTF_DETECTION_TERMS;
       const timeZone = profile?.timeZone ?? "Europe/Stockholm";
       const effectiveSource =
@@ -240,12 +272,26 @@ export class ImportProcessor {
       const incomingCaches = [...parsed.caches, ...parsed.finds.map((find) => find.cache)];
       // Earlier attempts may have committed metadata before failing to rebuild
       // stats (or before finishing cache resolution). Retry that derived work.
-      let shouldRecalculateStats = attempt.attemptsMade > 0;
+      const receipt = {
+        caches: new Set(parsed.caches.map(({ gcCode }) => gcCode.toUpperCase())).size,
+        finds: parsed.finds.length,
+        hides: importSource === ImportSource.MY_HIDES_GPX ? new Set(parsed.caches.map(({ gcCode }) => gcCode.toUpperCase())).size : 0,
+        skippedWaypoints: parsed.skippedWaypoints,
+        unmatchedFinds: importRecord.purpose === "finds" ? parsed.caches.length - parsed.finds.length : 0
+      };
+      let shouldRecalculateStats = recovered || Boolean(importRecord.receipt) || attempt.attemptsMade > 0;
       const cachesByCode = await this.resolveCaches(payload.userId, incomingCaches, () => {
         shouldRecalculateStats = true;
       });
 
       await this.prisma.$transaction(async (tx) => {
+        // Hold the import row through the transaction so a reclaimed job
+        // cannot commit finds or hides from the previous processing attempt.
+        const owner = await tx.import.updateMany({
+          where: { ...lease, leaseExpiresAt: { gt: new Date() } },
+          data: { leaseExpiresAt: leaseExpiry() }
+        });
+        if (!owner.count) throw new Error("Import processing lease expired");
         const parsedCaches =
           importRecord.source === ImportSource.MY_HIDES_GPX
             ? [...parsed.caches].sort((left, right) => left.gcCode.localeCompare(right.gcCode))
@@ -393,7 +439,7 @@ export class ImportProcessor {
         // while the import record is still marked as processing.
         await tx.import.update({
           where: { id: payload.importId },
-          data: { updatedAt: new Date() }
+          data: { receipt }
         });
       });
 
@@ -401,20 +447,24 @@ export class ImportProcessor {
         await this.recalculateStats(payload.userId);
       }
       await this.prisma.import.update({
-        where: { id: payload.importId },
-        data: { status: ImportStatus.COMPLETED, source: effectiveSource }
+        where: lease,
+        data: { status: ImportStatus.COMPLETED, source: effectiveSource, leaseToken: null, leaseExpiresAt: null }
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown import failure";
       const willRetry = attempt.attemptsMade + 1 < attempt.maxAttempts;
       await this.prisma.import.update({
-        where: { id: payload.importId },
+        where: lease,
         data: {
           status: willRetry ? ImportStatus.QUEUED : ImportStatus.FAILED,
-          errorMessage: willRetry ? null : message
+          errorMessage: willRetry ? null : message,
+          leaseToken: null,
+          leaseExpiresAt: null
         }
       });
       throw error;
+    } finally {
+      clearInterval(heartbeat);
     }
   }
 

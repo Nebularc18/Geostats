@@ -65,7 +65,7 @@ function wrapFindCreateManyFailure(prisma: PrismaClient, failOnBatch: number) {
 }
 
 test(
-  "imports more than 500 finds, preserves manual FTF on reimport, and rolls back a failed second batch",
+  "recovers an expired import lease, deduplicates finds, and rolls back a failed second batch",
   { skip: !databaseUrl, timeout: 180_000 },
   async () => {
     const runId = `${process.pid}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -167,18 +167,32 @@ test(
         data: { isFtf: false, isFtfManual: true }
       });
 
-      await processor.process({
-        importId: imports[1]!.id,
+      // Simulate a worker that was stopped after claiming the next job.
+      const crashedId = imports[1]!.id;
+      await prisma.import.update({
+        where: { id: crashedId },
+        data: { status: ImportStatus.PROCESSING, leaseToken: "stopped-worker", leaseExpiresAt: new Date(0) }
+      });
+      const payload = {
+        importId: crashedId,
         userId,
         objectKey: reimportObjectKey,
         source: ImportSource.MY_FINDS_GPX
-      });
+      };
+      await Promise.all([
+        processor.process(payload),
+        new ImportProcessor(prisma, storage as any).process(payload)
+      ]);
 
       assert.equal(await prisma.find.count({ where: { userId } }), FIND_COUNT, "reimport must not duplicate finds");
       const preservedFind = await prisma.find.findUnique({ where: { id: firstFind.id } });
       assert.equal(preservedFind?.isFtf, false);
       assert.equal(preservedFind?.isFtfManual, true);
-      assert.equal((await prisma.import.findUnique({ where: { id: imports[1]!.id } }))?.status, ImportStatus.COMPLETED);
+      const recovered = await prisma.import.findUniqueOrThrow({ where: { id: crashedId } });
+      assert.equal(recovered.status, ImportStatus.COMPLETED);
+      assert.equal(recovered.leaseToken, null);
+      assert.equal(recovered.recoveryAttempts, 1);
+      assert.deepEqual(recovered.receipt, { caches: FIND_COUNT, finds: FIND_COUNT, hides: 0, skippedWaypoints: 0, unmatchedFinds: 0 });
 
       const countBatches = wrapFindCreateManyFailure(prisma, 2);
       await assert.rejects(

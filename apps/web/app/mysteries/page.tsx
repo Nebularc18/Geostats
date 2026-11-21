@@ -922,13 +922,15 @@ export default function MysteriesPage() {
     let retryTimeout: number | undefined;
     const timeout = window.setTimeout(() => {
       void Promise.all(pendingCaches.map(({ cache, serialized }) => {
-        const requestedRevision = nextSnapshotRevision(cache.id);
         const baseMetadata = syncMetadata.current.get(cache.id);
+        const baseRevision = baseMetadata?.revision ?? 0;
+        const requestedRevision = baseRevision + 1;
         return apiFetch<{ revision: number; mystery: MysteryCache }>(`/mysteries/${encodeURIComponent(cache.id)}`, {
           method: "PUT",
           body: JSON.stringify({
             mystery: shareableMystery(cache),
-            revision: requestedRevision
+            revision: requestedRevision,
+            baseRevision
           })
         }).then(({ revision, mystery }) => {
           const storedSerialized = stableJsonStringify(mystery);
