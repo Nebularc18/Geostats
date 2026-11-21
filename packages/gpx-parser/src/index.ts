@@ -31,6 +31,7 @@ export interface ParsedFind {
 export interface ParsedImport {
   caches: ParsedCache[];
   finds: ParsedFind[];
+  skippedWaypoints: number;
 }
 
 export type ParsedTrackableState = "OWNED" | "DISCOVERED" | "RETRIEVED" | "DROPPED" | "VISITED" | "MISSING";
@@ -73,6 +74,8 @@ export interface ParsedTrackableImport {
 
 export interface ParseImportOptions {
   gcUsername?: string | null;
+  requireVerifiedFind?: boolean;
+  cacheOnly?: boolean;
 }
 
 const parser = new XMLParser({
@@ -285,14 +288,15 @@ function parseWaypoint(waypoint: Record<string, any>, source: ImportSource, opti
   }
 
   const userFoundDate = findUserFoundDate(waypoint);
-  const foundLog = findFoundLog(cacheExtension, userFoundDate, options.gcUsername);
+  const foundLog = options.cacheOnly ? null : findFoundLog(cacheExtension, userFoundDate, options.gcUsername);
   const foundLogDate = toDate(foundLog?.["groundspeak:date"] ?? foundLog?.date);
   const username = normalizeUsername(options.gcUsername);
   const foundLogMatchesUser =
     username !== null && normalizeUsername(firstText(foundLog?.["groundspeak:finder"], foundLog?.finder)) === username;
   const foundLogMatchesUserFoundDate =
     userFoundDate !== null && foundLogDate !== null && userFoundDate.getTime() === foundLogDate.getTime();
-  const shouldUseFoundLogText = foundLogMatchesUser || (userFoundDate === null && username === null) || foundLogMatchesUserFoundDate;
+  const shouldUseFoundLogText = foundLogMatchesUser || (!options.requireVerifiedFind &&
+    ((userFoundDate === null && username === null) || foundLogMatchesUserFoundDate));
   const placedBy = cacheExtension["groundspeak:placed_by"] ?? cacheExtension.placed_by;
   const owner = cacheExtension["groundspeak:owner"] ?? cacheExtension.owner;
 
@@ -316,15 +320,19 @@ function parseWaypoint(waypoint: Record<string, any>, source: ImportSource, opti
 
   return {
     cache,
-    foundAt: foundLogMatchesUser
+    foundAt: options.cacheOnly ? null : foundLogMatchesUser
       ? foundLogDate ?? userFoundDate
-      : userFoundDate ?? (source === ImportSource.POCKET_QUERY ? null : foundLogDate),
+      : userFoundDate ?? (source === ImportSource.POCKET_QUERY || options.requireVerifiedFind ? null : foundLogDate),
     logText: shouldUseFoundLogText ? firstText(foundLog?.["groundspeak:text"], foundLog?.text) : null,
     source
   };
 }
 
 export function parseGpx(content: string | Buffer, source: ImportSource, options: ParseImportOptions = {}): ParsedImport {
+  return parseGpxWaypoints(content, source, options, false);
+}
+
+function parseGpxWaypoints(content: string | Buffer, source: ImportSource, options: ParseImportOptions, allowWaypointOnly: boolean): ParsedImport {
   const maxBytes = positiveLimit("IMPORT_MAX_BYTES", DEFAULT_MAX_IMPORT_BYTES);
   if (byteLength(content) > maxBytes) {
     throw new Error(`GPX file exceeds ${maxBytes} bytes`);
@@ -344,13 +352,14 @@ export function parseGpx(content: string | Buffer, source: ImportSource, options
     .map((waypoint) => parseWaypoint(waypoint, source, options))
     .filter((find): find is ParsedFind => find !== null);
 
-  if (parsedWaypoints.length === 0) {
+  if (parsedWaypoints.length === 0 && !allowWaypointOnly) {
     throw new Error("No valid geocache waypoints found");
   }
 
   return {
     caches: parsedWaypoints.map((find) => find.cache),
-    finds: source === ImportSource.MY_HIDES_GPX ? [] : parsedWaypoints.filter((find) => find.foundAt !== null)
+    finds: source === ImportSource.MY_HIDES_GPX ? [] : parsedWaypoints.filter((find) => find.foundAt !== null),
+    skippedWaypoints: waypoints.length - parsedWaypoints.length
   };
 }
 
@@ -390,11 +399,14 @@ export async function parseImportFile(
       if (totalBytes > maxTotalBytes) {
         throw new Error(`ZIP GPX content exceeds ${maxTotalBytes} bytes`);
       }
-      parsed.push(parseGpx(entry, source, options));
+      parsed.push(parseGpxWaypoints(entry, source, options, /(?:^|[._-])wpts\.gpx$/i.test(file.name)));
     }
+    const caches = parsed.flatMap((item) => item.caches);
+    if (!caches.length) throw new Error("No valid geocache waypoints found");
     return {
-      caches: parsed.flatMap((item) => item.caches),
-      finds: parsed.flatMap((item) => item.finds)
+      caches,
+      finds: parsed.flatMap((item) => item.finds),
+      skippedWaypoints: parsed.reduce((total, item) => total + item.skippedWaypoints, 0)
     };
   }
 

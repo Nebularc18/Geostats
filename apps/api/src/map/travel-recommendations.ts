@@ -51,7 +51,14 @@ export function haversineKm(first: Coordinate, second: Coordinate) {
   return EARTH_RADIUS_KM * 2 * Math.atan2(Math.sqrt(value), Math.sqrt(1 - value));
 }
 
-function closestRoutePoint(point: Coordinate, route: Coordinate[]) {
+export function prepareTravelRoute(route: Coordinate[]) {
+  const segmentLengths = route.slice(1).map((end, index) => haversineKm(route[index]!, end));
+  return { route, segmentLengths, routeLength: segmentLengths.reduce((total, length) => total + length, 0) };
+}
+
+type PreparedRoute = ReturnType<typeof prepareTravelRoute>;
+
+function closestRoutePoint(point: Coordinate, { route, segmentLengths, routeLength }: PreparedRoute) {
   if (route.length === 0) return { distanceKm: Number.POSITIVE_INFINITY, progress: 0 };
   if (route.length === 1) return { distanceKm: haversineKm(point, route[0]!), progress: 0 };
 
@@ -60,13 +67,6 @@ function closestRoutePoint(point: Coordinate, route: Coordinate[]) {
   let closest = Number.POSITIVE_INFINITY;
   let closestProgress = 0;
   let traveled = 0;
-  let routeLength = 0;
-
-  const segmentLengths = route.slice(1).map((end, index) => {
-    const length = haversineKm(route[index]!, end);
-    routeLength += length;
-    return length;
-  });
 
   for (let index = 1; index < route.length; index += 1) {
     const start = route[index - 1]!;
@@ -94,14 +94,41 @@ function closestRoutePoint(point: Coordinate, route: Coordinate[]) {
   return { distanceKm: closest, progress: closestProgress };
 }
 
+export function compareTravelCandidates(first: RankedTravelCandidate, second: RankedTravelCandidate) {
+  if (first.routeProgress !== undefined && second.routeProgress !== undefined) {
+    return first.routeProgress - second.routeProgress || first.distanceKm - second.distanceKm || first.gcCode.localeCompare(second.gcCode);
+  }
+  return Number(first.found) - Number(second.found) || first.distanceKm - second.distanceKm || first.gcCode.localeCompare(second.gcCode);
+}
+
+export function roundTravelCandidate(candidate: RankedTravelCandidate) {
+  return { ...candidate, distanceKm: Math.round(candidate.distanceKm * 10) / 10 };
+}
+
+export function rankTravelCandidates(
+  candidates: TravelCandidate[],
+  origin: Coordinate,
+  radiusKm: number,
+  includeFound: boolean,
+  route?: PreparedRoute
+): RankedTravelCandidate[] {
+  return candidates.flatMap((candidate) => {
+    if (!includeFound && candidate.found) return [];
+    const closest = route ? closestRoutePoint(candidate, route) : undefined;
+    const distanceKm = closest?.distanceKm ?? haversineKm(candidate, origin);
+    if (!Number.isFinite(distanceKm) || distanceKm > radiusKm) return [];
+    return [{ ...candidate, distanceKm, ...(closest && { routeProgress: closest.progress }) }];
+  }).sort(compareTravelCandidates);
+}
+
 export function recommendNearbyCaches(
   candidates: TravelCandidate[],
   center: Coordinate,
   radiusKm: number,
   includeFound: boolean,
   limit = 100
-): RankedTravelCandidate[] {
-  return rankCandidates(candidates, (candidate) => haversineKm(candidate, center), radiusKm, includeFound, limit);
+) {
+  return rankTravelCandidates(candidates, center, radiusKm, includeFound).slice(0, limit).map(roundTravelCandidate);
 }
 
 export function recommendRouteCaches(
@@ -110,35 +137,7 @@ export function recommendRouteCaches(
   corridorKm: number,
   includeFound: boolean,
   limit = 100
-): RankedTravelCandidate[] {
-  return candidates
-    .filter((candidate) => includeFound || !candidate.found)
-    .map((candidate) => {
-      const closest = closestRoutePoint(candidate, route);
-      return { ...candidate, distanceKm: closest.distanceKm, routeProgress: closest.progress };
-    })
-    .filter((candidate) => Number.isFinite(candidate.distanceKm) && candidate.distanceKm <= corridorKm)
-    .sort((first, second) => first.routeProgress - second.routeProgress
-      || first.distanceKm - second.distanceKm
-      || first.gcCode.localeCompare(second.gcCode))
-    .slice(0, limit)
-    .map((candidate) => ({ ...candidate, distanceKm: Math.round(candidate.distanceKm * 10) / 10 }));
-}
-
-function rankCandidates(
-  candidates: TravelCandidate[],
-  distance: (candidate: TravelCandidate) => number,
-  maximumDistanceKm: number,
-  includeFound: boolean,
-  limit: number
 ) {
-  return candidates
-    .filter((candidate) => includeFound || !candidate.found)
-    .map((candidate) => ({ ...candidate, distanceKm: distance(candidate) }))
-    .filter((candidate) => Number.isFinite(candidate.distanceKm) && candidate.distanceKm <= maximumDistanceKm)
-    .sort((first, second) => Number(first.found) - Number(second.found)
-      || first.distanceKm - second.distanceKm
-      || first.gcCode.localeCompare(second.gcCode))
-    .slice(0, limit)
-    .map((candidate) => ({ ...candidate, distanceKm: Math.round(candidate.distanceKm * 10) / 10 }));
+  return rankTravelCandidates(candidates, route[0] ?? { latitude: 0, longitude: 0 }, corridorKm, includeFound, prepareTravelRoute(route))
+    .slice(0, limit).map(roundTravelCandidate);
 }

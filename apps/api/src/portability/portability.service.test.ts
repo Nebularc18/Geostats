@@ -121,7 +121,7 @@ test("portable parser rejects files from an unknown format", () => {
 
 test("portable parser rejects future versions instead of partially importing them", () => {
   assert.throws(
-    () => parsePortableArchive(archive({ version: 2 })),
+    () => parsePortableArchive(archive({ version: 3 })),
     /Unsupported Geostats export version/,
   );
 });
@@ -539,6 +539,13 @@ test("export includes every portable user data category and excludes server secr
     name: "Corrected cache",
   };
   const prisma = {
+    challengeChecker: {
+      findMany: async () => [{
+        id: "checker-1", portableId: null, name: "Find one", gcCode: "GC12345",
+        description: null, rules: [{ type: "TOTAL_FINDS", minimum: 1 }]
+      }],
+    },
+    travelPlan: { findMany: async () => [] },
     user: {
       findUniqueOrThrow: async () => ({
         ...user,
@@ -649,6 +656,11 @@ test("export includes every portable user data category and excludes server secr
 
   const exported = await service.exportData(user);
 
+  assert.equal(exported.version, 2);
+  assert.deepEqual(exported.data.challengeCheckers, [{
+    sourceId: "checker-1", name: "Find one", gcCode: "GC12345",
+    description: null, rules: [{ type: "TOTAL_FINDS", minimum: 1 }]
+  }]);
   assert.deepEqual(exported.account, {
     username: "alice",
     email: "alice@example.com",

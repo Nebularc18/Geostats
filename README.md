@@ -92,6 +92,10 @@ run before the API, worker, and web services start.
 
 Use `.env.agent.example` only for local development. Its secrets are intentionally fixed so automation can launch the app without extra prompts.
 
+## Importing a GPX or ZIP
+
+Choose **My Finds**, **My Hides**, or **Cache list** when uploading. My Finds uses your configured Geocaching username or a personal found date recorded in the file. Cache list imports add waypoints for Travel. Import history shows the processed counts and warnings and lets you retry a failed upload.
+
 ## Authentication
 
 Geostats uses Clerk for hosted web and native sign-in. After Clerk verifies a
@@ -191,11 +195,13 @@ Kinds are `approach`, `keyword`, and `coordinate`. States are `planned` (not tri
 
 ## Data portability
 
-Every signed-in user can download a server-independent JSON backup from **Settings → Profile → Move or back up all your data** and import it into an account on another Geostats server.
+Every signed-in user can download a server-independent JSON backup from **Settings → Profile → Back up or move account data** and import it into an account on another Geostats server.
 
-The versioned `geostats-portable-data` format contains the geocaching profile, finds and log text, hides and received logs, trackable logbook entries, associated cache metadata, corrected coordinates, finder-country statistics, generated stat snapshots, and owned mystery workspaces. Import is transactional and can safely be repeated. It merges by stable cache code and record identity, updates matching user-owned records, and keeps unrelated records already in the destination account.
+The version 2 `geostats-portable-data` format includes the geocaching profile, finds and log text, hides and received logs, trackable history, associated cache metadata, corrected coordinates, finder-country statistics, stat snapshots, owned mystery workspaces, saved account trips, and challenge checker definitions. Version 1 backups can still be restored. Restore updates matching records for the original categories. Matching trips and checkers on the destination account take precedence. Restored checkers start private and receive a new link when published.
 
-Authentication secrets and server-local capabilities are intentionally not portable: password hashes, OAuth links, login sessions, collector tokens, object-storage keys, and mystery sharing grants remain on the server that issued them. The export includes account identity only as informational metadata and never changes the destination account's email or username.
+Use **Travel → Review browser trips** to move trips kept in the current browser into your account before backing up. On Android, opening Travel while connected caches the account trips for offline access. Keep original uploads and standalone cache lists separately.
+
+Password hashes, OAuth links, login sessions, collector tokens, object-storage keys, and Mystery sharing grants stay on their original server. The export includes account identity only as informational metadata and never changes the destination account's email or username.
 
 The authenticated endpoints are:
 

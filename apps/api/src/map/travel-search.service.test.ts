@@ -58,8 +58,8 @@ test("nearby search filters geographically and bounds matching cache candidates"
     originPlace: { label: "Karlskrona", latitude: 56.1612, longitude: 15.5869 }
   });
 
-  assert.equal(query!.take, 5001);
-  assert.deepEqual(query!.orderBy, [{ updatedAt: "desc" }, { id: "desc" }]);
+  assert.equal(query!.take, 1000);
+  assert.deepEqual(query!.orderBy, { id: "asc" });
   const bounds = travelSearchBounds([{ latitude: 56.1612, longitude: 15.5869 }], 10);
   assert.deepEqual((query!.where as any).cache.OR[0], {
     latitude: { gte: bounds.minimumLatitude, lte: bounds.maximumLatitude },
@@ -79,7 +79,7 @@ test("route sampling preserves endpoints and uses a bounded number of points", (
   assert.deepEqual(sampled.at(-1), coordinates.at(-1));
 });
 
-test("travel search reports database and route-geometry truncation", async () => {
+test("travel search reports route-geometry truncation", async () => {
   const originalFetch = globalThis.fetch;
   const geometry = Array.from({ length: 2001 }, (_, index) => [index / 1000, index / 1000] as [number, number]);
   globalThis.fetch = async () => new Response(JSON.stringify({
@@ -102,7 +102,7 @@ test("travel search reports database and route-geometry truncation", async () =>
     finds: [],
     corrections: []
   };
-  const prisma = { userCacheData: { findMany: async () => Array(5001).fill({ cache }) } };
+  const prisma = { userCacheData: { findMany: async () => [{ cache }] } };
   const service = new TravelSearchService(prisma as never);
 
   try {
@@ -117,8 +117,8 @@ test("travel search reports database and route-geometry truncation", async () =>
       destinationPlace: { label: "Destination", latitude: 2, longitude: 2 }
     });
 
-    assert.equal(result.importedCacheCount, 5000);
-    assert.equal(result.poolTruncated, true);
+    assert.equal(result.importedCacheCount, 1);
+    assert.equal(result.poolTruncated, false);
     assert.deepEqual(result.route, {
       distanceMeters: 1234,
       durationSeconds: 567,
@@ -129,4 +129,32 @@ test("travel search reports database and route-geometry truncation", async () =>
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("nearby results include an older corrected cache beyond the first 5,000 candidates", async () => {
+  const source = Array.from({ length: 5002 }, (_, index) => ({
+    id: String(index).padStart(5, "0"),
+    cache: {
+      id: `cache-${index}`, gcCode: `GC${index}`, name: `Cache ${index}`,
+      metadataTrusted: true, cacheType: "Traditional Cache", difficulty: 1, terrain: 1, size: null,
+      latitude: 56.2, longitude: 15.58, country: null, region: null, county: null,
+      finds: index === 5000 ? [{ id: "found" }] : [],
+      corrections: index >= 5000 ? [{ latitude: 56.16, longitude: 15.58 }] : []
+    }
+  }));
+  const prisma = {
+    userCacheData: {
+      findMany: async ({ take, where }: any) => source.filter((row) => !where.id || row.id > where.id.gt).slice(0, take)
+    }
+  };
+  const service = new TravelSearchService(prisma as never);
+  const result = await service.search("owner", {
+    mode: "nearby", origin: "Origin", radiusKm: 10, includeFound: false, mysteryCaches: [],
+    originPlace: { label: "Origin", latitude: 56.16, longitude: 15.58 }
+  });
+  assert.equal(result.importedCacheCount, 5002);
+  assert.equal(result.recommendations[0]?.gcCode, "GC5001");
+  assert.ok(!result.recommendations.some(({ gcCode }) => gcCode === "GC5000"));
+  assert.equal(result.resultsTruncated, true);
+  assert.equal(result.poolTruncated, false);
 });

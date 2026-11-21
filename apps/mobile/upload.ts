@@ -1,3 +1,5 @@
+import type { CacheImportMode } from "@geostats/shared";
+
 export type UploadKind = "cache" | "csv" | "trackable";
 
 type UploadAsset = {
@@ -16,6 +18,7 @@ type UploadDependencies = {
   request: (path: string, body: FormData) => Promise<unknown>;
   refresh: () => Promise<unknown>;
   onMessage: (message: string) => void;
+  mode?: CacheImportMode;
 };
 
 const uploadSpecs: Record<UploadKind, { types: string[]; path: string; uploading: string; complete: string }> = {
@@ -77,10 +80,16 @@ export async function pickAndUploadDocument(kind: UploadKind, dependencies: Uplo
     if (!asset) throw new Error("The selected file could not be opened");
 
     const form = new FormData();
+    if (kind === "cache" && dependencies.mode) form.set("purpose", dependencies.mode);
     form.append("file", fileForUpload(kind, asset, dependencies.createFile(asset.uri)), asset.name);
     dependencies.onMessage(spec.uploading);
     const response = await dependencies.request(spec.path, form);
-    dependencies.onMessage(kind === "trackable" ? trackableImportMessage(response) ?? spec.complete : spec.complete);
+    const job = response as { import?: { status?: string } } | null;
+    dependencies.onMessage(
+      kind === "trackable" ? trackableImportMessage(response) ?? spec.complete
+        : kind === "cache" && job?.import?.status === "FAILED" ? "The import could not queue. Retry it from history."
+          : spec.complete
+    );
     await dependencies.refresh();
     return "uploaded" as const;
   } catch (error) {

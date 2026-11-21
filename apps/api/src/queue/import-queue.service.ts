@@ -5,6 +5,7 @@ import { IMPORT_QUEUE_NAME, ImportJobPayload } from "@geostats/shared";
 import { requiredEnv } from "../common/env";
 
 const HEALTH_PING_TIMEOUT_MS = 1_000;
+const ENQUEUE_TIMEOUT_MS = 3_000;
 
 export function importJobId(importId: string) {
   return `import-${importId}`;
@@ -24,10 +25,10 @@ export class ImportQueueStateUnknownError extends Error {
   }
 }
 
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string, timeoutError = new Error(message)): Promise<T> {
   let timeout: NodeJS.Timeout;
   const timeoutPromise = new Promise<never>((_, reject) => {
-    timeout = setTimeout(() => reject(new Error(message)), timeoutMs);
+    timeout = setTimeout(() => reject(timeoutError), timeoutMs);
   });
   return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timeout));
 }
@@ -42,16 +43,18 @@ export class ImportQueueService implements OnModuleDestroy {
   async enqueue(payload: ImportJobPayload) {
     const jobId = importJobId(payload.importId);
     try {
-      await this.queue.add("process-import", payload, {
+      await withTimeout(this.queue.add("process-import", payload, {
         jobId,
         attempts: 3,
         backoff: { type: "exponential", delay: 5000 },
         removeOnComplete: true,
         removeOnFail: true
-      });
+      }), ENQUEUE_TIMEOUT_MS, "Import submission timed out",
+      new ImportQueueStateUnknownError(new Error("Import submission timed out")));
     } catch (error) {
+      if (error instanceof ImportQueueStateUnknownError) throw error;
       try {
-        if (await this.queue.getJob(jobId)) {
+        if (await withTimeout(this.queue.getJob(jobId), ENQUEUE_TIMEOUT_MS, "Import job lookup timed out")) {
           return;
         }
       } catch {

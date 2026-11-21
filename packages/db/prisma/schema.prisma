@@ -78,10 +78,26 @@ model User {
   mysteryDeletions        MysteryWorkspaceDeletion[]
   cacheData               UserCacheData[]
   challengeCheckers       ChallengeChecker[]
+  travelPlans             TravelPlan[]
   trackables              Trackable[]
   trackableLogs           TrackableLog[]
 
   @@map("users")
+}
+
+model TravelPlan {
+  userId    String    @map("user_id")
+  id        String
+  data      Json
+  version   Int       @default(1)
+  deletedAt DateTime? @map("deleted_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, id])
+  @@index([userId, deletedAt, updatedAt])
+  @@map("travel_plans")
 }
 
 model ChallengeChecker {
@@ -92,6 +108,7 @@ model ChallengeChecker {
   description String?
   rules       Json
   publicSlug  String?   @unique @map("public_slug")
+  portableId  String?   @map("portable_id")
   publishedAt DateTime? @map("published_at")
   createdAt   DateTime  @default(now()) @map("created_at")
   updatedAt   DateTime  @updatedAt @map("updated_at")
@@ -99,6 +116,7 @@ model ChallengeChecker {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([userId, gcCode])
+  @@unique([userId, portableId])
   @@index([userId, updatedAt])
   @@map("challenge_checkers")
 }
@@ -255,6 +273,11 @@ model Import {
   status       ImportStatus   @default(UPLOADED)
   objectKey    String         @map("object_key")
   errorMessage String?        @map("error_message")
+  purpose      String?
+  receipt      Json?
+  leaseToken   String?        @map("lease_token")
+  leaseExpiresAt DateTime?    @map("lease_expires_at")
+  recoveryAttempts Int        @default(0) @map("recovery_attempts")
   createdAt    DateTime       @default(now()) @map("created_at")
   updatedAt    DateTime       @updatedAt @map("updated_at")
 
@@ -263,6 +286,7 @@ model Import {
   hides Hide[]
 
   @@index([userId, createdAt])
+  @@index([status, updatedAt])
   @@map("imports")
 }
 

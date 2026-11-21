@@ -3,8 +3,10 @@ import { BadGatewayException, Injectable, NotFoundException } from "@nestjs/comm
 import { envOrDefault } from "../common/env";
 import { PrismaService } from "../common/prisma.service";
 import {
-  recommendNearbyCaches,
-  recommendRouteCaches,
+  compareTravelCandidates,
+  prepareTravelRoute,
+  rankTravelCandidates,
+  roundTravelCandidate,
   mergeTravelCandidates,
   type Coordinate,
   type TravelCandidate
@@ -28,6 +30,7 @@ type GeographicBounds = {
 
 const MAX_CACHE_POOL = 5000;
 const MAX_RECOMMENDATIONS = 100;
+const SEARCH_PAGE_SIZE = 1000;
 const MAX_ROUTE_POINTS = 2000;
 const geocodeCache = new Map<string, Place>();
 const suggestionCache = new Map<string, PlaceSuggestion[]>();
@@ -284,86 +287,95 @@ export class TravelSearchService {
     const longitude = bounds.minimumLongitude === undefined || bounds.maximumLongitude === undefined
       ? undefined
       : { gte: bounds.minimumLongitude, lte: bounds.maximumLongitude };
-    const records = await this.prisma.userCacheData.findMany({
-      where: {
-        userId,
-        cache: {
-          hides: { none: { userId } },
-          OR: [
-            { latitude, ...(longitude ? { longitude } : {}) },
-            { corrections: { some: { userId, latitude, ...(longitude ? { longitude } : {}) } } },
-            { metadataTrusted: false, userData: { some: { userId, AND: [
-              { raw: { path: ["geostatsMetadata", "latitude"], ...latitude } },
-              ...(longitude ? [{ raw: { path: ["geostatsMetadata", "longitude"], ...longitude } }] : [])
-            ] } } }
-          ]
-        }
-      },
+    const routeGeometry = route && prepareTravelRoute(route.coordinates);
+    const mysteryCodes = [...new Set(input.mysteryCaches.map(({ gcCode }) => gcCode.trim().toUpperCase()))];
+    const mysteryStatuses = mysteryCodes.length ? await this.prisma.cache.findMany({
+      where: { gcCode: { in: mysteryCodes } },
       select: {
-        raw: true,
-        cache: {
-          select: {
-            id: true,
-            gcCode: true,
-            name: true,
-            metadataTrusted: true,
-            cacheType: true,
-            difficulty: true,
-            terrain: true,
-            size: true,
-            latitude: true,
-            longitude: true,
-            country: true,
-            region: true,
-            county: true,
-            finds: { where: { userId }, select: { id: true }, take: 1 },
-            corrections: { where: { userId }, select: { latitude: true, longitude: true }, take: 1 }
-          }
-        }
-      },
-      orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
-      take: MAX_CACHE_POOL + 1
-    });
-    const poolTruncated = records.length > MAX_CACHE_POOL;
-    const importedCandidates: TravelCandidate[] = records.slice(0, MAX_CACHE_POOL).map(({ cache: shared, raw }) => {
-      const cache = { ...shared, ...personalCacheMetadata(shared, raw) };
-      const correction = cache.corrections[0];
-      return {
-        id: cache.id,
-        gcCode: cache.gcCode,
-        name: cache.name,
-        cacheType: cache.cacheType,
-        difficulty: cache.difficulty === null ? null : Number(cache.difficulty),
-        terrain: cache.terrain === null ? null : Number(cache.terrain),
-        size: cache.size,
-        latitude: Number(correction?.latitude ?? cache.latitude),
-        longitude: Number(correction?.longitude ?? cache.longitude),
-        country: cache.country,
-        region: cache.region,
-        county: cache.county,
-        found: cache.finds.length > 0,
-        source: "imported"
-      };
-    });
-    const mysteryCandidates: TravelCandidate[] = input.mysteryCaches.map((cache) => ({
-      ...cache,
-      cacheType: "Mystery Cache",
-      difficulty: null,
-      terrain: null,
-      size: null,
-      country: cache.country ?? null,
-      region: cache.region ?? null,
-      county: cache.county ?? null,
-      found: false,
-      source: "mystery"
+        gcCode: true,
+        finds: { where: { userId }, select: { id: true }, take: 1 },
+        hides: { where: { userId }, select: { id: true }, take: 1 }
+      }
+    }) : [];
+    const statusByCode = new Map(mysteryStatuses.map((cache) => [cache.gcCode, cache]));
+    const mysteryCandidates = mergeTravelCandidates([], input.mysteryCaches.flatMap((cache): TravelCandidate[] => {
+      const gcCode = cache.gcCode.trim().toUpperCase();
+      const status = statusByCode.get(gcCode);
+      if (status?.hides.length) return [];
+      return [{
+        ...cache, gcCode, cacheType: "Mystery Cache", difficulty: null, terrain: null, size: null,
+        country: cache.country ?? null, region: cache.region ?? null, county: cache.county ?? null,
+        found: Boolean(status?.finds.length), source: "mystery"
+      }];
     }));
-    const candidates = mergeTravelCandidates(importedCandidates, mysteryCandidates);
-    const recommendations = route
-      ? recommendRouteCaches(candidates, route.coordinates, input.radiusKm, input.includeFound, MAX_RECOMMENDATIONS)
-      : recommendNearbyCaches(candidates, origin, input.radiusKm, input.includeFound, MAX_RECOMMENDATIONS);
+    const mysteryByCode = new Set(mysteryCandidates.map(({ gcCode }) => gcCode));
+    let best = rankTravelCandidates(mysteryCandidates, origin, input.radiusKm, input.includeFound, routeGeometry)
+      .slice(0, MAX_RECOMMENDATIONS + 1);
+    let importedCacheCount = 0;
+    let matchingMysteries = 0;
+    let afterId: string | undefined;
+    // Page the whole geographical subset and keep only the leading results.
+    // An import's age never decides whether a waypoint is eligible.
+    for (;;) {
+      const records = await this.prisma.userCacheData.findMany({
+        where: {
+          userId,
+          ...(afterId && { id: { gt: afterId } }),
+          cache: {
+            hides: { none: { userId } },
+            OR: [
+              { latitude, ...(longitude ? { longitude } : {}) },
+              { corrections: { some: { userId, latitude, ...(longitude ? { longitude } : {}) } } },
+              { metadataTrusted: false, userData: { some: { userId, AND: [
+                { raw: { path: ["geostatsMetadata", "latitude"], ...latitude } },
+                ...(longitude ? [{ raw: { path: ["geostatsMetadata", "longitude"], ...longitude } }] : [])
+              ] } } }
+            ]
+          }
+        },
+        select: {
+          id: true,
+          raw: true,
+          cache: {
+            select: {
+              id: true, gcCode: true, name: true, metadataTrusted: true, cacheType: true,
+              difficulty: true, terrain: true, size: true, latitude: true, longitude: true,
+              country: true, region: true, county: true,
+              finds: { where: { userId }, select: { id: true }, take: 1 },
+              corrections: { where: { userId }, select: { latitude: true, longitude: true }, take: 1 }
+            }
+          }
+        },
+        orderBy: { id: "asc" },
+        take: SEARCH_PAGE_SIZE
+      });
+      importedCacheCount += records.length;
+      const candidates = records.flatMap(({ cache: shared, raw }): TravelCandidate[] => {
+        if (mysteryByCode.has(shared.gcCode)) {
+          matchingMysteries++;
+          return [];
+        }
+        const cache = { ...shared, ...personalCacheMetadata(shared, raw) };
+        const correction = cache.corrections[0];
+        return [{
+          id: cache.id, gcCode: cache.gcCode, name: cache.name, cacheType: cache.cacheType,
+          difficulty: cache.difficulty === null ? null : Number(cache.difficulty),
+          terrain: cache.terrain === null ? null : Number(cache.terrain),
+          size: cache.size, latitude: Number(correction?.latitude ?? cache.latitude),
+          longitude: Number(correction?.longitude ?? cache.longitude), country: cache.country,
+          region: cache.region, county: cache.county, found: cache.finds.length > 0, source: "imported"
+        }];
+      });
+      const page = rankTravelCandidates(candidates, origin, input.radiusKm, input.includeFound, routeGeometry);
+      best = [...best, ...page].sort(compareTravelCandidates).slice(0, MAX_RECOMMENDATIONS + 1);
+      if (records.length < SEARCH_PAGE_SIZE) break;
+      afterId = records.at(-1)!.id;
+    }
+    const recommendations = best.slice(0, MAX_RECOMMENDATIONS).map(roundTravelCandidate);
 
     return {
       mode: input.mode,
+      radiusKm: input.radiusKm,
       origin,
       destination,
       route: route ? {
@@ -374,10 +386,11 @@ export class TravelSearchService {
         geometryTruncated: route.coordinatesTruncated
       } : undefined,
       recommendations,
-      importedCacheCount: importedCandidates.length,
+      importedCacheCount,
       mysteryCacheCount: mysteryCandidates.length,
-      searchedCacheCount: candidates.length,
-      poolTruncated,
+      searchedCacheCount: importedCacheCount + mysteryCandidates.length - matchingMysteries,
+      poolTruncated: false,
+      resultsTruncated: best.length > MAX_RECOMMENDATIONS,
       resultLimit: MAX_RECOMMENDATIONS,
       attribution: {
         places: "© OpenStreetMap contributors",

@@ -14,6 +14,7 @@ type ShareMysteryBody = {
 type UpdateMysteryBody = {
   mystery?: unknown;
   revision?: unknown;
+  baseRevision?: unknown;
 };
 
 type SharingPreferenceBody = {
@@ -472,6 +473,11 @@ export class MysteriesController {
   ) {
     const { data, gcCode } = mysteryData(body.mystery, clientId);
     const revision = snapshotRevision(body.revision);
+    const baseRevision = body.baseRevision === undefined ? null
+      : body.baseRevision === 0 ? 0 : snapshotRevision(body.baseRevision);
+    if (baseRevision !== null && revision !== baseRevision + 1) {
+      throw new BadRequestException("Mystery revision must follow its base revision");
+    }
     const storedRevision = await this.prisma.$transaction(async (tx) => {
       await lockMystery(tx, user.id, clientId, gcCode);
       const deletion = await tx.mysteryWorkspaceDeletion.findUnique({
@@ -493,6 +499,7 @@ export class MysteriesController {
         select: { clientId: true }
       });
       if (!existing) {
+        if (baseRevision) throw new ConflictException("The original Mystery workspace no longer exists");
         const workspaceCount = await tx.mysteryWorkspace.count({ where: { ownerId: user.id } });
         if (workspaceCount >= MAX_MYSTERY_WORKSPACES_PER_OWNER) {
           throw new BadRequestException("Too many Mystery workspaces");
@@ -525,6 +532,7 @@ export class MysteriesController {
           FROM requested
           WHERE workspace.id = ${mystery.id}
             AND workspace.snapshot_revision < ${revision}
+            ${baseRevision === null ? Prisma.empty : Prisma.sql`AND workspace.snapshot_revision = ${baseRevision}`}
             AND workspace.data IS DISTINCT FROM requested.data
           RETURNING workspace.snapshot_revision AS revision,
                     workspace.data AS mystery

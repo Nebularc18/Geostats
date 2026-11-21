@@ -308,3 +308,123 @@ test("sidebar entry to Mysteries loads a new document so the legacy helper can r
   await navigation;
   await expect(page.getByRole("status", { name: "Geocaching helper update" })).toBeVisible();
 });
+
+test("signed-in Travel migrates a browser trip, saves stop order, and downloads GPX", async ({ page }) => {
+  const installation = installations[0];
+  const origin = `http://127.0.0.1:${installation.port}`;
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  const trip = {
+    id: "browser-trip", name: "Saturday route", mode: "nearby", createdAt: "2026-01-01T00:00:00.000Z",
+    radiusKm: 5, origin: { label: "Start", latitude: 59, longitude: 18 },
+    caches: [
+      { id: "point-one", gcCode: "GCONE", name: "First stop", latitude: 59.01, longitude: 18, cacheType: "Traditional Cache", distanceKm: 1 },
+      { id: "point-two", gcCode: "GCTWO", name: "Second stop", latitude: 59.02, longitude: 18, cacheType: null, distanceKm: 2 }
+    ]
+  };
+  const storageKey = `geostats-travel-plans-v3:${encodeURIComponent(installation.apiUrl)}:user-1`;
+  await page.addInitScript(({ storageKey, trip }) => {
+    if (localStorage.getItem(storageKey) === null) localStorage.setItem(storageKey, JSON.stringify([trip]));
+  }, { storageKey, trip });
+
+  let savedPlans = [];
+  await page.route(`${installation.apiUrl}/**`, async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    const headers = {
+      "access-control-allow-origin": origin,
+      "access-control-allow-credentials": "true",
+      "access-control-allow-methods": "GET, POST, PUT, OPTIONS",
+      "access-control-allow-headers": "content-type, x-geostats-account-id"
+    };
+    if (request.method() === "OPTIONS") return route.fulfill({ status: 204, headers });
+    if (path === "/travel-plans/migrate" && request.method() === "POST") {
+      expect(request.headers()["x-geostats-account-id"]).toBe("user-1");
+      const { plans } = request.postDataJSON();
+      savedPlans = plans.map((plan) => ({ ...plan, version: 1 }));
+      return route.fulfill({ headers, json: { plans: savedPlans } });
+    }
+    if (path === "/travel-plans/browser-trip" && request.method() === "PUT") {
+      const { version, plan } = request.postDataJSON();
+      expect(version).toBe(1);
+      savedPlans = [{ ...plan, version: 2 }];
+      return route.fulfill({ headers, json: { plan: savedPlans[0] } });
+    }
+    const fixture = {
+      "/auth/me": { user: { id: "user-1" } },
+      "/profile": { profile: { userId: "user-1" } },
+      "/admin/access": { isAdmin: false },
+      "/map/travel-pool": { total: 0, found: 0, unfound: 0, poolTruncated: false, types: [] },
+      "/mysteries/owned": { mysteries: [], deletedClientIds: [] },
+      "/mysteries/shared": { mysteries: [] },
+      "/travel-plans": { plans: savedPlans }
+    };
+    await route.fulfill({ headers, json: fixture[path] ?? {} });
+  });
+
+  await page.goto(`${origin}/travel`);
+  await page.getByRole("button", { name: "Review browser trips" }).click();
+  await expect(page.getByText("Saturday route · 2 stops", { exact: false })).toBeVisible();
+  await page.getByRole("button", { name: "Move 1 to my account" }).click();
+  await expect(page.getByRole("button", { name: "Review browser trips" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Move Second stop earlier" }).click();
+  await expect.poll(() => savedPlans[0]?.caches.map(({ gcCode }) => gcCode)).toEqual(["GCTWO", "GCONE"]);
+  await page.reload();
+  const savedCard = page.locator("article").filter({ hasText: "Saturday route" });
+  await expect(savedCard.getByRole("link", { name: "Second stop" })).toBeVisible();
+  const download = page.waitForEvent("download");
+  await savedCard.getByRole("button", { name: "GPX" }).click();
+  expect((await download).suggestedFilename()).toBe("Saturday-route.gpx");
+  expect(errors).toEqual([]);
+});
+
+test("renamed upload sends the chosen mode and a retry shows its receipt", async ({ page }) => {
+  const installation = installations[0];
+  const origin = `http://127.0.0.1:${installation.port}`;
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  let status = null;
+  await page.route(`${installation.apiUrl}/**`, async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    const headers = {
+      "access-control-allow-origin": origin,
+      "access-control-allow-credentials": "true",
+      "access-control-allow-methods": "GET, POST, OPTIONS",
+      "access-control-allow-headers": "content-type"
+    };
+    if (request.method() === "OPTIONS") return route.fulfill({ status: 204, headers });
+    if (request.method() === "POST" && path === "/imports/upload") {
+      expect(request.postData()).toMatch(/name="purpose"\r\n\r\nhides/);
+      status = "FAILED";
+      return route.fulfill({ headers, json: { import: { id: "import-1", status } } });
+    }
+    if (request.method() === "POST" && path === "/imports/import-1/retry") {
+      status = "COMPLETED";
+      return route.fulfill({ headers, json: { import: { id: "import-1", status } } });
+    }
+    const responses = {
+      "/profile": { profile: { userId: "user-1" } },
+      "/admin/access": { isAdmin: false },
+      "/collector/gsak/status": { connected: false, lastImportedAt: null },
+      "/imports": { imports: status ? [{
+        id: "import-1", fileName: "renamed.gpx", source: "MY_HIDES_GPX", status, createdAt: "2026-01-01T00:00:00Z",
+        retryable: status === "FAILED", errorMessage: status === "FAILED" ? "Temporary import error" : null,
+        receipt: status === "COMPLETED" ? { caches: 1, hides: 1, finds: 0, skippedWaypoints: 0, unmatchedFinds: 0 } : null
+      }] : [] }
+    };
+    await route.fulfill({ headers, json: responses[path] ?? {} });
+  });
+
+  await page.goto(`${origin}/upload`);
+  await page.getByLabel("GPX or ZIP file").setInputFiles({
+    name: "renamed.gpx", mimeType: "application/gpx+xml", buffer: Buffer.from("<gpx/>")
+  });
+  await page.getByLabel("What does the file contain?").selectOption("hides");
+  await page.getByRole("button", { name: "Queue import" }).click();
+  await expect(page.getByText("The import could not queue.", { exact: false })).toBeVisible();
+  await page.getByRole("link", { name: "View import history" }).click();
+  await page.getByRole("button", { name: "Retry", exact: true }).click();
+  await expect(page.getByText("1 cache · 0 finds · 1 hide", { exact: true })).toBeVisible();
+  expect(errors).toEqual([]);
+});

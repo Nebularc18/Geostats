@@ -51,6 +51,35 @@ function aiSolverInstructions(token: string) {
   ].join("\n");
 }
 
+const portableCategories = [
+  ["profile", "Profile"],
+  ["caches", "Associated caches"],
+  ["finds", "Finds"],
+  ["hides", "Hides"],
+  ["correctedCoordinates", "Corrected coordinates"],
+  ["ownerFinderCountryStats", "Finder country totals"],
+  ["statSnapshots", "Statistics snapshots"],
+  ["mysteryWorkspaces", "Mysteries"],
+  ["trackables", "Trackables"],
+  ["trackableLogs", "Trackable logs"],
+  ["challengeCheckers", "Challenge checkers"],
+  ["travelPlans", "Saved trips"]
+] as const;
+
+function portablePreview(value: unknown) {
+  if (!value || typeof value !== "object") throw new Error("Choose a Geostats JSON backup.");
+  const archive = value as { format?: unknown; version?: unknown; data?: Record<string, unknown> };
+  if (archive.format !== "geostats-portable-data" || (archive.version !== 1 && archive.version !== 2) || !archive.data || Array.isArray(archive.data) || typeof archive.data !== "object") {
+    throw new Error("Choose a Geostats backup in format version 1 or 2.");
+  }
+  return portableCategories.flatMap(([key, label]) => {
+    if (archive.version === 1 && (key === "challengeCheckers" || key === "travelPlans")) return [];
+    const records = archive.data?.[key];
+    const count = Array.isArray(records) ? records.length : key === "profile" && records ? 1 : 0;
+    return count ? [{ key, label, count }] : [];
+  });
+}
+
 export default function ProfilePage() {
   const [profile, setProfile] = useState<any>(null);
   const [tokens, setTokens] = useState<any[]>([]);
@@ -58,6 +87,7 @@ export default function ProfilePage() {
   const [projectGcText, setProjectGcText] = useState("");
   const [copiedCommandId, setCopiedCommandId] = useState<string | null>(null);
   const [portableFile, setPortableFile] = useState<File | null>(null);
+  const [archivePreview, setArchivePreview] = useState<ReturnType<typeof portablePreview> | null>(null);
   const [portabilityBusy, setPortabilityBusy] = useState<"export" | "import" | null>(null);
   const [portabilityMessage, setPortabilityMessage] = useState<string | null>(null);
   const [deleteConfirmation, setDeleteConfirmation] = useState("");
@@ -160,12 +190,29 @@ export default function ProfilePage() {
   }
 
   function selectPortableFile(event: ChangeEvent<HTMLInputElement>) {
+    setArchivePreview(null);
+    setPortabilityMessage(null);
     setPortableFile(event.target.files?.[0] ?? null);
   }
 
+  useEffect(() => {
+    if (!portableFile) return;
+    let active = true;
+    if (portableFile.size > 50 * 1024 * 1024) {
+      setPortabilityMessage("Choose a backup under 50 MiB.");
+    } else {
+      void portableFile.text().then((contents) => portablePreview(JSON.parse(contents))).then((counts) => {
+        if (active) setArchivePreview(counts);
+      }).catch(() => {
+        if (active) setPortabilityMessage("This file is not a readable Geostats backup in format version 1 or 2.");
+      });
+    }
+    return () => { active = false; };
+  }, [portableFile]);
+
   async function importAllData(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!portableFile) return;
+    if (!portableFile || !archivePreview) return;
     const formElement = event.currentTarget;
     setPortabilityBusy("import");
     setPortabilityMessage(null);
@@ -173,10 +220,12 @@ export default function ProfilePage() {
       const upload = new FormData();
       upload.append("file", portableFile);
       const result = await apiFetch<{ imported: Record<string, number> }>("/portability/import", { method: "POST", body: upload });
-      setPortabilityMessage(`Import complete: ${result.imported.finds} finds, ${result.imported.hides} hides, and ${result.imported.mysteryWorkspaces} mysteries processed.`);
-      const refreshed = await apiFetch<{ profile: any }>("/profile");
-      setProfile(refreshed.profile);
+      const { finds, hides, mysteryWorkspaces, challengeCheckers, travelPlans } = result.imported;
+      setPortabilityMessage(`Processed ${finds} finds, ${hides} hides, and ${mysteryWorkspaces} mysteries.${challengeCheckers !== undefined
+        ? ` Added ${challengeCheckers} private challenge checkers and ${travelPlans} saved trips.` : ""}`);
+      void apiFetch<{ profile: any }>("/profile").then((refreshed) => setProfile(refreshed.profile)).catch(() => undefined);
       setPortableFile(null);
+      setArchivePreview(null);
       formElement.reset();
     } catch (error) {
       setPortabilityMessage(error instanceof Error ? error.message : "Import failed.");
@@ -278,13 +327,13 @@ export default function ProfilePage() {
         </form>
       </section>
       <section className="panel narrow">
-        <h2>Move or back up all your data</h2>
+        <h2>Back up or move account data</h2>
         <p className="muted">
-          Download a portable JSON file containing your profile, finds, hides, cache details, corrected coordinates, statistics, and mystery workspaces. You can import it into any Geostats server while signed in to your destination account.
+          The backup includes your geocaching profile, finds, hides and received logs, associated cache details, corrected coordinates, statistics, mysteries, trackable history, challenge checkers, and account trips. Move browser trips to your account before exporting. Keep original GPX files and standalone cache lists separately.
         </p>
         <button className="primary-button" type="button" disabled={portabilityBusy !== null} onClick={() => void exportAllData()}>
           <FileDown size={18} />
-          {portabilityBusy === "export" ? "Preparing export…" : "Export all data"}
+          {portabilityBusy === "export" ? "Preparing export…" : "Download backup"}
         </button>
         <form className="form portability-import-form" onSubmit={importAllData}>
           <label>
@@ -292,11 +341,16 @@ export default function ProfilePage() {
             <input type="file" accept="application/json,.json" onChange={selectPortableFile} />
           </label>
           <p className="muted">
-            Import merges records into this account. Matching profile settings, hides, corrected coordinates, and mystery workspaces are updated; unrelated data already on this server stays in place. Passwords, sign-in connections, access tokens, and sharing permissions never leave their original server.
+            Restore updates matching profile settings, hides, corrected coordinates, and mysteries. Existing saved trips and challenge checkers take precedence. Restored challenge checkers are private until you publish them and receive a new link.
           </p>
-          <button className="secondary-button" type="submit" disabled={!portableFile || portabilityBusy !== null}>
+          {archivePreview ? <div aria-live="polite">
+            <h3>Records in this backup</h3>
+            {archivePreview.length ? <ul>{archivePreview.map(({ key, label, count }) => <li key={key}>{label} · {count.toLocaleString()}</li>)}</ul>
+              : <p className="muted">This backup has no records to restore.</p>}
+          </div> : null}
+          <button className="secondary-button" type="submit" disabled={!portableFile || !archivePreview || !archivePreview.length || portabilityBusy !== null}>
             <UploadCloud size={18} />
-            {portabilityBusy === "import" ? "Importing…" : "Import all data"}
+            {portabilityBusy === "import" ? "Importing…" : "Restore backup"}
           </button>
         </form>
         {portabilityMessage ? <p className="muted">{portabilityMessage}</p> : null}

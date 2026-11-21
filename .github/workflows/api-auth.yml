@@ -3,7 +3,7 @@ name: API authentication
 on:
   pull_request:
     paths:
-      - 'apps/api/**'
+      - 'apps/**'
       - 'packages/**'
       - 'package.json'
       - 'pnpm-lock.yaml'
@@ -18,16 +18,34 @@ permissions:
 jobs:
   auth-tests:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: imresamu/postgis:16-3.5
+        env:
+          POSTGRES_USER: geostats_test
+          POSTGRES_PASSWORD: geostats_test
+          POSTGRES_DB: geostats_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U geostats_test -d geostats_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      DATABASE_URL: postgresql://geostats_test:geostats_test@localhost:5432/geostats_test
+      GEOSTATS_TEST_DATABASE_URL: postgresql://geostats_test:geostats_test@localhost:5432/geostats_test
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
-        with:
-          version: 9.15.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @geostats/api... build
-      - run: node --test apps/api/dist/auth/*.test.js
+      - run: pnpm --filter @geostats/db db:generate
+      - run: pnpm --filter @geostats/db db:deploy
+      - name: Run workspace tests with PostGIS
+        run: pnpm -r test
+      - run: pnpm -r typecheck

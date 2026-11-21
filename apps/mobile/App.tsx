@@ -6,16 +6,22 @@ import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import * as DocumentPicker from "expo-document-picker";
 import { File, Paths } from "expo-file-system";
 import * as SecureStore from "expo-secure-store";
+import * as Crypto from "expo-crypto";
 import * as Clipboard from "expo-clipboard";
 import * as Sharing from "expo-sharing";
 import * as Updates from "expo-updates";
+import { mergeDeviceMystery, mysteryFieldFingerprints, type MysterySyncField } from "./mystery-sync";
 import { MysteryBrowser } from "./mystery-browser";
 import MapView, { Callout, Marker, Polygon, Polyline, PROVIDER_GOOGLE, type MapStyleElement, type Region } from "react-native-maps";
 import * as Linking from "expo-linking";
 import { ClerkProvider, useAuth } from "@clerk/expo";
 import { useHostedAuth } from "@clerk/expo/hosted-auth";
 import { tokenCache } from "@clerk/expo/token-cache";
-import { MAX_MYSTERY_WORKSPACES_PER_OWNER, normalizeMysteryListing, parseCoordinate, type MysteryListing } from "@geostats/shared";
+import {
+  MAX_TRAVEL_DIRECTIONS_STOPS, moveTravelStop, normalizeAccountTravelPlan, normalizeTravelPlan,
+  travelPlanDirectionsUrl, travelPlanGpx, type AccountTravelPlan, type TravelPlan
+} from "@geostats/shared";
+import { CACHE_IMPORT_MODES, formatImportReceipt, type CacheImportMode, type ImportReceipt, MAX_MYSTERY_WORKSPACES_PER_OWNER, normalizeMysteryListing, parseCoordinate, type MysteryListing, type MergeableMysteryCache, stableJsonStringify } from "@geostats/shared";
 import { pickAndUploadDocument, type UploadKind } from "./upload";
 import { MAX_MYSTERY_GPX_BYTES, mysteryAiPrompt, mysteryCodeFromText, parseMysteryGpx, selectMysteryImports } from "./mystery-tools";
 import { groupTrackableJourneyPoints, hasNativeMapSupport, scratchMapGeometryBudget, SCRATCH_WORLD_REGION, selectNativeMapPoints } from "./mobile-map";
@@ -44,7 +50,7 @@ type CountBucket = { key: string; count: number };
 type LocationBucket = { name: string; count: number };
 type PercentBucket = CountBucket & { percent: number };
 type CachePoint = { id: string; gcCode: string; name: string; cacheType: string | null; difficulty?: number | null; terrain?: number | null; size?: string | null; latitude: number; longitude: number; foundAt?: string; placedAt?: string; isOwnHide?: boolean };
-type ImportListItem = { id: string; fileName: string; source: string; status: string; createdAt: string; errorMessage: string | null };
+type ImportListItem = { id: string; fileName: string; source: string; status: string; createdAt: string; errorMessage: string | null; receipt?: ImportReceipt | null; retryable?: boolean };
 type AuthConfig = { mode: "dev" | "clerk" | "password"; providerName: string; clerkPublishableKey?: string };
 type ServerProbeState = {
   url: string | null;
@@ -56,7 +62,7 @@ type ScreenId = "dashboard" | "explore" | "upload" | "imports" | "stats" | "ftf"
 type Session = { token: string; user: { id: string; email: string; username: string } };
 type CheckState = "correct" | "wrong" | "unchecked";
 type MysteryStatus = "solving" | "solved" | "planned" | "archived";
-type AttemptKind = "coordinate" | "keyword";
+type AttemptKind = "coordinate" | "keyword" | "approach";
 type AppUser = { id: string; username: string };
 type CoordinateAttempt = {
   id: string;
@@ -66,7 +72,7 @@ type CoordinateAttempt = {
   answer?: string;
   finalLatitude?: number;
   finalLongitude?: number;
-  state: CheckState;
+  state: CheckState | "planned";
   createdAt: string;
   geocachingSyncedAt?: string;
 };
@@ -80,6 +86,8 @@ type MysteryCache = MysteryListing & {
   region?: string;
   locality?: string;
   trip?: string;
+  tripUpdatedAt?: string;
+  syncConflicts?: MergeableMysteryCache["syncConflicts"];
   status: MysteryStatus;
   statusUpdatedAt?: string;
   publishedLatitude: number;
@@ -107,7 +115,7 @@ type OwnedMysterySnapshot = {
   sharedWith: AppUser[];
 };
 type IncomingMysteryShare = { id: number; text: string };
-type MysterySyncMetadata = { revision: number; fingerprint: string };
+type MysterySyncMetadata = { revision: number; fingerprint: string; fields?: Record<MysterySyncField, string> };
 type Position = [number, number];
 type PolygonCoordinates = Position[][];
 type MultiPolygonCoordinates = PolygonCoordinates[];
@@ -139,7 +147,9 @@ type TravelSearchResult = {
   recommendations: TravelRecommendation[];
   searchedCacheCount: number;
   poolTruncated: boolean;
+  resultsTruncated?: boolean;
   resultLimit: number;
+  radiusKm?: number;
 };
 type TravelPoolSummary = { total: number; found: number; unfound: number; poolTruncated: boolean; types: LocationBucket[] };
 type TrackableState = "OWNED" | "DISCOVERED" | "RETRIEVED" | "DROPPED" | "VISITED" | "MISSING";
@@ -163,7 +173,7 @@ type ChallengeEvidence = { date: string; gcCode: string; name: string };
 type ChallengeRuleResult = { label: string; current: number; required: number; passed: boolean; detail: string; evidence: ChallengeEvidence[]; evidenceLimited: boolean };
 type ChallengeResult = { passed: boolean; username: string; checkedAt: string; dataUpdatedAt: string | null; proofText: string; rules: ChallengeRuleResult[] };
 
-const MAX_GOOGLE_MAPS_ROUTE_CACHES = 8;
+const MAX_GOOGLE_MAPS_ROUTE_CACHES = MAX_TRAVEL_DIRECTIONS_STOPS;
 
 const HOSTED_API_URL = process.env.EXPO_PUBLIC_API_URL ?? "https://geostats-api.hampusek.com";
 const DEFAULT_API_URL = process.env.EXPO_PUBLIC_API_URL ?? (__DEV__ ? "http://10.0.2.2:3001" : HOSTED_API_URL);
@@ -171,6 +181,7 @@ const HOSTED_WEB_URL = process.env.EXPO_PUBLIC_WEB_URL ?? "https://geostats.hamp
 const ANDROID_MAP_PROVIDER = Platform.OS === "android" ? PROVIDER_GOOGLE : undefined;
 const NATIVE_MAP_AVAILABLE = hasNativeMapSupport(Platform.OS, process.env.EXPO_PUBLIC_GOOGLE_MAPS_ANDROID_API_KEY);
 const TOKEN_KEY = "geostats_session";
+const OFFLINE_SESSION_KEY = "geostats_offline_identity";
 const SERVER_URL_KEY = "geostats_server_url";
 const DEFAULT_AUTH_CONFIG: AuthConfig = __DEV__
   ? { mode: "password", providerName: "Home Auth" }
@@ -389,6 +400,36 @@ async function apiFetch<T>(baseUrl: string, path: string, token: string | null, 
   return response.json() as Promise<T>;
 }
 
+async function apiFetchWithTimeout<T>(baseUrl: string, path: string, token: string) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8000);
+  try {
+    return await apiFetch<T>(baseUrl, path, token, { signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+type OfflineIdentity = { user: Session["user"]; baseUrl: string; credentialHash: string };
+
+async function storeOfflineIdentity(baseUrl: string, session: Session) {
+  const credentialHash = await Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, session.token);
+  await SecureStore.setItemAsync(OFFLINE_SESSION_KEY, JSON.stringify({ user: session.user, baseUrl, credentialHash }));
+}
+
+async function readOfflineIdentity(baseUrl: string, token: string): Promise<Session | null> {
+  try {
+    const json = await SecureStore.getItemAsync(OFFLINE_SESSION_KEY);
+    if (!json) return null;
+    const identity = JSON.parse(json) as OfflineIdentity;
+    if (identity.baseUrl !== baseUrl || !identity.user?.id || !identity.user.username) return null;
+    const credentialHash = await Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, token);
+    return identity.credentialHash === credentialHash ? { user: identity.user, token } : null;
+  } catch {
+    return null;
+  }
+}
+
 async function fetchJson<T>(url: string): Promise<T> {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`Could not load ${url}`);
@@ -569,13 +610,13 @@ function escapeMarkup(value: unknown) {
 }
 
 function attemptLabel(attempt: CoordinateAttempt) {
-  if (attempt.kind === "keyword") return attempt.answer?.trim() || "Keyword";
+  if (attempt.kind === "keyword" || attempt.kind === "approach") return attempt.answer?.trim() || (attempt.kind === "approach" ? "Approach" : "Keyword");
   const coordinate = inputCoordinate(attempt);
   return coordinate ? `${coordinate.latitude.toFixed(5)}, ${coordinate.longitude.toFixed(5)}` : "Invalid coordinate attempt";
 }
 
 function shareableMystery(cache: MysteryCache) {
-  const { sharedBy: _sharedBy, sharedWorkspaceId: _workspace, ...mystery } = cache;
+  const { sharedBy: _sharedBy, sharedWorkspaceId: _workspace, syncConflicts: _syncConflicts, ...mystery } = cache;
   return mystery;
 }
 
@@ -1196,7 +1237,7 @@ function AuthScreen({ apiBaseUrl, onApiBaseUrlChange, onSession }: { apiBaseUrl:
       return null;
     }
     if (savedToken && !sameOrigin(apiBaseUrl, nextUrl)) {
-      await SecureStore.deleteItemAsync(TOKEN_KEY);
+      await Promise.all([SecureStore.deleteItemAsync(TOKEN_KEY), SecureStore.deleteItemAsync(OFFLINE_SESSION_KEY)]);
     }
     onApiBaseUrlChange(nextUrl);
     setServerUrl(nextUrl);
@@ -1385,30 +1426,53 @@ export default function App() {
     setSession(nextSession);
     setNeedsOnboarding(false);
     try {
-      const profile = await apiFetch<{ profile: any }>(baseUrl, "/profile", nextSession.token);
+      const profile = await apiFetchWithTimeout<{ profile: any }>(baseUrl, "/profile", nextSession.token);
       if (sessionGenerationRef.current !== sessionGeneration) return;
       setNeedsOnboarding(!profile.profile);
       setProfileChecked(true);
-    } catch {
+      if (profile.profile) void storeOfflineIdentity(baseUrl, nextSession).catch(() => undefined);
+    } catch (cause) {
       if (sessionGenerationRef.current !== sessionGeneration) return;
+      if (!(cause instanceof ApiError) || cause.status >= 500) {
+        const verified = await readOfflineIdentity(baseUrl, nextSession.token);
+        if (sessionGenerationRef.current !== sessionGeneration) return;
+        if (verified?.user.id === nextSession.user.id) {
+          setProfileChecked(true);
+          return;
+        }
+      }
       setProfileLoadError("Could not check your profile. Retry before continuing.");
     }
   }
   useEffect(() => {
+    let active = true;
+    const bootGeneration = sessionGenerationRef.current;
+    const isCurrent = () => active && sessionGenerationRef.current === bootGeneration;
     void Promise.all([SecureStore.getItemAsync(SERVER_URL_KEY), SecureStore.getItemAsync(TOKEN_KEY)])
       .then(async ([serverUrl, token]) => {
+        if (!isCurrent()) return;
         const nextUrl = serverUrl ? normalizeStoredServerUrl(serverUrl) : apiBaseUrl;
         setApiBaseUrl(nextUrl);
         if (!token) return;
-        const data = await apiFetch<{ user: Session["user"] }>(nextUrl, "/auth/me", token);
-        await acceptSession({ token, user: data.user }, nextUrl);
-      })
-      .catch((error) => {
-        if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
-          return SecureStore.deleteItemAsync(TOKEN_KEY);
+        try {
+          const data = await apiFetchWithTimeout<{ user: Session["user"] }>(nextUrl, "/auth/me", token);
+          if (isCurrent()) await acceptSession({ token, user: data.user }, nextUrl);
+        } catch (cause) {
+          if (!isCurrent()) return;
+          if (cause instanceof ApiError && (cause.status === 401 || cause.status === 403)) {
+            await Promise.all([SecureStore.deleteItemAsync(TOKEN_KEY), SecureStore.deleteItemAsync(OFFLINE_SESSION_KEY)]);
+          } else if (!(cause instanceof ApiError) || cause.status >= 500) {
+            const verified = await readOfflineIdentity(nextUrl, token);
+            if (verified && isCurrent()) {
+              setSession(verified);
+              setProfileChecked(true);
+            }
+          }
         }
       })
-      .finally(() => setBooting(false));
+      .catch(() => undefined)
+      .finally(() => { if (active) setBooting(false); });
+    return () => { active = false; };
   }, []);
   async function logout() {
     // Clearing the cache must not notify mounted summary hooks: their
@@ -1423,7 +1487,8 @@ export default function App() {
     setNeedsOnboarding(false);
     // Unmount authenticated screens before waiting on storage so their
     // schedulers cannot start another request with the old token.
-    await SecureStore.deleteItemAsync(TOKEN_KEY);
+    setScreen("dashboard");
+    await Promise.all([SecureStore.deleteItemAsync(TOKEN_KEY), SecureStore.deleteItemAsync(OFFLINE_SESSION_KEY)]);
   }
   let content;
   if (booting || (session && !profileChecked)) {
@@ -1486,7 +1551,7 @@ function ScreenSwitch({ incomingMysteryShare, onIncomingShareHandled, apiBaseUrl
   if (screen === "trackables") return <TrackablesScreen apiBaseUrl={apiBaseUrl} token={token} />;
   if (screen === "mysteries") return <MysteriesScreen incomingShare={incomingMysteryShare} onIncomingShareHandled={onIncomingShareHandled} apiBaseUrl={apiBaseUrl} token={token} userId={userId} onRequestScrollTop={onRequestScrollTop} />;
   if (screen === "challenges") return <ChallengesScreen apiBaseUrl={apiBaseUrl} token={token} />;
-  if (screen === "travel") return <TravelScreen apiBaseUrl={apiBaseUrl} token={token} userId={userId} />;
+  if (screen === "travel") return <TravelScreen key={`${apiBaseUrl}:${userId}`} apiBaseUrl={apiBaseUrl} token={token} userId={userId} />;
   if (screen === "upload") return <UploadScreen apiBaseUrl={apiBaseUrl} token={token} />;
   if (screen === "imports") return <ImportsScreen apiBaseUrl={apiBaseUrl} token={token} />;
   return <ProfileScreen apiBaseUrl={apiBaseUrl} token={token} onLogout={onLogout} />;
@@ -2177,7 +2242,7 @@ function UploadScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string
     }, 3000);
     return () => clearInterval(interval);
   }, [imports.data.imports]);
-  async function pickAndUpload(kind: UploadKind) {
+  async function pickAndUpload(kind: UploadKind, mode?: CacheImportMode) {
     if (uploading) return;
     setUploading(true);
     try {
@@ -2186,7 +2251,8 @@ function UploadScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string
         createFile: (uri) => new File(uri),
         request: (path, body) => apiFetch(apiBaseUrl, path, token, { method: "POST", body }),
         refresh: imports.refresh,
-        onMessage: setMessage
+        onMessage: setMessage,
+        mode
       });
     } finally {
       setUploading(false);
@@ -2195,7 +2261,9 @@ function UploadScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string
   return (
     <>
       <PageTitle eyebrow="Import pipeline" title="Upload cache data" />
-      <Panel title="GPX or ZIP"><PrimaryButton label={uploading ? "Uploading..." : "Choose GPX or ZIP"} onPress={() => pickAndUpload("cache")} /></Panel>
+      <Panel title="GPX or ZIP" subtitle={uploading ? "Uploading…" : "Choose what the file contains."}>
+        {CACHE_IMPORT_MODES.map(({ value, label }) => <SecondaryButton key={value} label={`Import ${label}`} disabled={uploading} onPress={() => void pickAndUpload("cache", value)} />)}
+      </Panel>
       {message ? <Text style={styles.note}>{message}</Text> : null}
       <Panel title="Latest imports"><ImportRows imports={imports.data.imports.slice(0, 8)} /></Panel>
       <LoadState loading={imports.loading} error={imports.error} />
@@ -2205,6 +2273,22 @@ function UploadScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string
 
 function ImportsScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
   const { data, loading, error, refresh } = useImports(apiBaseUrl, token);
+  const [retrying, setRetrying] = useState<string | null>(null);
+  const [retryError, setRetryError] = useState<string | null>(null);
+
+  async function retry(id: string) {
+    if (retrying) return;
+    setRetrying(id);
+    setRetryError(null);
+    try {
+      await apiFetch(apiBaseUrl, `/imports/${encodeURIComponent(id)}/retry`, token, { method: "POST" });
+      await refresh();
+    } catch (cause) {
+      setRetryError(cause instanceof Error ? cause.message : "Could not retry the import.");
+    } finally {
+      setRetrying(null);
+    }
+  }
   useEffect(() => {
     if (!hasActiveImports(data.imports)) return;
     const interval = setInterval(() => {
@@ -2212,7 +2296,7 @@ function ImportsScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: strin
     }, 3000);
     return () => clearInterval(interval);
   }, [data.imports]);
-  return <><PageTitle eyebrow="Background jobs" title="Import history" /><PrimaryButton label="Refresh" onPress={refresh} /><Panel title="Imports"><ImportRows imports={data.imports} /></Panel><LoadState loading={loading} error={error} /></>;
+  return <><PageTitle eyebrow="Background jobs" title="Import history" /><PrimaryButton label="Refresh" onPress={refresh} /><Panel title="Imports"><ImportRows imports={data.imports} onRetry={retry} retrying={retrying} /></Panel><LoadState loading={loading} error={retryError ?? error} /></>;
 }
 
 function ChallengesScreen({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
@@ -2474,7 +2558,15 @@ function MysteriesScreen({ incomingShare, onIncomingShareHandled, apiBaseUrl, to
   const loadedMysteryNamespace = useRef("");
   const [accountLoaded, setAccountLoaded] = useState(false);
   const [ownedLoadAttempt, setOwnedLoadAttempt] = useState(0);
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (state === "active") setOwnedLoadAttempt((attempt) => attempt + 1);
+    });
+    return () => subscription.remove();
+  }, []);
   const [syncAttempt, setSyncAttempt] = useState(0);
+  const sendingMysteries = useRef(new Map<string, string>());
+  const blockedMysteries = useRef(new Map<string, string>());
   const [selectedId, setSelectedId] = useState("");
   const [detailOpen, setDetailOpen] = useState(false);
   const [filter, setFilter] = useState<"all" | MysteryStatus>("all");
@@ -2514,16 +2606,14 @@ function MysteriesScreen({ incomingShare, onIncomingShareHandled, apiBaseUrl, to
     snapshotRevisions.current.set(cacheId, Math.max(snapshotRevisions.current.get(cacheId) ?? 0, revision));
   }
 
-  function nextSnapshotRevision(cacheId: string) {
-    const revision = (snapshotRevisions.current.get(cacheId) ?? 0) + 1;
-    snapshotRevisions.current.set(cacheId, revision);
-    return revision;
-  }
-
-  function rememberServerSnapshot(cacheId: string, revision: number, serialized: string) {
-    rememberSnapshotRevision(cacheId, revision);
-    serverSnapshots.current.set(cacheId, serialized);
-    syncMetadata.current.set(cacheId, { revision, fingerprint: snapshotFingerprint(serialized) });
+  function rememberServerSnapshot(cache: MysteryCache, revision: number, serialized: string) {
+    rememberSnapshotRevision(cache.id, revision);
+    serverSnapshots.current.set(cache.id, serialized);
+    syncMetadata.current.set(cache.id, {
+      revision,
+      fingerprint: snapshotFingerprint(serialized),
+      fields: mysteryFieldFingerprints(cache, snapshotFingerprint)
+    });
     void writeMysterySyncMetadata(apiBaseUrl, userId, syncMetadata.current);
   }
 
@@ -2539,6 +2629,8 @@ function MysteriesScreen({ incomingShare, onIncomingShareHandled, apiBaseUrl, to
       serverSnapshots.current.clear();
       snapshotRevisions.current.clear();
       syncMetadata.current.clear();
+      sendingMysteries.current.clear();
+      blockedMysteries.current.clear();
       persistedMysteriesFingerprint.current = null;
       setCaches([]);
       setBrowserGcCode("");
@@ -2568,7 +2660,7 @@ function MysteriesScreen({ incomingShare, onIncomingShareHandled, apiBaseUrl, to
       const startingCaches = latestMysteries.current.ready ? latestMysteries.current.caches : local;
       const ownedAtRequest = new Map(startingCaches.filter((cache) => !cache.sharedBy).map((cache) => [
         cache.id,
-        JSON.stringify(shareableMystery(cache))
+        stableJsonStringify(shareableMystery(cache))
       ]));
       const knownSyncMetadata = new Map(syncMetadata.current);
 
@@ -2587,39 +2679,47 @@ function MysteriesScreen({ incomingShare, onIncomingShareHandled, apiBaseUrl, to
               id: clientId,
               sharedWith: Array.isArray(sharedWith) ? sharedWith : []
             };
-            return { cache, revision, serialized: JSON.stringify(shareableMystery(cache)) };
+            return { cache, revision, serialized: stableJsonStringify(shareableMystery(cache)) };
           });
-        const serverIds = new Set(ownedEntries.map(({ cache }) => cache.id));
-        const available = latestMysteries.current.caches;
-        const availableById = new Map(available.filter((cache) => !cache.sharedBy).map((cache) => [cache.id, cache]));
-        const conflictCopies: MysteryCache[] = [];
-        const reconciledOwned = ownedEntries.map(({ cache: serverCache, revision, serialized: serverSerialized }) => {
-          const currentCache = availableById.get(serverCache.id);
-          if (!currentCache) return serverCache;
-          const currentSerialized = JSON.stringify(shareableMystery(currentCache));
-          const requestSerialized = ownedAtRequest.get(serverCache.id);
-          const metadata = knownSyncMetadata.get(serverCache.id);
-          const localChanged = metadata
-            ? snapshotFingerprint(currentSerialized) !== metadata.fingerprint
-            : currentSerialized !== serverSerialized;
-          const serverChanged = metadata
-            ? revision !== metadata.revision
-            : requestSerialized !== undefined && requestSerialized !== serverSerialized;
-          const changedDuringRequest = requestSerialized !== undefined && currentSerialized !== requestSerialized;
-          if ((localChanged || changedDuringRequest) && !serverChanged) return currentCache;
-          if (localChanged || changedDuringRequest) {
-            conflictCopies.push({
-              ...shareableMystery(currentCache),
-              id: newId("mystery"),
-              name: `${currentCache.name} (device edits)`,
-              sharedWith: []
-            });
+        const available = latestMysteries.current.ready ? latestMysteries.current.caches : local;
+        const localByCode = new Map<string, MysteryCache[]>();
+        for (const cache of available) {
+          if (cache.sharedBy || deletedIds.has(cache.id)) continue;
+          const code = cache.gcCode.trim().toUpperCase();
+          localByCode.set(code, [...(localByCode.get(code) ?? []), cache]);
+        }
+        const canonicalIds = new Map<string, string>();
+        let conflicts = 0;
+        const reconciledOwned = ownedEntries.map(({ cache: server, revision, serialized }) => {
+          const code = server.gcCode.toUpperCase();
+          const localMatches = localByCode.get(code) ?? [];
+          localByCode.delete(code);
+          let reconciled = server;
+          for (const device of localMatches.sort((left, right) => Number(right.id === server.id) - Number(left.id === server.id))) {
+            canonicalIds.set(device.id, server.id);
+            const content = shareableMystery(device);
+            const current = stableJsonStringify(content);
+            const metadata = knownSyncMetadata.get(device.id);
+            const fingerprint = metadata?.fields ? snapshotFingerprint(current) : snapshotFingerprint(JSON.stringify(content));
+            const unchanged = device.id === server.id && (current === serialized ||
+              (metadata && fingerprint === metadata.fingerprint && ownedAtRequest.get(device.id) === current));
+            if (unchanged) {
+              reconciled = { ...reconciled, syncConflicts: device.syncConflicts };
+            } else if (device.id === server.id && metadata?.revision === revision) {
+              reconciled = { ...device, sharedWith: server.sharedWith };
+            } else {
+              reconciled = mergeDeviceMystery(reconciled, device, snapshotFingerprint, metadata?.fields);
+            }
           }
-          return serverCache;
+          if (reconciled.syncConflicts) conflicts++;
+          rememberServerSnapshot(server, revision, serialized);
+          return reconciled;
         });
-        ownedEntries.forEach(({ cache, revision, serialized }) => rememberServerSnapshot(cache.id, revision, serialized));
-        const localOnly = available.filter((cache) =>
-          !cache.sharedBy && !serverIds.has(cache.id) && !deletedIds.has(cache.id)
+        const localOnly = [...localByCode.values()].map(([first, ...duplicates]) =>
+          duplicates.reduce((cache, duplicate) => {
+            canonicalIds.set(duplicate.id, first.id);
+            return mergeDeviceMystery(cache, duplicate, snapshotFingerprint);
+          }, first)
         );
         const sharedCaches = shared
           ? shared.mysteries.map((grant) => ({
@@ -2630,12 +2730,14 @@ function MysteriesScreen({ incomingShare, onIncomingShareHandled, apiBaseUrl, to
               sharedWorkspaceId: grant.workspaceId
             }))
           : available.filter((cache) => cache.sharedBy);
-        const next = [...reconciledOwned, ...conflictCopies, ...localOnly, ...sharedCaches];
+        const next = [...reconciledOwned, ...localOnly, ...sharedCaches];
+        latestMysteries.current = { caches: next, ready: true, accountLoaded: true };
         setCaches(next);
-        setSelectedId((selected) => next.some((cache) => cache.id === selected) ? selected : "");
-        if (conflictCopies.length) {
-          setNotice(`${conflictCopies.length} local ${conflictCopies.length === 1 ? "edit was" : "edits were"} preserved as a separate device copy because the server also changed.`);
-        }
+        setSelectedId((selected) => {
+          const id = canonicalIds.get(selected) ?? selected;
+          return next.some((cache) => cache.id === id) ? id : "";
+        });
+        if (conflicts) setNotice("Review the offline edits marked in your Mystery list.");
         setAccountLoaded(true);
         setReady(true);
       } catch {
@@ -2672,40 +2774,62 @@ function MysteriesScreen({ incomingShare, onIncomingShareHandled, apiBaseUrl, to
     const namespace = mysteryStorageNamespace(apiBaseUrl, userId);
     if (!ready || !accountLoaded || loadedMysteryNamespace.current !== namespace) return;
     const pending = caches.flatMap((cache) => {
-      if (cache.sharedBy) return [];
-      const serialized = JSON.stringify(shareableMystery(cache));
-      return serverSnapshots.current.get(cache.id) === serialized ? [] : [{ cache, serialized }];
+      if (cache.sharedBy || sendingMysteries.current.has(cache.id)) return [];
+      const mystery = shareableMystery(cache);
+      const serialized = stableJsonStringify(mystery);
+      return serverSnapshots.current.get(cache.id) === serialized || blockedMysteries.current.get(cache.id) === serialized ||
+        mysterySnapshotByteLength(mystery) > MAX_MYSTERY_SNAPSHOT_BYTES
+        ? [] : [{ cache, mystery, serialized }];
     });
     if (!pending.length) return;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    const stillCurrent = () => mounted.current && activeMysteryNamespace.current === namespace;
     const timer = setTimeout(() => {
-      void Promise.all(pending.map(({ cache, serialized }) => {
-        const requestedRevision = nextSnapshotRevision(cache.id);
-        return apiFetch<{ revision: number; mystery: MysteryCache }>(
-          apiBaseUrl,
-          `/mysteries/${encodeURIComponent(cache.id)}`,
-          token,
-          {
-            method: "PUT",
-            body: JSON.stringify({ mystery: shareableMystery(cache), revision: requestedRevision })
+      let retry = false;
+      let refresh = false;
+      // Send a small batch so reconnecting a large library leaves room for
+      // other requests and one unavailable workspace cannot stall the rest.
+      void Promise.all(pending.slice(0, 4).map(async ({ cache, mystery, serialized }) => {
+        const base = syncMetadata.current.get(cache.id);
+        const baseRevision = base?.revision ?? 0;
+        sendingMysteries.current.set(cache.id, serialized);
+        try {
+          const result = await apiFetch<{ revision: number; mystery: MysteryCache }>(
+            apiBaseUrl,
+            `/mysteries/${encodeURIComponent(cache.id)}`,
+            token,
+            {
+              method: "PUT",
+              body: JSON.stringify({ mystery, revision: baseRevision + 1, baseRevision })
+            }
+          );
+          if (!stillCurrent()) return;
+          const stored = stableJsonStringify(result.mystery);
+          const authoritative = { ...result.mystery, sharedWith: cache.sharedWith };
+          rememberServerSnapshot(authoritative, result.revision, stored);
+          if (stored !== serialized) {
+            setCaches((current) => current.map((item) => item.id !== cache.id ? item
+              : mergeDeviceMystery({ ...authoritative, sharedWith: item.sharedWith }, item, snapshotFingerprint, base?.fields)));
+            setNotice(`Review any offline edits for ${cache.gcCode}.`);
           }
-        ).then(({ revision, mystery }) => {
-          const storedSerialized = JSON.stringify(mystery);
-          rememberServerSnapshot(cache.id, revision, storedSerialized);
-          if (storedSerialized !== serialized) {
-            const authoritative = { ...mystery, sharedWith: cache.sharedWith };
-            setCaches((current) => current.flatMap((item) => item.id === cache.id
-              ? [
-                  authoritative,
-                  { ...shareableMystery(item), id: newId("mystery"), name: `${item.name} (device edits)`, sharedWith: [] }
-                ]
-              : [item]));
-            setNotice(`A newer ${cache.gcCode} was already on the server. Your device edits were preserved as a separate copy.`);
+        } catch (error) {
+          if (!stillCurrent()) return;
+          if (error instanceof ApiError && error.status >= 400 && error.status < 500 && error.status !== 408 && error.status !== 429) {
+            blockedMysteries.current.set(cache.id, serialized);
+            refresh ||= error.status === 404 || error.status === 409;
+            setNotice(`${cache.gcCode} is saved on this device. ${error.message}`);
+          } else {
+            retry = true;
+            setNotice("Saved on this device. Account sync will retry.");
           }
-        });
-      })).catch(() => {
-        setNotice("Saved on this device; account sync will retry.");
-        retryTimer = setTimeout(() => setSyncAttempt((attempt) => attempt + 1), 3000);
+        } finally {
+          if (stillCurrent()) sendingMysteries.current.delete(cache.id);
+        }
+      })).then(() => {
+        if (!stillCurrent()) return;
+        if (refresh) setOwnedLoadAttempt((attempt) => attempt + 1);
+        if (retry) retryTimer = setTimeout(() => setSyncAttempt((attempt) => attempt + 1), 5000);
+        else setSyncAttempt((attempt) => attempt + 1);
       });
     }, 500);
     return () => {
@@ -2778,13 +2902,33 @@ function MysteriesScreen({ incomingShare, onIncomingShareHandled, apiBaseUrl, to
 
   function updateSelected(patch: Partial<MysteryCache>) {
     if (!selected || selected.sharedBy) return false;
-    const next = { ...selected, ...patch };
-    if (mysterySnapshotByteLength(shareableMystery(next)) > MAX_MYSTERY_SNAPSHOT_BYTES) {
+    const latest = latestMysteries.current;
+    const item = latest.caches.find(({ id }) => id === selected.id);
+    if (!item || item.sharedBy) return false;
+    const next = { ...item, ...patch };
+    const size = mysterySnapshotByteLength(shareableMystery(next));
+    if (size > MAX_MYSTERY_SNAPSHOT_BYTES && size >= mysterySnapshotByteLength(shareableMystery(item))) {
       setNotice("This mystery is too large to sync. Shorten its notes or choose a smaller image.");
       return false;
     }
-    setCaches((current) => current.map((cache) => cache.id === selected.id ? next : cache));
+    const nextCaches = latest.caches.map((cache) => cache.id === selected.id ? next : cache);
+    latestMysteries.current = { ...latest, caches: nextCaches };
+    setCaches(nextCaches);
     return true;
+  }
+
+  function resolveSyncConflict(field: MysterySyncField, choice?: string | null) {
+    const conflicts = selected?.syncConflicts;
+    const conflict = conflicts?.[field];
+    if (!conflict) return;
+    const remaining = { ...conflicts };
+    delete remaining[field];
+    const patch: Partial<MysteryCache> = { syncConflicts: Object.keys(remaining).length ? remaining : undefined };
+    if (choice !== undefined) {
+      if (field === "image") patch.image = choice ?? undefined;
+      else patch[field] = choice ?? "";
+    }
+    updateSelected(patch);
   }
 
   function openBrowserCapture(code: string) {
@@ -3022,7 +3166,7 @@ function MysteriesScreen({ incomingShare, onIncomingShareHandled, apiBaseUrl, to
         body: JSON.stringify({
           recipientId: user.id,
           mystery: shareableMystery(selected),
-          revision: nextSnapshotRevision(selected.id)
+          revision: Math.max(1, snapshotRevisions.current.get(selected.id) ?? 0)
         })
       });
       rememberSnapshotRevision(selected.id, result.revision);
@@ -3146,7 +3290,7 @@ function MysteriesScreen({ incomingShare, onIncomingShareHandled, apiBaseUrl, to
         <Segmented values={["all", "solving", "solved", "planned", "archived"]} active={filter} onPress={(value) => setFilter(value as typeof filter)} />
         {visible.map((cache) => {
           const isSelected = selected?.id === cache.id;
-          return <Pressable accessibilityRole="button" accessibilityLabel={`Open ${cache.gcCode} ${cache.name}`} accessibilityState={{ selected: isSelected }} key={`${cache.sharedBy?.id ?? "own"}-${cache.id}`} onPress={() => showMystery(cache.id)} style={[styles.cacheRow, isSelected && styles.selectedRow]}><View style={styles.cacheRowHeading}><Text style={[styles.rowTitle, isSelected && styles.selectedRowTitle]}>{cache.gcCode} · {cache.name}</Text><Text style={styles.cacheRowAction}>Open ›</Text></View><Text style={[styles.muted, isSelected && styles.selectedRowMeta]}>{cache.status} · {mysteryLocation(cache) || "No location"}{cache.sharedBy ? ` · from ${cache.sharedBy.username}` : ""}</Text></Pressable>;
+          return <Pressable accessibilityRole="button" accessibilityLabel={`Open ${cache.gcCode} ${cache.name}`} accessibilityState={{ selected: isSelected }} key={`${cache.sharedBy?.id ?? "own"}-${cache.id}`} onPress={() => showMystery(cache.id)} style={[styles.cacheRow, isSelected && styles.selectedRow]}><View style={styles.cacheRowHeading}><Text style={[styles.rowTitle, isSelected && styles.selectedRowTitle]}>{cache.gcCode} · {cache.name}</Text><Text style={styles.cacheRowAction}>Open ›</Text></View><Text style={[styles.muted, isSelected && styles.selectedRowMeta]}>{cache.status}{cache.syncConflicts ? " · Offline edits to review" : ""} · {mysteryLocation(cache) || "No location"}{cache.sharedBy ? ` · from ${cache.sharedBy.username}` : ""}</Text></Pressable>;
         })}
         {!visible.length ? <Text style={styles.muted}>No mysteries match this view.</Text> : null}
       </Panel>
@@ -3163,9 +3307,29 @@ function MysteriesScreen({ incomingShare, onIncomingShareHandled, apiBaseUrl, to
           <View style={styles.flex}><SecondaryButton label="Copy for AI" onPress={copyForAi} /></View>
         </View>
         <Text style={styles.muted}>Choose your AI app from the share menu, or copy and paste. Includes clues, notes, and attempts. Attach puzzle images separately.</Text>
-        <Field label="Trip / route" value={selected.trip ?? ""} editable={!selected.sharedBy} onChangeText={(value) => updateSelected({ trip: value })} />
+        <Field label="Trip / route" value={selected.trip ?? ""} editable={!selected.sharedBy} onChangeText={(value) => updateSelected({ trip: value, tripUpdatedAt: new Date().toISOString() })} />
         <Field label="Solution" value={selected.notes} editable={!selected.sharedBy} multiline style={styles.textArea} onChangeText={(value) => updateSelected({ notes: value })} />
         <Field label="Field notes" value={selected.fieldNotes ?? ""} editable={!selected.sharedBy} multiline style={styles.textArea} onChangeText={(value) => updateSelected({ fieldNotes: value })} />
+        {selected.syncConflicts && !selected.sharedBy ? <View>
+          <Text style={styles.sectionLabel}>Review offline edits</Text>
+          {(["notes", "fieldNotes", "image"] as const).map((field) => {
+            const conflict = selected.syncConflicts?.[field];
+            if (!conflict) return null;
+            const label = field === "notes" ? "Solution" : field === "fieldNotes" ? "Field notes" : "Reference image";
+            return <View key={field}>
+              <Text style={styles.rowTitle}>{label} from this device</Text>
+              {[conflict.device, ...(conflict.otherDeviceEdits ?? [])].map((choice, index) => <View key={index}>
+                {field === "image" && choice
+                  ? <Image source={{ uri: choice }} resizeMode="contain" style={styles.mysteryImage} />
+                  : <Text selectable style={styles.muted}>{choice || "Cleared on this device."}</Text>}
+                <SecondaryButton label="Use this edit" onPress={() => resolveSyncConflict(field, choice)} />
+              </View>)}
+              <SecondaryButton label="Keep current edit" onPress={() => resolveSyncConflict(field)} />
+            </View>;
+          })}
+        </View> : null}
+        {mysterySnapshotByteLength(shareableMystery(selected)) > MAX_MYSTERY_SNAPSHOT_BYTES
+          ? <Text style={styles.error}>This merged Mystery is saved on this device. Shorten its notes or remove an image to sync it.</Text> : null}
         <Text style={styles.sectionLabel}>Listing</Text>
         {selected.listingText || selected.listingImageUrls.length ? <>
           <SecondaryButton label={showListing ? "Hide listing" : "Show listing"} onPress={() => setShowListing((value) => !value)} />
@@ -3193,8 +3357,8 @@ function MysteriesScreen({ incomingShare, onIncomingShareHandled, apiBaseUrl, to
           const revealed = revealedCoordinate(attempt);
           const isCorrect = attempt.state === "correct";
           const isWrong = attempt.state === "wrong";
-          const statusLabel = isCorrect ? "✓ Correct" : isWrong ? "× Wrong" : "Not checked";
-          return <View key={attempt.id} style={[styles.attemptRow, isCorrect && styles.attemptRowCorrect, isWrong && styles.attemptRowWrong]}><View style={styles.flex}><View style={styles.attemptHeading}><Text style={[styles.attemptCoordinate, isCorrect && styles.attemptCoordinateCorrect, isWrong && styles.attemptCoordinateWrong]}>{attemptLabel(attempt)}</Text><Text style={[styles.attemptStatus, isCorrect && styles.attemptStatusCorrect, isWrong && styles.attemptStatusWrong]}>{statusLabel}</Text></View>{revealed ? <Text style={styles.correctCoordinate}>Correct coordinates: {revealed.latitude.toFixed(5)}, {revealed.longitude.toFixed(5)}</Text> : null}<Text style={styles.attemptMeta}>{attempt.kind === "keyword" ? "Keyword" : "Coordinate"} · {dateText(attempt.createdAt)}</Text></View>{!selected.sharedBy ? <Pressable accessibilityRole="button" accessibilityLabel={`Remove ${attemptLabel(attempt)}`} onPress={() => updateSelected({ attempts: selected.attempts.filter((item) => item.id !== attempt.id) })}><Text style={styles.danger}>Remove</Text></Pressable> : null}</View>;
+          const statusLabel = isCorrect ? "✓ Correct" : isWrong ? "× Wrong" : attempt.state === "planned" ? "Planned" : "Not checked";
+          return <View key={attempt.id} style={[styles.attemptRow, isCorrect && styles.attemptRowCorrect, isWrong && styles.attemptRowWrong]}><View style={styles.flex}><View style={styles.attemptHeading}><Text style={[styles.attemptCoordinate, isCorrect && styles.attemptCoordinateCorrect, isWrong && styles.attemptCoordinateWrong]}>{attemptLabel(attempt)}</Text><Text style={[styles.attemptStatus, isCorrect && styles.attemptStatusCorrect, isWrong && styles.attemptStatusWrong]}>{statusLabel}</Text></View>{revealed ? <Text style={styles.correctCoordinate}>Correct coordinates: {revealed.latitude.toFixed(5)}, {revealed.longitude.toFixed(5)}</Text> : null}<Text style={styles.attemptMeta}>{attempt.kind === "keyword" ? "Keyword" : attempt.kind === "approach" ? "Approach" : "Coordinate"} · {dateText(attempt.createdAt)}</Text></View>{!selected.sharedBy ? <Pressable accessibilityRole="button" accessibilityLabel={`Remove ${attemptLabel(attempt)}`} onPress={() => updateSelected({ attempts: selected.attempts.filter((item) => item.id !== attempt.id) })}><Text style={styles.danger}>Remove</Text></Pressable> : null}</View>;
         })}
         {!selected.sharedBy ? <>
           <Text style={styles.sectionLabel}>Share with a Geostats user</Text>
@@ -3212,6 +3376,19 @@ function MysteriesScreen({ incomingShare, onIncomingShareHandled, apiBaseUrl, to
   );
 }
 
+function travelPlanFiles(apiBaseUrl: string, userId: string) {
+  const key = mysteryStorageNamespace(apiBaseUrl, userId);
+  return {
+    active: new File(Paths.document, `geostats-trips-${key}.json`),
+    backup: new File(Paths.document, `geostats-trips-${key}.backup.json`),
+    pending: new File(Paths.document, `geostats-trips-${key}.tmp`)
+  };
+}
+
+function validAccountPlan(value: unknown): value is AccountTravelPlan {
+  return Boolean(normalizeAccountTravelPlan(value));
+}
+
 function TravelScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; token: string; userId: string }) {
   const [caches, setCaches] = useState<MysteryCache[]>([]);
   const [query, setQuery] = useState("");
@@ -3225,6 +3402,72 @@ function TravelScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; token
   const [searchError, setSearchError] = useState<string | null>(null);
   const [searchResult, setSearchResult] = useState<TravelSearchResult | null>(null);
   const [selectedRecommendations, setSelectedRecommendations] = useState<Set<string>>(new Set());
+  const [plans, setPlans] = useState<AccountTravelPlan[]>([]);
+  const [plansReady, setPlansReady] = useState(false);
+  const [planStatus, setPlanStatus] = useState("");
+  const [savingPlan, setSavingPlan] = useState(false);
+  const [planName, setPlanName] = useState("");
+  const [openPlan, setOpenPlan] = useState<string | null>(null);
+  const [reloadPlans, setReloadPlans] = useState(0);
+  const planRequestEpoch = useRef(0);
+  const plansRef = useRef<AccountTravelPlan[]>([]);
+  const files = useMemo(() => travelPlanFiles(apiBaseUrl, userId), [apiBaseUrl, userId]);
+
+  function rememberPlans(next: AccountTravelPlan[], persist: boolean) {
+    plansRef.current = next;
+    setPlans(next);
+    if (persist) {
+      try {
+        replaceJsonFile(files.active, files.pending, files.backup, JSON.stringify(next), validAccountPlan);
+      } catch {
+        setPlanStatus("Trips are synced. This device could not save an offline copy.");
+      }
+    }
+  }
+
+  useEffect(() => {
+    const epoch = ++planRequestEpoch.current;
+    const current = () => planRequestEpoch.current === epoch;
+    void (async () => {
+      if (!plansRef.current.length && (files.active.exists || files.backup.exists)) {
+        const cached = await readJsonArrayWithRecovery(
+          files.active, files.backup, () => new File(Paths.cache, `geostats-trips-corrupt-${Date.now()}.json`),
+          validAccountPlan, (message, error) => console.warn(message, error)
+        );
+        if (!current()) return;
+        rememberPlans(cached, false);
+      }
+      try {
+        const { plans: remote } = await apiFetchWithTimeout<{ plans: unknown[] }>(apiBaseUrl, "/travel-plans", token);
+        if (!current()) return;
+        const next = remote.flatMap((value) => {
+          const plan = normalizeAccountTravelPlan(value);
+          return plan ? [plan] : [];
+        });
+        setPlanStatus("");
+        rememberPlans(next, true);
+      } catch (cause) {
+        if (!current()) return;
+        if (cause instanceof ApiError && (cause.status === 401 || cause.status === 403)) {
+          rememberPlans([], false);
+          setPlanStatus("Sign in again to open account trips.");
+        } else {
+          setPlanStatus(plansRef.current.length ? "Showing trips saved on this device." : "Connect to load your saved trips.");
+        }
+      } finally {
+        if (current()) setPlansReady(true);
+      }
+    })();
+    return () => { planRequestEpoch.current += 1; };
+  }, [apiBaseUrl, files, reloadPlans, token]);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (state === "active") setReloadPlans((value) => value + 1);
+    });
+    return () => subscription.remove();
+  }, []);
+
   const pool = useApi<TravelPoolSummary>(apiBaseUrl, token, "/map/travel-pool", { total: 0, found: 0, unfound: 0, poolTruncated: false, types: [] });
   useEffect(() => {
     let active = true;
@@ -3331,26 +3574,62 @@ function TravelScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; token
     });
   }
 
+  function selectedStops() {
+    return searchResult?.recommendations.filter((cache) => selectedRecommendations.has(cache.id)) ?? [];
+  }
+
   function openRecommendedRoute() {
     if (!searchResult) return;
-    const cachesForRoute = searchResult.recommendations.filter((cache) => selectedRecommendations.has(cache.id));
-    if (!cachesForRoute.length) {
+    const url = travelPlanDirectionsUrl({ ...searchResult, caches: selectedStops() });
+    if (!url) {
       setSearchError("Choose at least one cache for directions.");
       return;
     }
-    const coordinate = (place: Pick<TravelPlace, "latitude" | "longitude">) => `${place.latitude},${place.longitude}`;
-    const destinationPoint = searchResult.mode === "route" && searchResult.destination
-      ? coordinate(searchResult.destination)
-      : coordinate(cachesForRoute.at(-1)!);
-    const waypointCaches = searchResult.mode === "route" ? cachesForRoute : cachesForRoute.slice(0, -1);
-    const params = [
-      "api=1",
-      `origin=${encodeURIComponent(coordinate(searchResult.origin))}`,
-      `destination=${encodeURIComponent(destinationPoint)}`,
-      "travelmode=driving"
-    ];
-    if (waypointCaches.length) params.push(`waypoints=${encodeURIComponent(waypointCaches.map(coordinate).join("|"))}`);
-    void Linking.openURL(`https://www.google.com/maps/dir/?${params.join("&")}`);
+    void Linking.openURL(url).catch(() => setSearchError("Could not open Maps."));
+  }
+
+  async function savePlan(plan: TravelPlan, version: number) {
+    if (savingPlan || !plansReady) return;
+    const epoch = ++planRequestEpoch.current;
+    setSavingPlan(true);
+    setPlanStatus("");
+    try {
+      const { plan: saved } = await apiFetch<{ plan: AccountTravelPlan }>(apiBaseUrl, `/travel-plans/${plan.id}`, token, {
+        method: "PUT", body: JSON.stringify({ plan, version })
+      });
+      if (planRequestEpoch.current !== epoch) return;
+      setPlansReady(true);
+      setPlanName("");
+      setOpenPlan(saved.id);
+      rememberPlans([saved, ...plansRef.current.filter(({ id }) => id !== saved.id)], true);
+    } catch (cause) {
+      if (planRequestEpoch.current === epoch) setPlanStatus(cause instanceof Error ? cause.message : "Could not save this trip.");
+    } finally {
+      setSavingPlan(false);
+    }
+  }
+
+  function saveRecommendations() {
+    const plan = normalizeTravelPlan(searchResult && {
+      ...searchResult, id: newId("trip"), name: planName, createdAt: new Date().toISOString(),
+      radiusKm: searchResult.radiusKm ?? Number(radiusKm), caches: selectedStops()
+    });
+    if (!plan) {
+      setSearchError("Enter a trip name and choose at least one recommended cache.");
+      return;
+    }
+    setSearchError(null);
+    void savePlan(plan, 0);
+  }
+
+  async function shareTripGpx(plan: TravelPlan) {
+    try {
+      const file = new File(Paths.cache, `geostats-trip-${plan.id}.gpx`);
+      file.write(travelPlanGpx(plan));
+      await Sharing.shareAsync(file.uri, { dialogTitle: `Share ${plan.name}`, mimeType: "application/gpx+xml", UTI: "com.topografix.gpx" });
+    } catch {
+      setPlanStatus("Could not export this trip.");
+    }
   }
 
   return (
@@ -3358,6 +3637,32 @@ function TravelScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; token
       <PageTitle eyebrow="Find caches for the journey" title="Travel" />
       <Text style={styles.muted}>Search around a place or find caches along the drive. Your solved mysteries join the imported cache pool.</Text>
       <StatGrid rows={[["Trips", tripCount], ["Ready to find", readyCount], ["Still solving", Math.max(0, caches.length - readyCount)], ["Total caches", caches.length]]} />
+      <Panel title="Saved trips">
+        {planStatus ? <Text accessibilityRole="alert" style={styles.note}>{planStatus}</Text> : null}
+        {plansReady && !plans.length && !planStatus ? <Text style={styles.muted}>Save a trip here or on the web to open it on this device.</Text> : null}
+        {!plansReady && !plans.length ? <Text style={styles.muted}>Loading account trips…</Text> : null}
+        <SecondaryButton label="Refresh saved trips" disabled={savingPlan} onPress={() => setReloadPlans((value) => value + 1)} />
+        {plans.map((plan) => <View key={plan.id}>
+          <Pressable accessibilityRole="button" accessibilityState={{ expanded: openPlan === plan.id }} style={styles.cacheRow} onPress={() => setOpenPlan((current) => current === plan.id ? null : plan.id)}>
+            <Text style={styles.rowTitle}>{plan.name} · {plan.caches.length} stops</Text>
+            <Text style={styles.muted}>{plan.origin.label}{plan.destination ? ` to ${plan.destination.label}` : ""}</Text>
+          </Pressable>
+          {openPlan === plan.id ? <>
+            {plan.caches.map((cache, index) => <View key={cache.id} style={styles.attemptRow}>
+              <View style={styles.flex}><Text style={styles.rowTitle}>{index + 1}. {cache.gcCode} · {cache.name}</Text>
+                <Text selectable style={styles.muted}>{cache.latitude.toFixed(5)}, {cache.longitude.toFixed(5)}</Text></View>
+              <SecondaryButton label="↑" accessibilityLabel={`Move ${cache.name} earlier`} disabled={savingPlan || index === 0} onPress={() => void savePlan({ ...plan, caches: moveTravelStop(plan.caches, index, -1) }, plan.version)} />
+              <SecondaryButton label="↓" accessibilityLabel={`Move ${cache.name} later`} disabled={savingPlan || index === plan.caches.length - 1} onPress={() => void savePlan({ ...plan, caches: moveTravelStop(plan.caches, index, 1) }, plan.version)} />
+            </View>)}
+            {plan.caches.length > MAX_TRAVEL_DIRECTIONS_STOPS + (plan.mode === "nearby" ? 1 : 0)
+              ? <Text style={styles.muted}>Google Maps uses up to eight intermediate stops. The GPX includes every stop.</Text> : null}
+            <View style={styles.actionRow}>
+              <View style={styles.flex}><SecondaryButton label="Open Maps" onPress={() => void Linking.openURL(travelPlanDirectionsUrl(plan)).catch(() => setPlanStatus("Could not open Maps."))} /></View>
+              <View style={styles.flex}><SecondaryButton label="Export GPX" onPress={() => void shareTripGpx(plan)} /></View>
+            </View>
+          </> : null}
+        </View>)}
+      </Panel>
       <Panel title="Find caches" subtitle={pool.loading ? "Checking your cache pool..." : `${pool.data.unfound}${pool.data.poolTruncated ? "+" : ""} unfound of ${pool.data.total}${pool.data.poolTruncated ? "+" : ""} imported caches`}>
         <Segmented values={["nearby", "route"]} active={searchMode} onPress={changeSearchMode} disabled={searching} />
         <Field label={searchMode === "nearby" ? "Where are you?" : "Start"} value={origin} onChangeText={setOrigin} placeholder={searchMode === "nearby" ? "Town, address, or landmark" : "Starting town or address"} />
@@ -3380,7 +3685,12 @@ function TravelScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; token
             </Pressable>;
           })}
           {!searchResult.recommendations.length ? <Text style={styles.muted}>No matching caches found. Try a wider radius or import a Pocket Query for this area.</Text> : null}
-          {searchResult.recommendations.length ? <PrimaryButton label="Open picked caches in Maps" onPress={openRecommendedRoute} /> : null}
+          {searchResult.resultsTruncated ? <Text style={styles.muted}>Showing the first {searchResult.resultLimit} matching caches.</Text> : null}
+          {searchResult.recommendations.length ? <>
+            <Field label="Trip name" value={planName} onChangeText={setPlanName} maxLength={80} />
+            <PrimaryButton label={savingPlan ? "Saving…" : "Save picked caches"} disabled={savingPlan || !plansReady} onPress={saveRecommendations} />
+            <SecondaryButton label="Open picked caches in Maps" onPress={openRecommendedRoute} />
+          </> : null}
         </View> : null}
         <LoadState loading={pool.loading} error={pool.error} />
       </Panel>
@@ -3434,8 +3744,8 @@ function PrimaryButton({ label, onPress, disabled = false }: { label: string; on
   return <Pressable accessibilityRole="button" accessibilityState={{ disabled }} disabled={disabled} onPress={onPress} style={[styles.primaryButton, disabled && { opacity: 0.5 }]}><Text style={styles.primaryButtonText}>{label}</Text></Pressable>;
 }
 
-function SecondaryButton({ label, onPress, danger = false, disabled = false }: { label: string; onPress: () => void; danger?: boolean; disabled?: boolean }) {
-  return <Pressable accessibilityRole="button" accessibilityState={{ disabled }} disabled={disabled} onPress={onPress} style={[styles.secondaryButton, danger && styles.secondaryButtonDanger, disabled && { opacity: 0.5 }]}><Text style={[styles.secondaryButtonText, danger && styles.danger]}>{label}</Text></Pressable>;
+function SecondaryButton({ label, onPress, danger = false, disabled = false, accessibilityLabel }: { label: string; onPress: () => void; danger?: boolean; disabled?: boolean; accessibilityLabel?: string }) {
+  return <Pressable accessibilityRole="button" accessibilityLabel={accessibilityLabel} accessibilityState={{ disabled }} disabled={disabled} onPress={onPress} style={[styles.secondaryButton, danger && styles.secondaryButtonDanger, disabled && { opacity: 0.5 }]}><Text style={[styles.secondaryButtonText, danger && styles.danger]}>{label}</Text></Pressable>;
 }
 
 function Segmented({ values, active, onPress, disabled = false }: { values: readonly string[]; active: string; onPress: (value: string) => void; disabled?: boolean }) {
@@ -3803,12 +4113,25 @@ function CacheRow({ point }: { point: CachePoint }) {
   );
 }
 
-function ImportRows({ imports }: { imports: ImportListItem[] }) {
+function ImportRows({ imports, onRetry, retrying }: {
+  imports: ImportListItem[];
+  onRetry?: (id: string) => Promise<void>;
+  retrying?: string | null;
+}) {
   if (imports.length === 0) return <Text style={styles.muted}>No import history yet.</Text>;
   return <View>{imports.map((item) => {
     const completed = item.status === "COMPLETED";
     const failed = item.status === "FAILED";
-    return <View key={item.id} style={styles.importRow}><View style={styles.flex}><Text style={styles.rowTitle} numberOfLines={1}>{item.fileName}</Text><Text style={styles.muted}>{dateText(item.createdAt)} · {item.source}</Text>{item.errorMessage ? <Text style={styles.importError}>{item.errorMessage}</Text> : null}</View><Text style={[styles.statusPill, completed && styles.statusPillComplete, failed && styles.statusPillFailed]}>{completed ? "DONE" : item.status}</Text></View>;
+    return <View key={item.id} style={styles.importRow}>
+      <View style={styles.flex}>
+        <Text style={styles.rowTitle} numberOfLines={1}>{item.fileName}</Text>
+        <Text style={styles.muted}>{dateText(item.createdAt)} · {item.source}</Text>
+        {completed && item.receipt ? <Text style={styles.muted}>{formatImportReceipt(item.receipt)}</Text> : null}
+        {item.errorMessage ? <Text style={styles.importError}>{item.errorMessage}</Text> : null}
+        {item.retryable && onRetry ? <SecondaryButton label={retrying === item.id ? "Retrying…" : "Retry import"} onPress={() => void onRetry(item.id)} /> : null}
+      </View>
+      <Text style={[styles.statusPill, completed && styles.statusPillComplete, failed && styles.statusPillFailed]}>{completed ? "DONE" : item.status}</Text>
+    </View>;
   })}</View>;
 }
 

@@ -433,3 +433,27 @@ test("parseTrackableImportFile counts unsupported KMZ entries toward the entry l
     }
   }
 });
+
+test("explicit My Finds requires an owned find and cache-list imports add no finds", () => {
+  const finder = "FixtureFinder";
+  const withFinder = gpx.replace("<groundspeak:type>Found it</groundspeak:type>",
+    `<groundspeak:type>Found it</groundspeak:type><groundspeak:finder>${finder}</groundspeak:finder>`);
+  assert.equal(parseGpx(withFinder, ImportSource.MY_FINDS_GPX, {
+    gcUsername: "Different cacher", requireVerifiedFind: true
+  }).finds.length, 0);
+  assert.equal(parseGpx(withFinder, ImportSource.MY_FINDS_GPX, {
+    gcUsername: finder, requireVerifiedFind: true
+  }).finds.length, 1);
+  assert.equal(parseGpx(withFinder, ImportSource.POCKET_QUERY, { gcUsername: finder, cacheOnly: true }).finds.length, 0);
+});
+
+test("Pocket Query ZIP skips companion parking waypoints and reports the count", async () => {
+  const zip = new JSZip();
+  zip.file("query.gpx", gpx);
+  zip.file("query-wpts.gpx", '<gpx><wpt lat="59" lon="18"><name>PK123</name></wpt></gpx>');
+  const parsed = await parseImportFile("query.zip", await zip.generateAsync({ type: "nodebuffer" }),
+    ImportSource.POCKET_QUERY, { cacheOnly: true });
+  assert.equal(parsed.caches.length, 1);
+  assert.equal(parsed.finds.length, 0);
+  assert.equal(parsed.skippedWaypoints, 1);
+});
