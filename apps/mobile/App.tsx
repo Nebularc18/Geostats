@@ -412,8 +412,9 @@ async function apiFetchWithTimeout<T>(baseUrl: string, path: string, token: stri
 
 type OfflineIdentity = { user: Session["user"]; baseUrl: string; credentialHash: string };
 
-async function storeOfflineIdentity(baseUrl: string, session: Session) {
+async function storeOfflineIdentity(baseUrl: string, session: Session, isCurrent: () => boolean) {
   const credentialHash = await Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, session.token);
+  if (!isCurrent()) return;
   await SecureStore.setItemAsync(OFFLINE_SESSION_KEY, JSON.stringify({ user: session.user, baseUrl, credentialHash }));
 }
 
@@ -1430,7 +1431,7 @@ export default function App() {
       if (sessionGenerationRef.current !== sessionGeneration) return;
       setNeedsOnboarding(!profile.profile);
       setProfileChecked(true);
-      if (profile.profile) void storeOfflineIdentity(baseUrl, nextSession).catch(() => undefined);
+      if (profile.profile) void storeOfflineIdentity(baseUrl, nextSession, () => sessionGenerationRef.current === sessionGeneration).catch(() => undefined);
     } catch (cause) {
       if (sessionGenerationRef.current !== sessionGeneration) return;
       if (!(cause instanceof ApiError) || cause.status >= 500) {
@@ -1496,7 +1497,12 @@ export default function App() {
   } else if (!session) {
     content = <AuthScreen apiBaseUrl={apiBaseUrl} onApiBaseUrlChange={changeApiBaseUrl} onSession={acceptSession} />;
   } else if (needsOnboarding) {
-    content = <OnboardingScreen apiBaseUrl={apiBaseUrl} token={session.token} onComplete={() => setNeedsOnboarding(false)} onLogout={logout} />;
+    const generation = sessionGenerationRef.current;
+    const isCurrent = () => sessionGenerationRef.current === generation;
+    content = <OnboardingScreen apiBaseUrl={apiBaseUrl} token={session.token} onComplete={async () => {
+      await storeOfflineIdentity(apiBaseUrl, session, isCurrent).catch(() => undefined);
+      if (isCurrent()) setNeedsOnboarding(false);
+    }} onLogout={logout} />;
   } else {
     const activePrimaryScreen = primaryScreens.includes(screen) ? screen : "explore";
     const ownsScrollRoot = screen === "ftf" || screen === "trackables";
@@ -1557,7 +1563,7 @@ function ScreenSwitch({ incomingMysteryShare, onIncomingShareHandled, apiBaseUrl
   return <ProfileScreen apiBaseUrl={apiBaseUrl} token={token} onLogout={onLogout} />;
 }
 
-function OnboardingScreen({ apiBaseUrl, token, onComplete, onLogout }: { apiBaseUrl: string; token: string; onComplete: () => void; onLogout: () => void }) {
+function OnboardingScreen({ apiBaseUrl, token, onComplete, onLogout }: { apiBaseUrl: string; token: string; onComplete: () => Promise<void>; onLogout: () => void }) {
   const [gcUsername, setGcUsername] = useState("");
   const [homeLatitude, setHomeLatitude] = useState("");
   const [homeLongitude, setHomeLongitude] = useState("");
@@ -1577,7 +1583,7 @@ function OnboardingScreen({ apiBaseUrl, token, onComplete, onLogout }: { apiBase
           timeZone
         })
       });
-      onComplete();
+      await onComplete();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save profile");
     } finally {
@@ -2551,7 +2557,6 @@ function MysteriesScreen({ incomingShare, onIncomingShareHandled, apiBaseUrl, to
   const [ready, setReady] = useState(false);
   const latestMysteries = useRef({ caches, ready, accountLoaded: false });
   const serverSnapshots = useRef(new Map<string, string>());
-  const snapshotRevisions = useRef(new Map<string, number>());
   const syncMetadata = useRef(new Map<string, MysterySyncMetadata>());
   const persistedMysteriesFingerprint = useRef<string | null>(null);
   const activeMysteryNamespace = useRef("");
@@ -2601,13 +2606,8 @@ function MysteriesScreen({ incomingShare, onIncomingShareHandled, apiBaseUrl, to
 
   latestMysteries.current = { caches, ready, accountLoaded };
 
-  function rememberSnapshotRevision(cacheId: string, revision: number) {
-    if (!Number.isSafeInteger(revision) || revision < 0) return;
-    snapshotRevisions.current.set(cacheId, Math.max(snapshotRevisions.current.get(cacheId) ?? 0, revision));
-  }
-
   function rememberServerSnapshot(cache: MysteryCache, revision: number, serialized: string) {
-    rememberSnapshotRevision(cache.id, revision);
+    if (revision < (syncMetadata.current.get(cache.id)?.revision ?? 0)) return;
     serverSnapshots.current.set(cache.id, serialized);
     syncMetadata.current.set(cache.id, {
       revision,
@@ -2627,7 +2627,6 @@ function MysteriesScreen({ incomingShare, onIncomingShareHandled, apiBaseUrl, to
       loadedMysteryNamespace.current = "";
       latestMysteries.current = { caches: [], ready: false, accountLoaded: false };
       serverSnapshots.current.clear();
-      snapshotRevisions.current.clear();
       syncMetadata.current.clear();
       sendingMysteries.current.clear();
       blockedMysteries.current.clear();
@@ -2650,7 +2649,6 @@ function MysteriesScreen({ incomingShare, onIncomingShareHandled, apiBaseUrl, to
       loadedMysteryNamespace.current = namespace;
       if (identityChanged || !syncMetadata.current.size) {
         syncMetadata.current = storedMetadata;
-        storedMetadata.forEach(({ revision }, cacheId) => rememberSnapshotRevision(cacheId, revision));
       }
       if (identityChanged || !latestMysteries.current.ready) {
         setCaches(local);
@@ -3159,20 +3157,28 @@ function MysteriesScreen({ incomingShare, onIncomingShareHandled, apiBaseUrl, to
   }
 
   async function shareWith(user: AppUser) {
-    if (!selected || selected.sharedBy || selected.sharedWith.some((person) => person.id === user.id)) return;
+    const cache = latestMysteries.current.caches.find(({ id }) => id === selected?.id);
+    if (!cache || cache.sharedBy || cache.sharedWith.some((person) => person.id === user.id)) return;
+    const namespace = activeMysteryNamespace.current;
+    const isCurrent = () => mounted.current && activeMysteryNamespace.current === namespace;
+    const mystery = shareableMystery(cache);
+    const baseRevision = syncMetadata.current.get(cache.id)?.revision ?? 0;
     try {
-      const result = await apiFetch<{ recipient: AppUser; revision: number }>(apiBaseUrl, `/mysteries/${encodeURIComponent(selected.id)}/shares`, token, {
+      const result = await apiFetch<{ recipient: AppUser; revision: number }>(apiBaseUrl, `/mysteries/${encodeURIComponent(cache.id)}/shares`, token, {
         method: "POST",
-        body: JSON.stringify({
-          recipientId: user.id,
-          mystery: shareableMystery(selected),
-          revision: Math.max(1, snapshotRevisions.current.get(selected.id) ?? 0)
-        })
+        body: JSON.stringify({ recipientId: user.id, mystery, revision: baseRevision + 1, baseRevision })
       });
-      rememberSnapshotRevision(selected.id, result.revision);
-      updateSelected({ sharedWith: [...selected.sharedWith, result.recipient] });
-      setShareQuery(""); setUsers([]); setNotice(`Shared with ${result.recipient.username}.`);
+      if (!isCurrent()) return;
+      rememberServerSnapshot(cache, result.revision, stableJsonStringify(mystery));
+      setCaches((current) => current.map((item) => item.id === cache.id && !item.sharedWith.some(({ id }) => id === user.id)
+        ? { ...item, sharedWith: [...item.sharedWith, result.recipient] }
+        : item));
+      setShareQuery("");
+      setUsers([]);
+      setNotice(`Shared with ${result.recipient.username}.`);
     } catch (error) {
+      if (!isCurrent()) return;
+      if (error instanceof ApiError && error.status === 409) setOwnedLoadAttempt((attempt) => attempt + 1);
       setNotice(error instanceof Error ? error.message : "Could not share this mystery.");
     }
   }
@@ -3222,7 +3228,6 @@ function MysteriesScreen({ incomingShare, onIncomingShareHandled, apiBaseUrl, to
           try {
             await apiFetch(apiBaseUrl, `/mysteries/${encodeURIComponent(selected.id)}`, token, { method: "DELETE" });
             serverSnapshots.current.delete(selected.id);
-            snapshotRevisions.current.delete(selected.id);
             syncMetadata.current.delete(selected.id);
             void writeMysterySyncMetadata(apiBaseUrl, userId, syncMetadata.current);
             const remaining = latestMysteries.current.caches.filter((cache) => cache.id !== selected.id);
@@ -3410,6 +3415,8 @@ function TravelScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; token
   const [openPlan, setOpenPlan] = useState<string | null>(null);
   const [reloadPlans, setReloadPlans] = useState(0);
   const planRequestEpoch = useRef(0);
+  const planSaveController = useRef<AbortController | null>(null);
+  const refreshAfterPlanSave = useRef(false);
   const plansRef = useRef<AccountTravelPlan[]>([]);
   const files = useMemo(() => travelPlanFiles(apiBaseUrl, userId), [apiBaseUrl, userId]);
 
@@ -3426,6 +3433,10 @@ function TravelScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; token
   }
 
   useEffect(() => {
+    if (planSaveController.current) {
+      refreshAfterPlanSave.current = true;
+      return;
+    }
     const epoch = ++planRequestEpoch.current;
     const current = () => planRequestEpoch.current === epoch;
     void (async () => {
@@ -3460,6 +3471,11 @@ function TravelScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; token
     })();
     return () => { planRequestEpoch.current += 1; };
   }, [apiBaseUrl, files, reloadPlans, token]);
+
+  useEffect(() => () => {
+    planSaveController.current?.abort();
+    planSaveController.current = null;
+  }, [apiBaseUrl, token]);
 
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (state) => {
@@ -3589,23 +3605,32 @@ function TravelScreen({ apiBaseUrl, token, userId }: { apiBaseUrl: string; token
   }
 
   async function savePlan(plan: TravelPlan, version: number) {
-    if (savingPlan || !plansReady) return;
-    const epoch = ++planRequestEpoch.current;
+    if (planSaveController.current || !plansReady) return;
+    const controller = new AbortController();
+    planSaveController.current = controller;
+    planRequestEpoch.current += 1;
     setSavingPlan(true);
     setPlanStatus("");
     try {
       const { plan: saved } = await apiFetch<{ plan: AccountTravelPlan }>(apiBaseUrl, `/travel-plans/${plan.id}`, token, {
-        method: "PUT", body: JSON.stringify({ plan, version })
+        method: "PUT", body: JSON.stringify({ plan, version }), signal: controller.signal
       });
-      if (planRequestEpoch.current !== epoch) return;
+      if (controller.signal.aborted) return;
       setPlansReady(true);
       setPlanName("");
       setOpenPlan(saved.id);
       rememberPlans([saved, ...plansRef.current.filter(({ id }) => id !== saved.id)], true);
     } catch (cause) {
-      if (planRequestEpoch.current === epoch) setPlanStatus(cause instanceof Error ? cause.message : "Could not save this trip.");
+      if (!controller.signal.aborted) setPlanStatus(cause instanceof Error ? cause.message : "Could not save this trip.");
     } finally {
-      setSavingPlan(false);
+      if (planSaveController.current === controller) {
+        planSaveController.current = null;
+        setSavingPlan(false);
+        if (refreshAfterPlanSave.current) {
+          refreshAfterPlanSave.current = false;
+          setReloadPlans((value) => value + 1);
+        }
+      }
     }
   }
 

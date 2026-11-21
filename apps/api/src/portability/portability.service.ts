@@ -202,7 +202,7 @@ function portableChecker(row: unknown, index: number): PortableChallengeChecker 
     name: requiredText(data.name, `${label}.name`, 120),
     gcCode,
     description: optionalText(data.description, `${label}.description`, 1000),
-    rules: parseRules(data.rules) as unknown as Prisma.InputJsonValue
+    rules: parseRules(data.rules, { enforceComplexityLimits: false }) as unknown as Prisma.InputJsonValue
   };
 }
 

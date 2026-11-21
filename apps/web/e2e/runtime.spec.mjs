@@ -363,10 +363,17 @@ test("signed-in Travel migrates a browser trip, saves stop order, and downloads 
   });
 
   await page.goto(`${origin}/travel`);
+  const browserCard = page.locator("article").filter({ hasText: "This browser" });
+  await expect(browserCard.getByRole("link", { name: "First stop" })).toBeVisible();
+  await expect(browserCard.getByRole("link", { name: "Route" })).toHaveAttribute("href", /google\.com\/maps/);
+  const browserDownload = page.waitForEvent("download");
+  await browserCard.getByRole("button", { name: "GPX" }).click();
+  expect((await browserDownload).suggestedFilename()).toBe("Saturday-route.gpx");
   await page.getByRole("button", { name: "Review browser trips" }).click();
   await expect(page.getByText("Saturday route · 2 stops", { exact: false })).toBeVisible();
   await page.getByRole("button", { name: "Move 1 to my account" }).click();
   await expect(page.getByRole("button", { name: "Review browser trips" })).toHaveCount(0);
+  await expect(browserCard).toHaveCount(0);
   await page.getByRole("button", { name: "Move Second stop earlier" }).click();
   await expect.poll(() => savedPlans[0]?.caches.map(({ gcCode }) => gcCode)).toEqual(["GCTWO", "GCONE"]);
   await page.reload();

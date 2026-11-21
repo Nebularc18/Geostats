@@ -3,7 +3,7 @@
 import Link from "next/link";
 import {
   MAX_TRAVEL_DIRECTIONS_STOPS, moveTravelStop, normalizeAccountTravelPlan, normalizeTravelPlan, travelPlanDirectionsUrl,
-  travelPlanGpx, type AccountTravelPlan, type TravelPlace
+  travelPlanGpx, type AccountTravelPlan, type TravelPlace, type TravelPlan
 } from "@geostats/shared";
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Check, CircleDot, Database, ExternalLink, LoaderCircle, MapPin, Navigation, Pencil, Plus, Puzzle, Route, Search, Trash2, X } from "lucide-react";
@@ -640,7 +640,17 @@ function TravelWorkspace({ session }: { session: TravelSession }) {
     }
   }
 
-  function downloadTravelPlan(plan: AccountTravelPlan) {
+  function removeBrowserPlan(plan: TravelPlan) {
+    if (!session.isCurrent() || !window.confirm(`Remove ${plan.name} from this browser?`)) return;
+    try {
+      updateBrowserPlans((current) => current.filter((item) => normalizeTravelPlan(item)?.id !== plan.id));
+      setPlanActionError("");
+    } catch {
+      setPlanActionError("Could not remove this browser trip.");
+    }
+  }
+
+  function downloadTravelPlan(plan: TravelPlan) {
     const url = URL.createObjectURL(new Blob([travelPlanGpx(plan)], { type: "application/gpx+xml" }));
     const link = document.createElement("a");
     link.href = url;
@@ -870,13 +880,16 @@ function TravelWorkspace({ session }: { session: TravelSession }) {
           </> : null}
         </div> : null}
         <div className="travel-route-grid">
-          {savedPlans.map((plan) => <article className="travel-route-card travel-saved-card" key={plan.id}>
+          {[
+            ...savedPlans.map((plan) => ({ plan, accountPlan: plan })),
+            ...browserPlans.map((plan) => ({ plan, accountPlan: null }))
+          ].map(({ plan, accountPlan }) => <article className="travel-route-card travel-saved-card" key={`${accountPlan ? "account" : "browser"}:${plan.id}`}>
             <header>
-              <span>{plan.mode === "route" ? <Route size={17} /> : <MapPin size={17} />}<strong>{plan.name}</strong><small>{plan.caches.length} stops</small></span>
+              <span>{plan.mode === "route" ? <Route size={17} /> : <MapPin size={17} />}<strong>{plan.name}</strong><small>{plan.caches.length} stops{accountPlan ? "" : " · This browser"}</small></span>
               <div className="travel-route-actions">
                 <a href={travelPlanDirectionsUrl(plan)} target="_blank" rel="noreferrer"><ExternalLink size={14} /> Route</a>
                 <button type="button" onClick={() => downloadTravelPlan(plan)}>GPX</button>
-                <button className="danger" type="button" disabled={plansBusy} onClick={() => void changeSavedPlan(plan, { remove: true })} aria-label={`Remove ${plan.name}`}><Trash2 size={14} /></button>
+                <button className="danger" type="button" disabled={plansBusy} onClick={() => accountPlan ? void changeSavedPlan(accountPlan, { remove: true }) : removeBrowserPlan(plan)} aria-label={`Remove ${plan.name}`}><Trash2 size={14} /></button>
               </div>
             </header>
             <p className="travel-saved-meta">{shortPlace(plan.origin.label)}{plan.destination ? ` → ${shortPlace(plan.destination.label)}` : ` · ${plan.radiusKm} km radius`}{plan.route ? ` · ${routeSummary(plan.route)}` : ""}</p>
@@ -886,10 +899,10 @@ function TravelWorkspace({ session }: { session: TravelSession }) {
               {plan.caches.map((cache, index) => <div className="travel-cache-row" key={cache.id}>
                 <span className="travel-cache-pin">{index + 1}</span>
                 <span><small>{cache.gcCode} · {cache.cacheType ?? "Unknown type"}</small><strong><a href={`https://www.geocaching.com/geocache/${encodeURIComponent(cache.gcCode)}`} target="_blank" rel="noreferrer">{cache.name}</a></strong></span>
-                <div className="travel-route-actions">
-                  <button type="button" disabled={plansBusy || index === 0} aria-label={`Move ${cache.name} earlier`} onClick={() => void changeSavedPlan(plan, { caches: moveTravelStop(plan.caches, index, -1) })}>↑</button>
-                  <button type="button" disabled={plansBusy || index === plan.caches.length - 1} aria-label={`Move ${cache.name} later`} onClick={() => void changeSavedPlan(plan, { caches: moveTravelStop(plan.caches, index, 1) })}>↓</button>
-                </div>
+                {accountPlan ? <div className="travel-route-actions">
+                  <button type="button" disabled={plansBusy || index === 0} aria-label={`Move ${cache.name} earlier`} onClick={() => void changeSavedPlan(accountPlan, { caches: moveTravelStop(plan.caches, index, -1) })}>↑</button>
+                  <button type="button" disabled={plansBusy || index === plan.caches.length - 1} aria-label={`Move ${cache.name} later`} onClick={() => void changeSavedPlan(accountPlan, { caches: moveTravelStop(plan.caches, index, 1) })}>↓</button>
+                </div> : null}
               </div>)}
             </div>
           </article>)}

@@ -43,9 +43,10 @@ test("account trips and private checkers survive a repeat restore, with account 
     await assert.rejects(trips.save(source, trip.id, { plan: trip, version: 1 }), /changed on another device/);
     assert.match(travelPlanGpx(reordered), /Puzzle &amp; route/);
 
+    const legacyRegions = Array.from({ length: 257 }, (_, index) => `Region ${index}`);
     await prisma.challengeChecker.create({ data: {
       userId: source.id, gcCode, name: "Find one", publicSlug: `published-${suffix}`,
-      publishedAt: new Date(), rules: [{ type: "TOTAL_FINDS", minimum: 1 }]
+      publishedAt: new Date(), rules: [{ type: "PROJECT_GC_NUMBER", minimum: 1, filters: [{ regions: legacyRegions }] }]
     } });
     const backup = await portability.exportData(source);
     assert.equal(backup.version, 2);
@@ -62,6 +63,7 @@ test("account trips and private checkers survive a repeat restore, with account 
     const restored = await prisma.challengeChecker.findFirstOrThrow({ where: { userId: destination.id } });
     assert.equal(restored.publicSlug, null);
     assert.equal(restored.publishedAt, null);
+    assert.deepEqual((restored.rules as Array<{ filters: Array<{ regions: string[] }> }>)[0]?.filters[0]?.regions, legacyRegions);
 
     await trips.remove(destination, trip.id, 1);
     await trips.migrate(destination, [trip]);
@@ -77,6 +79,15 @@ test("account trips and private checkers survive a repeat restore, with account 
     });
     assert.equal(response.revision, 2);
     assert.deepEqual(response.mystery, serverEdit);
+    const share = { recipientId: destination.id, mystery: { ...serverEdit, notes: "Latest edit to share" } };
+    await assert.rejects(mysteries.share(source, mystery.id, { ...share, baseRevision: 1, revision: 2 }), /changed on another device/);
+    assert.equal(await prisma.mysteryShare.count({ where: { recipientId: destination.id } }), 0);
+    const granted = await mysteries.share(source, mystery.id, { ...share, baseRevision: 2, revision: 3 });
+    const retried = await mysteries.share(source, mystery.id, { ...share, baseRevision: 2, revision: 3 });
+    assert.equal(granted.revision, 3);
+    assert.equal(retried.revision, 3);
+    const grant = await prisma.mysteryShare.findFirstOrThrow({ where: { recipientId: destination.id }, include: { mystery: true } });
+    assert.deepEqual(grant.mystery.data, share.mystery);
   } finally {
     await prisma.user.deleteMany({ where: { id: { in: [source.id, destination.id] } } });
     await prisma.cache.deleteMany({ where: { gcCode } });

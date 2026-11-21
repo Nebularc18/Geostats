@@ -1,6 +1,6 @@
 import { BadRequestException, Body, ConflictException, Controller, Delete, Get, Header, NotFoundException, Param, Post, Put, UseGuards } from "@nestjs/common";
 import { personalCacheMetadata, Prisma } from "@geostats/db";
-import { AuthUser, MAX_MYSTERY_SNAPSHOT_BYTES, MAX_MYSTERY_WORKSPACES_PER_OWNER } from "@geostats/shared";
+import { AuthUser, MAX_MYSTERY_SNAPSHOT_BYTES, MAX_MYSTERY_WORKSPACES_PER_OWNER, stableJsonStringify } from "@geostats/shared";
 import { AuthGuard } from "../auth/auth.guard";
 import { CurrentUser } from "../auth/current-user.decorator";
 import { PrismaService } from "../common/prisma.service";
@@ -9,6 +9,7 @@ type ShareMysteryBody = {
   recipientId?: unknown;
   mystery?: unknown;
   revision?: unknown;
+  baseRevision?: unknown;
 };
 
 type UpdateMysteryBody = {
@@ -78,6 +79,13 @@ function snapshotRevision(value: unknown): number {
     throw new BadRequestException("A positive snapshot revision is required");
   }
   return value as number;
+}
+
+function expectedBaseRevision(value: unknown, revision: number) {
+  if (value === undefined) return null;
+  const base = value === 0 ? 0 : snapshotRevision(value);
+  if (revision !== base + 1) throw new BadRequestException("Mystery revision must follow its base revision");
+  return base;
 }
 
 function sharingStatuses(value: unknown): MysteryStatus[] {
@@ -404,6 +412,7 @@ export class MysteriesController {
     }
     const { data, gcCode } = mysteryData(body.mystery, clientId);
     const revision = snapshotRevision(body.revision);
+    const baseRevision = expectedBaseRevision(body.baseRevision, revision);
 
     const recipient = await this.prisma.user.findUnique({
       where: { id: body.recipientId },
@@ -432,6 +441,7 @@ export class MysteriesController {
         select: { clientId: true }
       });
       if (!existing) {
+        if (baseRevision) throw new ConflictException("The original Mystery workspace no longer exists");
         const workspaceCount = await tx.mysteryWorkspace.count({ where: { ownerId: user.id } });
         if (workspaceCount >= MAX_MYSTERY_WORKSPACES_PER_OWNER) {
           throw new BadRequestException("Too many shared Mystery workspaces");
@@ -444,9 +454,16 @@ export class MysteriesController {
         update: {}
       });
       await tx.mysteryWorkspace.updateMany({
-        where: { id: mystery.id, snapshotRevision: { lt: revision } },
+        where: { id: mystery.id, snapshotRevision: baseRevision ?? { lt: revision } },
         data: { data, snapshotRevision: revision }
       });
+      const stored = await tx.mysteryWorkspace.findUnique({
+        where: { id: mystery.id },
+        select: { snapshotRevision: true, ...(baseRevision !== null && { data: true }) }
+      });
+      if (baseRevision !== null && stableJsonStringify(stored?.data) !== stableJsonStringify(data)) {
+        throw new ConflictException("This Mystery changed on another device. Review the latest version before sharing.");
+      }
       await tx.mysteryShare.upsert({
         where: { mysteryId_recipientId: { mysteryId: mystery.id, recipientId: recipient.id } },
         create: { mysteryId: mystery.id, recipientId: recipient.id },
@@ -454,10 +471,6 @@ export class MysteriesController {
       });
       await tx.mysterySharingExclusion.deleteMany({
         where: { mysteryId: mystery.id, recipientId: recipient.id }
-      });
-      const stored = await tx.mysteryWorkspace.findUnique({
-        where: { id: mystery.id },
-        select: { snapshotRevision: true }
       });
       return stored?.snapshotRevision ?? revision;
     });
@@ -473,11 +486,7 @@ export class MysteriesController {
   ) {
     const { data, gcCode } = mysteryData(body.mystery, clientId);
     const revision = snapshotRevision(body.revision);
-    const baseRevision = body.baseRevision === undefined ? null
-      : body.baseRevision === 0 ? 0 : snapshotRevision(body.baseRevision);
-    if (baseRevision !== null && revision !== baseRevision + 1) {
-      throw new BadRequestException("Mystery revision must follow its base revision");
-    }
+    const baseRevision = expectedBaseRevision(body.baseRevision, revision);
     const storedRevision = await this.prisma.$transaction(async (tx) => {
       await lockMystery(tx, user.id, clientId, gcCode);
       const deletion = await tx.mysteryWorkspaceDeletion.findUnique({
