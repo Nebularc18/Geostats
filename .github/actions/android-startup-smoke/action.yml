@@ -40,6 +40,8 @@ runs:
         api-level: 35
         target: google_apis
         arch: x86_64
+        # Emulator 37.3.10 went offline during the app relaunch. Use the verified 37.2.13 build.
+        emulator-build: '16740729'
         disable-animations: true
         script: bash apps/mobile/e2e/run-startup-smoke.sh
     - name: Upload startup logs and screenshots
