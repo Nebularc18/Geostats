@@ -184,7 +184,8 @@ export function CacheMap({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const popupRef = useRef<maplibregl.Popup | null>(null);
-  const hasFittedRef = useRef(false);
+  const fittedPointsRef = useRef<CacheMapPoint[] | null>(null);
+  const currentBasemapRef = useRef(basemap);
   const onSelectCacheRef = useRef(onSelectCache);
   onSelectCacheRef.current = onSelectCache;
 
@@ -195,7 +196,7 @@ export function CacheMap({
 
     const map = new maplibregl.Map({
       container: containerRef.current,
-      style: basemap === "light" ? osmRasterStyle : DARK_VECTOR_STYLE_URL,
+      style: currentBasemapRef.current === "light" ? osmRasterStyle : DARK_VECTOR_STYLE_URL,
       center: [15.5869, 56.1612],
       zoom: 5,
       attributionControl: false
@@ -323,8 +324,16 @@ export function CacheMap({
       popupRef.current = null;
       map.remove();
       mapRef.current = null;
-      hasFittedRef.current = false;
+      fittedPointsRef.current = null;
     };
+  }, []);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || currentBasemapRef.current === basemap) return;
+    popupRef.current?.remove();
+    currentBasemapRef.current = basemap;
+    map.setStyle(basemap === "light" ? osmRasterStyle : DARK_VECTOR_STYLE_URL, { diff: false });
   }, [basemap]);
 
   useEffect(() => {
@@ -466,10 +475,10 @@ export function CacheMap({
       setVis(CLUSTER_UNCLUSTERED_LAYER_ID, displayMode === "clusters");
       setVis(HEATMAP_LAYER_ID, displayMode === "heatmap");
 
-      const bounds = boundsFor(points);
-      if (bounds && !hasFittedRef.current) {
-        hasFittedRef.current = true;
-        activeMap.fitBounds(bounds, { padding: 56, maxZoom: 10, duration: 700 });
+      if (fittedPointsRef.current !== points) {
+        fittedPointsRef.current = points;
+        const bounds = boundsFor(points);
+        if (bounds) activeMap.fitBounds(bounds, { padding: 56, maxZoom: 10, duration: 0 });
       }
     }
 

@@ -106,15 +106,15 @@ export function evaluateGoalCurrent(kind: GoalKind, config: GoalConfig, stats: a
       return Math.max(Number(stats?.streaks?.longest ?? 0), Number(stats?.streaks?.current ?? 0));
     case "COUNTRIES":
       return Array.isArray(stats?.countries)
-        ? stats.countries.filter((entry: any) => Number(entry?.count ?? 0) > 0).length
+        ? stats.countries.filter(isKnownLocation).length
         : 0;
     case "REGIONS":
       return Array.isArray(stats?.regions)
-        ? stats.regions.filter((entry: any) => Number(entry?.count ?? 0) > 0).length
+        ? stats.regions.filter(isKnownLocation).length
         : 0;
     case "COUNTIES":
       return Array.isArray(stats?.counties)
-        ? stats.counties.filter((entry: any) => Number(entry?.count ?? 0) > 0).length
+        ? stats.counties.filter(isKnownLocation).length
         : 0;
     case "CACHE_TYPE": {
       const targetType = (config.cacheType ?? "").trim().toLowerCase();
@@ -127,6 +127,11 @@ export function evaluateGoalCurrent(kind: GoalKind, config: GoalConfig, stats: a
     case "CUSTOM":
       return Number(config.manualCurrent ?? 0);
   }
+}
+
+function isKnownLocation(entry: { key?: string; count?: number } | null) {
+  const key = entry?.key?.trim().toLowerCase();
+  return Boolean(key && key !== "unknown" && Number(entry?.count ?? 0) > 0);
 }
 
 function gapFilterForKind(kind: GoalKind): EnrichedGoal["gapFilter"] {

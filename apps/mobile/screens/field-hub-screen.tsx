@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import * as Clipboard from "expo-clipboard";
 import {
@@ -19,9 +19,13 @@ export function FieldHubScreen({ userId }: { userId: string }) {
   const [mode, setMode] = useState<ToolMode>("notes");
 
   // Offline field notes
-  const [notes, setNotes] = useState<OfflineFieldNote[]>([]);
+  const [notes, setNotes] = useState<OfflineFieldNote[] | null>(null);
   const [gcCode, setGcCode] = useState("");
   const [noteText, setNoteText] = useState("");
+  const [notesError, setNotesError] = useState<string | null>(null);
+  const [loadAttempt, setLoadAttempt] = useState(0);
+  const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
 
   // Cipher helper
   const [cipherText, setCipherText] = useState("");
@@ -33,27 +37,48 @@ export function FieldHubScreen({ userId }: { userId: string }) {
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
-    void loadOfflineFieldNotes(userId).then(setNotes);
-  }, [userId]);
+    let active = true;
+    setNotesError(null);
+    void loadOfflineFieldNotes(userId)
+      .then((loaded) => { if (active) setNotes(loaded); })
+      .catch(() => { if (active) setNotesError("Could not load your saved field notes."); });
+    return () => { active = false; };
+  }, [userId, loadAttempt]);
+
+  async function persistNotes(next: OfflineFieldNote[]) {
+    if (savingRef.current) return false;
+    savingRef.current = true;
+    setSaving(true);
+    setNotesError(null);
+    try {
+      await saveOfflineFieldNotes(userId, next);
+      setNotes(next);
+      return true;
+    } catch {
+      setNotesError("Could not save your field notes. Try again.");
+      return false;
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
+    }
+  }
 
   async function addNote() {
     const cleanCode = gcCode.trim().toUpperCase();
     const cleanNote = noteText.trim();
-    if (!cleanCode || !cleanNote) return;
-    const next: OfflineFieldNote[] = [
+    if (!notes || !cleanCode || !cleanNote) return;
+    const saved = await persistNotes([
       { id: `${Date.now()}`, gcCode: cleanCode, note: cleanNote, createdAt: new Date().toISOString() },
       ...notes
-    ];
-    setNotes(next);
-    setGcCode("");
-    setNoteText("");
-    await saveOfflineFieldNotes(userId, next);
+    ]);
+    if (saved) {
+      setGcCode("");
+      setNoteText("");
+    }
   }
 
   async function deleteNote(id: string) {
-    const next = notes.filter((item) => item.id !== id);
-    setNotes(next);
-    await saveOfflineFieldNotes(userId, next);
+    if (notes) await persistNotes(notes.filter((item) => item.id !== id));
   }
 
   const a1 = useMemo(() => a1z26Encode(cipherText), [cipherText]);
@@ -100,6 +125,7 @@ export function FieldHubScreen({ userId }: { userId: string }) {
             style={localStyles.input}
             placeholder="GC code (e.g. GC9F3A2)"
             placeholderTextColor="#7f9386"
+            editable={!saving}
             value={gcCode}
             onChangeText={setGcCode}
             autoCapitalize="characters"
@@ -108,21 +134,28 @@ export function FieldHubScreen({ userId }: { userId: string }) {
             style={[localStyles.input, { minHeight: 72, textAlignVertical: "top" }]}
             placeholder="Quick trail note, clue, or log draft..."
             placeholderTextColor="#7f9386"
+            editable={!saving}
             value={noteText}
             onChangeText={setNoteText}
             multiline
           />
-          <Pressable style={localStyles.button} onPress={() => void addNote()}>
+          {notesError ? <Text accessibilityRole="alert" style={localStyles.meta}>{notesError}</Text> : null}
+          {notes === null && notesError ? (
+            <Pressable accessibilityRole="button" onPress={() => setLoadAttempt((value) => value + 1)}>
+              <Text style={localStyles.meta}>Retry loading notes</Text>
+            </Pressable>
+          ) : null}
+          <Pressable style={localStyles.button} disabled={!notes || saving} onPress={() => void addNote()}>
             <Text style={localStyles.buttonText}>Save offline note</Text>
           </Pressable>
 
-          {notes.map((item) => (
+          {notes?.map((item) => (
             <View key={item.id} style={localStyles.noteRow}>
               <View style={{ flex: 1, gap: 2 }}>
                 <Text style={localStyles.noteCode}>{item.gcCode}</Text>
                 <Text style={localStyles.noteBody}>{item.note}</Text>
               </View>
-              <Pressable onPress={() => void deleteNote(item.id)}>
+              <Pressable disabled={saving} onPress={() => void deleteNote(item.id)}>
                 <Text style={localStyles.remove}>Delete</Text>
               </Pressable>
             </View>

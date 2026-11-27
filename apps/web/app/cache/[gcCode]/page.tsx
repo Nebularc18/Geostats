@@ -13,6 +13,10 @@ import { copyText } from "../../../lib/copy-text";
 export default function CacheDetailPage() {
   const params = useParams<{ gcCode: string }>();
   const gcCode = decodeURIComponent(params.gcCode ?? "").toUpperCase();
+  return <AppShell><CacheDetailContent key={gcCode} gcCode={gcCode} /></AppShell>;
+}
+
+function CacheDetailContent({ gcCode }: { gcCode: string }) {
   const [detail, setDetail] = useState<UnifiedCacheDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -36,11 +40,11 @@ export default function CacheDetailPage() {
     window.setTimeout(() => setCopied((current) => (current === value ? null : current)), 1400);
   }
 
-  const lat = detail?.cache.correctedLatitude ?? detail?.cache.latitude ?? 0;
-  const lon = detail?.cache.correctedLongitude ?? detail?.cache.longitude ?? 0;
+  const lat = detail?.cache.correctedLatitude ?? detail?.cache.latitude;
+  const lon = detail?.cache.correctedLongitude ?? detail?.cache.longitude;
 
   return (
-    <AppShell>
+    <>
       <header className="page-header">
         <div>
           <p className="eyebrow">Unified cache profile · {gcCode}</p>
@@ -91,7 +95,7 @@ export default function CacheDetailPage() {
             </div>
 
             <div className="cache-detail-coord-row">
-              {[
+              {lat != null && lon != null ? [
                 formatCoordinateDdm(lat, lon),
                 formatCoordinateDd(lat, lon),
                 formatCoordinateDms(lat, lon)
@@ -99,7 +103,7 @@ export default function CacheDetailPage() {
                 <button key={formatted} type="button" className="secondary-button" onClick={() => copyValue(formatted)}>
                   <Copy size={13} /> {copied === formatted ? "Copied!" : formatted}
                 </button>
-              ))}
+              )) : <p className="muted">Coordinates unavailable</p>}
             </div>
           </section>
 
@@ -170,7 +174,7 @@ export default function CacheDetailPage() {
 
             {detail.trackables.length > 0 ? (
               <section className="panel">
-                <h2><Footprints size={16} style={{ verticalAlign: "-2px", marginRight: 6 }} />Trackables at this cache</h2>
+                <h2><Footprints size={16} style={{ verticalAlign: "-2px", marginRight: 6 }} />Trackable history at this cache</h2>
                 <div className="table-list">
                   {detail.trackables.map((tb) => (
                     <div key={tb.id} className="table-row">
@@ -184,6 +188,6 @@ export default function CacheDetailPage() {
           </div>
         </>
       ) : null}
-    </AppShell>
+    </>
   );
 }

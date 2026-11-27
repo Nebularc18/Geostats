@@ -129,12 +129,20 @@ export class ImportsController {
 
   @Get()
   async list(@CurrentUser() user: AuthUser) {
-    const imports = await this.prisma.import.findMany({
-      where: { userId: user.id },
-      orderBy: { createdAt: "desc" },
-      take: 50
-    });
+    const [imports, latestCompleted] = await Promise.all([
+      this.prisma.import.findMany({
+        where: { userId: user.id },
+        orderBy: { createdAt: "desc" },
+        take: 50
+      }),
+      this.prisma.import.findFirst({
+        where: { userId: user.id, status: ImportStatus.COMPLETED },
+        orderBy: { updatedAt: "desc" },
+        select: { updatedAt: true }
+      })
+    ]);
     return {
+      lastCompletedAt: latestCompleted?.updatedAt ?? null,
       imports: imports.map(({ leaseToken: _token, leaseExpiresAt: _expiry, objectKey, recoveryAttempts: _attempts, ...row }) => ({
         ...row,
         retryable: row.status === ImportStatus.FAILED && Boolean(objectKey)

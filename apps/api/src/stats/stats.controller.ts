@@ -85,7 +85,8 @@ export class StatsController {
     @Query("ftfOnly") ftfOnly?: string,
     @Query("sort") sort?: string,
     @Query("offset") offset?: string,
-    @Query("limit") limit?: string
+    @Query("limit") limit?: string,
+    @Query("facets") facets?: string
   ) {
     return this.stats.findsForUser(user.id, {
       q,
@@ -103,7 +104,8 @@ export class StatsController {
       ftfOnly: ftfOnly === "true" || ftfOnly === "1",
       sort,
       offset: offset ? Number(offset) : 0,
-      limit: limit ? Number(limit) : 50
+      limit: limit ? Number(limit) : 50,
+      includeFacets: facets !== "false"
     });
   }
 

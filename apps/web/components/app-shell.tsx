@@ -143,10 +143,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     let pollFailures = 0;
     let wasSyncing = false;
     let requestSeq = 0;
-    type ImportRecord = { status: string; finishedAt?: string | null; createdAt?: string | null };
+    type ImportRecord = { status: string; updatedAt?: string | null; createdAt?: string | null };
     const fetchFreshness = () => {
       const seq = ++requestSeq;
-      void apiFetch<ImportRecord[] | { imports?: ImportRecord[] }>("/imports")
+      void apiFetch<ImportRecord[] | { imports?: ImportRecord[]; lastCompletedAt?: string | null }>("/imports")
         .then((res) => {
           if (!active || seq !== requestSeq) return;
           pollFailures = 0;
@@ -160,8 +160,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             return;
           }
           wasSyncing = false;
-          const completed = items.find((item) => item.status === "COMPLETED");
-          const stamp = completed?.finishedAt ?? completed?.createdAt ?? null;
+          const stamp = items.reduce((latest, item) => {
+            if (item.status !== "COMPLETED") return latest;
+            const time = Date.parse(item.updatedAt ?? item.createdAt ?? "");
+            return Number.isFinite(time) ? Math.max(latest, time) : latest;
+          }, Array.isArray(res) ? 0 : Date.parse(res?.lastCompletedAt ?? "") || 0);
           if (!stamp) {
             setFreshness({ label: "No imports yet", stale: true });
             return;

@@ -100,8 +100,10 @@ export default function GoalsPage() {
     try {
       await apiFetch("/goals", { method: "POST", body: JSON.stringify(payload) });
       await load();
+      return true;
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not save goal");
+      return false;
     } finally {
       setBusy(false);
     }
@@ -118,8 +120,10 @@ export default function GoalsPage() {
     if (kind === "YEARLY_FINDS") config.year = Number(year) || CURRENT_YEAR;
     if (kind === "CACHE_TYPE") config.cacheType = cacheType;
     if (kind === "CUSTOM") config.manualCurrent = Math.max(0, Number(manualCurrent) || 0);
-    await createGoal({ title: title.trim(), kind, target: parsedTarget, config });
-    setTitle("");
+    const draft = title;
+    if (await createGoal({ title: draft.trim(), kind, target: parsedTarget, config })) {
+      setTitle((current) => current === draft ? "" : current);
+    }
   }
 
   async function incrementCustomGoal(goal: EnrichedGoal, delta: number) {
@@ -150,7 +154,25 @@ export default function GoalsPage() {
     }
   }
 
-  const completedCount = goals.filter((goal) => goal.completed).length;
+  async function toggleArchive(goal: EnrichedGoal) {
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await apiFetch<{ goal: EnrichedGoal }>(`/goals/${goal.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ archived: !goal.archived })
+      });
+      setGoals((current) => current.map((item) => item.id === goal.id ? response.goal : item));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not update goal");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const activeGoals = goals.filter((goal) => !goal.archived);
+  const archivedGoals = goals.filter((goal) => goal.archived);
+  const completedCount = activeGoals.filter((goal) => goal.completed).length;
 
   return (
     <AppShell>
@@ -167,7 +189,7 @@ export default function GoalsPage() {
       <section className="stat-grid stat-grid-3">
         <div className="stat-card">
           <span>Active goals</span>
-          <strong>{goals.length}</strong>
+          <strong>{activeGoals.length}</strong>
         </div>
         <div className="stat-card">
           <span>Completed</span>
@@ -175,7 +197,7 @@ export default function GoalsPage() {
         </div>
         <div className="stat-card">
           <span>In progress</span>
-          <strong>{goals.length - completedCount}</strong>
+          <strong>{activeGoals.length - completedCount}</strong>
         </div>
       </section>
 
@@ -191,16 +213,16 @@ export default function GoalsPage() {
 
         {loading ? <p className="muted">Loading goals…</p> : null}
 
-        {!loading && goals.length === 0 ? (
+        {!loading && activeGoals.length === 0 ? (
           <div className="travel-empty">
             <Goal size={30} />
-            <h3>No goals yet</h3>
+            <h3>No active goals</h3>
             <p className="muted">Pick a starter preset below or create your own geocaching target.</p>
           </div>
         ) : null}
 
         <div className="goals-grid">
-          {goals.map((goal) => (
+          {activeGoals.map((goal) => (
             <article key={goal.id} className={`goal-card${goal.completed ? " goal-completed" : ""}`}>
               <div className="goal-card-top">
                 <div>
@@ -227,6 +249,9 @@ export default function GoalsPage() {
                 <div className="goal-progress-fill" style={{ width: `${goal.percent}%` }} />
               </div>
               <div className="goal-card-actions">
+                <button type="button" className="text-button" disabled={busy} onClick={() => void toggleArchive(goal)}>
+                  Archive
+                </button>
                 {goal.gapFilter ? (
                   <Link className="text-button" href={`/travel?gapFilter=${goal.gapFilter}`}>
                     <Compass size={14} /> Find caches in Travel
@@ -247,6 +272,25 @@ export default function GoalsPage() {
           ))}
         </div>
       </section>
+
+      {archivedGoals.length > 0 ? (
+        <section className="panel">
+          <h2>Archived goals</h2>
+          <div className="goals-grid">
+            {archivedGoals.map((goal) => (
+              <article key={goal.id} className="goal-card">
+                <h3>{goal.title}</h3>
+                <div className="goal-card-actions">
+                  <button type="button" className="text-button" disabled={busy} onClick={() => void toggleArchive(goal)}>Restore</button>
+                  <button type="button" className="row-delete" aria-label={`Delete ${goal.title}`} disabled={busy} onClick={() => void deleteGoal(goal)}>
+                    <Trash2 size={15} />
+                  </button>
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
+      ) : null}
 
       <section className="panel">
         <h2>Quick-add presets</h2>

@@ -92,3 +92,13 @@ test("builds sorted unique option values and counts active filters", () => {
     2
   );
 });
+
+test("overlays obey cache type, rating, date, and find/hide source filters", () => {
+  const solved = { ...points[1], id: "3", isOwnHide: false, isSolvedMystery: true };
+  const unfound = { ...points[0], id: "4", foundAt: undefined, isUnfound: true };
+  const overlays = [solved, unfound];
+  assert.deepEqual(filterMapPoints(overlays, { ...EMPTY_MAP_FILTERS, cacheType: "Traditional Cache" }), [unfound]);
+  assert.deepEqual(filterMapPoints(overlays, { ...EMPTY_MAP_FILTERS, difficultyMin: "3" }), [solved]);
+  assert.deepEqual(filterMapPoints(overlays, { ...EMPTY_MAP_FILTERS, dateFrom: "2024-01-01" }), []);
+  assert.deepEqual(filterMapPoints(overlays, { ...EMPTY_MAP_FILTERS, source: "finds" }), []);
+});

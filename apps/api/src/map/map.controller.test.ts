@@ -271,3 +271,40 @@ test("private imported map metadata is scoped to the requesting user and filters
   assert.ok(personal.userData.some.AND.some((item: any) => item.raw.path[1] === "country" && item.raw.equals === "Sweden"));
   assert.ok(personal.userData.some.AND.some((item: any) => item.raw.path[1] === "difficulty" && item.raw.gte === 2));
 });
+
+test("solved mystery pins omit unknown finals and use the newest correct attempt", async () => {
+  const controller = new MapController({
+    mysteryWorkspace: { findMany: async () => [
+      { id: "published", gcCode: "GCPUB", data: { status: "solved", publishedLatitude: 50, publishedLongitude: 10 } },
+      { id: "final", gcCode: "GCFINAL", data: { status: "solved", attempts: [
+        { state: "correct", latitude: 56, longitude: 15 },
+        { state: "correct", latitude: 57, longitude: 16 }
+      ] } },
+    ] }
+  } as never, {} as never);
+  const result = await controller.mysteries(user);
+  assert.deepEqual(result.points.map(({ gcCode, latitude, longitude }) => ({ gcCode, latitude, longitude })), [
+    { gcCode: "GCFINAL", latitude: 56, longitude: 15 }
+  ]);
+});
+
+test("unfound overlay reports its full count when the displayed pool is capped", async () => {
+  const controller = new MapController({
+    userCacheData: {
+      findMany: async ({ where, orderBy, take }: any) => {
+        assert.equal(where.userId, user.id);
+        assert.deepEqual(orderBy, { id: "asc" });
+        assert.equal(take, 2500);
+        return [{ cache: { ...cache(), corrections: [] } }];
+      },
+      count: async ({ where }: any) => {
+        assert.equal(where.userId, user.id);
+        return 2501;
+      }
+    }
+  } as never, {} as never);
+  const result = await controller.unfound(user);
+  assert.equal(result.points.length, 1);
+  assert.equal(result.totalCount, 2501);
+  assert.equal(result.truncated, true);
+});

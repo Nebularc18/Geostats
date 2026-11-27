@@ -1,5 +1,5 @@
 import { BadRequestException, Body, ConflictException, Controller, Get, Post, Query, UseGuards } from "@nestjs/common";
-import { AuthUser } from "@geostats/shared";
+import { AuthUser, mysteryFinalCoordinate } from "@geostats/shared";
 import { countableFindWhere, personalCacheMetadata, Prisma } from "@geostats/db";
 import { normalizedGcUsername } from "@geostats/stats";
 import { Type } from "class-transformer";
@@ -526,21 +526,8 @@ export class MapController {
     const points = workspaces.flatMap((workspace) => {
       const data = workspace.data as any;
       if (!data || data.status === "archived") return [];
-      const attempts = Array.isArray(data.attempts) ? data.attempts : [];
-      const correctAttempt = [...attempts]
-        .reverse()
-        .find((attempt: any) => attempt?.state === "correct" && (
-          (typeof attempt.finalLatitude === "number" && typeof attempt.finalLongitude === "number") ||
-          (typeof attempt.latitude === "number" && typeof attempt.longitude === "number")
-        ));
-      const latitude = correctAttempt
-        ? Number(correctAttempt.finalLatitude ?? correctAttempt.latitude)
-        : Number(data.publishedLatitude);
-      const longitude = correctAttempt
-        ? Number(correctAttempt.finalLongitude ?? correctAttempt.longitude)
-        : Number(data.publishedLongitude);
-      const solved = Boolean(correctAttempt) || data.status === "solved";
-      if (!solved || !Number.isFinite(latitude) || !Number.isFinite(longitude)) return [];
+      const final = mysteryFinalCoordinate(data.attempts);
+      if (!final) return [];
       return [{
         id: `mystery-${workspace.id}`,
         gcCode: String(data.gcCode ?? workspace.gcCode ?? "").toUpperCase(),
@@ -549,8 +536,7 @@ export class MapController {
         difficulty: null,
         terrain: null,
         size: null,
-        latitude,
-        longitude,
+        ...final,
         country: typeof data.country === "string" ? data.country : null,
         region: typeof data.region === "string" ? data.region : null,
         county: typeof data.county === "string" ? data.county : null,
@@ -562,38 +548,43 @@ export class MapController {
 
   @Get("unfound")
   async unfound(@CurrentUser() user: AuthUser) {
-    const records = await this.prisma.userCacheData.findMany({
-      where: {
-        userId: user.id,
-        cache: {
-          finds: { none: { userId: user.id } },
-          hides: { none: { userId: user.id } }
-        }
-      },
-      select: {
-        raw: true,
-        cache: {
-          select: {
-            id: true,
-            gcCode: true,
-            name: true,
-            cacheType: true,
-            difficulty: true,
-            terrain: true,
-            size: true,
-            latitude: true,
-            longitude: true,
-            country: true,
-            region: true,
-            county: true,
-            hiddenDate: true,
-            metadataTrusted: true,
-            corrections: { where: { userId: user.id }, take: 1, select: { latitude: true, longitude: true } }
+    const where: Prisma.UserCacheDataWhereInput = {
+      userId: user.id,
+      cache: {
+        finds: { none: { userId: user.id } },
+        hides: { none: { userId: user.id } }
+      }
+    };
+    const [records, totalCount] = await Promise.all([
+      this.prisma.userCacheData.findMany({
+        where,
+        orderBy: { id: "asc" },
+        select: {
+          raw: true,
+          cache: {
+            select: {
+              id: true,
+              gcCode: true,
+              name: true,
+              cacheType: true,
+              difficulty: true,
+              terrain: true,
+              size: true,
+              latitude: true,
+              longitude: true,
+              country: true,
+              region: true,
+              county: true,
+              hiddenDate: true,
+              metadataTrusted: true,
+              corrections: { where: { userId: user.id }, take: 1, select: { latitude: true, longitude: true } }
+            }
           }
-        }
-      },
-      take: 2500
-    });
+        },
+        take: 2500
+      }),
+      this.prisma.userCacheData.count({ where })
+    ]);
     const points = records.map(({ cache: shared, raw }) => {
       const merged = { ...shared, ...personalCacheMetadata(shared, raw) };
       const correction = shared.corrections[0];
@@ -614,7 +605,7 @@ export class MapController {
         isUnfound: true
       };
     });
-    return { points, totalCount: points.length };
+    return { points, totalCount, truncated: totalCount > points.length };
   }
 
   @Get("caches")

@@ -56,8 +56,17 @@ export function GlobalDropImport({ onOpen }: { onOpen?: () => void } = {}) {
     const hasFiles = (event: DragEvent) =>
       Array.from(event.dataTransfer?.types ?? []).includes("Files");
 
+    const isLocalDrop = (event: DragEvent) => event.defaultPrevented ||
+      (event.target instanceof Element && Boolean(event.target.closest('input[type="file"]')));
+
+    const resetDrag = () => {
+      dragDepthRef.current = 0;
+      setDragging(false);
+    };
+
     const onDragEnter = (event: DragEvent) => {
       if (!hasFiles(event) || uploadingRef.current) return;
+      if (isLocalDrop(event)) { resetDrag(); return; }
       event.preventDefault();
       dragDepthRef.current += 1;
       setDragging(true);
@@ -65,12 +74,13 @@ export function GlobalDropImport({ onOpen }: { onOpen?: () => void } = {}) {
 
     const onDragOver = (event: DragEvent) => {
       if (!hasFiles(event)) return;
+      if (isLocalDrop(event)) { resetDrag(); return; }
       event.preventDefault();
     };
 
     const onDragLeave = (event: DragEvent) => {
       if (!hasFiles(event)) return;
-      event.preventDefault();
+      if (isLocalDrop(event)) { resetDrag(); return; }
       dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
       if (dragDepthRef.current === 0) {
         setDragging(false);
@@ -79,9 +89,9 @@ export function GlobalDropImport({ onOpen }: { onOpen?: () => void } = {}) {
 
     const onDrop = (event: DragEvent) => {
       if (!hasFiles(event)) return;
+      resetDrag();
+      if (isLocalDrop(event)) return;
       event.preventDefault();
-      dragDepthRef.current = 0;
-      setDragging(false);
       if (uploadingRef.current) {
         setToast({ text: "Wait for the current upload to finish before dropping another file.", isError: true });
         return;

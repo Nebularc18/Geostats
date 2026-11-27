@@ -435,3 +435,120 @@ test("renamed upload sends the chosen mode and a retry shows its receipt", async
   await expect(page.getByText("1 cache · 0 finds · 1 hide", { exact: true })).toBeVisible();
   expect(errors).toEqual([]);
 });
+
+test("command palette keeps focus inside the modal and restores it on close", async ({ page }) => {
+  const installation = installations[0];
+  const origin = `http://127.0.0.1:${installation.port}`;
+  await page.route(`${installation.apiUrl}/**`, (route) => {
+    const responses = {
+      "/profile": { profile: { userId: "user-1" } },
+      "/auth/me": { user: { id: "user-1" } },
+      "/imports": { imports: [] },
+      "/collector/gsak/status": { connected: false, updateAvailable: false }
+    };
+    return route.fulfill({
+      headers: { "access-control-allow-origin": origin, "access-control-allow-credentials": "true" },
+      json: responses[new URL(route.request().url()).pathname] ?? {}
+    });
+  });
+  await page.goto(`${origin}/imports`);
+  await expect(page.getByRole("heading", { name: "Import history" })).toBeVisible();
+  const trigger = page.getByRole("button", { name: "Open command palette" });
+  await trigger.click();
+  const dialog = page.getByRole("dialog", { name: "Quick command palette" });
+  const input = dialog.getByRole("textbox");
+  await expect(input).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  // Native dialogs may briefly put focus on the browser chrome when cycling.
+  expect(await page.evaluate(() => document.activeElement === document.body || Boolean(document.activeElement?.closest("dialog")))).toBe(true);
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+});
+
+test("cache navigation clears old details while the next cache loads", async ({ page }) => {
+  const installation = installations[0];
+  const origin = `http://127.0.0.1:${installation.port}`;
+  let releaseSecond;
+  const secondCache = new Promise((resolve) => { releaseSecond = resolve; });
+  const detail = (gcCode, name) => ({
+    gcCode, cache: { gcCode, name, latitude: null, longitude: null },
+    find: null, hide: null, mystery: null, friendsWhoFound: [], trackables: []
+  });
+  await page.route(`${installation.apiUrl}/**`, async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/stats/cache/GCSECOND") await secondCache;
+    const responses = {
+      "/profile": { profile: { userId: "user-1" } },
+      "/auth/me": { user: { id: "user-1" } },
+      "/imports": { imports: [] },
+      "/stats/cache/GCFIRST": detail("GCFIRST", "First cache"),
+      "/stats/cache/GCSECOND": detail("GCSECOND", "Second cache")
+    };
+    await route.fulfill({
+      headers: { "access-control-allow-origin": origin, "access-control-allow-credentials": "true" },
+      json: responses[path] ?? {}
+    });
+  });
+  try {
+    await page.goto(`${origin}/cache/GCFIRST`);
+    await expect(page.getByRole("heading", { name: "First cache" })).toBeVisible();
+    await expect(page.getByText("Coordinates unavailable")).toBeVisible();
+
+    await page.getByRole("button", { name: "Open command palette" }).click();
+    const palette = page.getByRole("dialog", { name: "Quick command palette" });
+    await palette.getByRole("textbox").fill("GCSECOND");
+    await palette.getByRole("button", { name: "Open GCSECOND" }).click();
+
+    await expect(page.getByRole("heading", { name: "GCSECOND", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "First cache" })).toHaveCount(0);
+    releaseSecond();
+    await expect(page.getByRole("heading", { name: "Second cache" })).toBeVisible();
+  } finally {
+    releaseSecond();
+  }
+});
+
+test("archived goals leave the active list and failed saves keep the draft title", async ({ page }) => {
+  const installation = installations[0];
+  const origin = `http://127.0.0.1:${installation.port}`;
+  let goal = {
+    id: "goal-1", title: "Find more caches", kind: "YEARLY_FINDS", target: 200,
+    current: 10, remaining: 190, percent: 5, completed: false, archived: false, config: {}
+  };
+  await page.route(`${installation.apiUrl}/**`, async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    const method = route.request().method();
+    const headers = {
+      "access-control-allow-origin": origin, "access-control-allow-credentials": "true",
+      "access-control-allow-methods": "GET, POST, PATCH, OPTIONS", "access-control-allow-headers": "content-type"
+    };
+    if (method === "OPTIONS") return route.fulfill({ status: 204, headers });
+    if (path === "/goals/goal-1" && method === "PATCH") {
+      goal = { ...goal, ...route.request().postDataJSON() };
+      return route.fulfill({ headers, json: { goal } });
+    }
+    if (path === "/goals" && method === "POST") {
+      return route.fulfill({ status: 503, headers, json: { message: "Goal save unavailable" } });
+    }
+    const responses = {
+      "/profile": { profile: { userId: "user-1" } },
+      "/auth/me": { user: { id: "user-1" } },
+      "/imports": { imports: [] },
+      "/goals": { goals: [goal], cacheTypes: [] }
+    };
+    return route.fulfill({ headers, json: responses[path] ?? {} });
+  });
+  await page.goto(`${origin}/goals`);
+  await page.getByRole("button", { name: "Archive", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "No active goals" })).toBeVisible();
+  await page.getByRole("button", { name: "Restore", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Archived goals" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Archive", exact: true })).toBeVisible();
+
+  const title = page.getByRole("textbox", { name: "Goal title" });
+  await title.fill("Keep this draft");
+  await page.getByRole("button", { name: "Add goal", exact: true }).click();
+  await expect(page.getByText("Goal save unavailable")).toBeVisible();
+  await expect(title).toHaveValue("Keep this draft");
+});

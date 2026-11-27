@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ActivityIndicator, StyleSheet, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 
 type FetchFn = <T>(apiBaseUrl: string, path: string, token: string, init?: RequestInit) => Promise<T>;
 
@@ -26,21 +26,30 @@ export function LogbookScreen({
 }) {
   const [query, setQuery] = useState("");
   const [finds, setFinds] = useState<FindEntry[]>([]);
+  const [offset, setOffset] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [retry, setRetry] = useState(0);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     let active = true;
+    setLoading(true);
+    setError(null);
+    setFinds([]);
     const timeout = setTimeout(() => {
-      setLoading(true);
-      const params = new URLSearchParams({ limit: "30" });
+      const params = new URLSearchParams({ limit: "30", offset: String(offset), facets: "false" });
       if (query.trim()) params.set("q", query.trim());
-      void apiFetch<{ finds: FindEntry[]; total: number }>(apiBaseUrl, `/stats/finds?${params.toString()}`, token)
+      void apiFetch<{ finds: FindEntry[]; total: number; hasMore: boolean }>(apiBaseUrl, `/stats/finds?${params}`, token)
         .then((res) => {
-          if (active) {
-            setFinds(res.finds);
-            setTotal(res.total);
-          }
+          if (!active) return;
+          setFinds(res.finds);
+          setTotal(res.total);
+          setHasMore(res.hasMore);
+        })
+        .catch(() => {
+          if (active) setError("Could not load finds.");
         })
         .finally(() => {
           if (active) setLoading(false);
@@ -50,7 +59,7 @@ export function LogbookScreen({
       active = false;
       clearTimeout(timeout);
     };
-  }, [apiBaseUrl, query, token]);
+  }, [apiBaseUrl, apiFetch, offset, query, retry, token]);
 
   return (
     <View style={localStyles.container}>
@@ -61,9 +70,17 @@ export function LogbookScreen({
         placeholder="Search logs, names, GC codes..."
         placeholderTextColor="#7f9386"
         value={query}
-        onChangeText={setQuery}
+        onChangeText={(value) => { setQuery(value); setOffset(0); }}
       />
       {loading ? <ActivityIndicator color="#7be08e" /> : null}
+      {error ? (
+        <View>
+          <Text accessibilityRole="alert" style={localStyles.meta}>{error}</Text>
+          <Pressable accessibilityRole="button" onPress={() => setRetry((value) => value + 1)}>
+            <Text style={localStyles.action}>Retry</Text>
+          </Pressable>
+        </View>
+      ) : null}
       {finds.map((find) => (
         <View key={find.id} style={localStyles.card}>
           <Text style={localStyles.cardTitle}>
@@ -77,11 +94,19 @@ export function LogbookScreen({
           {find.logText ? <Text style={localStyles.log} numberOfLines={3}>{find.logText}</Text> : null}
         </View>
       ))}
+      {!loading && !error && (offset > 0 || hasMore) ? (
+        <View style={localStyles.pagination}>
+          {offset > 0 ? <Pressable accessibilityRole="button" onPress={() => setOffset(Math.max(0, offset - 30))}><Text style={localStyles.action}>Previous page</Text></Pressable> : null}
+          {hasMore ? <Pressable accessibilityRole="button" onPress={() => setOffset(offset + 30)}><Text style={localStyles.action}>Next page</Text></Pressable> : null}
+        </View>
+      ) : null}
     </View>
   );
 }
 
 const localStyles = StyleSheet.create({
+  action: { color: "#7be08e", paddingVertical: 10 },
+  pagination: { flexDirection: "row", gap: 16 },
   container: { gap: 12 },
   eyebrow: { color: "#8fb39a", fontSize: 11, fontWeight: "700", letterSpacing: 1 },
   title: { color: "#f1f6f2", fontSize: 22, fontWeight: "800" },

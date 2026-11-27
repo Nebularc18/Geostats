@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowRight, BookOpen, Compass, Flag, Footprints, Globe2, Goal, Home, KeyRound, Map, Navigation, Puzzle, Search, Settings, ShieldCheck, Trophy, Upload, Users, X } from "lucide-react";
 import { formatCoordinateDd, formatCoordinateDdm, formatCoordinateDms, parseAnyCoordinate, rot13 } from "@geostats/shared";
 import { apiFetch } from "../lib/api";
+import { Modal } from "./ui/modal";
 
 type SearchFind = {
   id: string;
@@ -37,7 +38,6 @@ const PAGES = [
 
 export function CommandPalette({ open, onClose }: { open: boolean; onClose: () => void }) {
   const router = useRouter();
-  const inputRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState("");
   const [finds, setFinds] = useState<SearchFind[]>([]);
   const [searching, setSearching] = useState(false);
@@ -46,21 +46,8 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
     if (open) {
       setQuery("");
       setFinds([]);
-      window.setTimeout(() => inputRef.current?.focus(), 20);
     }
   }, [open]);
-
-  useEffect(() => {
-    if (!open) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        onClose();
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [open, onClose]);
 
   useEffect(() => {
     if (!open) return;
@@ -72,7 +59,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
     let active = true;
     const timer = window.setTimeout(() => {
       setSearching(true);
-      void apiFetch<{ finds: SearchFind[] }>(`/stats/finds?q=${encodeURIComponent(trimmed)}&limit=6`)
+      void apiFetch<{ finds: SearchFind[] }>(`/stats/finds?q=${encodeURIComponent(trimmed)}&limit=6&facets=false`)
         .then((res) => {
           if (active) setFinds(res.finds ?? []);
         })
@@ -120,12 +107,12 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
   }
 
   return (
-    <div className="ds-cmdk-backdrop" role="dialog" aria-modal="true" aria-label="Quick command palette" onClick={onClose}>
-      <div className="ds-cmdk-dialog" onClick={(event) => event.stopPropagation()}>
+    <Modal className="ds-cmdk-backdrop" label="Quick command palette" onClose={onClose}>
+      <div className="ds-cmdk-dialog">
         <div className="ds-cmdk-input-row">
           <Search size={18} />
           <input
-            ref={inputRef}
+            autoFocus
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder="Jump to page, GC code, log text, coordinates, or 'rot13 ...'"
@@ -204,6 +191,6 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
           ) : null}
         </div>
       </div>
-    </div>
+    </Modal>
   );
 }

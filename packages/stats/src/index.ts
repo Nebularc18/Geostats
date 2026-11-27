@@ -54,7 +54,7 @@ export interface CountBucket {
   count: number;
 }
 
-export const STATS_VERSION = 23;
+export const STATS_VERSION = 24;
 
 export function normalizedGcUsername(profile?: { gcUsername?: string | null } | string | null): string | null {
   const value = typeof profile === "string" ? profile : profile?.gcUsername;
@@ -883,7 +883,7 @@ function asRawArray<T>(value: T | T[] | undefined): T[] {
   return Array.isArray(value) ? value : [value];
 }
 
-function hideLogs(hide: StatsHide): HideLog[] {
+export function hideLogs(hide: Pick<StatsHide, "receivedLogsRaw"> & { cache: Pick<StatsCache, "gcCode" | "name"> }): HideLog[] {
   const logs = Array.isArray(hide.receivedLogsRaw)
     ? hide.receivedLogsRaw
     : (() => {
@@ -891,9 +891,11 @@ function hideLogs(hide: StatsHide): HideLog[] {
         return extension["groundspeak:logs"]?.["groundspeak:log"] ?? extension.logs?.log;
       })();
   return asRawArray<Record<string, any>>(logs)
+    .filter((log) => log && typeof log === "object")
     .map((log) => {
       const type = firstRawText(log["groundspeak:type"], log.type) ?? "Unknown";
-      const date = firstRawText(log["groundspeak:date"], log.date);
+      const rawDate = firstRawText(log["groundspeak:date"], log.date);
+      const date = rawDate ? toDate(rawDate) : null;
       const finder = firstRawText(log["groundspeak:finder"], log.finder) ?? "Unknown";
       const finderCountry = firstRawText(
         log["geostats:finder_country"],
@@ -903,7 +905,7 @@ function hideLogs(hide: StatsHide): HideLog[] {
         log.country
       );
       return {
-        date: date ? dateKey(toDate(date)) : "",
+        date: date && Number.isFinite(date.getTime()) ? dateKey(date) : "",
         finder,
         finderCountry,
         type,

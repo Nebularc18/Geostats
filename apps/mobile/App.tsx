@@ -1557,8 +1557,8 @@ function ScreenSwitch({ incomingMysteryShare, onIncomingShareHandled, apiBaseUrl
   if (screen === "dashboard") return <DashboardScreen apiBaseUrl={apiBaseUrl} token={token} username={username} onNavigate={onNavigate} />;
   if (screen === "explore") return <ExploreScreen username={username} onNavigate={onNavigate} />;
   if (screen === "stats") return <StatsScreen apiBaseUrl={apiBaseUrl} token={token} />;
-  if (screen === "field") return <FieldHubScreen userId={userId} />;
-  if (screen === "logbook") return <LogbookScreen apiBaseUrl={apiBaseUrl} token={token} apiFetch={apiFetch} />;
+  if (screen === "field") return <FieldHubScreen key={userId} userId={userId} />;
+  if (screen === "logbook") return <LogbookScreen key={JSON.stringify([apiBaseUrl, userId])} apiBaseUrl={apiBaseUrl} token={token} apiFetch={apiFetch} />;
   if (screen === "goals") return <GoalsScreen apiBaseUrl={apiBaseUrl} token={token} apiFetch={apiFetch} />;
   if (screen === "friends") return <FriendsScreen apiBaseUrl={apiBaseUrl} token={token} apiFetch={apiFetch} />;
   if (screen === "map") return <MapScreen apiBaseUrl={apiBaseUrl} token={token} />;

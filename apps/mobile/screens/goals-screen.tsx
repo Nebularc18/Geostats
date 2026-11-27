@@ -12,6 +12,7 @@ type GoalItem = {
   remaining: number;
   percent: number;
   completed: boolean;
+  archived: boolean;
 };
 
 export function GoalsScreen({
@@ -24,6 +25,7 @@ export function GoalsScreen({
   apiFetch: FetchFn;
 }) {
   const [goals, setGoals] = useState<GoalItem[]>([]);
+  const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -56,21 +58,40 @@ export function GoalsScreen({
     }
   }
 
+  async function toggleArchive(goal: GoalItem) {
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await apiFetch<{ goal: GoalItem }>(apiBaseUrl, `/goals/${goal.id}`, token, {
+        method: "PATCH",
+        body: JSON.stringify({ archived: !goal.archived })
+      });
+      setGoals((current) => current.map((item) => item.id === goal.id ? response.goal : item));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not update goal");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const activeGoals = goals.filter((goal) => !goal.archived);
+  const archivedGoals = goals.filter((goal) => goal.archived);
+
   return (
     <View style={localStyles.container}>
       <Text style={localStyles.eyebrow}>ACCOUNT-SYNCED TARGETS</Text>
       <Text style={localStyles.title}>Goals</Text>
       {error ? <Text style={localStyles.error}>{error}</Text> : null}
       {loading ? <ActivityIndicator color="#7be08e" /> : null}
-      {!loading && goals.length === 0 ? (
+      {!loading && activeGoals.length === 0 ? (
         <View style={localStyles.card}>
-          <Text style={localStyles.meta}>No goals yet. Add a starter goal:</Text>
+          <Text style={localStyles.meta}>No active goals. Add a starter goal:</Text>
           <Pressable style={localStyles.button} onPress={() => void quickAdd("Complete the 81 D/T grid", "DT_GRID", 81)}>
             <Text style={localStyles.buttonText}>+ Complete 81 D/T Grid</Text>
           </Pressable>
         </View>
       ) : null}
-      {goals.map((goal) => (
+      {activeGoals.map((goal) => (
         <View key={goal.id} style={[localStyles.card, goal.completed && localStyles.cardDone]}>
           <Text style={localStyles.cardTitle}>{goal.title}</Text>
           <Text style={localStyles.meta}>
@@ -79,6 +100,18 @@ export function GoalsScreen({
           <View style={localStyles.track}>
             <View style={[localStyles.fill, { width: `${goal.percent}%` }]} />
           </View>
+          <Pressable accessibilityRole="button" disabled={busy} style={localStyles.button} onPress={() => void toggleArchive(goal)}>
+            <Text style={localStyles.buttonText}>Archive</Text>
+          </Pressable>
+        </View>
+      ))}
+      {archivedGoals.length > 0 ? <Text style={localStyles.title}>Archived goals</Text> : null}
+      {archivedGoals.map((goal) => (
+        <View key={goal.id} style={localStyles.card}>
+          <Text style={localStyles.cardTitle}>{goal.title}</Text>
+          <Pressable accessibilityRole="button" disabled={busy} style={localStyles.button} onPress={() => void toggleArchive(goal)}>
+            <Text style={localStyles.buttonText}>Restore</Text>
+          </Pressable>
         </View>
       ))}
     </View>

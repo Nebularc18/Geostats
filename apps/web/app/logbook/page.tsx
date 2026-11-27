@@ -188,7 +188,7 @@ function LogbookContent() {
         .map(escapeCsv)
         .join(",")
     );
-    downloadBlob("geostats-logbook.csv", [header.join(","), ...rows].join("\n"), "text/csv;charset=utf-8");
+    downloadBlob("geostats-logbook-current-page.csv", [header.join(","), ...rows].join("\n"), "text/csv;charset=utf-8");
   }
 
   function exportGpx() {
@@ -200,7 +200,7 @@ function LogbookContent() {
       )
       .join("\n");
     const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="Geostats" xmlns="http://www.topografix.com/GPX/1/1">\n${waypoints}\n</gpx>`;
-    downloadBlob("geostats-logbook.gpx", xml, "application/gpx+xml");
+    downloadBlob("geostats-logbook-current-page.gpx", xml, "application/gpx+xml");
   }
 
   function toggleExpand(id: string) {
@@ -225,10 +225,10 @@ function LogbookContent() {
         </div>
         <div className="logbook-header-actions">
           <button className="secondary-button" type="button" disabled={!data?.finds.length} onClick={exportCsv}>
-            <Download size={16} /> Export CSV
+            <Download size={16} /> Export page as CSV
           </button>
           <button className="secondary-button" type="button" disabled={!data?.finds.length} onClick={exportGpx}>
-            <Download size={16} /> Export GPX
+            <Download size={16} /> Export page as GPX
           </button>
         </div>
       </header>

@@ -2,6 +2,7 @@ import { personalCacheMetadata } from "@geostats/db";
 import { BadGatewayException, Injectable, NotFoundException } from "@nestjs/common";
 import { envOrDefault } from "../common/env";
 import { PrismaService } from "../common/prisma.service";
+import { StatsService } from "../stats/stats.service";
 import {
   compareTravelCandidates,
   prepareTravelRoute,
@@ -180,7 +181,7 @@ async function roadRoute(origin: Place, destination: Place): Promise<RouteResult
 
 @Injectable()
 export class TravelSearchService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService, private readonly stats: StatsService) {}
 
   async poolSummary(userId: string) {
     const records = await this.prisma.userCacheData.findMany({
@@ -279,14 +280,7 @@ export class TravelSearchService {
     gapFilters?: Array<"missing_dt" | "missing_jasmer" | "missing_county">;
   }) {
     const gapFilterSet = new Set(input.gapFilters ?? []);
-    const snapshot = this.prisma.statSnapshot?.findFirst
-      ? await this.prisma.statSnapshot.findFirst({
-          where: { userId },
-          orderBy: { generatedAt: "desc" },
-          select: { statsJson: true }
-        })
-      : null;
-    const statsJson = (snapshot?.statsJson ?? null) as any;
+    const statsJson = await this.stats.snapshotForUser(userId);
     const foundDtKeys = new Set<string>(
       Array.isArray(statsJson?.difficultyTerrain)
         ? statsJson.difficultyTerrain
@@ -320,20 +314,20 @@ export class TravelSearchService {
 
       if (candidate.difficulty != null && candidate.terrain != null) {
         const dtKey = `${candidate.difficulty.toFixed(1)}/${candidate.terrain.toFixed(1)}`;
-        if (foundDtKeys.size > 0 && !foundDtKeys.has(dtKey)) {
+        if (!foundDtKeys.has(dtKey)) {
           fillsGaps.push(`Missing D/T ${dtKey}`);
           matchesDt = true;
         }
       }
       if (candidate.hiddenDate) {
         const ym = candidate.hiddenDate.slice(0, 7);
-        if (foundJasmerMonths.size > 0 && !foundJasmerMonths.has(ym)) {
+        if (!foundJasmerMonths.has(ym)) {
           fillsGaps.push(`Missing Jasmer ${ym}`);
           matchesJasmer = true;
         }
       }
-      if (candidate.county) {
-        if (foundCounties.size > 0 && !foundCounties.has(candidate.county.trim().toLowerCase())) {
+      if (candidate.county?.trim() && candidate.county.trim().toLowerCase() !== "unknown") {
+        if (!foundCounties.has(candidate.county.trim().toLowerCase())) {
           fillsGaps.push(`New county: ${candidate.county}`);
           matchesCounty = true;
         }

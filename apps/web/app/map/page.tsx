@@ -44,7 +44,8 @@ export default function MapPage() {
   const [showSolvedMysteries, setShowSolvedMysteries] = useState(true);
   const [showUnfoundCaches, setShowUnfoundCaches] = useState(false);
   const [mysteryPoints, setMysteryPoints] = useState<CacheMapPoint[]>([]);
-  const [unfoundPoints, setUnfoundPoints] = useState<CacheMapPoint[]>([]);
+  const [unfound, setUnfound] = useState<{ points: CacheMapPoint[]; totalCount: number; truncated: boolean } | null>(null);
+  const [unfoundError, setUnfoundError] = useState(false);
   const loadSequenceRef = useRef(0);
 
   useEffect(() => {
@@ -61,13 +62,14 @@ export default function MapPage() {
 
   useEffect(() => {
     if (!showUnfoundCaches) {
-      setUnfoundPoints([]);
+      setUnfound(null);
+      setUnfoundError(false);
       return;
     }
     let active = true;
-    void apiFetch<{ points: CacheMapPoint[] }>("/map/unfound")
-      .then((res) => { if (active) setUnfoundPoints(res.points); })
-      .catch(() => { if (active) setUnfoundPoints([]); });
+    void apiFetch<NonNullable<typeof unfound>>("/map/unfound")
+      .then((res) => { if (active) setUnfound(res); })
+      .catch(() => { if (active) setUnfoundError(true); });
     return () => { active = false; };
   }, [showUnfoundCaches]);
 
@@ -182,7 +184,11 @@ export default function MapPage() {
     };
   }, [requestFilters]);
 
-  const filterOptionPoints = optionPoints.length > 0 ? optionPoints : points;
+  const filterOptionPoints = useMemo(() => [
+    ...(optionPoints.length > 0 ? optionPoints : points),
+    ...mysteryPoints,
+    ...(unfound?.points ?? [])
+  ], [optionPoints, points, mysteryPoints, unfound]);
   const cacheTypes = useMemo(() => mapFilterValues(filterOptionPoints, "cacheType"), [filterOptionPoints]);
   const sizes = useMemo(() => mapFilterValues(filterOptionPoints, "size"), [filterOptionPoints]);
   const countries = useMemo(() => mapFilterValues(filterOptionPoints, "country"), [filterOptionPoints]);
@@ -191,22 +197,13 @@ export default function MapPage() {
     [filterOptionPoints, filters.country]
   );
   const filteredPoints = useMemo(() => filterMapPoints(points, loadedFilters), [loadedFilters, points]);
-  const matchesOverlay = useMemo(() => {
-    const queryLower = loadedFilters.query.trim().toLowerCase();
-    return (point: CacheMapPoint) => {
-      if (queryLower && !point.gcCode.toLowerCase().includes(queryLower) && !point.name.toLowerCase().includes(queryLower)) return false;
-      if (loadedFilters.country && point.country !== loadedFilters.country) return false;
-      if (loadedFilters.region && point.region !== loadedFilters.region) return false;
-      return true;
-    };
-  }, [loadedFilters.country, loadedFilters.query, loadedFilters.region]);
   const filteredMysteryPoints = useMemo(
-    () => (showSolvedMysteries ? mysteryPoints.filter(matchesOverlay) : []),
-    [matchesOverlay, mysteryPoints, showSolvedMysteries]
+    () => showSolvedMysteries ? filterMapPoints(mysteryPoints, loadedFilters) : [],
+    [loadedFilters, mysteryPoints, showSolvedMysteries]
   );
   const filteredUnfoundPoints = useMemo(
-    () => (showUnfoundCaches ? unfoundPoints.filter(matchesOverlay) : []),
-    [matchesOverlay, showUnfoundCaches, unfoundPoints]
+    () => showUnfoundCaches && unfound ? filterMapPoints(unfound.points, loadedFilters) : [],
+    [loadedFilters, showUnfoundCaches, unfound]
   );
   const combinedPoints = useMemo(
     () => [...filteredPoints, ...filteredMysteryPoints, ...filteredUnfoundPoints],
@@ -384,7 +381,11 @@ export default function MapPage() {
       </section>
       {error ? <p className="notice error">{error}</p> : null}
       {historyTruncated ? <p className="notice">Unfiltered map history is capped at {MAX_MAP_POINTS.toLocaleString()} points to keep the browser responsive. Use a filter to search the complete matching history.</p> : null}
-      {showUnfoundCaches && unfoundPoints.length === 0 ? (
+      {showUnfoundCaches && unfoundError ? <p className="notice error">Could not load unfound caches. Turn the overlay off and on to retry.</p> : null}
+      {showUnfoundCaches && unfound?.truncated ? (
+        <p className="notice">The unfound overlay loaded {unfound.points.length.toLocaleString()} of {unfound.totalCount.toLocaleString()} caches. Map filters and exports for this overlay use those loaded caches.</p>
+      ) : null}
+      {showUnfoundCaches && unfound?.totalCount === 0 ? (
         <p className="notice">
           No unfound caches in your account pool yet. <Link href="/upload?purpose=travel#travel-cache-import">Upload a Pocket Query or GSAK cache list →</Link>
         </p>
@@ -428,7 +429,7 @@ export default function MapPage() {
             </label>
             <label className="map-overlay-toggle">
               <input type="checkbox" checked={showUnfoundCaches} onChange={(event) => setShowUnfoundCaches(event.target.checked)} />
-              <span>Unfound ({unfoundPoints.length})</span>
+              <span>Unfound{unfound ? ` (${unfound.totalCount.toLocaleString()})` : ""}</span>
             </label>
             <button type="button" className="secondary-button" disabled={!combinedPoints.length} onClick={exportMapGpx}>
               <Download size={14} /> GPX
