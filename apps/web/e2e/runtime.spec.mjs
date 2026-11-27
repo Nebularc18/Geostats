@@ -552,3 +552,59 @@ test("archived goals leave the active list and failed saves keep the draft title
   await expect(page.getByText("Goal save unavailable")).toBeVisible();
   await expect(title).toHaveValue("Keep this draft");
 });
+
+test("dropping a GPX file opens the import dialog over the map cache drawer", async ({ page }) => {
+  const installation = installations[0];
+  const origin = `http://127.0.0.1:${installation.port}`;
+  await page.route("https://tiles.openfreemap.org/styles/dark", (route) =>
+    route.fulfill({
+      headers: { "access-control-allow-origin": "*" },
+      json: { version: 8, glyphs: "https://example.invalid/{fontstack}/{range}.pbf", sources: {}, layers: [] }
+    })
+  );
+  await page.route(`${installation.apiUrl}/**`, (route) => {
+    const point = {
+      id: "cache-1", gcCode: "GCDROP", name: "Test marker", cacheType: "Traditional Cache",
+      longitude: 15.5869, latitude: 56.1612
+    };
+    const empty = { points: [], totalCount: 0, snapshot: "fixture", snapshotRevision: "1" };
+    const responses = {
+      "/profile": { profile: { userId: "user-1" } },
+      "/auth/me": { user: { id: "user-1" } },
+      "/imports": { imports: [] },
+      "/map/caches": { ...empty, points: [point], totalCount: 1 },
+      "/map/hides": empty,
+      "/map/mysteries": empty,
+      "/stats/cache/GCDROP": { gcCode: point.gcCode, cache: point, friendsWhoFound: [], trackables: [] }
+    };
+    return route.fulfill({
+      headers: { "access-control-allow-origin": origin, "access-control-allow-credentials": "true" },
+      json: responses[new URL(route.request().url()).pathname] ?? {}
+    });
+  });
+  await page.goto(`${origin}/map`);
+  await expect(page.getByText("1 points shown")).toBeVisible();
+  const canvas = page.locator(".maplibregl-canvas");
+  await canvas.scrollIntoViewIfNeeded();
+  await expect.poll(async () => {
+    await canvas.hover();
+    return canvas.evaluate((element) => element.style.cursor);
+  }, { timeout: 10_000 }).toBe("pointer");
+  await canvas.click();
+  const drawer = page.getByRole("dialog", { name: "Cache details for GCDROP" });
+  await expect(drawer.getByRole("heading", { name: "Test marker" })).toBeVisible();
+
+  await drawer.evaluate((element) => {
+    const files = new DataTransfer();
+    files.items.add(new File(["<gpx/>"], "my-finds.gpx", { type: "application/gpx+xml" }));
+    element.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: files }));
+  });
+  const prompt = page.getByRole("dialog", { name: "Quick GPX / ZIP Import" });
+  await expect(prompt.getByText("my-finds.gpx")).toBeVisible();
+  const purpose = prompt.getByRole("combobox", { name: "Import as" });
+  await expect(purpose).toBeFocused();
+  await purpose.selectOption("hides");
+  await page.keyboard.press("Escape");
+  await expect(prompt).toHaveCount(0);
+  await expect(drawer.getByRole("button", { name: "Close cache inspector" })).toBeFocused();
+});

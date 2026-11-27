@@ -277,8 +277,8 @@ test("solved mystery pins omit unknown finals and use the newest correct attempt
     mysteryWorkspace: { findMany: async () => [
       { id: "published", gcCode: "GCPUB", data: { status: "solved", publishedLatitude: 50, publishedLongitude: 10 } },
       { id: "final", gcCode: "GCFINAL", data: { status: "solved", attempts: [
-        { state: "correct", latitude: 56, longitude: 15 },
-        { state: "correct", latitude: 57, longitude: 16 }
+        { state: "correct", latitude: 57, longitude: 16, createdAt: "2026-11-25" },
+        { state: "correct", latitude: 56, longitude: 15, createdAt: "2026-11-26" }
       ] } },
     ] }
   } as never, {} as never);

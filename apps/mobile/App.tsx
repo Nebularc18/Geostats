@@ -22,7 +22,7 @@ import { ClerkProvider, useAuth } from "@clerk/expo";
 import { useHostedAuth } from "@clerk/expo/hosted-auth";
 import { tokenCache } from "@clerk/expo/token-cache";
 import {
-  MAX_TRAVEL_DIRECTIONS_STOPS, moveTravelStop, normalizeAccountTravelPlan, normalizeTravelPlan,
+  MAX_TRAVEL_DIRECTIONS_STOPS, mysteryFinalCoordinate, moveTravelStop, normalizeAccountTravelPlan, normalizeTravelPlan,
   travelPlanDirectionsUrl, travelPlanGpx, type AccountTravelPlan, type TravelPlan
 } from "@geostats/shared";
 import { CACHE_IMPORT_MODES, formatImportReceipt, type CacheImportMode, type ImportReceipt, MAX_MYSTERY_WORKSPACES_PER_OWNER, normalizeMysteryListing, parseCoordinate, type MysteryListing, type MergeableMysteryCache, stableJsonStringify } from "@geostats/shared";
@@ -78,6 +78,7 @@ type CoordinateAttempt = {
   finalLongitude?: number;
   state: CheckState | "planned";
   createdAt: string;
+  updatedAt?: string;
   geocachingSyncedAt?: string;
 };
 type MysteryCache = MysteryListing & {
@@ -604,12 +605,7 @@ function revealedCoordinate(attempt: CoordinateAttempt) {
 }
 
 function finalCoordinate(cache: MysteryCache) {
-  for (const attempt of cache.attempts) {
-    if (attempt.state !== "correct") continue;
-    const coordinate = revealedCoordinate(attempt) ?? (attempt.kind !== "keyword" ? inputCoordinate(attempt) : null);
-    if (coordinate) return coordinate;
-  }
-  return null;
+  return mysteryFinalCoordinate(cache.attempts);
 }
 
 function escapeMarkup(value: unknown) {

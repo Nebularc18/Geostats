@@ -7,6 +7,8 @@ export type TravelAttempt = {
   longitude?: number;
   finalLatitude?: number;
   finalLongitude?: number;
+  createdAt?: string;
+  updatedAt?: string;
 };
 
 export type TravelPlannerCache = {

@@ -1,7 +1,7 @@
 "use client";
 
 import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import { MAX_MYSTERY_SNAPSHOT_BYTES, mysterySnapshotByteLength, normalizeMysteryListing, parseCoordinate, type MysteryListing as MysteryListingData } from "@geostats/shared";
+import { latestMysterySolution, MAX_MYSTERY_SNAPSHOT_BYTES, mysterySnapshotByteLength, normalizeMysteryListing, parseCoordinate, type MysteryListing as MysteryListingData } from "@geostats/shared";
 import { MysteryListing } from "./mystery-listing";
 import {
   AlertTriangle,
@@ -316,11 +316,7 @@ function solvedCoordinateForAttempt(attempt: CoordinateAttempt): SolvedCoordinat
 }
 
 function finalCoordinate(cache: MysteryCache) {
-  for (const attempt of cache.attempts) {
-    const solved = solvedCoordinateForAttempt(attempt);
-    if (solved) return solved;
-  }
-  return null;
+  return latestMysterySolution(cache.attempts);
 }
 
 function attemptKind(attempt: CoordinateAttempt): AttemptKind {

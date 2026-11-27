@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { UploadCloud, X } from "lucide-react";
 import { apiFetch, invalidateStatsSummaryCache } from "../lib/api";
+import { Modal } from "./ui/modal";
 
 function detectPurpose(fileName: string): "finds" | "hides" | "travel" {
   const lower = fileName.toLowerCase();
@@ -39,7 +40,6 @@ export function GlobalDropImport({ onOpen }: { onOpen?: () => void } = {}) {
   const onOpenRef = useRef(onOpen);
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const selectRef = useRef<HTMLSelectElement | null>(null);
-  const previousFocusRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     onOpenRef.current = onOpen;
@@ -122,54 +122,7 @@ export function GlobalDropImport({ onOpen }: { onOpen?: () => void } = {}) {
   }, []);
 
   useEffect(() => {
-    if (!pendingFile) {
-      previousFocusRef.current?.focus();
-      previousFocusRef.current = null;
-      return;
-    }
-
-    if (!previousFocusRef.current) {
-      previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    }
-    window.requestAnimationFrame(() => selectRef.current?.focus());
-
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        if (!uploadingRef.current) {
-          event.preventDefault();
-          setPendingFile(null);
-        }
-        return;
-      }
-      if (event.key === "Tab" && dialogRef.current) {
-        const focusable = Array.from(
-          dialogRef.current.querySelectorAll<HTMLElement>(
-            'button:not([disabled]), select:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])'
-          )
-        );
-        if (focusable.length === 0) {
-          event.preventDefault();
-          dialogRef.current.focus();
-          return;
-        }
-        const first = focusable[0]!;
-        const last = focusable[focusable.length - 1]!;
-        const active = document.activeElement as HTMLElement | null;
-        if (!active || !dialogRef.current.contains(active) || active === dialogRef.current) {
-          event.preventDefault();
-          (event.shiftKey ? last : first).focus();
-        } else if (event.shiftKey && active === first) {
-          event.preventDefault();
-          last.focus();
-        } else if (!event.shiftKey && active === last) {
-          event.preventDefault();
-          first.focus();
-        }
-      }
-    };
-
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
+    if (pendingFile) selectRef.current?.focus();
   }, [pendingFile]);
 
   useEffect(() => {
@@ -229,21 +182,14 @@ export function GlobalDropImport({ onOpen }: { onOpen?: () => void } = {}) {
       ) : null}
 
       {pendingFile ? (
-        <div
+        <Modal
           className="ds-cmdk-backdrop"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="quick-drop-import-title"
-          onClick={() => !uploading && setPendingFile(null)}
+          label="Quick GPX / ZIP Import"
+          onClose={() => { if (!uploadingRef.current) setPendingFile(null); }}
         >
-          <div
-            ref={dialogRef}
-            tabIndex={-1}
-            className="ds-cmdk-dialog ds-drop-dialog"
-            onClick={(event) => event.stopPropagation()}
-          >
+          <div ref={dialogRef} tabIndex={-1} className="ds-cmdk-dialog ds-drop-dialog">
             <div className="ds-drop-dialog-header">
-              <h2 id="quick-drop-import-title">Quick GPX / ZIP Import</h2>
+              <h2>Quick GPX / ZIP Import</h2>
               <button type="button" className="row-delete" disabled={uploading} onClick={() => setPendingFile(null)} aria-label="Cancel">
                 <X size={16} />
               </button>
@@ -274,7 +220,7 @@ export function GlobalDropImport({ onOpen }: { onOpen?: () => void } = {}) {
               </button>
             </div>
           </div>
-        </div>
+        </Modal>
       ) : null}
 
       {toast ? (
