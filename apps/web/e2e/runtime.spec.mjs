@@ -274,7 +274,7 @@ test("GSAK download clears the banner despite an older in-flight poll and later 
 });
 
 
-test("sidebar entry to Mysteries loads a new document so the legacy helper can run", async ({ page }) => {
+test("the Field sidebar link opens Mysteries in a new document so the legacy helper can run", async ({ page }) => {
   const installation = installations[0];
   const origin = `http://127.0.0.1:${installation.port}`;
   await page.route(`${installation.apiUrl}/**`, async (route) => {
@@ -304,7 +304,7 @@ test("sidebar entry to Mysteries loads a new document so the legacy helper can r
   await page.goto(`${origin}/imports`);
   await expect(page.getByRole("heading", { name: "Import history" })).toBeVisible();
   const navigation = page.waitForEvent("request", (request) => request.isNavigationRequest() && request.url() === `${origin}/mysteries`);
-  await page.getByRole("navigation", { name: "Primary", exact: true }).getByRole("link", { name: "Mysteries", exact: true }).click();
+  await page.getByRole("navigation", { name: "Primary", exact: true }).getByRole("link", { name: "Field", exact: true }).click();
   await navigation;
   await expect(page.getByRole("status", { name: "Geocaching helper update" })).toBeVisible();
 });
