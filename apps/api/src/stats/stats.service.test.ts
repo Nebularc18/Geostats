@@ -154,3 +154,91 @@ test("extreme SQL discards neutral placeholders and scopes elevation data", () =
   assert.match(locationExtremeSql("latitude", "DESC"), /latitude IS NOT NULL AND longitude IS NOT NULL/);
   assert.match(elevationExtremeSql("ASC", null), /u."user_id" = \$3/);
 });
+
+test("stats rebuild older snapshots and refresh maintenance after a UTC day", async () => {
+  let latest = { generatedAt: new Date("2000-01-01"), statsJson: { statsVersion: STATS_VERSION, hideStats: { activeHides: 1 } } };
+  let recalculations = 0;
+  const service = new StatsService({
+    geocachingProfile: { findUnique: async () => null },
+    statSnapshot: { findFirst: async () => latest }
+  } as never);
+  Object.assign(service, { recalculateSnapshotForUser: async () => { recalculations += 1; } });
+
+  await service.snapshotForUser("owner");
+  latest = { ...latest, generatedAt: new Date() };
+  assert.equal(await service.snapshotForUser("owner"), latest.statsJson);
+  latest = { ...latest, statsJson: { ...latest.statsJson, statsVersion: STATS_VERSION - 1 } };
+  await service.snapshotForUser("owner");
+  assert.equal(recalculations, 2);
+});
+
+test("cache detail uses the newest correct workspace coordinates and leaves missing coordinates empty", async () => {
+  const workspace = {
+    id: "workspace", clientId: "client", updatedAt: new Date(),
+    data: { attempts: [
+      { state: "wrong", latitude: 1, longitude: 2 },
+      { state: "correct", kind: "keyword", finalLatitude: 56, finalLongitude: 15 },
+      { state: "correct", latitude: 57, longitude: 16 }
+    ] }
+  };
+  const service = new StatsService({
+    cache: { findUnique: async () => null },
+    mysteryWorkspace: { findFirst: async () => workspace },
+    savedFriend: { findMany: async () => [] },
+    trackableLog: { findMany: async () => [] }
+  } as never);
+
+  const { cache } = await service.cacheDetailForUser("owner", "GCFINAL");
+  assert.deepEqual([cache.latitude, cache.longitude, cache.correctedLatitude, cache.correctedLongitude], [null, null, 56, 15]);
+});
+
+test("cache detail normalizes nested Groundspeak hide logs", async () => {
+  const cache = {
+    gcCode: "GCHIDE", name: "Hide", latitude: 56, longitude: 15, finds: [], corrections: [],
+    hides: [{ id: "hide", receivedLogCount: 1, receivedLogsRaw: {
+      "groundspeak:cache": { "groundspeak:logs": { "groundspeak:log": {
+        "groundspeak:type": "Found it",
+        "groundspeak:date": "2026-02-13T09:00:00Z",
+        "groundspeak:finder": { text: "Alice" }
+      } } }
+    } }]
+  };
+  const service = new StatsService({
+    cache: { findUnique: async () => cache },
+    mysteryWorkspace: { findFirst: async () => null },
+    savedFriend: { findMany: async () => [] },
+    trackableLog: { findMany: async () => [] }
+  } as never);
+
+  const result = await service.cacheDetailForUser("owner", "GCHIDE");
+  assert.deepEqual(result.hide?.receivedLogs.map(({ date, finder, type }) => ({ date, finder, type })), [
+    { date: "2026-02-13", finder: "Alice", type: "Found it" }
+  ]);
+});
+
+test("Logbook pages by date in the database when no private owner check is needed", async () => {
+  const row = { id: "third", foundAt: new Date("2025-01-01"), cache: { gcCode: "GCPAGE", metadataTrusted: true } };
+  let reads = 0;
+  const service = new StatsService({
+    geocachingProfile: { findUnique: async () => null },
+    find: {
+      count: async () => 10,
+      findMany: async (query: any) => {
+        reads += 1;
+        if (reads === 1) {
+          assert.equal(query.skip, 2);
+          assert.equal(query.take, 1);
+          assert.equal(query.select.logText, false);
+          return [row];
+        }
+        assert.deepEqual(query.where, { userId: "owner", id: { in: [row.id] } });
+        return [{ id: row.id, logText: "A log on this page" }];
+      }
+    }
+  } as never);
+
+  const result = await service.findsForUser("owner", { offset: 2, limit: 1, includeFacets: false });
+  assert.equal(result.total, 10);
+  assert.equal(result.hasMore, true);
+  assert.equal(result.finds[0]?.logText, "A log on this page");
+});

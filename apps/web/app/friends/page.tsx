@@ -1,11 +1,37 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { Check, Share2 } from "lucide-react";
 import { AppShell } from "../../components/app-shell";
 import { apiFetch } from "../../lib/api";
+import { copyText } from "../../lib/copy-text";
 import { comparisonBucketRows, comparisonCountries, FriendComparison, readSavedFriends } from "../../lib/friend-comparison";
 
 const SAVED_FRIENDS_KEY = "geostats-saved-friends";
+
+type SharedFind = {
+  gcCode: string;
+  name: string;
+  cacheType: string | null;
+  difficulty: number | null;
+  terrain: number | null;
+  country: string | null;
+  yourFoundAt: string;
+  friendFoundAt: string;
+};
+
+type RichFriendComparison = FriendComparison & {
+  sharedFindsCount?: number;
+  recentSharedFinds?: SharedFind[];
+  dtOverlap?: { both: number; onlyYou: number; onlyFriend: number };
+  jasmerOverlap?: { both: number; onlyYou: number; onlyFriend: number };
+};
+
+type LeaderboardRow = {
+  username: string;
+  isYou: boolean;
+  stats: FriendComparison["you"]["stats"];
+};
 
 const metrics: Array<{
   key: keyof FriendComparison["you"]["stats"];
@@ -20,6 +46,8 @@ const metrics: Array<{
   { key: "currentStreak", label: "Current streak" },
   { key: "ftfCount", label: "FTFs" }
 ];
+
+type LeaderboardMetric = "totalFinds" | "countryCount" | "difficultyTerrainCount" | "longestStreak" | "ftfCount";
 
 function formatImportDate(value: string | null) {
   if (!value) {
@@ -49,26 +77,92 @@ function CountryList({ title, countries }: { title: string; countries: string[] 
 export default function FriendsPage() {
   const [username, setUsername] = useState("");
   const [savedFriends, setSavedFriends] = useState<string[]>([]);
-  const [comparison, setComparison] = useState<FriendComparison | null>(null);
+  const [leaderboard, setLeaderboard] = useState<LeaderboardRow[]>([]);
+  const [sortMetric, setSortMetric] = useState<LeaderboardMetric>("totalFinds");
+  const [comparison, setComparison] = useState<RichFriendComparison | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [inviteCopied, setInviteCopied] = useState(false);
   const latestRequestRef = useRef(0);
   const pendingUsernameRef = useRef<string | null>(null);
+  const inviteHandledRef = useRef(false);
+
+  const myUsername = useMemo(
+    () => leaderboard.find((row) => row.isYou)?.username ?? comparison?.you.username ?? null,
+    [leaderboard, comparison]
+  );
 
   useEffect(() => {
-    setSavedFriends(readSavedFriends(localStorage.getItem(SAVED_FRIENDS_KEY)));
+    let active = true;
+    async function loadSaved() {
+      try {
+        const res = await apiFetch<{ friends: string[]; leaderboard: LeaderboardRow[] }>("/stats/friends");
+        if (!active) return;
+        setSavedFriends(res.friends);
+        setLeaderboard(res.leaderboard);
+
+        const localLegacy = readSavedFriends(localStorage.getItem(SAVED_FRIENDS_KEY));
+        if (localLegacy.length > 0) {
+          const missing = localLegacy.filter(
+            (candidate) => !res.friends.some((existing) => existing.toLowerCase() === candidate.toLowerCase())
+          );
+          if (missing.length === 0) {
+            localStorage.removeItem(SAVED_FRIENDS_KEY);
+          } else {
+            const failed: string[] = [];
+            for (const candidate of missing) {
+              try {
+                await apiFetch("/stats/friends", {
+                  method: "POST",
+                  body: JSON.stringify({ username: candidate })
+                });
+              } catch {
+                failed.push(candidate);
+              }
+            }
+            if (failed.length === 0) {
+              localStorage.removeItem(SAVED_FRIENDS_KEY);
+            } else {
+              localStorage.setItem(SAVED_FRIENDS_KEY, JSON.stringify(failed));
+            }
+            try {
+              const refreshed = await apiFetch<{ friends: string[]; leaderboard: LeaderboardRow[] }>("/stats/friends");
+              if (active) {
+                setSavedFriends(refreshed.friends);
+                setLeaderboard(refreshed.leaderboard);
+              }
+            } catch {
+              // Keep the server list already loaded above rather than wiping it with failed local entries.
+            }
+          }
+        }
+      } catch {
+        if (active) {
+          setSavedFriends(readSavedFriends(localStorage.getItem(SAVED_FRIENDS_KEY)));
+        }
+      }
+    }
+    void loadSaved();
+    if (!inviteHandledRef.current) {
+      const params = new URLSearchParams(window.location.search);
+      const invited = params.get("add")?.trim();
+      if (invited) {
+        inviteHandledRef.current = true;
+        setUsername(invited);
+        void compareWith(invited);
+      }
+    }
+    return () => {
+      active = false;
+    };
   }, []);
 
   const countryGroups = useMemo(() => (comparison ? comparisonCountries(comparison.you.stats.countries, comparison.friend.stats.countries) : null), [comparison]);
   const cacheTypeRows = useMemo(() => (comparison ? comparisonBucketRows(comparison.you.stats.cacheTypes, comparison.friend.stats.cacheTypes) : []), [comparison]);
-
-  function updateSavedFriends(update: (friends: string[]) => string[]) {
-    setSavedFriends((current) => {
-      const next = update(current);
-      localStorage.setItem(SAVED_FRIENDS_KEY, JSON.stringify(next));
-      return next;
-    });
-  }
+  const sortedLeaderboard = useMemo(
+    () => [...leaderboard].sort((a, b) => Number(b.stats[sortMetric]) - Number(a.stats[sortMetric]) || a.username.localeCompare(b.username)),
+    [leaderboard, sortMetric]
+  );
 
   async function compareWith(candidate: string) {
     const cleanUsername = candidate.trim();
@@ -83,13 +177,21 @@ export default function FriendsPage() {
     setLoading(true);
     setError(null);
     try {
-      const result = await apiFetch<FriendComparison>(`/stats/compare/${encodeURIComponent(cleanUsername)}`);
+      const result = await apiFetch<RichFriendComparison>(`/stats/compare/${encodeURIComponent(cleanUsername)}`);
       if (requestId !== latestRequestRef.current) {
         return;
       }
       setComparison(result);
       setUsername(result.friend.username);
-      updateSavedFriends((friends) => [result.friend.username, ...friends.filter((friend) => friend.toLowerCase() !== result.friend.username.toLowerCase())].slice(0, 20));
+
+      const saved = await apiFetch<{ friends: string[]; leaderboard: LeaderboardRow[] }>("/stats/friends", {
+        method: "POST",
+        body: JSON.stringify({ username: result.friend.username })
+      });
+      if (requestId === latestRequestRef.current) {
+        setSavedFriends(saved.friends);
+        setLeaderboard(saved.leaderboard);
+      }
     } catch (requestError) {
       if (requestId !== latestRequestRef.current) {
         return;
@@ -109,30 +211,59 @@ export default function FriendsPage() {
     void compareWith(username);
   }
 
-  function removeFriend(friend: string) {
+  async function removeFriend(friend: string) {
     const normalizedFriend = friend.trim().toLowerCase();
     if (pendingUsernameRef.current?.trim().toLowerCase() === normalizedFriend) {
       latestRequestRef.current += 1;
       pendingUsernameRef.current = null;
       setLoading(false);
     }
-    updateSavedFriends((friends) => friends.filter((candidate) => candidate !== friend));
-    if (comparison?.friend.username.trim().toLowerCase() === normalizedFriend) {
-      setComparison(null);
+    try {
+      const updated = await apiFetch<{ friends: string[]; leaderboard: LeaderboardRow[] }>(
+        `/stats/friends/${encodeURIComponent(friend)}`,
+        { method: "DELETE" }
+      );
+      setSavedFriends(updated.friends);
+      setLeaderboard(updated.leaderboard);
+      if (comparison?.friend.username.trim().toLowerCase() === normalizedFriend) {
+        setComparison(null);
+      }
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : `Could not remove ${friend}.`);
+    }
+  }
+
+  async function copyInviteLink() {
+    if (!myUsername) return;
+    const url = `${window.location.origin}/friends?add=${encodeURIComponent(myUsername)}`;
+    const copied = await copyText(url).catch(() => false);
+    if (copied) {
+      setInviteCopied(true);
+      window.setTimeout(() => setInviteCopied(false), 2500);
+    } else {
+      setError(`Could not copy automatically. Share this link: ${url}`);
     }
   }
 
   return (
     <AppShell>
       <header className="page-header">
-        <p className="eyebrow">Side-by-side stats</p>
-        <h1>Friend comparison</h1>
+        <div>
+          <p className="eyebrow">Account-synced friends & group stats</p>
+          <h1>Friends</h1>
+        </div>
+        {myUsername ? (
+          <button type="button" className="secondary-button" onClick={() => void copyInviteLink()}>
+            {inviteCopied ? <Check size={16} /> : <Share2 size={16} />}
+            {inviteCopied ? "Invite link copied!" : "Copy invite link"}
+          </button>
+        ) : null}
       </header>
 
       <section className="panel friend-search-panel">
         <div>
-          <h2>Find a friend</h2>
-          <p className="muted">They need a Geostats profile. Search by their exact geocaching username.</p>
+          <h2>Find & save a friend</h2>
+          <p className="muted">Saved friends sync across your devices and appear in the group leaderboard.</p>
         </div>
         <form onSubmit={submit}>
           <label className="sr-only" htmlFor="friend-username">
@@ -146,16 +277,64 @@ export default function FriendsPage() {
         {error ? <p className="notice error">{error}</p> : null}
       </section>
 
+      {sortedLeaderboard.length > 1 ? (
+        <section className="panel">
+          <div className="panel-heading">
+            <div>
+              <h2>Group leaderboard</h2>
+              <small className="muted">You and your saved friends ranked side by side.</small>
+            </div>
+            <select aria-label="Sort leaderboard by" value={sortMetric} onChange={(event) => setSortMetric(event.target.value as LeaderboardMetric)}>
+              <option value="totalFinds">Total finds</option>
+              <option value="countryCount">Countries</option>
+              <option value="difficultyTerrainCount">D/T grid</option>
+              <option value="longestStreak">Longest streak</option>
+              <option value="ftfCount">FTFs</option>
+            </select>
+          </div>
+          <div className="leaderboard-table">
+            <div className="leaderboard-row leaderboard-head">
+              <span>#</span>
+              <span>Geocacher</span>
+              <span>Finds</span>
+              <span>Countries</span>
+              <span>D/T</span>
+              <span>Streak</span>
+              <span>FTFs</span>
+            </div>
+            {sortedLeaderboard.map((entry, index) => (
+              <div key={entry.username} className={`leaderboard-row${entry.isYou ? " is-you" : ""}`}>
+                <strong>{index + 1}</strong>
+                <span>
+                  {entry.isYou ? (
+                    <strong>{entry.username} (You)</strong>
+                  ) : (
+                    <button type="button" className="text-button" onClick={() => void compareWith(entry.username)}>
+                      {entry.username}
+                    </button>
+                  )}
+                </span>
+                <strong>{entry.stats.totalFinds.toLocaleString()}</strong>
+                <span>{entry.stats.countryCount}</span>
+                <span>{entry.stats.difficultyTerrainCount}/81</span>
+                <span>{entry.stats.longestStreak}d</span>
+                <span>{entry.stats.ftfCount}</span>
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
       {savedFriends.length > 0 ? (
         <section className="panel friend-saved-panel">
-          <h2>Saved on this device</h2>
+          <h2>Saved friends</h2>
           <div className="friend-saved-list">
             {savedFriends.map((friend) => (
               <div key={friend}>
                 <button className="text-button" onClick={() => void compareWith(friend)} type="button">
                   {friend}
                 </button>
-                <button aria-label={`Remove ${friend}`} className="friend-remove-button" onClick={() => removeFriend(friend)} type="button">
+                <button aria-label={`Remove ${friend}`} className="friend-remove-button" onClick={() => void removeFriend(friend)} type="button">
                   Remove
                 </button>
               </div>
@@ -196,6 +375,54 @@ export default function FriendsPage() {
                 );
               })}
             </div>
+          </section>
+
+          {comparison.dtOverlap || comparison.jasmerOverlap ? (
+            <section className="panel">
+              <h2>Grid overlap</h2>
+              <div className="friend-overlap-grid">
+                {comparison.dtOverlap ? (
+                  <div className="friend-overlap-card">
+                    <h3>D/T Matrix</h3>
+                    <p>
+                      <strong>{comparison.dtOverlap.both}</strong> shared ·{" "}
+                      <strong>{comparison.dtOverlap.onlyYou}</strong> only {comparison.you.username} ·{" "}
+                      <strong>{comparison.dtOverlap.onlyFriend}</strong> only {comparison.friend.username}
+                    </p>
+                  </div>
+                ) : null}
+                {comparison.jasmerOverlap ? (
+                  <div className="friend-overlap-card">
+                    <h3>Jasmer (Hidden months)</h3>
+                    <p>
+                      <strong>{comparison.jasmerOverlap.both}</strong> shared ·{" "}
+                      <strong>{comparison.jasmerOverlap.onlyYou}</strong> only {comparison.you.username} ·{" "}
+                      <strong>{comparison.jasmerOverlap.onlyFriend}</strong> only {comparison.friend.username}
+                    </p>
+                  </div>
+                ) : null}
+              </div>
+            </section>
+          ) : null}
+
+          <section className="panel">
+            <h2>Shared finds ({comparison.sharedFindsCount ?? 0})</h2>
+            {comparison.recentSharedFinds && comparison.recentSharedFinds.length > 0 ? (
+              <div className="table-list">
+                {comparison.recentSharedFinds.map((find) => (
+                  <div key={find.gcCode} className="table-row">
+                    <a className="cache-link" href={`https://coord.info/${find.gcCode}`} rel="noreferrer" target="_blank">
+                      <strong>{find.gcCode}</strong> {find.name}
+                    </a>
+                    <small className="muted">
+                      You: {find.yourFoundAt.slice(0, 10)} · {comparison.friend.username}: {find.friendFoundAt.slice(0, 10)}
+                    </small>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="muted">No caches found by both accounts yet.</p>
+            )}
           </section>
 
           <section className="panel">

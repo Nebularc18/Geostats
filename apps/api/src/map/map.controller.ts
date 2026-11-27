@@ -1,5 +1,5 @@
 import { BadRequestException, Body, ConflictException, Controller, Get, Post, Query, UseGuards } from "@nestjs/common";
-import { AuthUser } from "@geostats/shared";
+import { AuthUser, mysteryFinalCoordinate } from "@geostats/shared";
 import { countableFindWhere, personalCacheMetadata, Prisma } from "@geostats/db";
 import { normalizedGcUsername } from "@geostats/stats";
 import { Type } from "class-transformer";
@@ -111,6 +111,12 @@ class TravelSearchDto {
   @ValidateNested()
   @Type(() => TravelPlaceDto)
   destinationPlace?: TravelPlaceDto;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(3)
+  @IsIn(["missing_dt", "missing_jasmer", "missing_county"], { each: true })
+  gapFilters?: Array<"missing_dt" | "missing_jasmer" | "missing_county">;
 }
 
 class MapPointsQueryDto {
@@ -506,8 +512,100 @@ export class MapController {
       includeFound: body.includeFound ?? false,
       mysteryCaches: body.mysteryCaches ?? [],
       originPlace: body.originPlace,
-      destinationPlace: body.destinationPlace
+      destinationPlace: body.destinationPlace,
+      gapFilters: body.gapFilters
     });
+  }
+
+  @Get("mysteries")
+  async mysteries(@CurrentUser() user: AuthUser) {
+    const workspaces = await this.prisma.mysteryWorkspace.findMany({
+      where: { ownerId: user.id },
+      select: { id: true, clientId: true, gcCode: true, data: true }
+    });
+    const points = workspaces.flatMap((workspace) => {
+      const data = workspace.data as any;
+      if (!data || data.status === "archived") return [];
+      const final = mysteryFinalCoordinate(data.attempts);
+      if (!final) return [];
+      return [{
+        id: `mystery-${workspace.id}`,
+        gcCode: String(data.gcCode ?? workspace.gcCode ?? "").toUpperCase(),
+        name: String(data.name ?? data.gcCode ?? "Solved mystery"),
+        cacheType: "Mystery Cache",
+        difficulty: null,
+        terrain: null,
+        size: null,
+        ...final,
+        country: typeof data.country === "string" ? data.country : null,
+        region: typeof data.region === "string" ? data.region : null,
+        county: typeof data.county === "string" ? data.county : null,
+        isSolvedMystery: true
+      }];
+    });
+    return { points, totalCount: points.length };
+  }
+
+  @Get("unfound")
+  async unfound(@CurrentUser() user: AuthUser) {
+    const where: Prisma.UserCacheDataWhereInput = {
+      userId: user.id,
+      cache: {
+        finds: { none: { userId: user.id } },
+        hides: { none: { userId: user.id } }
+      }
+    };
+    const [records, totalCount] = await Promise.all([
+      this.prisma.userCacheData.findMany({
+        where,
+        orderBy: { id: "asc" },
+        select: {
+          raw: true,
+          cache: {
+            select: {
+              id: true,
+              gcCode: true,
+              name: true,
+              cacheType: true,
+              difficulty: true,
+              terrain: true,
+              size: true,
+              latitude: true,
+              longitude: true,
+              country: true,
+              region: true,
+              county: true,
+              hiddenDate: true,
+              metadataTrusted: true,
+              corrections: { where: { userId: user.id }, take: 1, select: { latitude: true, longitude: true } }
+            }
+          }
+        },
+        take: 2500
+      }),
+      this.prisma.userCacheData.count({ where })
+    ]);
+    const points = records.map(({ cache: shared, raw }) => {
+      const merged = { ...shared, ...personalCacheMetadata(shared, raw) };
+      const correction = shared.corrections[0];
+      return {
+        id: `unfound-${shared.id}`,
+        gcCode: merged.gcCode,
+        name: merged.name,
+        cacheType: merged.cacheType,
+        difficulty: merged.difficulty === null ? null : Number(merged.difficulty),
+        terrain: merged.terrain === null ? null : Number(merged.terrain),
+        size: merged.size,
+        latitude: Number(correction?.latitude ?? merged.latitude),
+        longitude: Number(correction?.longitude ?? merged.longitude),
+        country: merged.country,
+        region: merged.region,
+        county: merged.county,
+        hiddenDate: merged.hiddenDate ? merged.hiddenDate.toISOString() : null,
+        isUnfound: true
+      };
+    });
+    return { points, totalCount, truncated: totalCount > points.length };
   }
 
   @Get("caches")

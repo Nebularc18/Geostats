@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import maplibregl, { type GeoJSONSource } from "maplibre-gl";
 import { boundsFor, isValidMapPoint } from "../lib/map-bounds";
-import { journeyMapStyle } from "../lib/journey-map-style";
+import { journeyMapStyle, journeyOsmStyle } from "../lib/journey-map-style";
 
 export type TrackableMapPoint = {
   id: string;
@@ -28,6 +28,7 @@ const ROUTE_SOURCE_ID = "trackable-routes";
 const POINT_SOURCE_ID = "trackable-points";
 const SELECTION_SOURCE_ID = "trackable-selection";
 const ROUTE_LAYER_ID = "trackable-routes";
+const POINT_DOT_LAYER_ID = "trackable-point-dots";
 const POINT_LABEL_LAYER_ID = "trackable-point-labels";
 const selectionColor: maplibregl.ExpressionSpecification = [
   "match", ["get", "role"], "Previous", "#8854ad", "Next", "#16836b", "#e8a34c"
@@ -166,14 +167,28 @@ export type TrackableMapProps = {
   focusPointId?: string | null;
   highlightPointIds?: string[];
   onPointSelect?: (pointId: string) => void;
+  basemap?: "dark" | "osm";
+  onBasemapFallback?: () => void;
 };
 
-export function TrackableMap({ points, focusPointId = null, highlightPointIds = [], onPointSelect, showFullRoute = false }: TrackableMapProps) {
+export function TrackableMap({
+  points,
+  focusPointId = null,
+  highlightPointIds = [],
+  onPointSelect,
+  showFullRoute = false,
+  basemap = "dark",
+  onBasemapFallback
+}: TrackableMapProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const popupRef = useRef<maplibregl.Popup | null>(null);
   const pointsRef = useRef<TrackableMapPoint[] | null>(null);
   const onPointSelectRef = useRef(onPointSelect);
+  const onBasemapFallbackRef = useRef(onBasemapFallback);
+  const [styleRevision, setStyleRevision] = useState(0);
+  const activeBasemapRef = useRef<"dark" | "osm">(basemap);
+  const fallbackTriggeredRef = useRef(false);
   const neighbours = useMemo(() => {
     const ordered = [...points].sort((a, b) => a.trackableId.localeCompare(b.trackableId) || a.sequence - b.sequence || Date.parse(a.loggedAt) - Date.parse(b.loggedAt));
     return new Map(ordered.map((point, index) => [
@@ -187,16 +202,56 @@ export function TrackableMap({ points, focusPointId = null, highlightPointIds = 
   }, [onPointSelect]);
 
   useEffect(() => {
+    onBasemapFallbackRef.current = onBasemapFallback;
+  }, [onBasemapFallback]);
+
+  useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
     const map = new maplibregl.Map({
       container: containerRef.current,
-      style: journeyMapStyle,
+      style: basemap === "osm" ? journeyOsmStyle : journeyMapStyle,
       center: [15.5869, 56.1612],
       zoom: 5,
       attributionControl: false
     });
+    activeBasemapRef.current = basemap;
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-left");
     map.addControl(new maplibregl.AttributionControl({ compact: true }), "bottom-right");
+
+    let vectorLoaded = false;
+    const triggerOsmFallback = () => {
+      if (fallbackTriggeredRef.current || activeBasemapRef.current === "osm") return;
+      fallbackTriggeredRef.current = true;
+      activeBasemapRef.current = "osm";
+      pointsRef.current = null;
+      map.setStyle(journeyOsmStyle);
+      onBasemapFallbackRef.current?.();
+    };
+
+    map.on("sourcedata", (event) => {
+      if (event.sourceId === "geography" && event.isSourceLoaded) {
+        vectorLoaded = true;
+      }
+    });
+
+    map.on("error", (event) => {
+      const sourceId = (event as { sourceId?: string }).sourceId;
+      if (sourceId === "geography" || !vectorLoaded) {
+        triggerOsmFallback();
+      }
+    });
+
+    map.on("style.load", () => {
+      pointsRef.current = null;
+      setStyleRevision((rev) => rev + 1);
+    });
+
+    const fallbackTimer = window.setTimeout(() => {
+      if (!vectorLoaded && activeBasemapRef.current === "dark") {
+        triggerOsmFallback();
+      }
+    }, 4500);
+
     map.on("click", (event) => {
       if (!map.getSource(POINT_SOURCE_ID)) return;
       const selected = map.getLayer("trackable-selected-stop") ? map.queryRenderedFeatures(event.point, { layers: ["trackable-selected-stop"] })[0] : undefined;
@@ -204,7 +259,8 @@ export function TrackableMap({ points, focusPointId = null, highlightPointIds = 
         onPointSelectRef.current?.(String(selected.properties.id));
         return;
       }
-      const feature = map.getLayer(POINT_LABEL_LAYER_ID) ? map.queryRenderedFeatures(event.point, { layers: [POINT_LABEL_LAYER_ID] })[0] : undefined;
+      const hitLayers = [POINT_LABEL_LAYER_ID, POINT_DOT_LAYER_ID].filter((id) => Boolean(map.getLayer(id)));
+      const feature = hitLayers.length > 0 ? map.queryRenderedFeatures(event.point, { layers: hitLayers })[0] : undefined;
       if (!feature?.properties) return;
       const coordinates = feature.geometry.type === "Point" ? feature.geometry.coordinates as number[] : [];
       if (coordinates.length < 2) return;
@@ -213,11 +269,12 @@ export function TrackableMap({ points, focusPointId = null, highlightPointIds = 
       if (pointId) onPointSelectRef.current?.(pointId);
     });
     map.on("mousemove", (event) => {
-      const layers = [POINT_LABEL_LAYER_ID, "trackable-selected-stop"].filter((id) => Boolean(map.getLayer(id)));
+      const layers = [POINT_LABEL_LAYER_ID, POINT_DOT_LAYER_ID, "trackable-selected-stop"].filter((id) => Boolean(map.getLayer(id)));
       map.getCanvas().style.cursor = layers.length > 0 && map.queryRenderedFeatures(event.point, { layers }).length > 0 ? "pointer" : "";
     });
     mapRef.current = map;
     return () => {
+      window.clearTimeout(fallbackTimer);
       popupRef.current?.remove();
       popupRef.current = null;
       map.remove();
@@ -225,6 +282,14 @@ export function TrackableMap({ points, focusPointId = null, highlightPointIds = 
       pointsRef.current = null;
     };
   }, []);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || activeBasemapRef.current === basemap) return;
+    activeBasemapRef.current = basemap;
+    pointsRef.current = null;
+    map.setStyle(basemap === "osm" ? journeyOsmStyle : journeyMapStyle);
+  }, [basemap]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -257,7 +322,7 @@ export function TrackableMap({ points, focusPointId = null, highlightPointIds = 
           const canvas = document.createElement("canvas");
           canvas.width = 24;
           canvas.height = 18;
-          const context = canvas.getContext("2d")!;
+          const context = canvas.getContext("2d", { willReadFrequently: true })!;
           context.fillStyle = "#292824";
           context.strokeStyle = "#a8a697";
           context.lineWidth = 1;
@@ -277,6 +342,17 @@ export function TrackableMap({ points, focusPointId = null, highlightPointIds = 
           });
         }
         map.addLayer({
+          id: POINT_DOT_LAYER_ID,
+          type: "circle",
+          source: POINT_SOURCE_ID,
+          paint: {
+            "circle-radius": ["case", ["==", ["get", "highlighted"], "true"], 7, 5],
+            "circle-color": ["case", ["==", ["get", "highlighted"], "true"], "#246645", "#292824"],
+            "circle-stroke-color": ["case", ["==", ["get", "highlighted"], "true"], "#87f3ae", "#a8a697"],
+            "circle-stroke-width": 1.5
+          }
+        });
+        map.addLayer({
           id: POINT_LABEL_LAYER_ID,
           type: "symbol",
           source: POINT_SOURCE_ID,
@@ -288,7 +364,7 @@ export function TrackableMap({ points, focusPointId = null, highlightPointIds = 
             "icon-ignore-placement": true,
             "symbol-z-order": "viewport-y",
             "text-field": ["get", "sequence"],
-            "text-font": ["Open Sans Regular"],
+            "text-font": ["Noto Sans Regular"],
             "text-size": 11,
             "text-padding": 0,
             "text-allow-overlap": false,
@@ -314,7 +390,7 @@ export function TrackableMap({ points, focusPointId = null, highlightPointIds = 
     return () => {
       cancelled = true;
     };
-  }, [highlightPointIds, points]);
+  }, [highlightPointIds, points, styleRevision]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -355,15 +431,15 @@ export function TrackableMap({ points, focusPointId = null, highlightPointIds = 
         map.addLayer({ id: "trackable-selected-legs", type: "line", source: SELECTION_SOURCE_ID, filter: ["all", ["==", ["geometry-type"], "LineString"], ["==", ["get", "role"], "Next"]], layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": "#16836b", "line-width": 4, "line-opacity": 0.95 } }, POINT_LABEL_LAYER_ID);
         map.addLayer({ id: "trackable-previous-leg", type: "line", source: SELECTION_SOURCE_ID, filter: ["all", ["==", ["geometry-type"], "LineString"], ["==", ["get", "role"], "Previous"]], layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": "#8854ad", "line-width": 4, "line-dasharray": [2, 2], "line-opacity": 0.95 } }, POINT_LABEL_LAYER_ID);
         map.addLayer({ id: "trackable-selected-stop", type: "circle", source: SELECTION_SOURCE_ID, filter: ["==", ["geometry-type"], "Point"], paint: { "circle-radius": ["case", ["==", ["get", "role"], "Selected"], 10, 7], "circle-color": selectionColor, "circle-stroke-color": "#fffdf0", "circle-stroke-width": 2 } });
-        map.addLayer({ id: "trackable-selected-labels", type: "symbol", source: SELECTION_SOURCE_ID, filter: ["==", ["geometry-type"], "Point"], layout: { "text-field": ["get", "label"], "text-font": ["Open Sans Bold"], "text-size": 12, "text-anchor": "top", "text-offset": [0, 1.2], "text-max-width": 18, "text-variable-anchor": ["top", "bottom", "left", "right"], "text-radial-offset": 1.2 }, paint: { "text-color": selectionColor, "text-halo-color": "#fffdf0", "text-halo-width": 2 } });
-        map.addLayer({ id: "trackable-selected-arrows", type: "symbol", source: SELECTION_SOURCE_ID, filter: ["==", ["geometry-type"], "LineString"], layout: { "symbol-placement": "line", "symbol-spacing": 120, "text-field": "▶", "text-font": ["Open Sans Regular"], "text-size": 13, "text-keep-upright": false }, paint: { "text-color": selectionColor, "text-halo-color": "#fffdf0", "text-halo-width": 1 } });
+        map.addLayer({ id: "trackable-selected-labels", type: "symbol", source: SELECTION_SOURCE_ID, filter: ["==", ["geometry-type"], "Point"], layout: { "text-field": ["get", "label"], "text-font": ["Noto Sans Bold"], "text-size": 12, "text-anchor": "top", "text-offset": [0, 1.2], "text-max-width": 18, "text-variable-anchor": ["top", "bottom", "left", "right"], "text-radial-offset": 1.2 }, paint: { "text-color": selectionColor, "text-halo-color": "#fffdf0", "text-halo-width": 2 } });
+        map.addLayer({ id: "trackable-selected-arrows", type: "symbol", source: SELECTION_SOURCE_ID, filter: ["==", ["geometry-type"], "LineString"], layout: { "symbol-placement": "line", "symbol-spacing": 120, "text-field": "▶", "text-font": ["Noto Sans Regular"], "text-size": 13, "text-keep-upright": false }, paint: { "text-color": selectionColor, "text-halo-color": "#fffdf0", "text-halo-width": 1 } });
       }
       map.setLayoutProperty(ROUTE_LAYER_ID, "visibility", showFullRoute ? "visible" : "none");
       map.setPaintProperty(ROUTE_LAYER_ID, "line-opacity", selected ? 0.3 : 0.5);
     };
     sync();
     return () => { cancelled = true; if (timer !== undefined) window.clearTimeout(timer); };
-  }, [focusPointId, neighbours, showFullRoute]);
+  }, [focusPointId, neighbours, showFullRoute, styleRevision]);
 
   useEffect(() => {
     const map = mapRef.current;

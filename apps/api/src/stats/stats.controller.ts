@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Get, Header, Param, Patch, Query, UseGuards } from "@nestjs/common";
+import { BadRequestException, Body, Controller, Delete, Get, Header, Param, Patch, Post, Query, UseGuards } from "@nestjs/common";
 import { AuthUser } from "@geostats/shared";
 import { AuthGuard } from "../auth/auth.guard";
 import { CurrentUser } from "../auth/current-user.decorator";
@@ -42,6 +42,71 @@ export class StatsController {
   @Get("compare/:username")
   async compare(@CurrentUser() user: AuthUser, @Param("username") username: string) {
     return this.stats.friendComparisonForUser(user.id, username);
+  }
+
+  @Get("friends")
+  async friends(@CurrentUser() user: AuthUser) {
+    return this.stats.savedFriendsForUser(user.id);
+  }
+
+  @Post("friends")
+  async addFriend(@CurrentUser() user: AuthUser, @Body() body: { username?: unknown }) {
+    if (typeof body.username !== "string" || !body.username.trim()) {
+      throw new BadRequestException("username is required");
+    }
+    return this.stats.saveFriendForUser(user.id, body.username);
+  }
+
+  @Delete("friends/:username")
+  async removeFriend(@CurrentUser() user: AuthUser, @Param("username") username: string) {
+    return this.stats.removeSavedFriendForUser(user.id, username);
+  }
+
+  @Get("cache/:gcCode")
+  async cacheDetail(@CurrentUser() user: AuthUser, @Param("gcCode") gcCode: string) {
+    return this.stats.cacheDetailForUser(user.id, gcCode);
+  }
+
+  @Get("finds")
+  async finds(
+    @CurrentUser() user: AuthUser,
+    @Query("q") q?: string,
+    @Query("cacheType") cacheType?: string,
+    @Query("size") size?: string,
+    @Query("country") country?: string,
+    @Query("region") region?: string,
+    @Query("county") county?: string,
+    @Query("difficulty") difficulty?: string,
+    @Query("terrain") terrain?: string,
+    @Query("foundMonthDay") foundMonthDay?: string,
+    @Query("hiddenYearMonth") hiddenYearMonth?: string,
+    @Query("year") year?: string,
+    @Query("owner") owner?: string,
+    @Query("ftfOnly") ftfOnly?: string,
+    @Query("sort") sort?: string,
+    @Query("offset") offset?: string,
+    @Query("limit") limit?: string,
+    @Query("facets") facets?: string
+  ) {
+    return this.stats.findsForUser(user.id, {
+      q,
+      cacheType,
+      size,
+      country,
+      region,
+      county,
+      difficulty: difficulty ? Number(difficulty) : undefined,
+      terrain: terrain ? Number(terrain) : undefined,
+      foundMonthDay,
+      hiddenYearMonth,
+      year,
+      owner,
+      ftfOnly: ftfOnly === "true" || ftfOnly === "1",
+      sort,
+      offset: offset ? Number(offset) : 0,
+      limit: limit ? Number(limit) : 50,
+      includeFacets: facets !== "false"
+    });
   }
 
   @Get("finds-by-month")

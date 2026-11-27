@@ -136,14 +136,18 @@ export default function DashboardPage() {
   return (
     <AppShell>
       <header className="page-header">
-        <p className="eyebrow">Private profile stats</p>
-        <h1>Your cache archive</h1>
-        <Link className="primary-link" href="/upload">
-          Upload GPX or ZIP
-        </Link>
-        <Link className="secondary-button" href="/trackables">
-          Open trackables
-        </Link>
+        <div>
+          <p className="eyebrow">Private profile stats</p>
+          <h1>Your cache archive</h1>
+        </div>
+        <div className="logbook-header-actions">
+          <Link className="primary-link" href="/upload">
+            Upload GPX or ZIP
+          </Link>
+          <Link className="secondary-button" href="/trackables">
+            Open trackables
+          </Link>
+        </div>
       </header>
       <section className="stat-grid">
         <StatCard label="Total finds" value={stats?.totalFinds ?? 0} />
@@ -166,7 +170,7 @@ export default function DashboardPage() {
               <span>Best day</span>
               <strong>
                 {stats?.summaryNumbers?.bestDay
-                  ? `${stats.summaryNumbers.bestDay.count} finds on ${stats.summaryNumbers.bestDay.key}`
+                  ? `${stats.summaryNumbers.bestDay.count} ${stats.summaryNumbers.bestDay.count === 1 ? "find" : "finds"} on ${stats.summaryNumbers.bestDay.key}`
                   : "-"}
               </strong>
             </div>
@@ -174,7 +178,7 @@ export default function DashboardPage() {
               <span>Best month</span>
               <strong>
                 {stats?.summaryNumbers?.bestMonth
-                  ? `${stats.summaryNumbers.bestMonth.count} finds in ${stats.summaryNumbers.bestMonth.key}`
+                  ? `${stats.summaryNumbers.bestMonth.count} ${stats.summaryNumbers.bestMonth.count === 1 ? "find" : "finds"} in ${stats.summaryNumbers.bestMonth.key}`
                   : "-"}
               </strong>
             </div>

@@ -13,7 +13,7 @@ test("travel pool summary includes every imported cache type and found state", a
       ]
     }
   };
-  const service = new TravelSearchService(prisma as never);
+  const service = new TravelSearchService(prisma as never, { snapshotForUser: async () => ({}) } as never);
 
   assert.deepEqual(await service.poolSummary("user-1"), {
     total: 4,
@@ -47,7 +47,7 @@ test("nearby search filters geographically and bounds matching cache candidates"
       }
     }
   };
-  const service = new TravelSearchService(prisma as never);
+  const service = new TravelSearchService(prisma as never, { snapshotForUser: async () => ({}) } as never);
 
   const result = await service.search("user-1", {
     mode: "nearby",
@@ -103,7 +103,7 @@ test("travel search reports route-geometry truncation", async () => {
     corrections: []
   };
   const prisma = { userCacheData: { findMany: async () => [{ cache }] } };
-  const service = new TravelSearchService(prisma as never);
+  const service = new TravelSearchService(prisma as never, { snapshotForUser: async () => ({}) } as never);
 
   try {
     const result = await service.search("user-1", {
@@ -147,7 +147,7 @@ test("nearby results include an older corrected cache beyond the first 5,000 can
       findMany: async ({ take, where }: any) => source.filter((row) => !where.id || row.id > where.id.gt).slice(0, take)
     }
   };
-  const service = new TravelSearchService(prisma as never);
+  const service = new TravelSearchService(prisma as never, { snapshotForUser: async () => ({}) } as never);
   const result = await service.search("owner", {
     mode: "nearby", origin: "Origin", radiusKm: 10, includeFound: false, mysteryCaches: [],
     originPlace: { label: "Origin", latitude: 56.16, longitude: 15.58 }
@@ -157,4 +157,26 @@ test("nearby results include an older corrected cache beyond the first 5,000 can
   assert.ok(!result.recommendations.some(({ gcCode }) => gcCode === "GC5000"));
   assert.equal(result.resultsTruncated, true);
   assert.equal(result.poolTruncated, false);
+});
+
+test("travel checks current stats and finds gaps for an imported pool with no history", async () => {
+  const prisma = { userCacheData: { findMany: async () => [{
+    id: "row", cache: {
+      id: "cache", gcCode: "GCPOOL", name: "Imported", cacheType: "Traditional Cache",
+      metadataTrusted: true, latitude: 56.16, longitude: 15.58, difficulty: 2, terrain: 3,
+      hiddenDate: new Date("2002-07-01"), county: "Blekinge", finds: [], corrections: []
+    }
+  }] } };
+  const service = new TravelSearchService(prisma as never, {
+    snapshotForUser: async (userId: string) => {
+      assert.equal(userId, "owner");
+      return { difficultyTerrain: [], hiddenMonthMatrix: [], counties: [] };
+    }
+  } as never);
+  const result = await service.search("owner", {
+    mode: "nearby", origin: "Origin", radiusKm: 10, includeFound: false, mysteryCaches: [],
+    gapFilters: ["missing_dt", "missing_jasmer", "missing_county"],
+    originPlace: { label: "Origin", latitude: 56.16, longitude: 15.58 }
+  });
+  assert.deepEqual(result.recommendations[0]?.fillsGaps, ["Missing D/T 2.0/3.0", "Missing Jasmer 2002-07", "New county: Blekinge"]);
 });

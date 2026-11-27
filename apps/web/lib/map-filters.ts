@@ -53,7 +53,8 @@ export function filterMapPoints(points: CacheMapPoint[], filters: MapFilters) {
     const date = pointDate(point);
     return (
       (!query || `${point.gcCode} ${point.name}`.toLocaleLowerCase().includes(query)) &&
-      (filters.source === "all" || (filters.source === "hides") === (point.isOwnHide === true)) &&
+      (filters.source === "all" ||
+        (!point.isSolvedMystery && !point.isUnfound && (filters.source === "hides") === (point.isOwnHide === true))) &&
       (!filters.cacheType || point.cacheType === filters.cacheType) &&
       (!filters.size || point.size === filters.size) &&
       (!filters.country || point.country === filters.country) &&

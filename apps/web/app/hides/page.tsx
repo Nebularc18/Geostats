@@ -1,6 +1,7 @@
 "use client";
 
 import { Fragment, useEffect, useMemo, useState, type CSSProperties } from "react";
+import Link from "next/link";
 import { AppShell } from "../../components/app-shell";
 import { CountBarChart, CumulativeFindsChart } from "../../components/charts";
 import { DifficultyTerrainGrid } from "../../components/difficulty-terrain-grid";
@@ -62,6 +63,20 @@ type HideStats = {
     cacheType: string | null;
     placedAt: string | null;
   }>;
+  maintenanceQueue?: Array<{
+    gcCode: string;
+    name: string;
+    cacheType: string | null;
+    latitude: number | null;
+    longitude: number | null;
+    severity: "high" | "medium" | "low";
+    reasons: string[];
+    recentDnfCount: number;
+    needsMaintenanceSince: string | null;
+    lastFoundDate: string | null;
+    lastLogDate: string | null;
+    daysSinceLastFind: number | null;
+  }>;
 };
 
 const monthLabels = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -113,6 +128,112 @@ function CountPercentTable({ title, data, total }: { title: string; data: CountB
       title={title}
       data={data.map((row) => ({ ...row, percent: total > 0 ? (row.count / total) * 100 : 0 }))}
     />
+  );
+}
+
+function MaintenanceQueuePanel({ items }: { items: NonNullable<HideStats["maintenanceQueue"]> }) {
+  const [selectedCodes, setSelectedCodes] = useState<Set<string>>(
+    () => new Set(items.filter((item) => item.latitude != null && item.longitude != null).map((item) => item.gcCode))
+  );
+
+  useEffect(() => {
+    setSelectedCodes(new Set(items.filter((item) => item.latitude != null && item.longitude != null).map((item) => item.gcCode)));
+  }, [items]);
+
+  function toggleCode(gcCode: string) {
+    setSelectedCodes((current) => {
+      const next = new Set(current);
+      if (next.has(gcCode)) next.delete(gcCode);
+      else next.add(gcCode);
+      return next;
+    });
+  }
+
+  const exportableSelected = items.filter(
+    (item) => selectedCodes.has(item.gcCode) && item.latitude != null && item.longitude != null
+  );
+
+  function exportMaintenanceGpx() {
+    if (!exportableSelected.length) return;
+    const esc = (value: string) => value.replace(/[<>&'"]/g, (ch) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", "'": "&apos;", '"': "&quot;" }[ch] ?? ch));
+    const waypoints = exportableSelected
+      .map(
+        (item) =>
+          `  <wpt lat="${item.latitude}" lon="${item.longitude}"><name>${esc(item.gcCode)}</name><desc>${esc(`${item.name} — ${item.reasons.join("; ")}`)}</desc></wpt>`
+      )
+      .join("\n");
+    const route = exportableSelected
+      .map((item) => `    <rtept lat="${item.latitude}" lon="${item.longitude}"><name>${esc(item.gcCode)} ${esc(item.name)}</name></rtept>`)
+      .join("\n");
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="Geostats" xmlns="http://www.topografix.com/GPX/1/1">\n${waypoints}\n  <rte>\n    <name>Geostats Maintenance Route</name>\n${route}\n  </rte>\n</gpx>`;
+    const url = URL.createObjectURL(new Blob([xml], { type: "application/gpx+xml" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "geostats-maintenance-route.gpx";
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  }
+
+  return (
+    <section className="panel hide-report-section maintenance-panel">
+      <div className="panel-heading">
+        <div>
+          <h2>Needs attention</h2>
+          <small className="muted">Active hides with Needs Maintenance logs, consecutive DNFs, or 180+ day droughts.</small>
+        </div>
+        <div className="logbook-header-actions">
+          <Link className="secondary-button" href="/upload">
+            Import latest logs
+          </Link>
+          {items.length > 0 ? (
+            <button
+              type="button"
+              className="primary-button"
+              disabled={exportableSelected.length === 0}
+              onClick={exportMaintenanceGpx}
+              title={exportableSelected.length === 0 ? "Select hides with coordinates to export a GPX route" : undefined}
+            >
+              Export maintenance GPX ({exportableSelected.length})
+            </button>
+          ) : null}
+        </div>
+      </div>
+      {items.length === 0 ? (
+        <p className="muted">All active hides look healthy right now.</p>
+      ) : (
+        <div className="maintenance-queue-list">
+          {items.map((item) => {
+            const hasCoords = item.latitude != null && item.longitude != null;
+            return (
+              <label key={item.gcCode} className={`maintenance-item severity-${item.severity}`}>
+                <input
+                  type="checkbox"
+                  checked={selectedCodes.has(item.gcCode)}
+                  disabled={!hasCoords}
+                  onChange={() => toggleCode(item.gcCode)}
+                />
+                <div className="maintenance-item-copy">
+                  <div className="maintenance-item-title">
+                    <span className={`severity-pill severity-${item.severity}`}>{item.severity}</span>
+                    <a href={`https://coord.info/${item.gcCode}`} rel="noreferrer" target="_blank">
+                      <strong>{item.gcCode}</strong>
+                    </a>
+                    <strong>{item.name}</strong>
+                  </div>
+                  <p className="muted">
+                    {item.reasons.join(" · ")}
+                    {!hasCoords ? " · Coordinates missing (import My Hides GPX to include in route)" : ""}
+                  </p>
+                </div>
+                <small className="maintenance-item-meta muted">
+                  {item.lastFoundDate ? `Last found ${item.lastFoundDate}` : "No recorded finds"}
+                </small>
+              </label>
+            );
+          })}
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -324,15 +445,19 @@ export default function HidesPage() {
   return (
     <AppShell>
       <header className="page-header">
-        <p className="eyebrow">Owner statistics</p>
-        <h1>Hides</h1>
+        <div>
+          <p className="eyebrow">Owner statistics</p>
+          <h1>Hides</h1>
+        </div>
       </header>
       <section className="stat-grid">
         <StatCard label="Owned" value={hideStats?.totalHides ?? 0} />
         <StatCard label="Active" value={hideStats?.activeHides ?? 0} />
         <StatCard label="Received logs" value={hideStats?.totalReceivedLogs ?? 0} />
-        <StatCard label="Finders" value={hideStats?.totalUniqueFinders ?? 0} />
+        <StatCard label="Needs attention" value={hideStats?.maintenanceQueue?.length ?? 0} />
       </section>
+
+      <MaintenanceQueuePanel items={hideStats?.maintenanceQueue ?? []} />
 
       <section className="two-column">
         <div className="panel">

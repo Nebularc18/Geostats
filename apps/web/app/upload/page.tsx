@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { CACHE_IMPORT_MODES, ImportStatus, formatImportReceipt } from "@geostats/shared";
 import { FormEvent, useCallback, useEffect, useState } from "react";
-import { Database, Download, FileUp, Route, UploadCloud } from "lucide-react";
+import { Database, Download, FileUp, Route, Shield, UploadCloud } from "lucide-react";
 import { AppShell } from "../../components/app-shell";
 import { apiFetch } from "../../lib/api";
 import { hasActiveImports, type ImportListItem, type ImportsResponse } from "../../lib/imports";
@@ -17,6 +17,9 @@ export default function UploadPage() {
   const [gsakStatus, setGsakStatus] = useState<{ connected: boolean; lastImportedAt: string | null } | null>(null);
   const [gsakMessage, setGsakMessage] = useState<string | null>(null);
   const [gsakBusy, setGsakBusy] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [adminGsakBusy, setAdminGsakBusy] = useState(false);
+  const [adminGsakMessage, setAdminGsakMessage] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     const data = await apiFetch<ImportsResponse>("/imports");
@@ -27,6 +30,9 @@ export default function UploadPage() {
   useEffect(() => {
     void refresh().catch(() => setMessage("Could not load recent imports."));
     void apiFetch<{ connected: boolean; lastImportedAt: string | null }>("/collector/gsak/status").then(setGsakStatus);
+    void apiFetch<{ isAdmin: boolean }>("/admin/access")
+      .then((data) => setIsAdmin(Boolean(data.isAdmin)))
+      .catch(() => setIsAdmin(false));
   }, [refresh]);
 
   useEffect(() => {
@@ -50,6 +56,7 @@ export default function UploadPage() {
       const { import: job } = await apiFetch<{ import: { status: ImportStatus } }>("/imports/upload", { method: "POST", body: form });
       setMessage(job.status === ImportStatus.FAILED ? "The import could not queue. Retry it from history." : "Import queued.");
       formElement.reset();
+      window.dispatchEvent(new CustomEvent("geostats:imports-updated"));
       await refresh();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Upload failed");
@@ -66,6 +73,7 @@ export default function UploadPage() {
       const { import: job } = await apiFetch<{ import: { status: ImportStatus } }>("/imports/upload", { method: "POST", body: form });
       setTravelMessage(job.status === ImportStatus.FAILED ? "The import could not queue. Retry it from history." : "Import queued. The caches will appear in Travel when processing finishes.");
       formElement.reset();
+      window.dispatchEvent(new CustomEvent("geostats:imports-updated"));
       await refresh();
     } catch (error) {
       setTravelMessage(error instanceof Error ? error.message : "Cache list upload failed");
@@ -111,11 +119,34 @@ export default function UploadPage() {
     }
   }
 
+  async function downloadAdminGsakConnector() {
+    setAdminGsakBusy(true);
+    setAdminGsakMessage(null);
+    try {
+      const data = await apiFetch<{ fileName: string; macro: string }>("/collector/gsak/admin-setup", { method: "POST" });
+      const url = URL.createObjectURL(new Blob([data.macro], { type: "text/plain;charset=utf-8" }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = data.fileName;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      setAdminGsakMessage("Admin connector downloaded. Install GeostatsMissingCaches.gsk in GSAK and run it whenever caches are missing across the instance.");
+    } catch (error) {
+      setAdminGsakMessage(error instanceof Error ? error.message : "Could not prepare the admin GSAK connector");
+    } finally {
+      setAdminGsakBusy(false);
+    }
+  }
+
   return (
     <AppShell>
       <header className="page-header">
-        <p className="eyebrow">Import pipeline</p>
-        <h1>Upload cache data</h1>
+        <div>
+          <p className="eyebrow">Import pipeline</p>
+          <h1>Upload cache data</h1>
+        </div>
       </header>
       <section className="upload-zone upload-purpose-zone" id="travel-cache-import">
         <Route size={42} />
@@ -184,6 +215,29 @@ export default function UploadPage() {
           {gsakMessage ? <p className="muted">{gsakMessage}</p> : null}
         </div>
       </section>
+      {isAdmin ? (
+        <section className="upload-zone">
+          <Shield size={42} />
+          <div className="form">
+            <div>
+              <h2>Admin: Missing caches GSAK script</h2>
+              <p className="muted">
+                Download the admin-only GSAK macro (<code>GeostatsMissingCaches.gsk</code>). Running it in GSAK automatically fetches any unresolved GC codes across all users and imports their shared cache metadata without touching personal finds or logs.
+              </p>
+            </div>
+            <div className="logbook-header-actions" style={{ justifyContent: "center" }}>
+              <button className="primary-button" type="button" disabled={adminGsakBusy} onClick={() => void downloadAdminGsakConnector()}>
+                <Download size={18} />
+                {adminGsakBusy ? "Preparing admin script…" : "Download admin GSAK script"}
+              </button>
+              <Link className="secondary-button" href="/admin">
+                Open Admin console
+              </Link>
+            </div>
+            {adminGsakMessage ? <p className="muted" role="status">{adminGsakMessage}</p> : null}
+          </div>
+        </section>
+      ) : null}
       <section className="upload-zone">
         <FileUp size={42} />
         <form onSubmit={submitOwnerLogsCsv} className="form">

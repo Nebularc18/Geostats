@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
 import { calculateUserStats, countableFindWhere, personalCacheMetadata, Prisma } from "@geostats/db";
-import { normalizedGcUsername, STATS_VERSION } from "@geostats/stats";
+import { mysteryFinalCoordinate, validCoordinatePair } from "@geostats/shared";
+import { hideLogs, normalizedGcUsername, STATS_VERSION } from "@geostats/stats";
 import { PrismaService } from "../common/prisma.service";
 import { countryExtremes, CountryExtremeEntry } from "./country-extremes";
 import { swedenRegionExtremes } from "./sweden-region-extremes";
@@ -185,7 +186,9 @@ export class StatsService {
     if (latest) {
       const stats = latest.statsJson as any;
       const needsHomeDistance = profile?.homeLatitude != null && profile.homeLongitude != null && !stats.distanceStats;
-      if (stats.statsVersion === STATS_VERSION && !needsHomeDistance) {
+      const maintenanceNeedsRefresh = stats.hideStats?.activeHides > 0 &&
+        latest.generatedAt.toISOString().slice(0, 10) !== new Date().toISOString().slice(0, 10);
+      if (stats.statsVersion === STATS_VERSION && !needsHomeDistance && !maintenanceNeedsRefresh) {
         return stats;
       }
 
@@ -287,6 +290,70 @@ export class StatsService {
       throw new BadRequestException("Enter another geocaching username");
     }
 
+    const [ownFindIds, friendFindIds] = await Promise.all([
+      this.prisma.find.findMany({
+        where: { userId },
+        select: {
+          cacheId: true,
+          foundAt: true,
+          cache: {
+            select: {
+              gcCode: true,
+              name: true,
+              cacheType: true,
+              difficulty: true,
+              terrain: true,
+              country: true
+            }
+          }
+        },
+        orderBy: { foundAt: "desc" }
+      }),
+      this.prisma.find.findMany({
+        where: { userId: friendSnapshot.profile.userId },
+        select: { cacheId: true, foundAt: true }
+      })
+    ]);
+
+    const friendFindByCacheId = new Map(friendFindIds.map((item) => [item.cacheId, item.foundAt]));
+    const sharedFinds = ownFindIds
+      .filter((item) => friendFindByCacheId.has(item.cacheId))
+      .map((item) => ({
+        gcCode: item.cache.gcCode,
+        name: item.cache.name,
+        cacheType: item.cache.cacheType,
+        difficulty: item.cache.difficulty === null ? null : Number(item.cache.difficulty),
+        terrain: item.cache.terrain === null ? null : Number(item.cache.terrain),
+        country: item.cache.country,
+        yourFoundAt: item.foundAt.toISOString(),
+        friendFoundAt: friendFindByCacheId.get(item.cacheId)!.toISOString()
+      }));
+
+    const dtKeys = (stats: any) =>
+      new Set<string>(
+        Array.isArray(stats?.difficultyTerrain)
+          ? stats.difficultyTerrain
+              .filter((cell: any) => Number(cell?.count ?? 0) > 0)
+              .map((cell: any) => `${Number(cell.difficulty).toFixed(1)}/${Number(cell.terrain).toFixed(1)}`)
+          : []
+      );
+    const jasmerKeys = (stats: any) =>
+      new Set<string>(
+        Array.isArray(stats?.hiddenMonthMatrix)
+          ? stats.hiddenMonthMatrix
+              .filter((entry: any) => Number(entry?.count ?? 0) > 0 && typeof entry?.key === "string")
+              .map((entry: any) => entry.key)
+          : []
+      );
+
+    const ownDt = dtKeys(ownStats);
+    const friendDt = dtKeys(friendSnapshot.stats);
+    const dtBoth = [...ownDt].filter((key) => friendDt.has(key)).length;
+
+    const ownJasmer = jasmerKeys(ownStats);
+    const friendJasmer = jasmerKeys(friendSnapshot.stats);
+    const jasmerBoth = [...ownJasmer].filter((key) => friendJasmer.has(key)).length;
+
     return {
       you: {
         username: ownProfile.gcUsername,
@@ -297,7 +364,457 @@ export class StatsService {
         username: friendSnapshot.profile.gcUsername,
         latestImportAt: friendSnapshot.stats.latestImportAt,
         stats: friendComparisonStats(friendSnapshot.stats)
+      },
+      sharedFindsCount: sharedFinds.length,
+      recentSharedFinds: sharedFinds.slice(0, 25),
+      dtOverlap: {
+        both: dtBoth,
+        onlyYou: ownDt.size - dtBoth,
+        onlyFriend: friendDt.size - dtBoth
+      },
+      jasmerOverlap: {
+        both: jasmerBoth,
+        onlyYou: ownJasmer.size - jasmerBoth,
+        onlyFriend: friendJasmer.size - jasmerBoth
       }
+    };
+  }
+
+  async savedFriendsForUser(userId: string) {
+    const [ownProfile, ownStats, savedRows] = await Promise.all([
+      this.prisma.geocachingProfile.findUnique({
+        where: { userId },
+        select: { gcUsername: true }
+      }),
+      this.snapshotForUser(userId),
+      this.prisma.savedFriend.findMany({
+        where: { userId },
+        orderBy: { createdAt: "desc" },
+        select: {
+          friendUserId: true,
+          friendUser: {
+            select: {
+              profile: { select: { gcUsername: true } }
+            }
+          }
+        }
+      })
+    ]);
+
+    const friendEntries = await Promise.all(
+      savedRows
+        .filter((row) => row.friendUser.profile?.gcUsername)
+        .map(async (row) => {
+          const stats = await this.snapshotForUser(row.friendUserId);
+          return {
+            username: row.friendUser.profile!.gcUsername,
+            isYou: false,
+            stats: friendComparisonStats(stats)
+          };
+        })
+    );
+
+    const leaderboard = [
+      ...(ownProfile
+        ? [{ username: ownProfile.gcUsername, isYou: true, stats: friendComparisonStats(ownStats) }]
+        : []),
+      ...friendEntries
+    ];
+
+    return {
+      friends: friendEntries.map((entry) => entry.username),
+      leaderboard
+    };
+  }
+
+  async saveFriendForUser(userId: string, username: string) {
+    const target = await this.snapshotForUsername(username);
+    if (target.profile.userId === userId) {
+      throw new BadRequestException("Enter another geocaching username");
+    }
+    await this.prisma.savedFriend.upsert({
+      where: { userId_friendUserId: { userId, friendUserId: target.profile.userId } },
+      create: { userId, friendUserId: target.profile.userId },
+      update: {}
+    });
+    return this.savedFriendsForUser(userId);
+  }
+
+  async removeSavedFriendForUser(userId: string, username: string) {
+    const normalized = normalizedGcUsername(username);
+    if (!normalized) {
+      return this.savedFriendsForUser(userId);
+    }
+    const savedRows = await this.prisma.savedFriend.findMany({
+      where: { userId },
+      select: {
+        id: true,
+        friendUser: { select: { profile: { select: { gcUsername: true } } } }
+      }
+    });
+    const toDelete = savedRows
+      .filter((row) => normalizedGcUsername(row.friendUser.profile?.gcUsername) === normalized)
+      .map((row) => row.id);
+    if (toDelete.length > 0) {
+      await this.prisma.savedFriend.deleteMany({ where: { id: { in: toDelete } } });
+    }
+    return this.savedFriendsForUser(userId);
+  }
+
+  async cacheDetailForUser(userId: string, rawGcCode: string) {
+    const gcCode = rawGcCode.trim().toUpperCase();
+    if (!/^GC[A-Z0-9]{2,12}$/.test(gcCode)) {
+      throw new BadRequestException("Invalid GC code");
+    }
+
+    const [cache, mysteryWorkspace, savedFriends, trackableLogs] = await Promise.all([
+      this.prisma.cache.findUnique({
+        where: {
+          gcCode,
+          OR: [
+            { metadataTrusted: true }, { userData: { some: { userId } } },
+            { finds: { some: { userId } } }, { hides: { some: { userId } } },
+            { corrections: { some: { userId } } }
+          ]
+        },
+        include: {
+          finds: { where: { userId }, orderBy: { foundAt: "desc" }, take: 5 },
+          hides: { where: { userId }, take: 1 },
+          corrections: { where: { userId }, take: 1 },
+          userData: { where: { userId }, take: 1, select: { raw: true } }
+        }
+      }),
+      this.prisma.mysteryWorkspace.findFirst({
+        where: { ownerId: userId, gcCode },
+        select: { id: true, clientId: true, data: true, updatedAt: true }
+      }),
+      this.prisma.savedFriend.findMany({
+        where: { userId },
+        select: {
+          friendUserId: true,
+          friendUser: { select: { profile: { select: { gcUsername: true } } } }
+        }
+      }),
+      this.prisma.trackableLog.findMany({
+        where: { userId, gcCode },
+        orderBy: { loggedAt: "desc" },
+        take: 15,
+        select: {
+          id: true,
+          logType: true,
+          loggedAt: true,
+          trackable: { select: { trackingCode: true, name: true, state: true } }
+        }
+      })
+    ]);
+
+    if (!cache && !mysteryWorkspace) {
+      throw new NotFoundException(`No local Geostats data found for ${gcCode}`);
+    }
+
+    const personal = cache ? personalCacheMetadata(cache, cache.userData?.[0]?.raw) : null;
+    const merged = cache ? { ...cache, ...personal } : null;
+    const correction = cache?.corrections[0] ?? null;
+    const mysteryData = (mysteryWorkspace?.data ?? null) as any;
+
+    const workspaceFinal = mysteryFinalCoordinate(mysteryData?.attempts);
+    const workspacePublished = validCoordinatePair(mysteryData?.publishedLatitude, mysteryData?.publishedLongitude);
+    const published = (cache?.metadataTrusted && merged
+      ? validCoordinatePair(Number(merged.latitude), Number(merged.longitude))
+      : validCoordinatePair(personal?.latitude, personal?.longitude)) ?? workspacePublished;
+    const final = (correction ? validCoordinatePair(Number(correction.latitude), Number(correction.longitude)) : null) ?? workspaceFinal;
+
+    let friendsWhoFound: Array<{ username: string; foundAt: string }> = [];
+    if (cache && savedFriends.length > 0) {
+      const friendIds = savedFriends.map((f) => f.friendUserId);
+      const friendFinds = await this.prisma.find.findMany({
+        where: { cacheId: cache.id, userId: { in: friendIds } },
+        select: { userId: true, foundAt: true }
+      });
+      const usernameById = new Map(
+        savedFriends.map((f) => [f.friendUserId, f.friendUser.profile?.gcUsername ?? "Friend"])
+      );
+      friendsWhoFound = friendFinds.map((find) => ({
+        username: usernameById.get(find.userId) ?? "Friend",
+        foundAt: find.foundAt.toISOString()
+      }));
+    }
+
+    const latestFind = cache?.finds[0] ?? null;
+    const hide = cache?.hides[0] ?? null;
+
+    return {
+      gcCode,
+      cache: merged
+        ? {
+            id: cache!.id,
+            gcCode: merged.gcCode,
+            name: merged.name,
+            cacheType: merged.cacheType ?? null,
+            difficulty: merged.difficulty == null ? null : Number(merged.difficulty),
+            terrain: merged.terrain == null ? null : Number(merged.terrain),
+            size: merged.size ?? null,
+            latitude: published?.latitude ?? null,
+            longitude: published?.longitude ?? null,
+            correctedLatitude: final?.latitude ?? null,
+            correctedLongitude: final?.longitude ?? null,
+            country: merged.country ?? null,
+            region: merged.region ?? null,
+            county: merged.county ?? null,
+            hiddenDate: merged.hiddenDate ? merged.hiddenDate.toISOString().slice(0, 10) : null,
+            ownerName: merged.ownerName ?? null
+          }
+        : {
+            id: mysteryWorkspace!.id,
+            gcCode,
+            name: String(mysteryData?.name ?? gcCode),
+            cacheType: "Mystery Cache",
+            difficulty: null,
+            terrain: null,
+            size: null,
+            latitude: published?.latitude ?? null,
+            longitude: published?.longitude ?? null,
+            correctedLatitude: final?.latitude ?? null,
+            correctedLongitude: final?.longitude ?? null,
+            country: mysteryData?.country ?? null,
+            region: mysteryData?.region ?? null,
+            county: mysteryData?.county ?? null,
+            hiddenDate: null,
+            ownerName: null
+          },
+      find: latestFind
+        ? {
+            id: latestFind.id,
+            foundAt: latestFind.foundAt.toISOString(),
+            foundDate: latestFind.foundAt.toISOString().slice(0, 10),
+            isFtf: latestFind.isFtf,
+            logText: latestFind.logText ?? null
+          }
+        : null,
+      hide: hide
+        ? {
+            id: hide.id,
+            placedAt: hide.placedAt ? hide.placedAt.toISOString().slice(0, 10) : null,
+            receivedLogCount: hide.receivedLogCount,
+            receivedLogs: hideLogs({ receivedLogsRaw: hide.receivedLogsRaw, cache: merged! })
+              .sort((a, b) => b.date.localeCompare(a.date)).slice(0, 10)
+          }
+        : null,
+      mystery: mysteryData
+        ? {
+            clientId: mysteryWorkspace!.clientId,
+            status: mysteryData.status ?? "solving",
+            notes: mysteryData.notes ?? "",
+            fieldNotes: mysteryData.fieldNotes ?? "",
+            clues: Array.isArray(mysteryData.clues) ? mysteryData.clues : [],
+            attemptsCount: Array.isArray(mysteryData.attempts) ? mysteryData.attempts.length : 0,
+            updatedAt: mysteryWorkspace!.updatedAt.toISOString()
+          }
+        : null,
+      friendsWhoFound,
+      trackables: trackableLogs.map((log) => ({
+        id: log.id,
+        trackingCode: log.trackable.trackingCode,
+        name: log.trackable.name,
+        state: log.trackable.state,
+        logType: log.logType,
+        loggedAt: log.loggedAt.toISOString().slice(0, 10)
+      }))
+    };
+  }
+
+  async findsForUser(
+    userId: string,
+    query: {
+      q?: string;
+      cacheType?: string;
+      size?: string;
+      country?: string;
+      region?: string;
+      county?: string;
+      difficulty?: number;
+      terrain?: number;
+      foundMonthDay?: string;
+      hiddenYearMonth?: string;
+      year?: string;
+      owner?: string;
+      ftfOnly?: boolean;
+      sort?: string;
+      offset?: number;
+      limit?: number;
+      includeFacets?: boolean;
+    }
+  ) {
+    const profile = await this.prisma.geocachingProfile.findUnique({
+      where: { userId },
+      select: { gcUsername: true }
+    });
+    const gcUsername = normalizedGcUsername(profile);
+    const safeLimit = Math.min(Math.max(1, Number.isFinite(query.limit) ? Math.floor(query.limit!) : 50), 200);
+    const safeOffset = Math.max(0, Number.isFinite(query.offset) ? Math.floor(query.offset!) : 0);
+    const sort = query.sort ?? "foundAt_desc";
+    const q = query.q?.trim().toLowerCase() ?? "";
+    const year = query.year?.trim();
+    const where: Prisma.FindWhereInput = {
+      ...countableFindWhere(userId, gcUsername),
+      ...(query.ftfOnly ? { isFtf: true } : {}),
+      ...(year && /^[0-9]{4}$/.test(year) && year !== "9999" ? {
+        foundAt: {
+          gte: new Date(`${year}-01-01T00:00:00Z`),
+          lt: new Date(`${String(Number(year) + 1).padStart(4, "0")}-01-01T00:00:00Z`)
+        }
+      } : {})
+    };
+
+    const token = q.match(/[a-z0-9]{2,}/g)?.sort((a, b) => b.length - a.length)[0];
+    if (token) {
+      // A contiguous alphanumeric token cannot span two fields in the rendered
+      // search text. Narrow candidates in SQL, then match the exact text in JS
+      // so legacy imports and phrases across fields still work.
+      const candidates = await this.prisma.$queryRaw<Array<{ id: string }>>`
+        SELECT f.id
+        FROM finds f
+        JOIN caches c ON c.id = f.cache_id
+        LEFT JOIN user_cache_data u ON u.cache_id = c.id AND u.user_id = f.user_id
+          AND NOT c.metadata_trusted
+        WHERE f.user_id = ${userId}
+          AND strpos(lower(concat_ws(' ', c.gc_code, c.name, c.owner_name,
+            c.country, c.region, c.county, f.log_text, u.raw::text)), ${token}) > 0
+        LIMIT 2001
+      `;
+      if (candidates.length <= 2000) where.id = { in: candidates.map(({ id }) => id) };
+    }
+
+    const useDatabasePage = !gcUsername && !q && !query.cacheType && !query.size && !query.country &&
+      !query.region && !query.county && query.difficulty === undefined && query.terrain === undefined &&
+      !query.foundMonthDay && !query.hiddenYearMonth && !year && !query.owner &&
+      (sort === "foundAt_desc" || sort === "foundAt_asc") && safeOffset <= 2_147_483_647;
+    const includeLogs = Boolean(q) || sort === "logLength_desc";
+    const [rows, count, snapshot] = await Promise.all([
+      this.prisma.find.findMany({
+        where,
+        ...(useDatabasePage ? { skip: safeOffset, take: safeLimit } : {}),
+        select: {
+          id: true,
+          foundAt: true,
+          isFtf: true,
+          logText: includeLogs,
+          cache: {
+            select: {
+              id: true,
+              gcCode: true,
+              name: true,
+              cacheType: true,
+              difficulty: true,
+              terrain: true,
+              size: true,
+              latitude: true,
+              longitude: true,
+              country: true,
+              region: true,
+              county: true,
+              hiddenDate: true,
+              ownerName: true,
+              metadataTrusted: true,
+              userData: { where: { userId }, take: 1, select: { raw: true } }
+            }
+          }
+        },
+        orderBy: [{ foundAt: sort === "foundAt_asc" ? "asc" : "desc" }, { id: "desc" }]
+      }),
+      useDatabasePage ? this.prisma.find.count({ where }) : null,
+      query.includeFacets === false ? null : this.snapshotForUser(userId)
+    ]);
+
+    const normalized = rows
+      .map((find) => {
+        const merged = {
+          ...find.cache,
+          ...personalCacheMetadata(find.cache, find.cache.userData?.[0]?.raw)
+        };
+        return {
+          id: find.id,
+          foundAt: find.foundAt.toISOString(),
+          foundDate: find.foundAt.toISOString().slice(0, 10),
+          foundMonthDay: find.foundAt.toISOString().slice(5, 10),
+          foundYear: find.foundAt.toISOString().slice(0, 4),
+          isFtf: find.isFtf,
+          logText: find.logText ?? null,
+          gcCode: merged.gcCode,
+          name: merged.name,
+          cacheType: merged.cacheType ?? null,
+          difficulty: merged.difficulty === null || merged.difficulty === undefined ? null : Number(merged.difficulty),
+          terrain: merged.terrain === null || merged.terrain === undefined ? null : Number(merged.terrain),
+          size: merged.size ?? null,
+          latitude: Number(merged.latitude),
+          longitude: Number(merged.longitude),
+          country: merged.country ?? null,
+          region: merged.region ?? null,
+          county: merged.county ?? null,
+          hiddenDate: merged.hiddenDate ? merged.hiddenDate.toISOString().slice(0, 10) : null,
+          hiddenYearMonth: merged.hiddenDate ? merged.hiddenDate.toISOString().slice(0, 7) : null,
+          ownerName: merged.ownerName ?? null
+        };
+      })
+      .filter((item) => !gcUsername || !item.ownerName || item.ownerName.trim().toLowerCase() !== gcUsername);
+
+    const keys = (buckets: Array<{ key: string }> | undefined) =>
+      (buckets ?? []).map(({ key }) => key).filter((key) => key !== "Unknown").sort();
+    const cacheTypes = keys(snapshot?.cacheTypes);
+    const countries = keys(snapshot?.countries);
+    const years = keys(snapshot?.findsByYear).reverse();
+
+    const filtered = normalized.filter((item) => {
+      if (q) {
+        const haystack = [item.gcCode, item.name, item.ownerName, item.logText, item.country, item.region, item.county]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
+        if (!haystack.includes(q)) return false;
+      }
+      if (query.cacheType && item.cacheType?.toLowerCase() !== query.cacheType.trim().toLowerCase()) return false;
+      if (query.size && item.size?.toLowerCase() !== query.size.trim().toLowerCase()) return false;
+      if (query.country && item.country?.toLowerCase() !== query.country.trim().toLowerCase()) return false;
+      if (query.region && item.region?.toLowerCase() !== query.region.trim().toLowerCase()) return false;
+      if (query.county && item.county?.toLowerCase() !== query.county.trim().toLowerCase()) return false;
+      if (query.difficulty !== undefined && Number.isFinite(query.difficulty) && item.difficulty !== query.difficulty) return false;
+      if (query.terrain !== undefined && Number.isFinite(query.terrain) && item.terrain !== query.terrain) return false;
+      if (query.foundMonthDay && item.foundMonthDay !== query.foundMonthDay.trim()) return false;
+      if (query.hiddenYearMonth && item.hiddenYearMonth !== query.hiddenYearMonth.trim()) return false;
+      if (query.year && item.foundYear !== query.year.trim()) return false;
+      if (query.owner && item.ownerName?.toLowerCase() !== query.owner.trim().toLowerCase()) return false;
+      if (query.ftfOnly && !item.isFtf) return false;
+      return true;
+    });
+
+    if (sort === "dt_desc") {
+      filtered.sort(
+        (a, b) =>
+          (b.difficulty ?? 0) + (b.terrain ?? 0) - ((a.difficulty ?? 0) + (a.terrain ?? 0)) ||
+          b.foundAt.localeCompare(a.foundAt)
+      );
+    } else if (sort === "logLength_desc") {
+      filtered.sort((a, b) => (b.logText?.length ?? 0) - (a.logText?.length ?? 0) || b.foundAt.localeCompare(a.foundAt));
+    }
+
+    const page = useDatabasePage ? filtered : filtered.slice(safeOffset, safeOffset + safeLimit);
+    const total = count ?? filtered.length;
+    if (!includeLogs && page.length > 0) {
+      const logs = await this.prisma.find.findMany({
+        where: { userId, id: { in: page.map(({ id }) => id) } },
+        select: { id: true, logText: true }
+      });
+      const logById = new Map(logs.map(({ id, logText }) => [id, logText]));
+      for (const find of page) find.logText = logById.get(find.id) ?? null;
+    }
+
+    return {
+      finds: page,
+      total,
+      offset: safeOffset,
+      limit: safeLimit,
+      hasMore: safeOffset + page.length < total,
+      facets: { cacheTypes, countries, years }
     };
   }
 

@@ -1,6 +1,7 @@
 ﻿"use client";
 
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import Link from "next/link";
 import { AppShell } from "../../components/app-shell";
 import { CountBarChart, CumulativeFindsChart } from "../../components/charts";
 import { DifficultyTerrainGrid } from "../../components/difficulty-terrain-grid";
@@ -629,7 +630,7 @@ function WayTo81Row({ entry }: { entry: WayTo81Entry }) {
   );
 }
 
-function CalendarHeatmap({ title, data }: { title: string; data: CountBucket[] }) {
+function CalendarHeatmap({ title, data, linkParam }: { title: string; data: CountBucket[]; linkParam?: "foundMonthDay" }) {
   const counts = new Map(data.map((bucket) => [bucket.key, bucket.count]));
   const max = Math.max(1, ...data.map((bucket) => bucket.count));
   const filled = data.filter((bucket) => bucket.count > 0).length;
@@ -644,7 +645,7 @@ function CalendarHeatmap({ title, data }: { title: string; data: CountBucket[] }
           <span key={day + 1}>{day + 1}</span>
         ))}
         {monthNames.map((month, monthIndex) => (
-          <CalendarMonthRow counts={counts} key={month} max={max} month={month} monthIndex={monthIndex} />
+          <CalendarMonthRow counts={counts} key={month} linkParam={linkParam} max={max} month={month} monthIndex={monthIndex} />
         ))}
       </div>
       <div className="mini-table-footer">
@@ -659,11 +660,13 @@ function CalendarHeatmap({ title, data }: { title: string; data: CountBucket[] }
 
 function CalendarMonthRow({
   counts,
+  linkParam,
   max,
   month,
   monthIndex
 }: {
   counts: Map<string, number>;
+  linkParam?: "foundMonthDay";
   max: number;
   month: string;
   monthIndex: number;
@@ -675,6 +678,19 @@ function CalendarMonthRow({
         const day = dayIndex + 1;
         const key = `${String(monthIndex + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
         const count = counts.get(key) ?? 0;
+        if (count > 0 && linkParam) {
+          return (
+            <Link
+              className="calendar-cell filled calendar-cell-link"
+              href={`/logbook?${linkParam}=${encodeURIComponent(key)}`}
+              key={key}
+              style={{ "--intensity": count / max } as CSSProperties & Record<"--intensity", number>}
+              title={`View ${count} find${count === 1 ? "" : "s"} on ${key}`}
+            >
+              {count}
+            </Link>
+          );
+        }
         return (
           <span
             className={count > 0 ? "calendar-cell filled" : "calendar-cell"}
@@ -698,7 +714,7 @@ function HiddenMonthGrid({ data }: { data: CountBucket[] }) {
 
   return (
     <section className="mini-table wide-table">
-      <h3>Finds by hidden month</h3>
+      <h3>Finds by hidden month (Jasmer)</h3>
       <div className="hidden-month-grid">
         <span />
         {monthLabels.map((month) => (
@@ -723,13 +739,26 @@ function HiddenMonthRow({ counts, max, year }: { counts: Map<string, number>; ma
       {Array.from({ length: 12 }, (_, monthIndex) => {
         const key = `${year}-${String(monthIndex + 1).padStart(2, "0")}`;
         const count = counts.get(key) ?? 0;
+        if (count > 0) {
+          return (
+            <Link
+              className="calendar-cell filled calendar-cell-link"
+              href={`/logbook?hiddenYearMonth=${encodeURIComponent(key)}`}
+              key={key}
+              style={{ "--intensity": count / max } as CSSProperties & Record<"--intensity", number>}
+              title={`View ${count} find${count === 1 ? "" : "s"} hidden in ${key}`}
+            >
+              {count}
+            </Link>
+          );
+        }
         return (
           <span
-            className={count > 0 ? "calendar-cell filled" : "calendar-cell"}
+            className="calendar-cell"
             key={key}
-            style={{ "--intensity": count / max } as CSSProperties & Record<"--intensity", number>}
+            style={{ "--intensity": 0 } as CSSProperties & Record<"--intensity", number>}
           >
-            {count || ""}
+            {""}
           </span>
         );
       })}
@@ -756,7 +785,7 @@ function DateGridPanel({ stats }: { stats: any }) {
       <h2>Date grids</h2>
       <div className="stats-breakdown-grid">
         <ElevationPanel data={stats?.elevationBuckets ?? []} />
-        <CalendarHeatmap title="Finds by found date" data={stats?.foundDateMatrix ?? []} />
+        <CalendarHeatmap title="Finds by found date" data={stats?.foundDateMatrix ?? []} linkParam="foundMonthDay" />
         <CalendarHeatmap title="Finds by hidden date" data={stats?.hiddenDateMatrix ?? []} />
         <HiddenMonthGrid data={stats?.hiddenMonthMatrix ?? []} />
       </div>
@@ -954,8 +983,10 @@ export default function StatsPage() {
   return (
     <AppShell>
       <header className="page-header">
-        <p className="eyebrow">Reusable stats package</p>
-        <h1>Statistics</h1>
+        <div>
+          <p className="eyebrow">Reusable stats package</p>
+          <h1>Statistics</h1>
+        </div>
       </header>
       <section className="stat-grid">
         <StatCard label="Total finds" value={stats?.totalFinds ?? 0} />
@@ -979,8 +1010,14 @@ export default function StatsPage() {
         </div>
       </section>
       <section className="panel">
-        <h2>Difficulty / Terrain</h2>
-        <DifficultyTerrainGrid data={stats?.difficultyTerrain ?? []} />
+        <div className="panel-heading">
+          <h2>Difficulty / Terrain</h2>
+          <small className="muted">Click any filled cell to inspect those finds in Logbook</small>
+        </div>
+        <DifficultyTerrainGrid
+          data={stats?.difficultyTerrain ?? []}
+          cellHref={(difficulty, terrain) => `/logbook?difficulty=${difficulty}&terrain=${terrain}`}
+        />
       </section>
       <BreakdownStatsPanel stats={stats} />
       <HomeDistancePanel distanceStats={stats?.distanceStats} />

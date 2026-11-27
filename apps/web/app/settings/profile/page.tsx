@@ -266,8 +266,10 @@ export default function ProfilePage() {
   return (
     <AppShell>
       <header className="page-header">
-        <p className="eyebrow">Per-user ownership</p>
-        <h1>Geocaching profile</h1>
+        <div>
+          <p className="eyebrow">Per-user ownership</p>
+          <h1>Geocaching profile</h1>
+        </div>
       </header>
       <section className="panel narrow">
         <form onSubmit={submit} className="form">

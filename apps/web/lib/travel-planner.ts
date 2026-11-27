@@ -1,3 +1,5 @@
+import { mysteryFinalCoordinate } from "@geostats/shared";
+
 export type TravelAttempt = {
   state: "correct" | "wrong" | "unchecked" | "planned";
   kind?: "coordinate" | "keyword" | "approach";
@@ -5,6 +7,8 @@ export type TravelAttempt = {
   longitude?: number;
   finalLatitude?: number;
   finalLongitude?: number;
+  createdAt?: string;
+  updatedAt?: string;
 };
 
 export type TravelPlannerCache = {
@@ -23,21 +27,7 @@ export function normalizedTripName(value: unknown) {
 }
 
 export function finalTravelCoordinate(cache: Pick<TravelPlannerCache, "attempts">) {
-  for (const attempt of cache.attempts) {
-    if (attempt.state !== "correct") continue;
-    if (Number.isFinite(attempt.finalLatitude) && Number.isFinite(attempt.finalLongitude)) {
-      return { latitude: attempt.finalLatitude!, longitude: attempt.finalLongitude! };
-    }
-    if (
-      attempt.kind !== "keyword" &&
-      attempt.kind !== "approach" &&
-      Number.isFinite(attempt.latitude) &&
-      Number.isFinite(attempt.longitude)
-    ) {
-      return { latitude: attempt.latitude!, longitude: attempt.longitude! };
-    }
-  }
-  return null;
+  return mysteryFinalCoordinate(cache.attempts);
 }
 
 export function travelGroups<T extends TravelPlannerCache>(caches: T[]) {

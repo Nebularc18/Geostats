@@ -61,8 +61,9 @@ export function parseRules(value: unknown, { enforceComplexityLimits = true }: {
   const rules: ChallengeRule[] = value.map((candidate) => {
     if (!candidate || typeof candidate !== "object") throw new BadRequestException("Each rule must be an object");
     const rule = candidate as Record<string, unknown>;
+    const usesMinimum = rule.type !== "MONTHLY_ATTRIBUTE" && rule.type !== "BIRTHDAY" && rule.type !== "ALPHABET";
     const minimum = Number(rule.minimum);
-    if (!Number.isInteger(minimum) || minimum < 1 || minimum > 1_000_000) {
+    if (usesMinimum && (!Number.isInteger(minimum) || minimum < 1 || minimum > 1_000_000)) {
       throw new BadRequestException("Each rule minimum must be a positive integer");
     }
     if (rule.type === "TOTAL_FINDS") return { type: rule.type, minimum };
@@ -200,6 +201,45 @@ export function parseRules(value: unknown, { enforceComplexityLimits = true }: {
       }
       if (typeof rule.excludeSelf !== "boolean") throw new BadRequestException("Monthly rule excludeSelf must be a boolean");
       return { type: rule.type, months, overallMinimum, attributeId, attributeLabel, filters, filterLabel, excludedGcCodes, excludeSelf: rule.excludeSelf };
+    }
+    if (rule.type === "BIRTHDAY") {
+      const minimumCaches = Number(rule.minimumCaches);
+      const minAge = Number(rule.minAge);
+      const maxAge = Number(rule.maxAge);
+      const minimumTotalAge = Number(rule.minimumTotalAge ?? 0);
+      const minimumDifferentAges = Number(rule.minimumDifferentAges ?? 0);
+      if (!Number.isInteger(minimumCaches) || minimumCaches < 1 || minimumCaches > 1_000_000) {
+        throw new BadRequestException("Birthday rule minimumCaches must be between 1 and 1000000");
+      }
+      if (!Number.isInteger(minAge) || minAge < 0 || !Number.isInteger(maxAge) || maxAge < minAge || maxAge > 999) {
+        throw new BadRequestException("Birthday rule age bounds are invalid");
+      }
+      if (!Number.isInteger(minimumTotalAge) || minimumTotalAge < 0 || minimumTotalAge > 1_000_000_000 || !Number.isInteger(minimumDifferentAges) || minimumDifferentAges < 0 || minimumDifferentAges > 366) {
+        throw new BadRequestException("Birthday rule age requirements are out of range");
+      }
+      if (typeof rule.uniqueDates !== "boolean") throw new BadRequestException("Birthday rule uniqueDates must be a boolean");
+      if (!Array.isArray(rule.filters) || rule.filters.length !== 1) throw new BadRequestException("Imported birthday rule must contain exactly one filter");
+      const filters = rule.filters.map((filter) => validateStoredProjectGcFilter(filter, enforceComplexityLimits));
+      const filterLabel = cleanOptionalText(rule.filterLabel, "filterLabel", 200) ?? projectGcFilterLabel(filters);
+      return { type: rule.type, minimumCaches, minAge, maxAge, minimumTotalAge, minimumDifferentAges, uniqueDates: rule.uniqueDates, filters, filterLabel };
+    }
+    if (rule.type === "ALPHABET") {
+      if (!Array.isArray(rule.letters) || rule.letters.length < 1 || rule.letters.length > 100) {
+        throw new BadRequestException("Alphabet rule must list between 1 and 100 letters");
+      }
+      const letters = rule.letters.map((letter) => {
+        if (typeof letter !== "string" || letter.length < 1 || letter.length > 4) {
+          throw new BadRequestException("Alphabet rule letters must be short strings");
+        }
+        return letter;
+      });
+      if (rule.field !== "cache_name" && rule.field !== "county") {
+        throw new BadRequestException("Alphabet rule field must be cache_name or county");
+      }
+      if (!Array.isArray(rule.filters) || rule.filters.length !== 1) throw new BadRequestException("Imported alphabet rule must contain exactly one filter");
+      const filters = rule.filters.map((filter) => validateStoredProjectGcFilter(filter, enforceComplexityLimits));
+      const filterLabel = cleanOptionalText(rule.filterLabel, "filterLabel", 200) ?? projectGcFilterLabel(filters);
+      return { type: rule.type, letters, field: rule.field, filters, filterLabel };
     }
     throw new BadRequestException("Unsupported challenge rule type");
   });

@@ -274,7 +274,7 @@ test("GSAK download clears the banner despite an older in-flight poll and later 
 });
 
 
-test("sidebar entry to Mysteries loads a new document so the legacy helper can run", async ({ page }) => {
+test("the Field sidebar link opens Mysteries in a new document so the legacy helper can run", async ({ page }) => {
   const installation = installations[0];
   const origin = `http://127.0.0.1:${installation.port}`;
   await page.route(`${installation.apiUrl}/**`, async (route) => {
@@ -304,7 +304,7 @@ test("sidebar entry to Mysteries loads a new document so the legacy helper can r
   await page.goto(`${origin}/imports`);
   await expect(page.getByRole("heading", { name: "Import history" })).toBeVisible();
   const navigation = page.waitForEvent("request", (request) => request.isNavigationRequest() && request.url() === `${origin}/mysteries`);
-  await page.getByRole("navigation", { name: "Primary", exact: true }).getByRole("link", { name: "Mysteries", exact: true }).click();
+  await page.getByRole("navigation", { name: "Primary", exact: true }).getByRole("link", { name: "Field", exact: true }).click();
   await navigation;
   await expect(page.getByRole("status", { name: "Geocaching helper update" })).toBeVisible();
 });
@@ -434,4 +434,177 @@ test("renamed upload sends the chosen mode and a retry shows its receipt", async
   await page.getByRole("button", { name: "Retry", exact: true }).click();
   await expect(page.getByText("1 cache · 0 finds · 1 hide", { exact: true })).toBeVisible();
   expect(errors).toEqual([]);
+});
+
+test("command palette keeps focus inside the modal and restores it on close", async ({ page }) => {
+  const installation = installations[0];
+  const origin = `http://127.0.0.1:${installation.port}`;
+  await page.route(`${installation.apiUrl}/**`, (route) => {
+    const responses = {
+      "/profile": { profile: { userId: "user-1" } },
+      "/auth/me": { user: { id: "user-1" } },
+      "/imports": { imports: [] },
+      "/collector/gsak/status": { connected: false, updateAvailable: false }
+    };
+    return route.fulfill({
+      headers: { "access-control-allow-origin": origin, "access-control-allow-credentials": "true" },
+      json: responses[new URL(route.request().url()).pathname] ?? {}
+    });
+  });
+  await page.goto(`${origin}/imports`);
+  await expect(page.getByRole("heading", { name: "Import history" })).toBeVisible();
+  const trigger = page.getByRole("button", { name: "Open command palette" });
+  await trigger.click();
+  const dialog = page.getByRole("dialog", { name: "Quick command palette" });
+  const input = dialog.getByRole("textbox");
+  await expect(input).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  // Native dialogs may briefly put focus on the browser chrome when cycling.
+  expect(await page.evaluate(() => document.activeElement === document.body || Boolean(document.activeElement?.closest("dialog")))).toBe(true);
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+});
+
+test("cache navigation clears old details while the next cache loads", async ({ page }) => {
+  const installation = installations[0];
+  const origin = `http://127.0.0.1:${installation.port}`;
+  let releaseSecond;
+  const secondCache = new Promise((resolve) => { releaseSecond = resolve; });
+  const detail = (gcCode, name) => ({
+    gcCode, cache: { gcCode, name, latitude: null, longitude: null },
+    find: null, hide: null, mystery: null, friendsWhoFound: [], trackables: []
+  });
+  await page.route(`${installation.apiUrl}/**`, async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/stats/cache/GCSECOND") await secondCache;
+    const responses = {
+      "/profile": { profile: { userId: "user-1" } },
+      "/auth/me": { user: { id: "user-1" } },
+      "/imports": { imports: [] },
+      "/stats/cache/GCFIRST": detail("GCFIRST", "First cache"),
+      "/stats/cache/GCSECOND": detail("GCSECOND", "Second cache")
+    };
+    await route.fulfill({
+      headers: { "access-control-allow-origin": origin, "access-control-allow-credentials": "true" },
+      json: responses[path] ?? {}
+    });
+  });
+  try {
+    await page.goto(`${origin}/cache/GCFIRST`);
+    await expect(page.getByRole("heading", { name: "First cache" })).toBeVisible();
+    await expect(page.getByText("Coordinates unavailable")).toBeVisible();
+
+    await page.getByRole("button", { name: "Open command palette" }).click();
+    const palette = page.getByRole("dialog", { name: "Quick command palette" });
+    await palette.getByRole("textbox").fill("GCSECOND");
+    await palette.getByRole("button", { name: "Open GCSECOND" }).click();
+
+    await expect(page.getByRole("heading", { name: "GCSECOND", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "First cache" })).toHaveCount(0);
+    releaseSecond();
+    await expect(page.getByRole("heading", { name: "Second cache" })).toBeVisible();
+  } finally {
+    releaseSecond();
+  }
+});
+
+test("archived goals leave the active list and failed saves keep the draft title", async ({ page }) => {
+  const installation = installations[0];
+  const origin = `http://127.0.0.1:${installation.port}`;
+  let goal = {
+    id: "goal-1", title: "Find more caches", kind: "YEARLY_FINDS", target: 200,
+    current: 10, remaining: 190, percent: 5, completed: false, archived: false, config: {}
+  };
+  await page.route(`${installation.apiUrl}/**`, async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    const method = route.request().method();
+    const headers = {
+      "access-control-allow-origin": origin, "access-control-allow-credentials": "true",
+      "access-control-allow-methods": "GET, POST, PATCH, OPTIONS", "access-control-allow-headers": "content-type"
+    };
+    if (method === "OPTIONS") return route.fulfill({ status: 204, headers });
+    if (path === "/goals/goal-1" && method === "PATCH") {
+      goal = { ...goal, ...route.request().postDataJSON() };
+      return route.fulfill({ headers, json: { goal } });
+    }
+    if (path === "/goals" && method === "POST") {
+      return route.fulfill({ status: 503, headers, json: { message: "Goal save unavailable" } });
+    }
+    const responses = {
+      "/profile": { profile: { userId: "user-1" } },
+      "/auth/me": { user: { id: "user-1" } },
+      "/imports": { imports: [] },
+      "/goals": { goals: [goal], cacheTypes: [] }
+    };
+    return route.fulfill({ headers, json: responses[path] ?? {} });
+  });
+  await page.goto(`${origin}/goals`);
+  await page.getByRole("button", { name: "Archive", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "No active goals" })).toBeVisible();
+  await page.getByRole("button", { name: "Restore", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Archived goals" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Archive", exact: true })).toBeVisible();
+
+  const title = page.getByRole("textbox", { name: "Goal title" });
+  await title.fill("Keep this draft");
+  await page.getByRole("button", { name: "Add goal", exact: true }).click();
+  await expect(page.getByText("Goal save unavailable")).toBeVisible();
+  await expect(title).toHaveValue("Keep this draft");
+});
+
+test("dropping a GPX file opens the import dialog over the map cache drawer", async ({ page }) => {
+  const installation = installations[0];
+  const origin = `http://127.0.0.1:${installation.port}`;
+  await page.route("https://tiles.openfreemap.org/styles/dark", (route) =>
+    route.fulfill({
+      headers: { "access-control-allow-origin": "*" },
+      json: { version: 8, glyphs: "https://example.invalid/{fontstack}/{range}.pbf", sources: {}, layers: [] }
+    })
+  );
+  await page.route(`${installation.apiUrl}/**`, (route) => {
+    const point = {
+      id: "cache-1", gcCode: "GCDROP", name: "Test marker", cacheType: "Traditional Cache",
+      longitude: 15.5869, latitude: 56.1612
+    };
+    const empty = { points: [], totalCount: 0, snapshot: "fixture", snapshotRevision: "1" };
+    const responses = {
+      "/profile": { profile: { userId: "user-1" } },
+      "/auth/me": { user: { id: "user-1" } },
+      "/imports": { imports: [] },
+      "/map/caches": { ...empty, points: [point], totalCount: 1 },
+      "/map/hides": empty,
+      "/map/mysteries": empty,
+      "/stats/cache/GCDROP": { gcCode: point.gcCode, cache: point, friendsWhoFound: [], trackables: [] }
+    };
+    return route.fulfill({
+      headers: { "access-control-allow-origin": origin, "access-control-allow-credentials": "true" },
+      json: responses[new URL(route.request().url()).pathname] ?? {}
+    });
+  });
+  await page.goto(`${origin}/map`);
+  await expect(page.getByText("1 points shown")).toBeVisible();
+  const canvas = page.locator(".maplibregl-canvas");
+  await canvas.scrollIntoViewIfNeeded();
+  await expect.poll(async () => {
+    await canvas.hover();
+    return canvas.evaluate((element) => element.style.cursor);
+  }, { timeout: 10_000 }).toBe("pointer");
+  await canvas.click();
+  const drawer = page.getByRole("dialog", { name: "Cache details for GCDROP" });
+  await expect(drawer.getByRole("heading", { name: "Test marker" })).toBeVisible();
+
+  await drawer.evaluate((element) => {
+    const files = new DataTransfer();
+    files.items.add(new File(["<gpx/>"], "my-finds.gpx", { type: "application/gpx+xml" }));
+    element.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: files }));
+  });
+  const prompt = page.getByRole("dialog", { name: "Quick GPX / ZIP Import" });
+  await expect(prompt.getByText("my-finds.gpx")).toBeVisible();
+  const purpose = prompt.getByRole("combobox", { name: "Import as" });
+  await expect(purpose).toBeFocused();
+  await purpose.selectOption("hides");
+  await page.keyboard.press("Escape");
+  await expect(prompt).toHaveCount(0);
+  await expect(drawer.getByRole("button", { name: "Close cache inspector" })).toBeFocused();
 });

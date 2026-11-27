@@ -10,9 +10,9 @@ export function CountBarChart({ data }: { data: { key: string; count: number }[]
           <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" />
           <XAxis
             dataKey="key"
-            interval={0}
-            minTickGap={0}
-            tick={{ fill: "var(--muted)", fontSize: 12 }}
+            interval="preserveStartEnd"
+            minTickGap={20}
+            tick={{ fill: "var(--muted)", fontSize: 11 }}
             tickMargin={8}
             stroke="var(--line)"
           />
@@ -27,7 +27,7 @@ export function CountBarChart({ data }: { data: { key: string; count: number }[]
             cursor={{ fill: "rgba(95, 191, 133, 0.08)" }}
             labelStyle={{ color: "var(--ink)" }}
           />
-          <Bar dataKey="count" fill="var(--green)" radius={[4, 4, 0, 0]} />
+          <Bar dataKey="count" fill="var(--green)" radius={[4, 4, 0, 0]} maxBarSize={52} />
         </BarChart>
       </ResponsiveContainer>
     </div>

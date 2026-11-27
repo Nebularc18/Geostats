@@ -178,7 +178,7 @@ export class TrackablesController {
         take: 20_000,
         include: {
           trackable: { select: { id: true, trackingCode: true, name: true } },
-          cache: { select: { id: true, gcCode: true, name: true, latitude: true, longitude: true } }
+          cache: { select: { id: true, gcCode: true, name: true, latitude: true, longitude: true, metadataTrusted: true } }
         }
       }),
       this.prisma.trackableLog.groupBy({
@@ -202,6 +202,30 @@ export class TrackablesController {
     const points = rows.map((row) => {
       const sequence = (sequenceByTrackable.get(row.trackable.id) ?? 0) + 1;
       sequenceByTrackable.set(row.trackable.id, sequence);
+      const cacheLat = row.cache ? Number(row.cache.latitude) : null;
+      const cacheLon = row.cache ? Number(row.cache.longitude) : null;
+      const cacheHasRealCoords =
+        row.cache != null &&
+        row.cache.metadataTrusted === true &&
+        cacheLat != null &&
+        cacheLon != null &&
+        Number.isFinite(cacheLat) &&
+        Number.isFinite(cacheLon) &&
+        cacheLat >= -90 &&
+        cacheLat <= 90 &&
+        cacheLon >= -180 &&
+        cacheLon <= 180;
+      const rowLat = row.latitude == null ? null : Number(row.latitude);
+      const rowLon = row.longitude == null ? null : Number(row.longitude);
+      const rowHasRealCoords =
+        rowLat != null &&
+        rowLon != null &&
+        Number.isFinite(rowLat) &&
+        Number.isFinite(rowLon) &&
+        rowLat >= -90 &&
+        rowLat <= 90 &&
+        rowLon >= -180 &&
+        rowLon <= 180;
       return {
         id: row.id,
         trackableId: row.trackable.id,
@@ -216,8 +240,8 @@ export class TrackablesController {
         dateEstimated: dateEstimated(row.raw),
         locationName: row.locationName,
         holderName: row.holderName,
-        latitude: row.latitude == null ? row.cache == null ? null : Number(row.cache.latitude) : Number(row.latitude),
-        longitude: row.longitude == null ? row.cache == null ? null : Number(row.cache.longitude) : Number(row.longitude),
+        latitude: rowHasRealCoords ? rowLat : (cacheHasRealCoords ? cacheLat : null),
+        longitude: rowHasRealCoords ? rowLon : (cacheHasRealCoords ? cacheLon : null),
         notes: row.notes
       };
     });

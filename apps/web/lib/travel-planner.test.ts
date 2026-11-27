@@ -107,3 +107,16 @@ test("builds a directions link from ready caches", () => {
   assert.equal(parsed.searchParams.get("destination"), "60,19");
   assert.equal(parsed.searchParams.get("waypoints"), "59,18");
 });
+
+test("selects appended and edited agent finals by timestamp while retaining legacy tie order", () => {
+  const webAttempt = { state: "correct", kind: "coordinate", latitude: 59, longitude: 18, createdAt: "2026-11-24" } as const;
+  const agentAttempt = { state: "correct", kind: "keyword", finalLatitude: 61, finalLongitude: 20, createdAt: "2026-11-25" } as const;
+  const invalid = { state: "correct", latitude: 91, longitude: 19, createdAt: "2026-11-27" } as const;
+  assert.deepEqual(finalTravelCoordinate(cache({ attempts: [webAttempt, agentAttempt, invalid] })), { latitude: 61, longitude: 20 });
+  assert.deepEqual(finalTravelCoordinate(cache({
+    attempts: [agentAttempt, { ...webAttempt, updatedAt: "2026-11-26" }]
+  })), { latitude: 59, longitude: 18 });
+  assert.deepEqual(finalTravelCoordinate(cache({
+    attempts: [{ ...webAttempt, createdAt: "invalid" }, { ...agentAttempt, createdAt: undefined }]
+  })), { latitude: 59, longitude: 18 });
+});

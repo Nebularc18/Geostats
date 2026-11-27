@@ -1,7 +1,7 @@
 "use client";
 
 import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import { MAX_MYSTERY_SNAPSHOT_BYTES, mysterySnapshotByteLength, normalizeMysteryListing, parseCoordinate, type MysteryListing as MysteryListingData } from "@geostats/shared";
+import { latestMysterySolution, MAX_MYSTERY_SNAPSHOT_BYTES, mysterySnapshotByteLength, normalizeMysteryListing, parseCoordinate, type MysteryListing as MysteryListingData } from "@geostats/shared";
 import { MysteryListing } from "./mystery-listing";
 import {
   AlertTriangle,
@@ -27,6 +27,7 @@ import {
 } from "lucide-react";
 import { AppShell } from "../../components/app-shell";
 import { MysteryHelperUpdateBanner } from "../../components/mystery-helper-update-banner";
+import { MysteryToolkit } from "../../components/mystery-toolkit";
 import { API_URL, apiFetch } from "../../lib/api";
 import {
   fieldMergeDecision,
@@ -315,11 +316,7 @@ function solvedCoordinateForAttempt(attempt: CoordinateAttempt): SolvedCoordinat
 }
 
 function finalCoordinate(cache: MysteryCache) {
-  for (const attempt of cache.attempts) {
-    const solved = solvedCoordinateForAttempt(attempt);
-    if (solved) return solved;
-  }
-  return null;
+  return latestMysterySolution(cache.attempts);
 }
 
 function attemptKind(attempt: CoordinateAttempt): AttemptKind {
@@ -592,6 +589,7 @@ export default function MysteriesPage() {
   const [serverLoadAttempt, setServerLoadAttempt] = useState(0);
   const [selectedId, setSelectedId] = useState("");
   const [ready, setReady] = useState(false);
+  const [offlineReady, setOfflineReady] = useState(false);
   const [storageKeys, setStorageKeys] = useState<MysteryStorageKeys | null>(null);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<"all" | MysteryStatus>("all");
@@ -857,7 +855,14 @@ export default function MysteriesPage() {
     persistedCaches.current = lastStoredCaches;
     setSelectedId((current) => current || initial.find((cache) => cache.id === requestedCacheId)?.id || initial[0]?.id || "");
     setReady(true);
-    if ("serviceWorker" in navigator) void navigator.serviceWorker.register("/mysteries-sw.js").catch(() => undefined);
+    if ("serviceWorker" in navigator) {
+      void navigator.serviceWorker
+        .register("/mysteries-sw.js")
+        .then(() => setOfflineReady(true))
+        .catch(() => setOfflineReady(false));
+    } else {
+      setOfflineReady(false);
+    }
   }, [storageKeys]);
 
   useEffect(() => {
@@ -2112,7 +2117,7 @@ export default function MysteriesPage() {
           <p className="mystery-subtitle">Keep every clue, coordinate and eureka moment in one place.</p>
         </div>
         <div className="mystery-header-actions">
-          <span className="offline-pill"><WifiOff size={14} /> Available offline</span>
+          <span className="offline-pill"><WifiOff size={14} /> {offlineReady ? "Available offline" : "Saved locally"}</span>
           <button className="secondary-button" type="button" disabled={!pendingGeocachingSyncCount} onClick={syncFromHeader}><ExternalLink size={17} /> Sync solved{pendingGeocachingSyncCount ? ` (${pendingGeocachingSyncCount})` : ""}</button>
           <button className="secondary-button" type="button" onClick={() => setShowBrowserImport(true)}><Import size={17} /> Browser import</button>
           <button className="secondary-button" type="button" onClick={exportGpx}><Download size={17} /> Export GPX</button>
@@ -2229,6 +2234,16 @@ export default function MysteriesPage() {
               {selected.clues.map((clue) => <button title={selected.sharedBy ? undefined : "Remove clue"} type="button" key={clue} disabled={Boolean(selected.sharedBy)} onClick={() => updateSelected({ clues: selected.clues.filter((item) => item !== clue) })}>{clue}{!selected.sharedBy && <X size={12} />}</button>)}
               {!selected.sharedBy && <button className="add-clue" type="button" onClick={addClue}><Plus size={13} /> Add clue</button>}
             </div>
+
+            <MysteryToolkit
+              publishedLatitude={selected.publishedLatitude}
+              publishedLongitude={selected.publishedLongitude}
+              onUseCoordinate={selected.sharedBy ? undefined : (lat, lon) => {
+                setAttemptType("coordinate");
+                setCoordinate(`${lat.toFixed(6)}, ${lon.toFixed(6)}`);
+                setCoordinateState("unchecked");
+              }}
+            />
 
             <div className="mystery-detail-grid">
               <section className="mystery-section coordinate-section">

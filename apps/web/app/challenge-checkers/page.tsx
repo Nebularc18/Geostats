@@ -26,7 +26,9 @@ type Rule =
   | { type: "CALENDAR_FILL"; minimum: number; perDay: number; allowLeapDaySkip: boolean; filters: Array<Record<string, unknown>>; filterLabel: string }
   | { type: "COUNTRIES"; minimum: number; findsPerCountry: number; findsTotal: number; bookmarkExclusionsUnavailable: boolean; filters: Array<Record<string, unknown>>; filterLabel: string; excludedGcCodes: string[]; excludeSelf: boolean }
   | { type: "DISTINCT_TYPES"; minimum: number; filters: Array<Record<string, unknown>>; filterLabel: string }
-  | { type: "MONTHLY_ATTRIBUTE"; months: Array<{ month: number; minimum: number }>; overallMinimum: number; attributeId: string; attributeLabel: string; filters: Array<Record<string, unknown>>; filterLabel: string; excludedGcCodes: string[]; excludeSelf: boolean };
+  | { type: "MONTHLY_ATTRIBUTE"; months: Array<{ month: number; minimum: number }>; overallMinimum: number; attributeId: string; attributeLabel: string; filters: Array<Record<string, unknown>>; filterLabel: string; excludedGcCodes: string[]; excludeSelf: boolean }
+  | { type: "BIRTHDAY"; minimumCaches: number; minAge: number; maxAge: number; minimumTotalAge: number; minimumDifferentAges: number; uniqueDates: boolean; filters: Array<Record<string, unknown>>; filterLabel: string }
+  | { type: "ALPHABET"; letters: string[]; field: "cache_name" | "county"; filters: Array<Record<string, unknown>>; filterLabel: string };
 type Checker = { id: string; name: string; gcCode: string | null; description: string | null; rules: Rule[]; publicSlug: string | null; publishedAt: string | null; updatedAt: string };
 type Evidence = { date: string; gcCode: string; name: string };
 type Result = { passed: boolean; username: string; checkedAt: string; dataUpdatedAt: string | null; proofText: string; rules: Array<{ label: string; current: number; required: number; passed: boolean; detail: string; evidence: Evidence[]; evidenceLimited: boolean; calendar?: CalendarGridData }> };
@@ -44,6 +46,8 @@ function defaultRule(type: Rule["type"]): Rule {
   if (type === "COUNTRIES") return { type, minimum: 3, findsPerCountry: 1, findsTotal: 1, filters: [{}], filterLabel: "all finds", excludedGcCodes: [], excludeSelf: true, bookmarkExclusionsUnavailable: true };
   if (type === "DISTINCT_TYPES") return { type, minimum: 10, filters: [{}], filterLabel: "all finds" };
   if (type === "MONTHLY_ATTRIBUTE") return { type, months: MONTHS.map((_, monthIndex) => ({ month: monthIndex + 1, minimum: 1 })), overallMinimum: 12, attributeId: "", attributeLabel: "Select an attribute", filters: [{}], filterLabel: "all finds", excludedGcCodes: [], excludeSelf: true };
+  if (type === "BIRTHDAY") return { type, minimumCaches: 1, minAge: 1, maxAge: 100, minimumTotalAge: 0, minimumDifferentAges: 0, uniqueDates: false, filters: [{}], filterLabel: "all finds" };
+  if (type === "ALPHABET") return { type, letters: "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split(""), field: "cache_name", filters: [{}], filterLabel: "all finds" };
   if (type === "CACHE_TYPE") return { type, cacheTypeId: "2", cacheTypeLabel: "Traditional Cache", minimum: 100 };
   if (type === "LOCATION") return { type, field: "country", value: "", minimum: 1 };
   if (type === "CALENDAR_DAYS") return { type, minimum: 365 };
@@ -59,12 +63,19 @@ function defaultRule(type: Rule["type"]): Rule {
   return { type, minimum: 1000 };
 }
 
+let nextDraftRuleId = 1;
+type DraftRule = { id: string; rule: Rule };
+function makeDraftRule(rule: Rule): DraftRule {
+  return { id: `rule-${nextDraftRuleId++}`, rule };
+}
+
 export default function ChallengeCheckersPage() {
   const [checkers, setCheckers] = useState<Checker[]>([]);
   const [name, setName] = useState("");
   const [gcCode, setGcCode] = useState("");
   const [description, setDescription] = useState("");
-  const [rules, setRules] = useState<Rule[]>([defaultRule("TOTAL_FINDS")]);
+  const [rules, setRules] = useState<DraftRule[]>(() => [makeDraftRule(defaultRule("TOTAL_FINDS"))]);
+  const [invalidExclusions, setInvalidExclusions] = useState<Record<string, string[]>>({});
   const [results, setResults] = useState<Record<string, Result>>({});
   const [locationCountries, setLocationCountries] = useState<LocationCountry[]>([]);
   const [cacheTypes, setCacheTypes] = useState<CacheTypeOption[]>([]);
@@ -82,10 +93,14 @@ export default function ChallengeCheckersPage() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [batchProgress, setBatchProgress] = useState<{ done: number; total: number } | null>(null);
   const [showProjectGcImport, setShowProjectGcImport] = useState(false);
+  const [projectGcImported, setProjectGcImported] = useState(false);
+  const [readingLuaFile, setReadingLuaFile] = useState(false);
+  const [formGeneration, setFormGeneration] = useState(0);
   const [projectGcScript, setProjectGcScript] = useState("");
   const [projectGcConfig, setProjectGcConfig] = useState('{\n  "limit": 100\n}');
   const [projectGcSummary, setProjectGcSummary] = useState("");
   const formSectionRef = useRef<HTMLElement>(null);
+  const projectGcRequestVersionRef = useRef(0);
 
   async function load() {
     const [checkerData, locationData, catalog] = await Promise.all([
@@ -104,8 +119,26 @@ export default function ChallengeCheckersPage() {
 
   useEffect(() => { void load().catch((cause) => setError(cause.message)); }, []);
 
-  function replaceRule(index: number, rule: Rule) {
-    setRules((current) => current.map((item, itemIndex) => itemIndex === index ? rule : item));
+  function replaceRule(ruleId: string, rule: Rule) {
+    setRules((current) => current.map((entry) => entry.id === ruleId ? { ...entry, rule } : entry));
+    if (rule.type !== "COUNTRIES" && rule.type !== "MONTHLY_ATTRIBUTE") {
+      setInvalidExclusions((current) => {
+        if (!(ruleId in current)) return current;
+        const next = { ...current };
+        delete next[ruleId];
+        return next;
+      });
+    }
+  }
+
+  function removeRule(ruleId: string) {
+    setRules((current) => current.filter((entry) => entry.id !== ruleId));
+    setInvalidExclusions((current) => {
+      if (!(ruleId in current)) return current;
+      const next = { ...current };
+      delete next[ruleId];
+      return next;
+    });
   }
 
   async function loadLocationCatalog(country: string, region?: string) {
@@ -124,14 +157,26 @@ export default function ChallengeCheckersPage() {
   }
 
   function resetForm() {
-    setName(""); setGcCode(""); setDescription(""); setRules([defaultRule("TOTAL_FINDS")]); setEditingId(null); setProjectGcSummary("");
+    projectGcRequestVersionRef.current += 1;
+    setName(""); setGcCode(""); setDescription(""); setRules([makeDraftRule(defaultRule("TOTAL_FINDS"))]); setInvalidExclusions({}); setEditingId(null); setProjectGcSummary(""); setProjectGcImported(false); setReadingLuaFile(false); setFormGeneration((g) => g + 1);
+    setBusy((current) => (current === "project-gc-import" ? null : current));
   }
+
+  const allInvalidExclusions = Object.values(invalidExclusions).flat();
 
   async function save(event: React.FormEvent) {
     event.preventDefault();
+    if (showProjectGcImport && !projectGcImported) {
+      setError("Translate the Project-GC script with “Use imported rules” before saving, or close the importer to build manual rules.");
+      return;
+    }
+    if (allInvalidExclusions.length > 0) {
+      setError(`Fix invalid excluded GC code${allInvalidExclusions.length === 1 ? "" : "s"} before saving: ${allInvalidExclusions.join(", ")}`);
+      return;
+    }
     setBusy("save"); setError("");
     try {
-      await apiFetch(editingId ? `/challenge-checkers/${editingId}` : "/challenge-checkers", { method: editingId ? "PATCH" : "POST", body: JSON.stringify({ name, gcCode, description, rules }) });
+      await apiFetch(editingId ? `/challenge-checkers/${editingId}` : "/challenge-checkers", { method: editingId ? "PATCH" : "POST", body: JSON.stringify({ name, gcCode, description, rules: rules.map((entry) => entry.rule) }) });
       if (editingId) setResults((current) => Object.fromEntries(Object.entries(current).filter(([id]) => id !== editingId)));
       resetForm();
       await load();
@@ -140,25 +185,40 @@ export default function ChallengeCheckersPage() {
   }
 
   async function importProjectGc() {
-    setBusy("project-gc-import"); setError(""); setProjectGcSummary("");
+    const requestVersion = ++projectGcRequestVersionRef.current;
+    setBusy("project-gc-import"); setError(""); setProjectGcSummary(""); setProjectGcImported(false);
     try {
       const imported = await apiFetch<{ rules: Rule[]; summary: string }>("/challenge-checkers/import-project-gc", {
         method: "POST",
         body: JSON.stringify({ script: projectGcScript, config: projectGcConfig })
       });
-      setRules(imported.rules);
+      if (requestVersion !== projectGcRequestVersionRef.current) return;
+      setRules(imported.rules.map((rule) => makeDraftRule(rule)));
+      setInvalidExclusions({});
+      setFormGeneration((g) => g + 1);
+      setProjectGcImported(true);
       setProjectGcSummary(imported.summary);
     } catch (cause) {
+      if (requestVersion !== projectGcRequestVersionRef.current) return;
       setError(cause instanceof Error ? cause.message : "Could not import the Project-GC script");
-    } finally { setBusy(null); }
+    } finally {
+      if (requestVersion === projectGcRequestVersionRef.current) setBusy(null);
+    }
   }
 
   function edit(checker: Checker) {
+    projectGcRequestVersionRef.current += 1;
     setEditingId(checker.id);
     setName(checker.name);
     setGcCode(checker.gcCode ?? "");
     setDescription(checker.description ?? "");
-    setRules(checker.rules.map((rule) => ({ ...rule })));
+    setRules(checker.rules.map((rule) => makeDraftRule({ ...rule })));
+    setInvalidExclusions({});
+    setFormGeneration((g) => g + 1);
+    setShowProjectGcImport(false);
+    setProjectGcImported(false);
+    setReadingLuaFile(false);
+    setBusy((current) => (current === "project-gc-import" ? null : current));
     setError("");
     window.requestAnimationFrame(() => formSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
   }
@@ -251,39 +311,55 @@ export default function ChallengeCheckersPage() {
     <div className="challenge-notice"><strong>Independent checker</strong><span>Geostats can validate and share your imported-data result, but Project-GC remains the checker accepted for newly published challenge caches on Geocaching.com.</span></div>
 
     <section className="panel" ref={formSectionRef}>
-      <div className="challenge-form-heading"><div><h2>{editingId ? "Edit checker" : "Create a checker"}</h2><p className="muted">Build the rules here or translate a supported Project-GC script.</p></div><button className="ghost-button challenge-small-button" type="button" onClick={() => setShowProjectGcImport((current) => !current)}><FileUp size={17} />{showProjectGcImport ? "Close importer" : "Import from Project-GC"}</button></div>
+      <div className="challenge-form-heading"><div><h2>{editingId ? "Edit checker" : "Create a checker"}</h2><p className="muted">Build the rules here or translate a supported Project-GC script.</p></div><button className="ghost-button challenge-small-button" type="button" onClick={() => { projectGcRequestVersionRef.current += 1; setReadingLuaFile(false); setBusy((current) => (current === "project-gc-import" ? null : current)); setShowProjectGcImport((current) => !current); setProjectGcImported(false); setInvalidExclusions({}); setFormGeneration((g) => g + 1); }}><FileUp size={17} />{showProjectGcImport ? "Close importer" : "Import from Project-GC"}</button></div>
       {showProjectGcImport && <div className="challenge-project-gc-import">
         <div><h3>Import a Project-GC checker</h3><p className="muted">Paste the Lua checker and its tag config. Geostats translates supported count (<code>c_number</code>), calendar (<code>c_calendar</code>), type-matrix and monthly-attribute rules and does not run the Lua.</p></div>
-        <label>Lua script<textarea value={projectGcScript} onChange={(event) => setProjectGcScript(event.target.value)} placeholder="Paste the Project-GC Lua script…" rows={9} /></label>
-        <label className="challenge-file-button"><span>Or choose a .lua file</span><input type="file" accept=".lua,text/plain" onChange={(event) => { const file = event.target.files?.[0]; if (!file) return; void file.text().then(setProjectGcScript).catch(() => setError("Could not read the Lua file")); }} /></label>
-        <label>Project-GC tag config <small>JSON</small><textarea value={projectGcConfig} onChange={(event) => setProjectGcConfig(event.target.value)} rows={6} spellCheck={false} /></label>
-        <div className="challenge-actions"><button className="ghost-button challenge-small-button" type="button" disabled={busy !== null || !projectGcScript.trim() || !projectGcConfig.trim()} onClick={() => void importProjectGc()}><FileUp size={17} />{busy === "project-gc-import" ? "Importing…" : "Use imported rules"}</button>{projectGcSummary && <span className="challenge-import-success"><Check size={16} />Imported {projectGcSummary}</span>}</div>
+        <label>Lua script<textarea disabled={busy === "project-gc-import" || readingLuaFile} value={projectGcScript} onChange={(event) => { projectGcRequestVersionRef.current += 1; setProjectGcScript(event.target.value); setProjectGcImported(false); setProjectGcSummary(""); }} placeholder="Paste the Project-GC Lua script…" rows={9} /></label>
+        <label className="challenge-file-button"><span>Or choose a .lua file</span><input type="file" disabled={busy === "project-gc-import" || readingLuaFile} accept=".lua,text/plain" onChange={(event) => { const file = event.target.files?.[0]; if (!file) return; const fileReadVersion = ++projectGcRequestVersionRef.current; setProjectGcImported(false); setProjectGcSummary(""); setReadingLuaFile(true); void file.text().then((text) => { if (fileReadVersion !== projectGcRequestVersionRef.current) return; setProjectGcScript(text); }).catch(() => { if (fileReadVersion !== projectGcRequestVersionRef.current) return; setError("Could not read the Lua file"); }).finally(() => { if (fileReadVersion === projectGcRequestVersionRef.current) setReadingLuaFile(false); }); }} /></label>
+        <label>Project-GC tag config <small>JSON</small><textarea disabled={busy === "project-gc-import" || readingLuaFile} value={projectGcConfig} onChange={(event) => { projectGcRequestVersionRef.current += 1; setProjectGcConfig(event.target.value); setProjectGcImported(false); setProjectGcSummary(""); }} rows={6} spellCheck={false} /></label>
+        <div className="challenge-actions"><button className="ghost-button challenge-small-button" type="button" disabled={busy !== null || readingLuaFile || !projectGcScript.trim() || !projectGcConfig.trim()} onClick={() => void importProjectGc()}><FileUp size={17} />{busy === "project-gc-import" ? "Importing…" : readingLuaFile ? "Reading file…" : "Use imported rules"}</button>{projectGcSummary && <span className="challenge-import-success"><Check size={16} />Imported {projectGcSummary}</span>}</div>
       </div>}
       <form className="form" onSubmit={save}>
         <div className="challenge-form-grid">
           <label>Name<input required maxLength={120} value={name} onChange={(event) => setName(event.target.value)} placeholder="365-day calendar challenge" /></label>
           <label>Challenge GC code<input required maxLength={20} value={gcCode} onChange={(event) => setGcCode(event.target.value.toUpperCase())} placeholder="GC12345" /></label>
         </div>
-        <label>Description <small>Optional note shown on the public result</small><textarea maxLength={1000} value={description} onChange={(event) => setDescription(event.target.value)} placeholder="The challenge requirements…" /></label>
+        <label>Description <small>Optional note shown on the public result</small><textarea className="compact-textarea" rows={2} maxLength={1000} value={description} onChange={(event) => setDescription(event.target.value)} placeholder="The challenge requirements…" /></label>
         {showProjectGcImport
           ? <div className="challenge-rules">
-            {rules.some((rule) => rule.type === "COUNTRIES" || rule.type === "PROJECT_GC_NUMBER" || rule.type === "CALENDAR_FILL" || rule.type === "DISTINCT_TYPES" || rule.type === "MONTHLY_ATTRIBUTE")
-              ? rules.map((rule, index) => rule.type !== "COUNTRIES" && rule.type !== "PROJECT_GC_NUMBER" && rule.type !== "CALENDAR_FILL" && rule.type !== "DISTINCT_TYPES" && rule.type !== "MONTHLY_ATTRIBUTE" ? null : <div className="challenge-rule" key={index}>
-                <div className="challenge-imported-filter"><span>{rule.type === "COUNTRIES" ? "Imported Project-GC countries" : rule.type === "CALENDAR_FILL" ? "Imported Project-GC calendar" : rule.type === "DISTINCT_TYPES" ? "Imported Project-GC matrix" : rule.type === "MONTHLY_ATTRIBUTE" ? "Imported Project-GC monthly" : "Imported Project-GC count"}</span><strong>{rule.type === "MONTHLY_ATTRIBUTE" ? `${rule.attributeLabel} · ${rule.filterLabel}` : rule.type === "COUNTRIES" ? `${rule.findsPerCountry} finds per country · ${rule.findsTotal} total finds · ${rule.filterLabel}` : rule.filterLabel}</strong><small>Re-import the script to change these filters.</small></div>
+            {projectGcImported
+              ? rules.map(({ id: ruleId, rule }) => rule.type !== "COUNTRIES" && rule.type !== "PROJECT_GC_NUMBER" && rule.type !== "CALENDAR_FILL" && rule.type !== "DISTINCT_TYPES" && rule.type !== "MONTHLY_ATTRIBUTE" && rule.type !== "BIRTHDAY" && rule.type !== "ALPHABET" ? null : <div className="challenge-rule" key={ruleId}>
+                <div className="challenge-imported-filter"><span>{rule.type === "COUNTRIES" ? "Imported Project-GC countries" : rule.type === "CALENDAR_FILL" ? "Imported Project-GC calendar" : rule.type === "DISTINCT_TYPES" ? "Imported Project-GC matrix" : rule.type === "MONTHLY_ATTRIBUTE" ? "Imported Project-GC monthly" : rule.type === "BIRTHDAY" ? "Imported Project-GC birthday" : rule.type === "ALPHABET" ? "Imported Project-GC alphabet" : "Imported Project-GC count"}</span><strong>{rule.type === "MONTHLY_ATTRIBUTE" ? `${rule.attributeLabel} · ${rule.filterLabel}` : rule.type === "COUNTRIES" ? `${rule.findsPerCountry} finds per country · ${rule.findsTotal} total finds · ${rule.filterLabel}` : rule.type === "BIRTHDAY" ? `${rule.minimumCaches} birthday finds (age ${rule.minAge}–${rule.maxAge}) · ${rule.filterLabel}` : rule.type === "ALPHABET" ? `${rule.letters.length} letters (${rule.field === "county" ? "county" : "cache name"}) · ${rule.filterLabel}` : rule.filterLabel}</strong><small>Re-import the script to change these filters.</small></div>
+                {(rule.type === "COUNTRIES" || rule.type === "MONTHLY_ATTRIBUTE") && (
+                  <ExcludedGcInput
+                    key={`imp-${ruleId}-${formGeneration}`}
+                    codes={rule.excludedGcCodes}
+                    onChange={(excludedGcCodes, invalid) => {
+                      replaceRule(ruleId, { ...rule, excludedGcCodes });
+                      setInvalidExclusions((current) => ({ ...current, [ruleId]: invalid }));
+                    }}
+                  />
+                )}
                 {rule.type === "MONTHLY_ATTRIBUTE"
-                  ? <label>Required months<input type="number" min={1} max={12} required value={rule.overallMinimum} onChange={(event) => replaceRule(index, { ...rule, overallMinimum: Number(event.target.value) })} /></label>
-                  : <label>Required<input type="number" min={1} max={rule.type === "CALENDAR_FILL" ? 366 : 1000000} required value={rule.minimum} onChange={(event) => replaceRule(index, { ...rule, minimum: Number(event.target.value) })} /></label>}
+                  ? <label>Required months<input type="number" min={1} max={12} required value={rule.overallMinimum} onChange={(event) => replaceRule(ruleId, { ...rule, overallMinimum: Number(event.target.value) })} /></label>
+                  : rule.type === "BIRTHDAY"
+                    ? <label>Required birthday caches<input type="number" min={1} max={1000000} required value={rule.minimumCaches} onChange={(event) => replaceRule(ruleId, { ...rule, minimumCaches: Number(event.target.value) })} /></label>
+                    : rule.type === "ALPHABET"
+                      ? null
+                      : <label>Required<input type="number" min={1} max={rule.type === "CALENDAR_FILL" ? 366 : 1000000} required value={rule.minimum} onChange={(event) => replaceRule(ruleId, { ...rule, minimum: Number(event.target.value) })} /></label>}
               </div>)
               : <p className="muted">Paste the Lua script and tag config above, then choose “Use imported rules”. The manual rule builder stays hidden while importing.</p>}
           </div>
           : <div className="challenge-rules">
-          {rules.map((rule, index) => <div className="challenge-rule" key={index}>
-            <label>Rule type<select value={rule.type} onChange={(event) => replaceRule(index, defaultRule(event.target.value as Rule["type"]))}>
+          {rules.map(({ id: ruleId, rule }) => <div className="challenge-rule" key={ruleId}>
+            <label>Rule type<select value={rule.type} onChange={(event) => replaceRule(ruleId, defaultRule(event.target.value as Rule["type"]))}>
               {rule.type === "PROJECT_GC_NUMBER" && <option value="PROJECT_GC_NUMBER">Imported Project-GC count</option>}
               {rule.type === "CALENDAR_FILL" && <option value="CALENDAR_FILL">Imported calendar fill</option>}
               {rule.type === "COUNTRIES" && <option value="COUNTRIES">Imported countries</option>}
               {rule.type === "DISTINCT_TYPES" && <option value="DISTINCT_TYPES">Imported type matrix</option>}
               {rule.type === "MONTHLY_ATTRIBUTE" && <option value="MONTHLY_ATTRIBUTE">Imported monthly attribute</option>}
+              {rule.type === "BIRTHDAY" && <option value="BIRTHDAY">Imported birthday</option>}
+              {rule.type === "ALPHABET" && <option value="ALPHABET">Imported alphabet</option>}
               <option value="TOTAL_FINDS">Total finds</option>
               <option value="CACHE_TYPE">Finds by cache type</option>
               <option value="CACHE_SIZE">Finds by cache size</option>
@@ -299,26 +375,42 @@ export default function ChallengeCheckersPage() {
               <option value="FAVORITE_POINTS">Finds by Favorite points</option>
               <option value="ATTRIBUTE">Finds with an attribute</option>
             </select></label>
-            {rule.type === "CACHE_TYPE" && <label>Cache type<select value={rule.cacheTypeId} onChange={(event) => { const selected = cacheTypes.find((type) => type.id === event.target.value); replaceRule(index, { ...rule, cacheTypeId: event.target.value, cacheTypeLabel: selected?.label ?? event.target.selectedOptions[0]?.text ?? event.target.value }); }}>{cacheTypes.map((type) => <option value={type.id} key={type.id}>{type.label}{type.imported ? " · imported" : ""}</option>)}</select></label>}
-            {rule.type === "CACHE_SIZE" && <label>Cache size<select value={rule.size} onChange={(event) => replaceRule(index, { ...rule, size: event.target.value })}>{cacheSizes.map((size) => <option key={size}>{size}</option>)}</select></label>}
-            {rule.type === "LOCATION" && <LocationRuleFields rule={rule} countries={locationCountries} regionCatalogs={regionCatalogs} countyCatalogs={countyCatalogs} loadCatalog={loadLocationCatalog} onChange={(nextRule) => replaceRule(index, nextRule)} />}
-            {rule.type === "MONTH_OF_YEAR" && <label>Month<select value={rule.month} onChange={(event) => replaceRule(index, { ...rule, month: Number(event.target.value) })}>{MONTHS.map((month, monthIndex) => <option value={monthIndex + 1} key={month}>{month}</option>)}</select></label>}
-            {rule.type === "WEEKDAY" && <label>Weekday<select value={rule.weekday} onChange={(event) => replaceRule(index, { ...rule, weekday: Number(event.target.value) })}>{WEEKDAYS.map((weekday, weekdayIndex) => <option value={weekdayIndex} key={weekday}>{weekday}</option>)}</select></label>}
-            {(rule.type === "DIFFICULTY_RATING" || rule.type === "TERRAIN_RATING") && <label>{rule.type === "DIFFICULTY_RATING" ? "Difficulty" : "Terrain"}<select value={rule.rating} onChange={(event) => replaceRule(index, { ...rule, rating: Number(event.target.value) })}>{RATINGS.map((rating) => <option value={rating} key={rating}>{rating.toFixed(1)}</option>)}</select></label>}
-            {rule.type === "FAVORITE_POINTS" && <label>Favorite points per cache<input type="number" min={1} max={1000000} required value={rule.minimumFavoritePoints} onChange={(event) => replaceRule(index, { ...rule, minimumFavoritePoints: Number(event.target.value) })} /></label>}
-            {rule.type === "ATTRIBUTE" && <label>Positive attribute<select required value={rule.attributeId} onChange={(event) => { const selected = attributes.find((attribute) => attribute.id === event.target.value); replaceRule(index, { ...rule, attributeId: event.target.value, attributeLabel: selected?.label ?? event.target.value }); }}><option value="" disabled>Select an attribute</option>{attributes.map((attribute) => <option value={attribute.id} key={attribute.id}>{attribute.label}</option>)}</select></label>}
+            {rule.type === "CACHE_TYPE" && <label>Cache type<select value={rule.cacheTypeId} onChange={(event) => { const selected = cacheTypes.find((type) => type.id === event.target.value); replaceRule(ruleId, { ...rule, cacheTypeId: event.target.value, cacheTypeLabel: selected?.label ?? event.target.selectedOptions[0]?.text ?? event.target.value }); }}>{cacheTypes.map((type) => <option value={type.id} key={type.id}>{type.label}{type.imported ? " · imported" : ""}</option>)}</select></label>}
+            {rule.type === "CACHE_SIZE" && <label>Cache size<select value={rule.size} onChange={(event) => replaceRule(ruleId, { ...rule, size: event.target.value })}>{cacheSizes.map((size) => <option key={size}>{size}</option>)}</select></label>}
+            {rule.type === "LOCATION" && <LocationRuleFields rule={rule} countries={locationCountries} regionCatalogs={regionCatalogs} countyCatalogs={countyCatalogs} loadCatalog={loadLocationCatalog} onChange={(nextRule) => replaceRule(ruleId, nextRule)} />}
+            {rule.type === "MONTH_OF_YEAR" && <label>Month<select value={rule.month} onChange={(event) => replaceRule(ruleId, { ...rule, month: Number(event.target.value) })}>{MONTHS.map((month, monthIndex) => <option value={monthIndex + 1} key={month}>{month}</option>)}</select></label>}
+            {rule.type === "WEEKDAY" && <label>Weekday<select value={rule.weekday} onChange={(event) => replaceRule(ruleId, { ...rule, weekday: Number(event.target.value) })}>{WEEKDAYS.map((weekday, weekdayIndex) => <option value={weekdayIndex} key={weekday}>{weekday}</option>)}</select></label>}
+            {(rule.type === "DIFFICULTY_RATING" || rule.type === "TERRAIN_RATING") && <label>{rule.type === "DIFFICULTY_RATING" ? "Difficulty" : "Terrain"}<select value={rule.rating} onChange={(event) => replaceRule(ruleId, { ...rule, rating: Number(event.target.value) })}>{RATINGS.map((rating) => <option value={rating} key={rating}>{rating.toFixed(1)}</option>)}</select></label>}
+            {rule.type === "FAVORITE_POINTS" && <label>Favorite points per cache<input type="number" min={1} max={1000000} required value={rule.minimumFavoritePoints} onChange={(event) => replaceRule(ruleId, { ...rule, minimumFavoritePoints: Number(event.target.value) })} /></label>}
+            {rule.type === "ATTRIBUTE" && <label>Positive attribute<select required value={rule.attributeId} onChange={(event) => { const selected = attributes.find((attribute) => attribute.id === event.target.value); replaceRule(ruleId, { ...rule, attributeId: event.target.value, attributeLabel: selected?.label ?? event.target.value }); }}><option value="" disabled>Select an attribute</option>{attributes.map((attribute) => <option value={attribute.id} key={attribute.id}>{attribute.label}</option>)}</select></label>}
             {rule.type === "PROJECT_GC_NUMBER" && <div className="challenge-imported-filter"><span>Imported filters</span><strong>{rule.filterLabel}</strong><small>Re-import the script to change these filters.</small></div>}
             {rule.type === "CALENDAR_FILL" && <div className="challenge-imported-filter"><span>Imported calendar</span><strong>{rule.filterLabel}{rule.allowLeapDaySkip ? " · Feb 29 skippable" : ""} · {rule.perDay} per day</strong><small>Re-import the script to change these filters.</small></div>}
             {rule.type === "COUNTRIES" && <div className="challenge-imported-filter"><span>Imported countries</span><strong>{rule.findsPerCountry} finds per country · {rule.findsTotal} total finds · {rule.filterLabel}</strong><small>Re-import the script to change these filters.</small></div>}
             {rule.type === "DISTINCT_TYPES" && <div className="challenge-imported-filter"><span>Imported matrix</span><strong>{rule.filterLabel}</strong><small>Re-import the script to change these filters.</small></div>}
             {rule.type === "MONTHLY_ATTRIBUTE" && <div className="challenge-imported-filter"><span>Imported monthly</span><strong>{rule.attributeLabel} · {rule.filterLabel} · {rule.months.length} months</strong><small>Re-import the script to change these filters.</small></div>}
+            {rule.type === "BIRTHDAY" && <div className="challenge-imported-filter"><span>Imported birthday</span><strong>{rule.minimumCaches} birthday finds (age {rule.minAge}–{rule.maxAge}) · {rule.filterLabel}</strong><small>Re-import the script to change these filters.</small></div>}
+            {rule.type === "ALPHABET" && <div className="challenge-imported-filter"><span>Imported alphabet</span><strong>{rule.letters.length} letters ({rule.field === "county" ? "county" : "cache name"}) · {rule.filterLabel}</strong><small>Re-import the script to change these filters.</small></div>}
+            {(rule.type === "COUNTRIES" || rule.type === "MONTHLY_ATTRIBUTE") && (
+              <ExcludedGcInput
+                key={`man-${ruleId}-${formGeneration}`}
+                codes={rule.excludedGcCodes}
+                onChange={(excludedGcCodes, invalid) => {
+                  replaceRule(ruleId, { ...rule, excludedGcCodes });
+                  setInvalidExclusions((current) => ({ ...current, [ruleId]: invalid }));
+                }}
+              />
+            )}
             {rule.type === "MONTHLY_ATTRIBUTE"
-              ? <label>Required months<input type="number" min={1} max={12} required value={rule.overallMinimum} onChange={(event) => replaceRule(index, { ...rule, overallMinimum: Number(event.target.value) })} /></label>
-              : <label>Required<input type="number" min={1} max={rule.type === "CALENDAR_DAYS" || rule.type === "CALENDAR_FILL" ? 366 : rule.type === "DIFFICULTY_TERRAIN" ? 81 : rule.type === "FIND_STREAK" ? 365 : 1000000} required value={rule.minimum} onChange={(event) => replaceRule(index, { ...rule, minimum: Number(event.target.value) })} /></label>}
-            {rules.length > 1 && <button className="challenge-icon-button" type="button" aria-label="Remove rule" onClick={() => setRules((current) => current.filter((_, itemIndex) => itemIndex !== index))}><X size={18} /></button>}
+              ? <label>Required months<input type="number" min={1} max={12} required value={rule.overallMinimum} onChange={(event) => replaceRule(ruleId, { ...rule, overallMinimum: Number(event.target.value) })} /></label>
+              : rule.type === "BIRTHDAY"
+                ? <label>Required birthday caches<input type="number" min={1} max={1000000} required value={rule.minimumCaches} onChange={(event) => replaceRule(ruleId, { ...rule, minimumCaches: Number(event.target.value) })} /></label>
+                : rule.type === "ALPHABET"
+                  ? null
+                  : <label>Required<input type="number" min={1} max={rule.type === "CALENDAR_DAYS" || rule.type === "CALENDAR_FILL" ? 366 : rule.type === "DIFFICULTY_TERRAIN" ? 81 : rule.type === "FIND_STREAK" ? 365 : 1000000} required value={rule.minimum} onChange={(event) => replaceRule(ruleId, { ...rule, minimum: Number(event.target.value) })} /></label>}
+            {rules.length > 1 && <button className="challenge-icon-button" type="button" aria-label="Remove rule" onClick={() => removeRule(ruleId)}><X size={18} /></button>}
           </div>)}
         </div>}
-        <div className="challenge-actions">{!showProjectGcImport && <button className="ghost-button challenge-small-button" type="button" disabled={rules.length >= 10} onClick={() => setRules((current) => [...current, defaultRule("TOTAL_FINDS")])}><Plus size={17} />Add AND rule</button>}{editingId && <button className="ghost-button challenge-small-button" type="button" onClick={resetForm}><X size={17} />Cancel editing</button>}<button className="primary-button" disabled={busy !== null}>{busy === "save" ? "Saving…" : editingId ? "Update checker" : "Save checker"}</button></div>
+        <div className="challenge-actions">{!showProjectGcImport && <button className="ghost-button challenge-small-button" type="button" disabled={rules.length >= 10} onClick={() => setRules((current) => [...current, makeDraftRule(defaultRule("TOTAL_FINDS"))])}><Plus size={17} />Add AND rule</button>}{editingId && <button className="ghost-button challenge-small-button" type="button" onClick={resetForm}><X size={17} />Cancel editing</button>}<button className="primary-button" disabled={busy !== null || readingLuaFile || (showProjectGcImport && !projectGcImported) || allInvalidExclusions.length > 0}>{busy === "save" ? "Saving…" : editingId ? "Update checker" : "Save checker"}</button></div>
       </form>
     </section>
 
@@ -351,6 +443,62 @@ export default function ChallengeCheckersPage() {
 function EvidenceList({ evidence, limited }: { evidence: Evidence[]; limited: boolean }) {
   if (!evidence.length) return null;
   return <details className="challenge-evidence"><summary>View supporting finds ({evidence.length}{limited ? "+" : ""})</summary><div>{evidence.map((row, index) => <p key={`${row.gcCode}-${row.date}-${index}`}><time>{row.date}</time><a href={`https://coord.info/${row.gcCode}`} target="_blank" rel="noreferrer">{row.gcCode}</a><span>{row.name}</span></p>)}</div>{limited && <small>Showing the first 500 supporting finds.</small>}</details>;
+}
+
+function parseGcCodes(raw: string): { valid: string[]; invalid: string[] } {
+  const seen = new Set<string>();
+  const valid: string[] = [];
+  const invalid: string[] = [];
+  for (const token of raw.split(/[\s,;]+/)) {
+    const clean = token.trim().toUpperCase();
+    if (!clean) continue;
+    if (/^GC[A-Z0-9]+$/.test(clean)) {
+      if (!seen.has(clean)) {
+        seen.add(clean);
+        valid.push(clean);
+      }
+    } else {
+      invalid.push(clean);
+    }
+  }
+  return { valid, invalid };
+}
+
+function ExcludedGcInput({ codes, onChange }: { codes: string[]; onChange: (next: string[], invalid: string[]) => void }) {
+  const [text, setText] = useState(() => codes.join(", "));
+  const [invalidTokens, setInvalidTokens] = useState<string[]>([]);
+  const joined = codes.join(", ");
+
+  useEffect(() => {
+    const parsed = parseGcCodes(text);
+    if (parsed.invalid.length === 0 && parsed.valid.join(", ") !== joined) {
+      setText(joined);
+    }
+  }, [joined]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  return (
+    <label>
+      <span>Excluded GC codes <small>(optional manual list)</small></span>
+      <input
+        type="text"
+        value={text}
+        placeholder="GC12345, GC67890"
+        aria-invalid={invalidTokens.length > 0 ? "true" : undefined}
+        onChange={(event) => {
+          const nextText = event.target.value.toUpperCase();
+          setText(nextText);
+          const parsed = parseGcCodes(nextText);
+          setInvalidTokens(parsed.invalid);
+          onChange(parsed.valid, parsed.invalid);
+        }}
+      />
+      {invalidTokens.length > 0 ? (
+        <small className="error" role="alert">
+          Invalid GC code{invalidTokens.length === 1 ? "" : "s"}: {invalidTokens.join(", ")} (expected format like GC12345)
+        </small>
+      ) : null}
+    </label>
+  );
 }
 
 function LocationRuleFields({ rule, countries, regionCatalogs, countyCatalogs, loadCatalog, onChange }: { rule: Extract<Rule, { type: "LOCATION" }>; countries: LocationCountry[]; regionCatalogs: Record<string, string[]>; countyCatalogs: Record<string, string[]>; loadCatalog: (country: string, region?: string) => Promise<void>; onChange: (rule: Extract<Rule, { type: "LOCATION" }>) => void }) {
