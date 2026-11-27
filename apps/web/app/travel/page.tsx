@@ -62,6 +62,7 @@ type TravelRecommendation = {
   county: string | null;
   found: boolean;
   distanceKm: number;
+  fillsGaps?: string[];
   source: "imported" | "mystery";
 };
 
@@ -228,6 +229,17 @@ function TravelWorkspace({ session }: { session: TravelSession }) {
   const [selectedDestination, setSelectedDestination] = useState<SelectedPlace | null>(null);
   const [radiusKm, setRadiusKm] = useState(10);
   const [includeFound, setIncludeFound] = useState(false);
+  const [gapFilters, setGapFilters] = useState<Array<"missing_dt" | "missing_jasmer" | "missing_county">>(() => {
+    if (typeof window === "undefined") return [];
+    const param = new URLSearchParams(window.location.search).get("gapFilter");
+    return param === "missing_dt" || param === "missing_jasmer" || param === "missing_county" ? [param] : [];
+  });
+
+  function toggleGapFilter(filter: "missing_dt" | "missing_jasmer" | "missing_county") {
+    setGapFilters((current) =>
+      current.includes(filter) ? current.filter((item) => item !== filter) : [...current, filter]
+    );
+  }
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState("");
   const [searchResult, setSearchResult] = useState<TravelSearchResult | null>(null);
@@ -507,6 +519,7 @@ function TravelWorkspace({ session }: { session: TravelSession }) {
           destination: searchMode === "route" ? destination.trim() : undefined,
           radiusKm,
           includeFound,
+          gapFilters: gapFilters.length ? gapFilters : undefined,
           mysteryCaches,
           originPlace: selectedOrigin ? {
             label: selectedOrigin.label,
@@ -679,7 +692,7 @@ function TravelWorkspace({ session }: { session: TravelSession }) {
   const activeCaches = useMemo(() => caches.filter((cache) => cache.status !== "archived"), [caches]);
   const assignedCaches = activeCaches.filter((cache) => normalizedTripName(cache.trip));
   const unassignedCaches = visibleCaches.filter((cache) => !normalizedTripName(cache.trip));
-  const readyCount = assignedCaches.filter((cache) => finalTravelCoordinate(cache)).length;
+  const readyCount = activeCaches.filter((cache) => finalTravelCoordinate(cache)).length;
   const tripCount = travelGroups(activeCaches).length;
   const savedCacheCount = savedPlans.reduce((total, plan) => total + plan.caches.length, 0);
   const archivedInEditedTrip = useMemo(() => {
@@ -836,6 +849,24 @@ function TravelWorkspace({ session }: { session: TravelSession }) {
           </select></label>
           <button className="primary-button travel-search-button" type="submit" disabled={searching}>{searching ? <><LoaderCircle className="spin" size={17} /> Searching…</> : <><Search size={17} /> Find caches</>}</button>
           <label className="travel-found-toggle"><input type="checkbox" checked={includeFound} onChange={(event) => setIncludeFound(event.target.checked)} /><span>Include caches I have already found</span></label>
+          <div className="travel-gap-filters" role="group" aria-label="Fill my stat gaps">
+            <span className="muted">Fill my gaps:</span>
+            {([
+              { id: "missing_dt", label: "Missing D/T" },
+              { id: "missing_jasmer", label: "Missing Jasmer" },
+              { id: "missing_county", label: "New county" }
+            ] as const).map((chip) => (
+              <button
+                key={chip.id}
+                type="button"
+                className={gapFilters.includes(chip.id) ? "gap-chip active" : "gap-chip"}
+                aria-pressed={gapFilters.includes(chip.id)}
+                onClick={() => toggleGapFilter(chip.id)}
+              >
+                {chip.label}
+              </button>
+            ))}
+          </div>
         </form>
 
         {searchError && <p className="coordinate-error travel-search-error">{searchError}</p>}
@@ -850,7 +881,15 @@ function TravelWorkspace({ session }: { session: TravelSession }) {
             {searchResult.recommendations.map((cache) => <label key={cache.id} className={selectedRecommendations.has(cache.id) ? "selected" : ""}>
               <input type="checkbox" checked={selectedRecommendations.has(cache.id)} onChange={() => toggleRecommendation(cache.id)} />
               <span className="travel-cache-pin"><MapPin size={15} /></span>
-              <span><strong>{cache.name}</strong><small>{cache.gcCode} · {cache.source === "mystery" ? "Solved mystery" : cache.cacheType ?? "Unknown type"}{cache.source !== "mystery" ? ` · D ${cache.difficulty ?? "–"} / T ${cache.terrain ?? "–"}` : ""}{cache.found ? " · Found" : ""}</small></span>
+              <span>
+                <strong>{cache.name}</strong>
+                <small>{cache.gcCode} · {cache.source === "mystery" ? "Solved mystery" : cache.cacheType ?? "Unknown type"}{cache.source !== "mystery" ? ` · D ${cache.difficulty ?? "–"} / T ${cache.terrain ?? "–"}` : ""}{cache.found ? " · Found" : ""}</small>
+                {cache.fillsGaps?.length ? (
+                  <span className="travel-gap-badges">
+                    {cache.fillsGaps.map((gap) => <em key={gap} className="travel-gap-badge">{gap}</em>)}
+                  </span>
+                ) : null}
+              </span>
               <em>{cache.distanceKm} km {searchMode === "route" ? "off route" : "away"}</em>
             </label>)}
           </div>}

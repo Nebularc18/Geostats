@@ -1,6 +1,7 @@
 "use client";
 
 import { Fragment, type CSSProperties } from "react";
+import Link from "next/link";
 
 const values = [1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5];
 
@@ -9,9 +10,11 @@ function label(value: number) {
 }
 
 export function DifficultyTerrainGrid({
-  data
+  data,
+  cellHref
 }: {
   data: { difficulty: number; terrain: number; count: number }[];
+  cellHref?: (difficulty: number, terrain: number) => string;
 }) {
   const counts = new Map(data.map((cell) => [`${cell.difficulty}/${cell.terrain}`, cell.count]));
   const max = Math.max(1, ...data.map((cell) => cell.count));
@@ -33,6 +36,19 @@ export function DifficultyTerrainGrid({
             {values.map((terrain) => {
               const count = counts.get(`${difficulty}/${terrain}`) ?? 0;
               const intensity = count === 0 ? 0 : Math.max(0.18, count / max);
+              if (count > 0 && cellHref) {
+                return (
+                  <Link
+                    key={`${difficulty}-${terrain}`}
+                    href={cellHref(difficulty, terrain)}
+                    className="dt-cell dt-cell-link"
+                    style={{ "--intensity": intensity } as CSSProperties}
+                    title={`View ${count} find${count === 1 ? "" : "s"} at D${label(difficulty)} / T${label(terrain)}`}
+                  >
+                    {count}
+                  </Link>
+                );
+              }
               return (
                 <div
                   key={`${difficulty}-${terrain}`}

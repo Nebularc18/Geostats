@@ -393,6 +393,22 @@ export interface HideStats {
     cacheType: string | null;
     placedAt: string | null;
   }>;
+  maintenanceQueue: HideMaintenanceItem[];
+}
+
+export interface HideMaintenanceItem {
+  gcCode: string;
+  name: string;
+  cacheType: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  severity: "high" | "medium" | "low";
+  reasons: string[];
+  recentDnfCount: number;
+  needsMaintenanceSince: string | null;
+  lastFoundDate: string | null;
+  lastLogDate: string | null;
+  daysSinceLastFind: number | null;
 }
 
 export interface StatsSnapshot {
@@ -868,8 +884,12 @@ function asRawArray<T>(value: T | T[] | undefined): T[] {
 }
 
 function hideLogs(hide: StatsHide): HideLog[] {
-  const extension = rawLogExtension(hide.receivedLogsRaw);
-  const logs = extension["groundspeak:logs"]?.["groundspeak:log"] ?? extension.logs?.log;
+  const logs = Array.isArray(hide.receivedLogsRaw)
+    ? hide.receivedLogsRaw
+    : (() => {
+        const extension = rawLogExtension(hide.receivedLogsRaw);
+        return extension["groundspeak:logs"]?.["groundspeak:log"] ?? extension.logs?.log;
+      })();
   return asRawArray<Record<string, any>>(logs)
     .map((log) => {
       const type = firstRawText(log["groundspeak:type"], log.type) ?? "Unknown";
@@ -1213,8 +1233,96 @@ export function calculateHideStats(hides: StatsHide[], options: HideStatsOptions
         count: hideLogs(hide).length || hide.receivedLogCount,
         cacheType: hide.cache.cacheType,
         placedAt: hide.placedAt ? dateKey(toDate(hide.placedAt)) : null
-      }))
+      })),
+    maintenanceQueue: calculateHideMaintenanceQueue(hides)
   };
+}
+
+function calculateHideMaintenanceQueue(hides: StatsHide[]): HideMaintenanceItem[] {
+  const now = new Date();
+  const severityRank: Record<HideMaintenanceItem["severity"], number> = { high: 0, medium: 1, low: 2 };
+  const items: HideMaintenanceItem[] = [];
+
+  for (const hide of hides) {
+    if (isArchived(hide.cache)) {
+      continue;
+    }
+
+    const logs = hideLogs(hide).sort((a, b) => b.date.localeCompare(a.date));
+    const lastLogDate = logs[0]?.date ?? null;
+
+    let needsMaintenanceSince: string | null = null;
+    let ownerMaintenanceSeen = false;
+    let lastFoundDate: string | null = null;
+    let recentDnfCount = 0;
+    let countingDnfs = true;
+
+    for (const log of logs) {
+      const normalizedType = log.type.trim().toLowerCase();
+      if (normalizedType.includes("owner maintenance")) {
+        ownerMaintenanceSeen = true;
+      }
+      if (!ownerMaintenanceSeen && (normalizedType.includes("needs maintenance") || normalizedType.includes("needs archived"))) {
+        if (!needsMaintenanceSince) {
+          needsMaintenanceSince = log.date;
+        }
+      }
+      if (normalizedType.includes("found it") || normalizedType.includes("attended") || normalizedType.includes("webcam photo taken")) {
+        if (!lastFoundDate) {
+          lastFoundDate = log.date;
+        }
+        countingDnfs = false;
+      } else if (countingDnfs && (normalizedType.includes("didn't find it") || normalizedType === "dnf")) {
+        recentDnfCount += 1;
+      }
+    }
+
+    const referenceDate = lastFoundDate ?? (hide.placedAt ? dateKey(toDate(hide.placedAt)) : null);
+    const daysSinceLastFind = referenceDate ? Math.max(0, daysBetweenInclusive(toDate(referenceDate), now) - 1) : null;
+
+    const reasons: string[] = [];
+    let severity: HideMaintenanceItem["severity"] | null = null;
+
+    if (needsMaintenanceSince) {
+      reasons.push(`Needs Maintenance logged on ${needsMaintenanceSince}`);
+      severity = "high";
+    }
+    if (recentDnfCount >= 2) {
+      reasons.push(`${recentDnfCount} consecutive DNFs since last find`);
+      severity = severity === "high" ? "high" : recentDnfCount >= 3 ? "high" : "medium";
+    }
+    if (daysSinceLastFind !== null && daysSinceLastFind >= 180) {
+      reasons.push(`No find in ${daysSinceLastFind} days`);
+      if (!severity) {
+        severity = "low";
+      }
+    }
+
+    if (severity && reasons.length > 0) {
+      items.push({
+        gcCode: hide.cache.gcCode,
+        name: hide.cache.name,
+        cacheType: hide.cache.cacheType,
+        latitude: hide.cache.latitude ?? null,
+        longitude: hide.cache.longitude ?? null,
+        severity,
+        reasons,
+        recentDnfCount,
+        needsMaintenanceSince,
+        lastFoundDate,
+        lastLogDate,
+        daysSinceLastFind
+      });
+    }
+  }
+
+  return items.sort(
+    (a, b) =>
+      severityRank[a.severity] - severityRank[b.severity] ||
+      b.recentDnfCount - a.recentDnfCount ||
+      (b.daysSinceLastFind ?? 0) - (a.daysSinceLastFind ?? 0) ||
+      a.gcCode.localeCompare(b.gcCode)
+  );
 }
 
 function calculateDistanceStats(finds: StatsFind[], options: StatsOptions): DistanceStats | null {

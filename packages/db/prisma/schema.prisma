@@ -81,6 +81,9 @@ model User {
   travelPlans             TravelPlan[]
   trackables              Trackable[]
   trackableLogs           TrackableLog[]
+  personalGoals           PersonalGoal[]
+  savedFriends            SavedFriend[]            @relation("SavedFriendOwner")
+  savedByFriends          SavedFriend[]            @relation("SavedFriendTarget")
 
   @@map("users")
 }
@@ -505,4 +508,35 @@ model MapRevisionChange {
 
   @@id([transactionId, userId])
   @@map("map_revision_changes")
+}
+
+model PersonalGoal {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  title     String
+  kind      String
+  target    Int
+  config    Json?
+  archived  Boolean  @default(false)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, archived, createdAt])
+  @@map("personal_goals")
+}
+
+model SavedFriend {
+  id           String   @id @default(cuid())
+  userId       String   @map("user_id")
+  friendUserId String   @map("friend_user_id")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  user       User @relation("SavedFriendOwner", fields: [userId], references: [id], onDelete: Cascade)
+  friendUser User @relation("SavedFriendTarget", fields: [friendUserId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, friendUserId])
+  @@index([userId, createdAt])
+  @@map("saved_friends")
 }

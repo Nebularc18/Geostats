@@ -29,8 +29,10 @@ export default function MilestonesPage() {
   return (
     <AppShell>
       <header className="page-header">
-        <p className="eyebrow">Progress markers</p>
-        <h1>Milestones</h1>
+        <div>
+          <p className="eyebrow">Progress markers</p>
+          <h1>Milestones</h1>
+        </div>
       </header>
       <MilestonePanel stats={stats} />
     </AppShell>

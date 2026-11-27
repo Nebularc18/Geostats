@@ -1,8 +1,11 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
+import { Download } from "lucide-react";
 import { AppShell } from "../../components/app-shell";
-import { CacheMap, CacheMapPoint, getCacheTypeColor } from "../../components/cache-map";
+import { CacheMap, CacheMapPoint, getCacheTypeColor, type MapBasemapStyle, type MapDisplayMode } from "../../components/cache-map";
+import { CacheDrawer } from "../../components/ui/cache-drawer";
 import { apiFetch } from "../../lib/api";
 import { activeMapFilterCount, EMPTY_MAP_FILTERS, filterMapPoints, MapFilters, mapFilterValues } from "../../lib/map-filters";
 import {
@@ -35,7 +38,38 @@ export default function MapPage() {
   const [error, setError] = useState<string | null>(null);
   const [historyTruncated, setHistoryTruncated] = useState(false);
   const [totalCount, setTotalCount] = useState(0);
+  const [displayMode, setDisplayMode] = useState<MapDisplayMode>("clusters");
+  const [basemap, setBasemap] = useState<MapBasemapStyle>("dark");
+  const [selectedGcCode, setSelectedGcCode] = useState<string | null>(null);
+  const [showSolvedMysteries, setShowSolvedMysteries] = useState(true);
+  const [showUnfoundCaches, setShowUnfoundCaches] = useState(false);
+  const [mysteryPoints, setMysteryPoints] = useState<CacheMapPoint[]>([]);
+  const [unfoundPoints, setUnfoundPoints] = useState<CacheMapPoint[]>([]);
   const loadSequenceRef = useRef(0);
+
+  useEffect(() => {
+    if (!showSolvedMysteries) {
+      setMysteryPoints([]);
+      return;
+    }
+    let active = true;
+    void apiFetch<{ points: CacheMapPoint[] }>("/map/mysteries")
+      .then((res) => { if (active) setMysteryPoints(res.points); })
+      .catch(() => { if (active) setMysteryPoints([]); });
+    return () => { active = false; };
+  }, [showSolvedMysteries]);
+
+  useEffect(() => {
+    if (!showUnfoundCaches) {
+      setUnfoundPoints([]);
+      return;
+    }
+    let active = true;
+    void apiFetch<{ points: CacheMapPoint[] }>("/map/unfound")
+      .then((res) => { if (active) setUnfoundPoints(res.points); })
+      .catch(() => { if (active) setUnfoundPoints([]); });
+    return () => { active = false; };
+  }, [showUnfoundCaches]);
 
   useEffect(() => {
     const timeout = window.setTimeout(() => setDebouncedQuery(filters.query), 300);
@@ -157,12 +191,74 @@ export default function MapPage() {
     [filterOptionPoints, filters.country]
   );
   const filteredPoints = useMemo(() => filterMapPoints(points, loadedFilters), [loadedFilters, points]);
+  const matchesOverlay = useMemo(() => {
+    const queryLower = loadedFilters.query.trim().toLowerCase();
+    return (point: CacheMapPoint) => {
+      if (queryLower && !point.gcCode.toLowerCase().includes(queryLower) && !point.name.toLowerCase().includes(queryLower)) return false;
+      if (loadedFilters.country && point.country !== loadedFilters.country) return false;
+      if (loadedFilters.region && point.region !== loadedFilters.region) return false;
+      return true;
+    };
+  }, [loadedFilters.country, loadedFilters.query, loadedFilters.region]);
+  const filteredMysteryPoints = useMemo(
+    () => (showSolvedMysteries ? mysteryPoints.filter(matchesOverlay) : []),
+    [matchesOverlay, mysteryPoints, showSolvedMysteries]
+  );
+  const filteredUnfoundPoints = useMemo(
+    () => (showUnfoundCaches ? unfoundPoints.filter(matchesOverlay) : []),
+    [matchesOverlay, showUnfoundCaches, unfoundPoints]
+  );
+  const combinedPoints = useMemo(
+    () => [...filteredPoints, ...filteredMysteryPoints, ...filteredUnfoundPoints],
+    [filteredMysteryPoints, filteredPoints, filteredUnfoundPoints]
+  );
   const findCount = useMemo(() => filteredPoints.filter((point) => !point.isOwnHide).length, [filteredPoints]);
   const ownHideCount = filteredPoints.length - findCount;
-  const visiblePoints = useMemo(() => [...filteredPoints].sort((a, b) => mapPointTime(b) - mapPointTime(a)).slice(0, 20), [filteredPoints]);
+  const visiblePoints = useMemo(() => [...combinedPoints].sort((a, b) => mapPointTime(b) - mapPointTime(a)).slice(0, 20), [combinedPoints]);
   const activeFilterCount = activeMapFilterCount(filters);
   const mapLoading = loading || filters.query !== debouncedQuery;
   const ratings = Array.from({ length: 9 }, (_, index) => String(1 + index * 0.5));
+
+  function exportMapGpx() {
+    if (!combinedPoints.length) return;
+    const esc = (value: string) => value.replace(/[<>&'"]/g, (ch) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", "'": "&apos;", '"': "&quot;" }[ch] ?? ch));
+    const waypoints = combinedPoints
+      .map((point) => `  <wpt lat="${point.latitude}" lon="${point.longitude}"><name>${esc(point.gcCode)}</name><desc>${esc(point.name)}</desc></wpt>`)
+      .join("\n");
+    const blob = new Blob(
+      [`<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="Geostats" xmlns="http://www.topografix.com/GPX/1/1">\n${waypoints}\n</gpx>`],
+      { type: "application/gpx+xml" }
+    );
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "geostats-map-points.gpx";
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  }
+
+  function exportMapCsv() {
+    if (!combinedPoints.length) return;
+    const esc = (value: unknown) => {
+      const text = String(value ?? "");
+      return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+    };
+    const rows = [
+      ["GC Code", "Name", "Type", "Difficulty", "Terrain", "Latitude", "Longitude", "Country", "Region", "County"].join(","),
+      ...combinedPoints.map((point) =>
+        [point.gcCode, point.name, point.cacheType ?? "", point.difficulty ?? "", point.terrain ?? "", point.latitude, point.longitude, point.country ?? "", point.region ?? "", point.county ?? ""]
+          .map(esc)
+          .join(",")
+      )
+    ];
+    const blob = new Blob([rows.join("\n")], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "geostats-map-points.csv";
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  }
 
   function setFilter<K extends keyof MapFilters>(key: K, value: MapFilters[K]) {
     setFilters((current) => ({ ...current, [key]: value }));
@@ -171,8 +267,10 @@ export default function MapPage() {
   return (
     <AppShell>
       <header className="page-header">
-        <p className="eyebrow">Explore your cache history</p>
-        <h1>Map</h1>
+        <div>
+          <p className="eyebrow">Explore your cache history</p>
+          <h1>Map</h1>
+        </div>
       </header>
       <section className="panel map-filter-panel" aria-labelledby="map-filter-heading">
         <div className="map-filter-heading">
@@ -286,15 +384,63 @@ export default function MapPage() {
       </section>
       {error ? <p className="notice error">{error}</p> : null}
       {historyTruncated ? <p className="notice">Unfiltered map history is capped at {MAX_MAP_POINTS.toLocaleString()} points to keep the browser responsive. Use a filter to search the complete matching history.</p> : null}
+      {showUnfoundCaches && unfoundPoints.length === 0 ? (
+        <p className="notice">
+          No unfound caches in your account pool yet. <Link href="/upload?purpose=travel#travel-cache-import">Upload a Pocket Query or GSAK cache list →</Link>
+        </p>
+      ) : null}
       <section className="map-stage">
         <div className="map-toolbar">
-          <strong aria-live="polite">{mapLoading ? "Loading map points..." : `${filteredPoints.length} of ${totalCount.toLocaleString()} matching points shown`}</strong>
-          <span>
-            {findCount} finds, {ownHideCount} own hides
-          </span>
+          <div className="map-toolbar-summary">
+            <strong aria-live="polite">{mapLoading ? "Loading map points..." : `${combinedPoints.length.toLocaleString()} points shown`}</strong>
+            <small className="muted">
+              {[
+                `${findCount} finds`,
+                `${ownHideCount} own hides`,
+                showSolvedMysteries && filteredMysteryPoints.length ? `${filteredMysteryPoints.length} solved ${filteredMysteryPoints.length === 1 ? "mystery" : "mysteries"}` : null,
+                showUnfoundCaches && filteredUnfoundPoints.length ? `${filteredUnfoundPoints.length} unfound` : null
+              ]
+                .filter(Boolean)
+                .join(" · ")}
+            </small>
+          </div>
+          <div className="map-toolbar-controls">
+            <div className="map-mode-switcher" role="group" aria-label="Map display mode">
+              {(["points", "clusters", "heatmap"] as MapDisplayMode[]).map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  className={displayMode === mode ? "active" : ""}
+                  aria-pressed={displayMode === mode}
+                  onClick={() => setDisplayMode(mode)}
+                >
+                  {mode === "points" ? "Points" : mode === "clusters" ? "Clusters" : "Heatmap"}
+                </button>
+              ))}
+            </div>
+            <div className="map-mode-switcher" role="group" aria-label="Basemap style">
+              <button type="button" className={basemap === "dark" ? "active" : ""} aria-pressed={basemap === "dark"} onClick={() => setBasemap("dark")}>Dark</button>
+              <button type="button" className={basemap === "light" ? "active" : ""} aria-pressed={basemap === "light"} onClick={() => setBasemap("light")}>OSM</button>
+            </div>
+            <label className="map-overlay-toggle">
+              <input type="checkbox" checked={showSolvedMysteries} onChange={(event) => setShowSolvedMysteries(event.target.checked)} />
+              <span>Solved mysteries ({mysteryPoints.length})</span>
+            </label>
+            <label className="map-overlay-toggle">
+              <input type="checkbox" checked={showUnfoundCaches} onChange={(event) => setShowUnfoundCaches(event.target.checked)} />
+              <span>Unfound ({unfoundPoints.length})</span>
+            </label>
+            <button type="button" className="secondary-button" disabled={!combinedPoints.length} onClick={exportMapGpx}>
+              <Download size={14} /> GPX
+            </button>
+            <button type="button" className="secondary-button" disabled={!combinedPoints.length} onClick={exportMapCsv}>
+              <Download size={14} /> CSV
+            </button>
+          </div>
         </div>
-        <CacheMap points={filteredPoints} />
+        <CacheMap points={combinedPoints} displayMode={displayMode} basemap={basemap} onSelectCache={setSelectedGcCode} />
       </section>
+      <CacheDrawer gcCode={selectedGcCode} onClose={() => setSelectedGcCode(null)} />
       <section className="panel">
         <h2>Recent map points</h2>
         <div className="table-list">

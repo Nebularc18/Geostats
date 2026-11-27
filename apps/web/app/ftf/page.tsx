@@ -614,8 +614,10 @@ export default function FtfPage() {
   return (
     <AppShell>
       <header className="page-header">
-        <p className="eyebrow">First to find</p>
-        <h1>FTF</h1>
+        <div>
+          <p className="eyebrow">First to find</p>
+          <h1>FTF</h1>
+        </div>
       </header>
       <section className="stat-grid">
         <StatCard label="FTF finds" value={stats?.total ?? 0} detail={stats ? `${formatPercent(stats.percentOfFinds)} of finds` : ""} />

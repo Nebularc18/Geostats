@@ -191,7 +191,7 @@ const sourceLabels: Record<string, string> = {
   MY_HIDES_GPX: "My Hides GPX",
   POCKET_QUERY: "Pocket Query",
   MANUAL_GPX: "Manual GPX",
-  GEOCACHING_API: "Geocaching API",
+  GEOCACHING_API: "Geocaching JSON",
   GSAK: "GSAK",
   GEOSTATS_EXPORT: "Geostats transfer",
 };

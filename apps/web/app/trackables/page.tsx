@@ -5,6 +5,7 @@ import { AppShell } from "../../components/app-shell";
 import { TrackableMap, type TrackableMapPoint } from "../../components/trackable-map";
 import { apiFetch } from "../../lib/api";
 import { matchesJourneySearch } from "../../lib/journey-search";
+import { isValidMapPoint } from "../../lib/map-bounds";
 
 const STATES = ["OWNED", "DISCOVERED", "RETRIEVED", "DROPPED", "VISITED", "MISSING"] as const;
 type TrackableState = (typeof STATES)[number];
@@ -120,6 +121,7 @@ export default function TrackablesPage() {
   const [mapCacheQuery, setMapCacheQuery] = useState("");
   const [focusedMapPointId, setFocusedMapPointId] = useState<string | null>(null);
   const [showFullRoute, setShowFullRoute] = useState(true);
+  const [mapBasemap, setMapBasemap] = useState<"dark" | "osm">("dark");
   useEffect(() => {
     try { setShowFullRoute(localStorage.getItem("geostats.journey.showFullRoute") !== "false"); } catch { /* Storage can be disabled. */ }
   }, []);
@@ -302,6 +304,13 @@ export default function TrackablesPage() {
       .sort((left, right) => left.sequence - right.sequence || Date.parse(left.loggedAt) - Date.parse(right.loggedAt)),
     [mapPoints, selectedMapTrackable]
   );
+  const mappedVisiblePoints = useMemo(
+    () =>
+      visibleMapPoints.filter((point) =>
+        isValidMapPoint({ latitude: point.latitude ?? NaN, longitude: point.longitude ?? NaN })
+      ),
+    [visibleMapPoints]
+  );
   const missingCacheNameCodes = useMemo(
     () => [...new Set(visibleMapPoints.flatMap((point) => point.gcCode && !displayCacheName(point) ? [point.gcCode] : []))],
     [visibleMapPoints]
@@ -366,7 +375,7 @@ export default function TrackablesPage() {
         <div className="upload-zone-copy">
           <p className="eyebrow">Bring your history with you</p>
           <h2>Import from Geocaching or GSAK</h2>
-          <p className="muted">Upload a trackable journey export as GPX, ZIP, KMZ, CSV, KML, or Geocaching API JSON. Journey cache details stay with your private movement history; matching cache records are linked from your archive.</p>
+          <p className="muted">Upload a trackable journey export as GPX, ZIP, KMZ, CSV, KML, or Geocaching JSON. Journey cache details stay with your private movement history; matching cache records are linked from your archive.</p>
         </div>
         <form onSubmit={importHistory} className="trackable-import-form">
           <input name="file" type="file" accept=".gpx,.zip,.kmz,.csv,.kml,.json,application/gpx+xml,application/zip,application/vnd.google-earth.kml+xml,text/csv,application/json" required />
@@ -379,23 +388,58 @@ export default function TrackablesPage() {
 
       <section className="map-stage trackable-map-stage">
         <div className="map-toolbar trackable-map-toolbar">
-          <div className="trackable-map-summary"><span className="trackable-map-kicker">Journey map</span><strong>{mapLoading ? "Loading movement…" : `${visibleMapPoints.length.toLocaleString()} stop${visibleMapPoints.length === 1 ? "" : "s"}`}</strong>{mapCacheQuery.trim() ? <small>{mapCacheMatches.length} matching stop{mapCacheMatches.length === 1 ? "" : "s"} · Enter to go</small> : null}</div>
-          <label className="trackable-map-search"><span>Find a stop</span><input aria-label="Search journey by stop number, GC code or name" type="search" value={mapCacheQuery} onChange={(event) => setMapCacheQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && mapCacheQuery.trim() && mapCacheMatches[0]) { event.preventDefault(); focusMapPoint(mapCacheMatches[0]); } }} placeholder="GC code, cache name or stop number" /></label>
+          <div className="trackable-map-summary"><span className="trackable-map-kicker">Journey map</span><strong>{mapLoading ? "Loading movement…" : `${mappedVisiblePoints.length.toLocaleString()} mapped stop${mappedVisiblePoints.length === 1 ? "" : "s"}`}</strong>{visibleMapPoints.length > mappedVisiblePoints.length ? <small>{visibleMapPoints.length.toLocaleString()} total in list</small> : null}{mapCacheQuery.trim() ? <small>{mapCacheMatches.length} matching stop{mapCacheMatches.length === 1 ? "" : "s"} · Enter to go</small> : null}</div>
+          <label className="trackable-map-search"><span>Find a stop</span><input aria-label="Search journey by stop number, GC code or name" type="search" value={mapCacheQuery} onChange={(event) => setMapCacheQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && mapCacheQuery.trim() && mapCacheMatches[0]) { event.preventDefault(); focusMapPoint(mapCacheMatches[0]); } }} placeholder="GC code, name, or stop #" /></label>
           <label className="trackable-map-filter"><span>Trackable</span><select value={selectedMapTrackable} onChange={(event) => { mapSelectionUserChanged.current = true; setSelectedMapTrackable(event.target.value); }}><option value="" disabled>Choose a trackable</option>{trackables.map((trackable) => <option key={trackable.id} value={trackable.id}>{trackable.trackingCode} · {trackable.name}</option>)}</select></label>
           <details className="trackable-map-help"><summary aria-label="About the journey map">?</summary><p>Each badge is a stop number in the journey. Badges can overlap; zoom in to separate nearby places, or choose a stop from the list. Use Show full route to show or hide all connections.</p></details>
         </div>
         <div className="journey-explorer">
           <div className="journey-explorer-details" aria-live="polite">
-            {focusedStop ? <><small>Stop {focusedStop.sequence.toLocaleString()} of {focusedStop.sequenceTotal.toLocaleString()}</small><strong>{stopTitle(focusedStop)}</strong><span>{stopMetaLabel(focusedStop)}</span></> : <><strong>Explore visited places</strong><span>Select a numbered badge or a stop below to follow its journey.</span></>}
+            {focusedStop ? (
+              <>
+                <small>Stop {focusedStop.sequence.toLocaleString()} of {focusedStop.sequenceTotal.toLocaleString()}</small>
+                <strong>{stopTitle(focusedStop)}</strong>
+                <span>
+                  {stopMetaLabel(focusedStop)}
+                  {!isValidMapPoint({ latitude: focusedStop.latitude ?? NaN, longitude: focusedStop.longitude ?? NaN }) ? (
+                    <> · No map coordinates (<a href="/upload#travel-cache-import">import caches</a>)</>
+                  ) : null}
+                </span>
+              </>
+            ) : <><strong>Explore visited places</strong><span>Select a numbered badge or a stop below to follow its journey.</span></>}
           </div>
           <div className="journey-explorer-actions">
-            {focusedStop ? <><button type="button" className="secondary-button" disabled={focusedIndex <= 0} onClick={() => focusMapPoint(visibleMapPoints[focusedIndex - 1]!)}>Previous stop</button><button type="button" className="secondary-button" disabled={focusedIndex >= visibleMapPoints.length - 1} onClick={() => focusMapPoint(visibleMapPoints[focusedIndex + 1]!)}>Next stop</button><button type="button" className="secondary-button" onClick={() => setFocusedMapPointId(null)}>All places</button></> : <button type="button" className="secondary-button" disabled={!visibleMapPoints.length} onClick={() => focusMapPoint(visibleMapPoints[0]!)}>Follow journey</button>}
+            <div className="ds-segmented" role="group" aria-label="Journey basemap">
+              <button type="button" className={mapBasemap === "dark" ? "active" : ""} aria-pressed={mapBasemap === "dark"} onClick={() => setMapBasemap("dark")}>Dark</button>
+              <button type="button" className={mapBasemap === "osm" ? "active" : ""} aria-pressed={mapBasemap === "osm"} onClick={() => setMapBasemap("osm")}>OSM</button>
+            </div>
+            {focusedStop ? <><button type="button" className="secondary-button" disabled={focusedIndex <= 0} onClick={() => focusMapPoint(visibleMapPoints[focusedIndex - 1]!)}>Previous stop</button><button type="button" className="secondary-button" disabled={focusedIndex >= visibleMapPoints.length - 1} onClick={() => focusMapPoint(visibleMapPoints[focusedIndex + 1]!)}>Next stop</button><button type="button" className="secondary-button" onClick={() => setFocusedMapPointId(null)}>All places</button></> : <button type="button" className="secondary-button" disabled={!mappedVisiblePoints.length} onClick={() => focusMapPoint(mappedVisiblePoints[0]!)}>Follow journey</button>}
             <label className="journey-route-toggle"><input type="checkbox" checked={showFullRoute} onChange={(event) => toggleFullRoute(event.target.checked)} />Show full route</label>
           </div>
         </div>
         {mapTruncated ? <p className="trackable-import-warning trackable-map-warning" role="status"><strong>Map history is limited.</strong> Showing the newest 20,000 of {mapTotal.toLocaleString()} movement points for performance. The full history remains in your logbook export.</p> : null}
         <div className="trackable-map-canvas">
-          <TrackableMap points={visibleMapPoints} focusPointId={focusedMapPointId} highlightPointIds={highlightedMapPointIds} onPointSelect={handleMapPointSelect} showFullRoute={showFullRoute} />
+          <TrackableMap
+            points={visibleMapPoints}
+            focusPointId={focusedMapPointId}
+            highlightPointIds={highlightedMapPointIds}
+            onPointSelect={handleMapPointSelect}
+            showFullRoute={showFullRoute}
+            basemap={mapBasemap}
+            onBasemapFallback={() => setMapBasemap("osm")}
+          />
+          {!mapLoading && mappedVisiblePoints.length === 0 ? (
+            <div className="trackable-map-empty-pill" role="status">
+              {visibleMapPoints.length > 0 ? (
+                <>
+                  None of this journey’s {visibleMapPoints.length} stop{visibleMapPoints.length === 1 ? "" : "s"} have coordinates yet.
+                  <a href="/upload#travel-cache-import">Import matching caches</a>
+                </>
+              ) : (
+                "No trackable stops mapped yet — add a trackable or import a journey above."
+              )}
+            </div>
+          ) : null}
           <div className="trackable-map-legend" aria-label="Journey map legend"><span><b className="trackable-legend-swatch number">12</b>Stop number</span>{showFullRoute ? <span><b className="trackable-legend-swatch route" />Full route</span> : null}{focusedStop ? <><span><b className="trackable-legend-swatch previous" />Previous</span><span><b className="trackable-legend-swatch selected" />Selected</span><span><b className="trackable-legend-swatch next" />Next</span></> : null}</div>
         </div>
         {mapUnmapped > 0 ? <p className="map-footnote">{mapUnmapped} imported movement{mapUnmapped === 1 ? " has" : "s have"} no cache coordinates. Import a GSAK cache GPX/ZIP or Geocaching cache export, then import this journey again. <a href="/upload#travel-cache-import">Open cache import</a></p> : null}
@@ -406,16 +450,27 @@ export default function TrackablesPage() {
             <div className="trackable-stop-nav">
               <span>{stopListSource.length > 0 ? `Stops ${stopListStart + 1}–${stopListEnd} of ${stopListSource.length}` : "No matching stops"}</span>
               <button className="secondary-button" type="button" disabled={stopListStart === 0 || stopListSource.length === 0} onClick={() => setStopListStart(Math.max(0, stopListStart - STOP_PAGE_SIZE))}>Previous</button>
-              <button className="secondary-button" type="button" disabled={stopListEnd >= stopListSource.length} onClick={() => setStopListStart(Math.min(Math.max(0, stopListSource.length - STOP_PAGE_SIZE), stopListStart + STOP_PAGE_SIZE))}>Next</button>
+              <button className="secondary-button" type="button" disabled={stopListEnd >= stopListSource.length} onClick={() => setStopListStart(stopListStart + STOP_PAGE_SIZE)}>Next</button>
             </div>
           </div>
           {stopListPoints.length > 0 ? <ol className="trackable-stop-list" start={stopListStart + 1}>
-            {stopListPoints.map((point) => <li key={point.id} className={focusedMapPointId === point.id ? "selected" : undefined}>
-              <button type="button" onClick={() => focusMapPoint(point)} aria-current={focusedMapPointId === point.id ? "true" : undefined}>
-                <span className="trackable-stop-number">{point.sequence}</span>
-                <span className="trackable-stop-copy"><strong>{stopTitle(point)}</strong><small>{stopMetaLabel(point)}</small></span>
-              </button>
-            </li>)}
+            {stopListPoints.map((point) => {
+              const mapped = isValidMapPoint({ latitude: point.latitude ?? NaN, longitude: point.longitude ?? NaN });
+              return (
+                <li key={point.id} className={focusedMapPointId === point.id ? "selected" : undefined}>
+                  <button type="button" onClick={() => focusMapPoint(point)} aria-current={focusedMapPointId === point.id ? "true" : undefined}>
+                    <span className="trackable-stop-number">{point.sequence}</span>
+                    <span className="trackable-stop-copy">
+                      <strong>
+                        {stopTitle(point)}
+                        {!mapped ? <span className="trackable-unmapped-badge">No coords</span> : null}
+                      </strong>
+                      <small>{stopMetaLabel(point)}</small>
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
           </ol> : <div className="trackable-stop-empty"><strong>No matching stops</strong><p>Try a stop number, GC code or cache name.</p><button className="secondary-button" type="button" onClick={() => setMapCacheQuery("")}>Clear search</button></div>}
         </div> : null}
       </section>

@@ -314,16 +314,34 @@ export class TrackablesImportService {
       const trackableIds = new Map(storedTrackables.map((trackable) => [trackable.trackingCode, trackable.id]));
 
       const sourceKeys = preparedLogs.map((log) => log.sourceKey);
-      const existingKeys = new Set(
-        (
-          await Promise.all(
-            batches(sourceKeys, TRACKABLE_IMPORT_QUERY_BATCH_SIZE).map((batch) =>
-              tx.trackableLog.findMany({ where: { userId, sourceKey: { in: batch } }, select: { sourceKey: true } })
-            )
+      const existingRows = (
+        await Promise.all(
+          batches(sourceKeys, TRACKABLE_IMPORT_QUERY_BATCH_SIZE).map((batch) =>
+            tx.trackableLog.findMany({
+              where: { userId, sourceKey: { in: batch } },
+              select: { id: true, sourceKey: true, cacheId: true, latitude: true, longitude: true, cacheName: true }
+            })
           )
-        ).flat().map((row) => row.sourceKey)
-      );
-      const newLogs = preparedLogs.filter((log) => !existingKeys.has(log.sourceKey));
+        )
+      ).flat();
+      const existingByKey = new Map(existingRows.map((row) => [row.sourceKey, row]));
+      const newLogs = preparedLogs.filter((log) => !existingByKey.has(log.sourceKey));
+      for (const log of preparedLogs) {
+        const existing = existingByKey.get(log.sourceKey);
+        if (!existing) continue;
+        const patch: Record<string, unknown> = {};
+        if (!existing.cacheId && log.cacheId) patch.cacheId = log.cacheId;
+        const logHasRealCoords = validCoordinate(log.latitude, log.longitude);
+        if ((existing.latitude == null || existing.longitude == null) && logHasRealCoords) {
+          patch.latitude = log.latitude;
+          patch.longitude = log.longitude;
+        }
+        const cleanedName = cleanText(log.cacheName);
+        if (!existing.cacheName && cleanedName) patch.cacheName = cleanedName;
+        if (Object.keys(patch).length > 0) {
+          await tx.trackableLog.update({ where: { id: existing.id }, data: patch });
+        }
+      }
       for (const batch of batches(newLogs, TRACKABLE_IMPORT_WRITE_BATCH_SIZE)) {
         await tx.trackableLog.createMany({
           data: batch.map((log) => ({

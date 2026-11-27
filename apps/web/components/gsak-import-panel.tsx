@@ -115,7 +115,7 @@ export function GsakImportPanel({ onImportActivity }: GsakImportPanelProps) {
             owned cache data in GSAK before sending it to Geostats, and loads
             cache codes that are missing from your trackable journeys. If GSAK
             cannot fetch a cache, export it as GPX or ZIP and upload that file
-            in the cache import above.
+            on the Upload page.
           </p>
         </div>
         {status?.updateAvailable ? (

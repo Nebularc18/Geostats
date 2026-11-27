@@ -14,6 +14,8 @@ export type TravelCandidate = Coordinate & {
   country: string | null;
   region: string | null;
   county: string | null;
+  hiddenDate?: string | null;
+  fillsGaps?: string[];
   found: boolean;
   source: "imported" | "mystery";
 };

@@ -276,7 +276,82 @@ export class TravelSearchService {
     }>;
     originPlace?: Place;
     destinationPlace?: Place;
+    gapFilters?: Array<"missing_dt" | "missing_jasmer" | "missing_county">;
   }) {
+    const gapFilterSet = new Set(input.gapFilters ?? []);
+    const snapshot = this.prisma.statSnapshot?.findFirst
+      ? await this.prisma.statSnapshot.findFirst({
+          where: { userId },
+          orderBy: { generatedAt: "desc" },
+          select: { statsJson: true }
+        })
+      : null;
+    const statsJson = (snapshot?.statsJson ?? null) as any;
+    const foundDtKeys = new Set<string>(
+      Array.isArray(statsJson?.difficultyTerrain)
+        ? statsJson.difficultyTerrain
+            .filter((cell: any) => Number(cell?.count ?? 0) > 0)
+            .map((cell: any) => `${Number(cell.difficulty).toFixed(1)}/${Number(cell.terrain).toFixed(1)}`)
+        : []
+    );
+    const foundJasmerMonths = new Set<string>(
+      Array.isArray(statsJson?.hiddenMonthMatrix)
+        ? statsJson.hiddenMonthMatrix
+            .filter((entry: any) => Number(entry?.count ?? 0) > 0 && typeof entry?.key === "string")
+            .map((entry: any) => entry.key)
+        : []
+    );
+    const foundCounties = new Set<string>(
+      Array.isArray(statsJson?.counties)
+        ? statsJson.counties
+            .filter((entry: any) => Number(entry?.count ?? 0) > 0 && typeof entry?.key === "string")
+            .map((entry: any) => entry.key.trim().toLowerCase())
+        : []
+    );
+
+    const annotateGaps = (candidate: TravelCandidate): TravelCandidate | null => {
+      if (candidate.found) {
+        return gapFilterSet.size > 0 ? null : candidate;
+      }
+      const fillsGaps: string[] = [];
+      let matchesDt = false;
+      let matchesJasmer = false;
+      let matchesCounty = false;
+
+      if (candidate.difficulty != null && candidate.terrain != null) {
+        const dtKey = `${candidate.difficulty.toFixed(1)}/${candidate.terrain.toFixed(1)}`;
+        if (foundDtKeys.size > 0 && !foundDtKeys.has(dtKey)) {
+          fillsGaps.push(`Missing D/T ${dtKey}`);
+          matchesDt = true;
+        }
+      }
+      if (candidate.hiddenDate) {
+        const ym = candidate.hiddenDate.slice(0, 7);
+        if (foundJasmerMonths.size > 0 && !foundJasmerMonths.has(ym)) {
+          fillsGaps.push(`Missing Jasmer ${ym}`);
+          matchesJasmer = true;
+        }
+      }
+      if (candidate.county) {
+        if (foundCounties.size > 0 && !foundCounties.has(candidate.county.trim().toLowerCase())) {
+          fillsGaps.push(`New county: ${candidate.county}`);
+          matchesCounty = true;
+        }
+      }
+
+      if (gapFilterSet.size > 0) {
+        const matched =
+          (gapFilterSet.has("missing_dt") && matchesDt) ||
+          (gapFilterSet.has("missing_jasmer") && matchesJasmer) ||
+          (gapFilterSet.has("missing_county") && matchesCounty);
+        if (!matched) {
+          return null;
+        }
+      }
+
+      return fillsGaps.length > 0 ? { ...candidate, fillsGaps } : candidate;
+    };
+
     const origin = input.originPlace ?? await geocode(input.origin);
     const destination = input.mode === "route"
       ? input.destinationPlace ?? await geocode(input.destination!)
@@ -302,11 +377,14 @@ export class TravelSearchService {
       const gcCode = cache.gcCode.trim().toUpperCase();
       const status = statusByCode.get(gcCode);
       if (status?.hides.length) return [];
-      return [{
+      const mysteryCandidate: TravelCandidate = {
         ...cache, gcCode, cacheType: "Mystery Cache", difficulty: null, terrain: null, size: null,
         country: cache.country ?? null, region: cache.region ?? null, county: cache.county ?? null,
+        hiddenDate: null,
         found: Boolean(status?.finds.length), source: "mystery"
-      }];
+      };
+      const annotated = annotateGaps(mysteryCandidate);
+      return annotated ? [annotated] : [];
     }));
     const mysteryByCode = new Set(mysteryCandidates.map(({ gcCode }) => gcCode));
     let best = rankTravelCandidates(mysteryCandidates, origin, input.radiusKm, input.includeFound, routeGeometry)
@@ -340,7 +418,7 @@ export class TravelSearchService {
             select: {
               id: true, gcCode: true, name: true, metadataTrusted: true, cacheType: true,
               difficulty: true, terrain: true, size: true, latitude: true, longitude: true,
-              country: true, region: true, county: true,
+              country: true, region: true, county: true, hiddenDate: true,
               finds: { where: { userId }, select: { id: true }, take: 1 },
               corrections: { where: { userId }, select: { latitude: true, longitude: true }, take: 1 }
             }
@@ -357,14 +435,18 @@ export class TravelSearchService {
         }
         const cache = { ...shared, ...personalCacheMetadata(shared, raw) };
         const correction = cache.corrections[0];
-        return [{
+        const candidate: TravelCandidate = {
           id: cache.id, gcCode: cache.gcCode, name: cache.name, cacheType: cache.cacheType,
           difficulty: cache.difficulty === null ? null : Number(cache.difficulty),
           terrain: cache.terrain === null ? null : Number(cache.terrain),
           size: cache.size, latitude: Number(correction?.latitude ?? cache.latitude),
           longitude: Number(correction?.longitude ?? cache.longitude), country: cache.country,
-          region: cache.region, county: cache.county, found: cache.finds.length > 0, source: "imported"
-        }];
+          region: cache.region, county: cache.county,
+          hiddenDate: cache.hiddenDate ? cache.hiddenDate.toISOString().slice(0, 10) : null,
+          found: cache.finds.length > 0, source: "imported"
+        };
+        const annotated = annotateGaps(candidate);
+        return annotated ? [annotated] : [];
       });
       const page = rankTravelCandidates(candidates, origin, input.radiusKm, input.includeFound, routeGeometry);
       best = [...best, ...page].sort(compareTravelCandidates).slice(0, MAX_RECOMMENDATIONS + 1);

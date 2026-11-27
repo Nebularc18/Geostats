@@ -16,7 +16,7 @@ const sourceLabels: Record<string, string> = {
   MY_HIDES_GPX: "My Hides GPX",
   POCKET_QUERY: "Pocket Query",
   MANUAL_GPX: "Manual GPX",
-  GEOCACHING_API: "Geocaching API",
+  GEOCACHING_API: "Geocaching JSON",
   GSAK: "GSAK",
   GEOSTATS_EXPORT: "Geostats transfer",
 };
@@ -61,6 +61,7 @@ export default function ImportsPage() {
     setRetrying(id);
     try {
       await apiFetch(`/imports/${encodeURIComponent(id)}/retry`, { method: "POST" });
+      window.dispatchEvent(new CustomEvent("geostats:imports-updated"));
       await refresh();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not retry the import.");
@@ -72,8 +73,10 @@ export default function ImportsPage() {
   return (
     <AppShell>
       <header className="page-header">
-        <p className="eyebrow">Background jobs</p>
-        <h1>Import history</h1>
+        <div>
+          <p className="eyebrow">Background jobs</p>
+          <h1>Import history</h1>
+        </div>
       </header>
       <GsakImportPanel onImportActivity={refresh} />
       <section className="panel">

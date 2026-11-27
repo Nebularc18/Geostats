@@ -12,6 +12,10 @@ import * as Sharing from "expo-sharing";
 import * as Updates from "expo-updates";
 import { mergeDeviceMystery, mysteryFieldFingerprints, type MysterySyncField } from "./mystery-sync";
 import { MysteryBrowser } from "./mystery-browser";
+import { FriendsScreen } from "./screens/friends-screen";
+import { GoalsScreen } from "./screens/goals-screen";
+import { LogbookScreen } from "./screens/logbook-screen";
+import { FieldHubScreen } from "./screens/field-hub-screen";
 import MapView, { Callout, Marker, Polygon, Polyline, PROVIDER_GOOGLE, type MapStyleElement, type Region } from "react-native-maps";
 import * as Linking from "expo-linking";
 import { ClerkProvider, useAuth } from "@clerk/expo";
@@ -58,7 +62,7 @@ type ServerProbeState = {
   config: AuthConfig;
 };
 type ScratchLevel = "countries" | "regions" | "counties";
-type ScreenId = "dashboard" | "explore" | "upload" | "imports" | "stats" | "ftf" | "hides" | "milestones" | "map" | "mysteries" | "travel" | "trackables" | "scratch" | "challenges" | "profile";
+type ScreenId = "dashboard" | "explore" | "field" | "upload" | "imports" | "stats" | "logbook" | "goals" | "friends" | "ftf" | "hides" | "milestones" | "map" | "mysteries" | "travel" | "trackables" | "scratch" | "challenges" | "profile";
 type Session = { token: string; user: { id: string; email: string; username: string } };
 type CheckState = "correct" | "wrong" | "unchecked";
 type MysteryStatus = "solving" | "solved" | "planned" | "archived";
@@ -273,9 +277,13 @@ const screenDetails: Record<ScreenId, { label: string; eyebrow: string; icon: st
   dashboard: { label: "Home", eyebrow: "Your geocaching overview", icon: "⌂" },
   stats: { label: "Stats", eyebrow: "Patterns and progress", icon: "▥" },
   map: { label: "Map", eyebrow: "Every find in context", icon: "⌖" },
+  field: { label: "Field", eyebrow: "Offline trail companion", icon: "🧭" },
   explore: { label: "Explore", eyebrow: "All Geostats tools", icon: "✦" },
   profile: { label: "Profile", eyebrow: "Account settings", icon: "●" },
   scratch: { label: "Scratch Map", eyebrow: "Coverage around the world", icon: "◎" },
+  logbook: { label: "Logbook", eyebrow: "Search finds and logs", icon: "≡" },
+  goals: { label: "Goals", eyebrow: "Track personal targets", icon: "◎" },
+  friends: { label: "Friends", eyebrow: "Compare & group leaderboard", icon: "☺" },
   milestones: { label: "Milestones", eyebrow: "Memorable firsts", icon: "◇" },
   ftf: { label: "First to Find", eyebrow: "Track your FTF history", icon: "⚑" },
   hides: { label: "Owned Caches", eyebrow: "Your hides and finders", icon: "△" },
@@ -287,9 +295,9 @@ const screenDetails: Record<ScreenId, { label: string; eyebrow: string; icon: st
   imports: { label: "Import History", eyebrow: "Processing and recent files", icon: "↻" }
 };
 
-const primaryScreens: ScreenId[] = ["dashboard", "stats", "map", "explore", "profile"];
+const primaryScreens: ScreenId[] = ["dashboard", "map", "field", "stats", "explore"];
 const exploreGroups: Array<{ title: string; subtitle: string; screens: ScreenId[] }> = [
-  { title: "Maps & progress", subtitle: "See where you have cached and what comes next.", screens: ["scratch", "milestones", "ftf"] },
+  { title: "Maps & progress", subtitle: "See where you have cached and what comes next.", screens: ["logbook", "goals", "scratch", "milestones", "ftf", "friends"] },
   { title: "Caching tools", subtitle: "Manage hides, trackables, puzzles, challenges, and upcoming trips.", screens: ["hides", "trackables", "mysteries", "challenges", "travel"] },
   { title: "Data", subtitle: "Keep your archive current and review recent imports.", screens: ["upload", "imports"] }
 ];
@@ -1549,6 +1557,10 @@ function ScreenSwitch({ incomingMysteryShare, onIncomingShareHandled, apiBaseUrl
   if (screen === "dashboard") return <DashboardScreen apiBaseUrl={apiBaseUrl} token={token} username={username} onNavigate={onNavigate} />;
   if (screen === "explore") return <ExploreScreen username={username} onNavigate={onNavigate} />;
   if (screen === "stats") return <StatsScreen apiBaseUrl={apiBaseUrl} token={token} />;
+  if (screen === "field") return <FieldHubScreen userId={userId} />;
+  if (screen === "logbook") return <LogbookScreen apiBaseUrl={apiBaseUrl} token={token} apiFetch={apiFetch} />;
+  if (screen === "goals") return <GoalsScreen apiBaseUrl={apiBaseUrl} token={token} apiFetch={apiFetch} />;
+  if (screen === "friends") return <FriendsScreen apiBaseUrl={apiBaseUrl} token={token} apiFetch={apiFetch} />;
   if (screen === "map") return <MapScreen apiBaseUrl={apiBaseUrl} token={token} />;
   if (screen === "scratch") return <ScratchScreen apiBaseUrl={apiBaseUrl} token={token} />;
   if (screen === "milestones") return <MilestonesScreen apiBaseUrl={apiBaseUrl} token={token} />;
