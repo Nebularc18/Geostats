@@ -33,13 +33,15 @@ test("an uncertain enqueue keeps the uploaded source available for reconciliatio
         assert.equal(data.status, "UPLOADED");
         created = { id: "import-1", ...data };
         return created;
-      },
-      updateMany: async () => ({ count: 1 }),
-      update: async ({ data }: any) => { assert.equal(data.status, "QUEUED"); }
+      }
     }
   };
   const controller = new ImportsController({
-    $transaction: async (run: (transaction: typeof tx) => unknown) => run(tx)
+    $transaction: async (run: (transaction: typeof tx) => unknown) => run(tx),
+    import: { updateMany: async ({ data }: any) => {
+      if (data.status !== undefined) assert.equal(data.status, "QUEUED");
+      return { count: 1 };
+    } }
   } as never, {
     putObject: async (key: string, value: Buffer) => {
       assert.equal(created?.objectKey, key);

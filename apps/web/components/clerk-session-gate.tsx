@@ -142,7 +142,7 @@ export function ClerkSessionGate({ children }: { children: React.ReactNode }) {
       event.preventDefault();
       const password = new FormData(event.currentTarget).get("migrationPassword");
       event.currentTarget.reset();
-      if (typeof password === "string" && password) submitMigration(password);
+      if (typeof password === "string") submitMigration(password);
     }
 
     return (
@@ -153,7 +153,7 @@ export function ClerkSessionGate({ children }: { children: React.ReactNode }) {
           <form className="form" method="post" onSubmit={submit} key={migration.sessionId}>
             <label>
               Previous Geostats password
-              <input name="migrationPassword" type="password" autoComplete="off" maxLength={128} required disabled={migrationBusy} />
+              <input name="migrationPassword" type="password" autoComplete="off" disabled={migrationBusy} />
             </label>
             {errorMessage ? <p className="error" role="alert">{errorMessage}</p> : null}
             <button className="primary-button" type="submit" disabled={migrationBusy}>

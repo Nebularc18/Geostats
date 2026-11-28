@@ -20,7 +20,7 @@ import { readFile } from "node:fs/promises";
 import { PrismaService } from "../common/prisma.service";
 import { parseRules } from "../challenge-checkers/challenge-checkers.service";
 import { StorageService } from "../storage/storage.service";
-import { lockImportAccount } from "../imports/import-storage";
+import { ABANDONED_UPLOAD_RETENTION_MS, lockImportAccount } from "../imports/import-storage";
 import { MAX_ELEVATION_METERS, MAX_ELEVATION_TEXT_LENGTH, MIN_ELEVATION_METERS } from "../common/elevation";
 
 const FORMAT = "geostats-portable-data";
@@ -515,10 +515,15 @@ export class PortabilityService implements OnModuleInit, OnModuleDestroy {
       await lockImportAccount(tx, user.id);
       const imports = await tx.import.findMany({
         where: { userId: user.id, objectKey: { not: "" } },
-        select: { objectKey: true },
+        select: { objectKey: true, status: true, objectCleanupAttemptedAt: true },
       });
+      // An upload can still be writing to storage after its import row is deleted.
+      const afterUploadsFinish = new Date(Date.now() + ABANDONED_UPLOAD_RETENTION_MS);
       await tx.pendingObjectDeletion.createMany({
-        data: imports.map(({ objectKey }) => ({ objectKey })),
+        data: imports.map(({ objectKey, status, objectCleanupAttemptedAt }) => ({
+          objectKey,
+          ...(status === "UPLOADED" || objectCleanupAttemptedAt ? { availableAt: afterUploadsFinish } : {}),
+        })),
         skipDuplicates: true,
       });
       await tx.user.delete({ where: { id: user.id } });
@@ -984,7 +989,8 @@ export class PortabilityService implements OnModuleInit, OnModuleDestroy {
     this.cleanupInProgress = true;
     try {
       const pending = await this.prisma.pendingObjectDeletion.findMany({
-        orderBy: { createdAt: "asc" },
+        where: { availableAt: { lte: new Date() } },
+        orderBy: { availableAt: "asc" },
         take: OBJECT_CLEANUP_BATCH_SIZE,
       });
       for (const item of pending) {

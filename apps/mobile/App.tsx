@@ -1242,9 +1242,8 @@ function ClerkAuthButton({
           editable={!busy}
           secureTextEntry
           autoComplete="off"
-          maxLength={128}
         />
-        <PrimaryButton label={busy ? "Linking..." : "Link account"} disabled={busy || !migrationPassword} onPress={() => runAuthAction(async () => {
+        <PrimaryButton label={busy ? "Linking..." : "Link account"} disabled={busy} onPress={() => runAuthAction(async () => {
           const password = migrationPassword;
           setMigrationPassword("");
           onMessage(null);

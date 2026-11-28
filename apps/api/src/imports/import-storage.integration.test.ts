@@ -144,11 +144,19 @@ test("account deletion collects a source file reserved by an in-flight upload", 
     const portability = new PortabilityService(prisma, storage as never);
     const upload = controller.upload(user, file);
     await started.promise;
-    const deletion = portability.deleteAccount(user);
-    resume.open();
-    const [uploaded, deleted] = await Promise.allSettled([upload, deletion]);
-    assert.equal(uploaded.status, "fulfilled");
-    assert.equal(deleted.status, "fulfilled");
+    const cancelled = assert.rejects(upload, isStatus(404));
+    try {
+      await portability.deleteAccount(user);
+    } finally {
+      resume.open();
+    }
+    await cancelled;
+    assert.equal(objects.size, 1);
+    const [key] = objects;
+    const cleanup = await prisma.pendingObjectDeletion.findUniqueOrThrow({ where: { objectKey: key } });
+    assert.ok(cleanup.availableAt.getTime() > Date.now());
+    await prisma.pendingObjectDeletion.update({ where: { objectKey: key }, data: { availableAt: new Date(0) } });
+    await portability["cleanupPendingObjects"]();
     assert.equal(objects.size, 0);
     await assert.rejects(controller.upload(user, file), isStatus(404));
   });

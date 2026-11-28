@@ -3,6 +3,8 @@ import {
   ConflictException,
   Injectable,
   Logger,
+  OnModuleDestroy,
+  OnModuleInit,
   ServiceUnavailableException,
   UnauthorizedException
 } from "@nestjs/common";
@@ -36,15 +38,35 @@ const PASSWORD_HASH_OPTIONS = { N: 16_384, r: 8, p: 1, maxmem: 32 * 1024 * 1024 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const CLERK_MIGRATION_REQUIRED = "CLERK_MIGRATION_REQUIRED";
 export const AUTH_SESSION_SECONDS = 30 * 24 * 60 * 60;
+const SESSION_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
 
 @Injectable()
-export class AuthService {
+export class AuthService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(AuthService.name);
+  private cleanupTimer?: NodeJS.Timeout;
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwt: JwtService
   ) {}
+
+  onModuleInit() {
+    void this.removeExpiredSessions();
+    this.cleanupTimer = setInterval(() => void this.removeExpiredSessions(), SESSION_CLEANUP_INTERVAL_MS);
+    this.cleanupTimer.unref();
+  }
+
+  onModuleDestroy() {
+    clearInterval(this.cleanupTimer);
+  }
+
+  private async removeExpiredSessions(now = new Date()) {
+    try {
+      await this.prisma.authSession.deleteMany({ where: { expiresAt: { lte: now } } });
+    } catch (error) {
+      this.logger.warn(error instanceof Error ? error.message : "Could not remove expired sessions");
+    }
+  }
 
   authMode(): AuthMode {
     if (process.env.NODE_ENV === "production") {
@@ -181,7 +203,6 @@ export class AuthService {
     const now = new Date();
     const jti = randomUUID();
     const token = this.jwt.sign({ sub: user.id, jti, authMode: this.authMode() } satisfies AuthTokenPayload);
-    await this.prisma.authSession.deleteMany({ where: { userId: user.id, expiresAt: { lte: now } } });
     await this.prisma.authSession.create({
       data: { id: jti, userId: user.id, expiresAt: new Date(now.getTime() + AUTH_SESSION_SECONDS * 1000) }
     });
@@ -317,8 +338,7 @@ export class AuthService {
             message: "Enter your previous Geostats password to link this account to Clerk"
           });
         }
-        if (typeof input.migrationPassword !== "string" || input.migrationPassword.length < 8 ||
-            input.migrationPassword.length > 128 || !(await this.verifyPassword(input.migrationPassword, priorHash))) {
+        if (typeof input.migrationPassword !== "string" || !(await this.verifyPassword(input.migrationPassword, priorHash))) {
           throw new UnauthorizedException({
             code: CLERK_MIGRATION_REQUIRED,
             message: "The previous Geostats password is incorrect"

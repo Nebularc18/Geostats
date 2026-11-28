@@ -383,38 +383,39 @@ test("Clerk token exchange refuses to link an unverified primary email", async (
   });
 });
 
-test("Clerk migration requires the previous password and retires legacy credentials", async () => {
-  await withEnv({ AUTH_MODE: "clerk", CLERK_SECRET_KEY: "sk_test_secret" }, async () => {
-    const { service, users, oauthAccounts, collectorTokenOwners } = authServiceWithUsers();
-    const password = "prior-test-password";
-    const hash = await bcrypt.hash(password, 4);
-    users.push({ id: "user-1", email: "user@example.com", username: "user", passwordHash: hash });
-    collectorTokenOwners.add("user-1");
-    collectorTokenOwners.add("unrelated");
-    (service as any).verifyClerkSessionToken = async () => ({ sub: "clerk-user-1" });
-    (service as any).getClerkUser = async () => ({
-      id: "clerk-user-1",
-      username: "clerk-user",
-      firstName: null,
-      primaryEmailAddress: { emailAddress: "User@Example.com", verification: { status: "verified" } }
-    });
+for (const password of ["", "legacy", "legacy-passphrase-".repeat(8)]) {
+  test(`Clerk migration verifies a ${password.length}-character legacy password and retires credentials`, async () => {
+    await withEnv({ AUTH_MODE: "clerk", CLERK_SECRET_KEY: "sk_test_secret" }, async () => {
+      const { service, users, oauthAccounts, collectorTokenOwners } = authServiceWithUsers();
+      const hash = await bcrypt.hash(password, 4);
+      users.push({ id: "user-1", email: "user@example.com", username: "user", passwordHash: hash });
+      collectorTokenOwners.add("user-1");
+      collectorTokenOwners.add("unrelated");
+      (service as any).verifyClerkSessionToken = async () => ({ sub: "clerk-user-1" });
+      (service as any).getClerkUser = async () => ({
+        id: "clerk-user-1",
+        username: "clerk-user",
+        firstName: null,
+        primaryEmailAddress: { emailAddress: "User@Example.com", verification: { status: "verified" } }
+      });
 
-    await assert.rejects(() => service.loginWithClerkToken("clerk-session"), { status: 409 });
-    await assert.rejects(() => service.loginWithClerkToken("clerk-session", "web", "wrong-test-password"), { status: 401 });
-    assert.equal(oauthAccounts.length, 0);
-    assert.equal(users[0]?.passwordHash, hash);
-    assert.deepEqual(await service.loginWithClerkToken("clerk-session", "web", password), {
-      id: "user-1",
-      email: "user@example.com",
-      username: "user"
+      await assert.rejects(() => service.loginWithClerkToken("clerk-session"), { status: 409 });
+      await assert.rejects(() => service.loginWithClerkToken("clerk-session", "web", "wrong-test-password"), { status: 401 });
+      assert.equal(oauthAccounts.length, 0);
+      assert.equal(users[0]?.passwordHash, hash);
+      assert.deepEqual(await service.loginWithClerkToken("clerk-session", "web", password), {
+        id: "user-1",
+        email: "user@example.com",
+        username: "user"
+      });
+      assert.equal(oauthAccounts[0]?.userId, "user-1");
+      assert.equal(oauthAccounts[0]?.providerAccountId, "clerk-user-1");
+      assert.equal(users[0]?.passwordHash, null);
+      assert.deepEqual([...collectorTokenOwners], ["unrelated"]);
+      assert.equal((await service.loginWithClerkToken("clerk-session")).id, "user-1");
     });
-    assert.equal(oauthAccounts[0]?.userId, "user-1");
-    assert.equal(oauthAccounts[0]?.providerAccountId, "clerk-user-1");
-    assert.equal(users[0]?.passwordHash, null);
-    assert.deepEqual([...collectorTokenOwners], ["unrelated"]);
-    assert.equal((await service.loginWithClerkToken("clerk-session")).id, "user-1");
   });
-});
+}
 
 test("Clerk token exchange preserves an existing provider-id link without a verified email", async () => {
   await withEnv({ AUTH_MODE: "clerk", CLERK_SECRET_KEY: "sk_test_secret" }, async () => {
@@ -594,4 +595,18 @@ test("mobile Clerk exchange still rejects expired and incorrectly signed tokens"
   await assert.rejects(() => verifyTestClerkToken(signedClerkToken({ exp: Math.floor(Date.now() / 1000) - 120 }), "native"), UnauthorizedException);
   const otherKey = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey;
   await assert.rejects(() => verifyTestClerkToken(signedClerkToken({}, otherKey), "native"), UnauthorizedException);
+});
+
+test("scheduled session cleanup covers expired sessions across all accounts", async () => {
+  const queries: Array<{ where: { expiresAt: { lte: Date } } }> = [];
+  const service = new AuthService({ authSession: {
+    deleteMany: async (query: typeof queries[number]) => { queries.push(query); }
+  } } as any, {} as any);
+  try {
+    service.onModuleInit();
+    assert.deepEqual(queries, [{ where: { expiresAt: { lte: queries[0]?.where.expiresAt.lte } } }]);
+    assert.ok(queries[0].where.expiresAt.lte instanceof Date);
+  } finally {
+    service.onModuleDestroy();
+  }
 });

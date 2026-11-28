@@ -259,6 +259,7 @@ model AuthSession {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, expiresAt])
+  @@index([expiresAt])
   @@map("auth_sessions")
 }
 
@@ -505,10 +506,12 @@ model PendingObjectDeletion {
   objectKey    String   @unique @map("object_key")
   attempts     Int      @default(0)
   lastError    String?  @map("last_error")
+  availableAt  DateTime @default(now()) @map("available_at")
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
   @@index([createdAt])
+  @@index([availableAt])
   @@map("pending_object_deletions")
 }
 

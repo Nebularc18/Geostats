@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, Pressable, StyleSheet, Switch, Text, TextInput, View } from "react-native";
 
 type FetchFn = <T>(apiBaseUrl: string, path: string, token: string, init?: RequestInit) => Promise<T>;
 
@@ -26,26 +26,49 @@ export function FriendsScreen({
 }) {
   const [username, setUsername] = useState("");
   const [leaderboard, setLeaderboard] = useState<LeaderboardRow[]>([]);
+  const [friendStatsEnabled, setFriendStatsEnabled] = useState<boolean | null>(null);
+  const [sharingBusy, setSharingBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function load() {
+  useEffect(() => {
+    const request = new AbortController();
     setLoading(true);
-    try {
-      const data = await apiFetch<{ friends: string[]; leaderboard: LeaderboardRow[] }>(apiBaseUrl, "/stats/friends", token);
+    setFriendStatsEnabled(null);
+    setLeaderboard([]);
+    void apiFetch<{ friendStatsEnabled: boolean; leaderboard: LeaderboardRow[] }>(
+      apiBaseUrl, "/stats/friends", token, { signal: request.signal }
+    ).then((data) => {
+      if (request.signal.aborted) return;
       setLeaderboard(data.leaderboard);
+      if (typeof data.friendStatsEnabled === "boolean") setFriendStatsEnabled(data.friendStatsEnabled);
       setError(null);
+    }).catch((cause) => {
+      if (!request.signal.aborted) setError(cause instanceof Error ? cause.message : "Could not load friends");
+    }).finally(() => {
+      if (!request.signal.aborted) setLoading(false);
+    });
+    return () => request.abort();
+  }, [apiBaseUrl, apiFetch, token]);
+
+  async function updateSharing(enabled: boolean) {
+    setSharingBusy(true);
+    setError(null);
+    try {
+      const { friendStatsEnabled: saved } = await apiFetch<{ friendStatsEnabled: boolean }>(
+        apiBaseUrl, "/profile/friend-stats", token, {
+          method: "PUT",
+          body: JSON.stringify({ friendStatsEnabled: enabled })
+        }
+      );
+      setFriendStatsEnabled(saved);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not load friends");
+      setError(cause instanceof Error ? cause.message : "Could not update friend sharing");
     } finally {
-      setLoading(false);
+      setSharingBusy(false);
     }
   }
-
-  useEffect(() => {
-    void load();
-  }, [apiBaseUrl, token]);
 
   async function addFriend() {
     if (!username.trim()) return;
@@ -88,6 +111,20 @@ export function FriendsScreen({
     <View style={localStyles.container}>
       <Text style={localStyles.eyebrow}>ACCOUNT-SYNCED FRIENDS</Text>
       <Text style={localStyles.title}>Friends & Leaderboard</Text>
+      {friendStatsEnabled !== null ? (
+        <View style={localStyles.card}>
+          <View style={localStyles.cardTop}>
+            <Text style={localStyles.cardTitle}>Share my friend statistics</Text>
+            <Switch
+              accessibilityLabel="Share my friend statistics"
+              value={friendStatsEnabled}
+              disabled={sharingBusy}
+              onValueChange={(enabled) => void updateSharing(enabled)}
+            />
+          </View>
+          <Text style={localStyles.meta}>Allow signed-in Geostats users to compare statistics and see your shared finds.</Text>
+        </View>
+      ) : null}
       <View style={localStyles.row}>
         <TextInput
           style={localStyles.input}

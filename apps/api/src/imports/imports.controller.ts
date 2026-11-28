@@ -19,7 +19,7 @@ import { CurrentUser } from "../auth/current-user.decorator";
 import { PrismaService } from "../common/prisma.service";
 import { ImportQueueRejectedError, ImportQueueService } from "../queue/import-queue.service";
 import { StorageService } from "../storage/storage.service";
-import { activeStoredCacheImport, claimFailedImportRetry, failedImportRetryCutoff, reserveImportStorage, storedCacheImport, uploadMaxBytes } from "./import-storage";
+import { ABANDONED_UPLOAD_RETENTION_MS, activeStoredCacheImport, claimFailedImportRetry, failedImportRetryCutoff, reserveImportStorage, storedCacheImport, uploadMaxBytes } from "./import-storage";
 
 export function importSourceFor(fileName: string, fileType: ImportFileType, purpose?: string) {
   if (purpose === "finds") return ImportSource.MY_FINDS_GPX;
@@ -82,30 +82,35 @@ export class ImportsController {
       });
     });
 
-    const uploaded = await this.prisma.$transaction(async (tx) => {
-      // The reservation is committed before the PUT. Hold its row until the
-      // bounded request finishes so cleanup cannot delete an in-flight upload.
-      const locked = await tx.import.updateMany({
-        where: { id: created.id, ...activeStoredCacheImport, status: ImportStatus.UPLOADED },
-        data: { updatedAt: new Date() }
-      });
-      if (!locked.count) throw new NotFoundException("Import reservation is no longer available");
-      try {
-        await this.storage.putObject(objectKey, file.buffer, file.mimetype || "application/octet-stream");
-      } catch {
-        // A failed PUT can have written a file. Keep charging the reserved
-        // bytes until scheduled cleanup confirms the object is gone.
-        await tx.import.update({ where: { id: created.id }, data: {
+    const activeUpload = { id: created.id, ...activeStoredCacheImport, status: ImportStatus.UPLOADED };
+    const claimedAt = new Date();
+    const claimed = await this.prisma.import.updateMany({
+      where: { ...activeUpload, updatedAt: { gt: new Date(claimedAt.getTime() - ABANDONED_UPLOAD_RETENTION_MS) } },
+      data: { updatedAt: claimedAt }
+    });
+    if (!claimed.count || Date.now() - claimedAt.getTime() >= ABANDONED_UPLOAD_RETENTION_MS / 2) {
+      throw new NotFoundException("Import reservation is no longer available");
+    }
+    try {
+      await this.storage.putObject(objectKey, file.buffer, file.mimetype || "application/octet-stream");
+    } catch {
+      // The PUT may have succeeded despite the error. Keep the reservation
+      // charged until scheduled cleanup confirms that the file is gone.
+      await this.prisma.import.updateMany({
+        where: activeUpload,
+        data: {
           status: ImportStatus.FAILED,
           objectCleanupAttemptedAt: new Date(),
           errorMessage: "The file could not be stored. Upload it again to retry."
-        } });
-        return false;
-      }
-      await tx.import.update({ where: { id: created.id }, data: { status: ImportStatus.QUEUED } });
-      return true;
-    }, { timeout: 30_000 });
-    if (!uploaded) throw new ServiceUnavailableException("The file could not be stored. Upload it again to retry.");
+        }
+      });
+      throw new ServiceUnavailableException("The file could not be stored. Upload it again to retry.");
+    }
+    const queued = await this.prisma.import.updateMany({
+      where: activeUpload,
+      data: { status: ImportStatus.QUEUED }
+    });
+    if (!queued.count) throw new NotFoundException("Import reservation is no longer available");
 
     return { import: { id: created.id, status: await this.submit(created) } };
   }
