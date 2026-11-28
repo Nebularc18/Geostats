@@ -1,6 +1,8 @@
 import {
   BadRequestException,
   ConflictException,
+  HttpException,
+  HttpStatus,
   Injectable,
   Logger,
   OnModuleDestroy,
@@ -37,6 +39,7 @@ const PASSWORD_HASH_KEYLEN = 64;
 const PASSWORD_HASH_OPTIONS = { N: 16_384, r: 8, p: 1, maxmem: 32 * 1024 * 1024 };
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const CLERK_MIGRATION_REQUIRED = "CLERK_MIGRATION_REQUIRED";
+const CLERK_MIGRATION_ATTEMPT_LIMIT = 10;
 export const AUTH_SESSION_SECONDS = 30 * 24 * 60 * 60;
 const SESSION_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
 
@@ -338,7 +341,21 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
             message: "Enter your previous Geostats password to link this account to Clerk"
           });
         }
-        if (typeof input.migrationPassword !== "string" || !(await this.verifyPassword(input.migrationPassword, priorHash))) {
+        if (typeof input.migrationPassword !== "string") {
+          throw new UnauthorizedException({
+            code: CLERK_MIGRATION_REQUIRED,
+            message: "The previous Geostats password is incorrect"
+          });
+        }
+        if (!(await this.reserveClerkMigrationAttempt(existingUser.id, priorHash))) {
+          const linkedAccount = await this.findOAuthAccount(input.provider, input.providerAccountId);
+          if (linkedAccount) return linkedAccount.user;
+          throw new HttpException({
+            code: CLERK_MIGRATION_REQUIRED,
+            message: "Too many account-linking attempts. Wait up to 15 minutes and try again."
+          }, HttpStatus.TOO_MANY_REQUESTS);
+        }
+        if (!(await this.verifyPassword(input.migrationPassword, priorHash))) {
           throw new UnauthorizedException({
             code: CLERK_MIGRATION_REQUIRED,
             message: "The previous Geostats password is incorrect"
@@ -348,7 +365,7 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
           const linked = await this.prisma.$transaction(async (tx) => {
             const claimed = await tx.user.updateMany({
               where: { id: existingUser.id, passwordHash: priorHash },
-              data: { passwordHash: null }
+              data: { passwordHash: null, clerkMigrationAttempts: 0, clerkMigrationWindowEndsAt: null }
             });
             if (!claimed.count) return false;
             await tx.authSession.deleteMany({ where: { userId: existingUser.id } });
@@ -403,6 +420,26 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
       }
       throw error;
     }
+  }
+
+  private async reserveClerkMigrationAttempt(userId: string, passwordHash: string): Promise<boolean> {
+    // Reserve before verifying so simultaneous requests share the same budget.
+    const count = await this.prisma.$executeRaw`
+      UPDATE "users"
+      SET "clerk_migration_attempts" = CASE
+            WHEN "clerk_migration_window_ends_at" > CURRENT_TIMESTAMP THEN "clerk_migration_attempts" + 1
+            ELSE 1
+          END,
+          "clerk_migration_window_ends_at" = CASE
+            WHEN "clerk_migration_window_ends_at" > CURRENT_TIMESTAMP THEN "clerk_migration_window_ends_at"
+            ELSE CURRENT_TIMESTAMP + INTERVAL '15 minutes'
+          END
+      WHERE "id" = ${userId} AND "password_hash" = ${passwordHash}
+        AND ("clerk_migration_window_ends_at" IS NULL
+          OR "clerk_migration_window_ends_at" <= CURRENT_TIMESTAMP
+          OR "clerk_migration_attempts" < ${CLERK_MIGRATION_ATTEMPT_LIMIT})
+    `;
+    return count === 1;
   }
 
   private async findOAuthAccount(provider: string, providerAccountId: string) {

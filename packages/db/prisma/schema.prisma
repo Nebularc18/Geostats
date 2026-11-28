@@ -59,6 +59,9 @@ model User {
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
+  clerkMigrationAttempts     Int       @default(0) @map("clerk_migration_attempts")
+  clerkMigrationWindowEndsAt DateTime? @map("clerk_migration_window_ends_at")
+
   mapRevision             MapRevision?
   profile                 GeocachingProfile?
   imports                 Import[]

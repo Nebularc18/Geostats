@@ -114,7 +114,7 @@ export function ClerkSessionGate({ children }: { children: React.ReactNode }) {
         if (!isCurrent()) return;
         if (error instanceof ApiError && error.code === "CLERK_MIGRATION_REQUIRED") {
           setPendingMigration({ sessionId: activeSessionId, submit: submitMigration });
-          setErrorMessage(migrationPassword === undefined ? null : "The previous Geostats password was not accepted.");
+          setErrorMessage(migrationPassword === undefined ? null : error.message);
         } else if (migrationPassword !== undefined) {
           setErrorMessage("Could not link your account. Try again.");
         } else {

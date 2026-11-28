@@ -1191,7 +1191,7 @@ function ClerkAuthButton({
       if (!isCurrent()) return;
       if (error instanceof ApiError && error.code === "CLERK_MIGRATION_REQUIRED") {
         setPendingMigration(expectedSessionId);
-        onMessage(password === undefined ? null : "The previous Geostats password was not accepted.");
+        onMessage(password === undefined ? null : error.message);
       } else {
         onMessage(password === undefined ? "Could not sign in with Clerk." : "Could not link your account. Try again.");
       }

@@ -47,7 +47,12 @@ function authServiceWithUsers() {
     providerUsername: string | null;
   }> = [];
   const collectorTokenOwners = new Set<string>();
+  const migrationBudget = { reservations: 0, available: true };
   const prisma = {
+    $executeRaw: async () => {
+      migrationBudget.reservations += 1;
+      return migrationBudget.available ? 1 : 0;
+    },
     user: {
       findFirst: async ({ where }: any) =>
         users.find((user) =>
@@ -132,7 +137,7 @@ function authServiceWithUsers() {
     authSession: { deleteMany: async () => ({ count: 0 }) },
     $transaction: async (run: (tx: any) => Promise<unknown>) => run(prisma)
   };
-  return { service: new AuthService(prisma as any, {} as any), users, oauthAccounts, collectorTokenOwners };
+  return { service: new AuthService(prisma as any, {} as any), users, oauthAccounts, collectorTokenOwners, migrationBudget };
 }
 
 test("password auth is the default mode", () => {
@@ -416,6 +421,27 @@ for (const password of ["", "legacy", "legacy-passphrase-".repeat(8)]) {
     });
   });
 }
+
+test("Clerk migration checks the shared account budget before verifying a password", async () => {
+  await withEnv({ AUTH_MODE: "clerk", CLERK_SECRET_KEY: "sk_test_secret" }, async () => {
+    const { service, users, migrationBudget } = authServiceWithUsers();
+    users.push({ id: "user-1", email: "user@example.com", username: "user", passwordHash: "stored-hash" });
+    (service as any).verifyClerkSessionToken = async () => ({ sub: "clerk-user-1" });
+    (service as any).getClerkUser = async () => ({
+      id: "clerk-user-1",
+      primaryEmailAddress: { emailAddress: "user@example.com", verification: { status: "verified" } }
+    });
+    (service as any).verifyPassword = async () => { assert.fail("A locked account must not verify a password"); };
+    migrationBudget.available = false;
+
+    await assert.rejects(() => service.loginWithClerkToken("clerk-session"), { status: 409 });
+    assert.equal(migrationBudget.reservations, 0);
+    for (const source of ["web", "native"] as const) {
+      await assert.rejects(() => service.loginWithClerkToken("clerk-session", source, "fixture-password"), { status: 429 });
+    }
+    assert.equal(migrationBudget.reservations, 2);
+  });
+});
 
 test("Clerk token exchange preserves an existing provider-id link without a verified email", async () => {
   await withEnv({ AUTH_MODE: "clerk", CLERK_SECRET_KEY: "sk_test_secret" }, async () => {
