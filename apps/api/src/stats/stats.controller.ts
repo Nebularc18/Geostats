@@ -3,6 +3,7 @@ import { AuthUser } from "@geostats/shared";
 import { AuthGuard } from "../auth/auth.guard";
 import { CurrentUser } from "../auth/current-user.decorator";
 import {
+  PROFILE_SVG_CONTENT_SECURITY_POLICY,
   PUBLIC_PROFILE_CONTENT_SECURITY_POLICY,
   renderPublicProfileHtml,
   renderPublicScratchMapSvg
@@ -32,6 +33,7 @@ export class StatsController {
 
   @Get("scratch-map-image")
   @Header("Content-Type", "image/svg+xml; charset=utf-8")
+  @Header("Content-Security-Policy", PROFILE_SVG_CONTENT_SECURITY_POLICY)
   @Header("Cache-Control", "no-store")
   async scratchMapImage(@CurrentUser() user: AuthUser) {
     const { profile, stats } = await this.stats.profileSnapshotForUser(user.id);
@@ -40,11 +42,13 @@ export class StatsController {
   }
 
   @Get("compare/:username")
+  @Header("Cache-Control", "private, no-store")
   async compare(@CurrentUser() user: AuthUser, @Param("username") username: string) {
     return this.stats.friendComparisonForUser(user.id, username);
   }
 
   @Get("friends")
+  @Header("Cache-Control", "private, no-store")
   async friends(@CurrentUser() user: AuthUser) {
     return this.stats.savedFriendsForUser(user.id);
   }
@@ -63,6 +67,7 @@ export class StatsController {
   }
 
   @Get("cache/:gcCode")
+  @Header("Cache-Control", "private, no-store")
   async cacheDetail(@CurrentUser() user: AuthUser, @Param("gcCode") gcCode: string) {
     return this.stats.cacheDetailForUser(user.id, gcCode);
   }

@@ -3,6 +3,7 @@ type PercentBucket = CountBucket & { percent?: number };
 
 export const PUBLIC_PROFILE_CONTENT_SECURITY_POLICY =
   "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'";
+export const PROFILE_SVG_CONTENT_SECURITY_POLICY = "default-src 'none'; sandbox; base-uri 'none'; form-action 'none'";
 
 const monthLabels = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const ratingValues = ["1", "1.5", "2", "2.5", "3", "3.5", "4", "4.5", "5"];
@@ -115,6 +116,10 @@ function formatPercent(value: unknown) {
   return Number.isFinite(number) ? `${number.toFixed(2)} %` : "-";
 }
 
+function statCount(value: unknown): number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : 0;
+}
+
 function sectionHead(title: string, width = 740) {
   return `<div style="width:${width}px; max-width:100%; background:#666699; font-weight:bold; line-height:20px; font-size:13px; color:white; border:1px solid #000000; text-align:center; margin:0 auto 6px;">
     ${escapeHtml(title)}
@@ -141,7 +146,8 @@ function scratchColor(count: number, max: number) {
 }
 
 function countryNamesForBoundary(countryName: string) {
-  return [countryName, ...(countryNameAliases[countryName] ?? [])];
+  const aliases = Object.hasOwn(countryNameAliases, countryName) ? countryNameAliases[countryName] : [];
+  return [countryName, ...aliases];
 }
 
 function topLocationList(buckets: CountBucket[], max: number, total: number, limit = 14) {
@@ -209,8 +215,9 @@ export function renderPublicScratchMapSvg(
   const countries = (stats?.countries ?? []) as CountBucket[];
   const countsByBoundaryName = new Map<string, number>();
   for (const country of countries) {
+    if (typeof country?.key !== "string") continue;
     for (const name of countryNamesForBoundary(country.key)) {
-      countsByBoundaryName.set(name.toLowerCase(), country.count);
+      countsByBoundaryName.set(name.toLowerCase(), statCount(country.count));
     }
   }
 
@@ -431,13 +438,13 @@ function monthTable(stats: any) {
     return "";
   }
   const years = [...new Set(findsByMonth.map((bucket) => bucket.key.slice(0, 4)))].sort((a, b) => b.localeCompare(a));
-  const counts = new Map(findsByMonth.map((bucket) => [bucket.key, bucket.count]));
+  const counts = new Map(findsByMonth.map((bucket) => [bucket.key, statCount(bucket.count)]));
   const daysByMonth = new Map<string, number>();
   for (const day of stats?.findsByDay ?? []) {
     const key = String(day.key).slice(0, 7);
     daysByMonth.set(key, (daysByMonth.get(key) ?? 0) + 1);
   }
-  const max = Math.max(1, ...findsByMonth.map((bucket) => bucket.count));
+  const max = Math.max(1, ...counts.values());
   return `${sectionHead("Finds by Month")}
     ${years
       .map((year) => {
@@ -447,9 +454,9 @@ function monthTable(stats: any) {
         });
         const total = months.reduce((sum, month) => sum + month.finds, 0);
         const days = months.reduce((sum, month) => sum + month.days, 0);
-        return `<div id="${year}" style="display:block;">
+        return `<div id="${escapeHtml(year)}" style="display:block;">
           <table border="0" style="font-size:12px; border-collapse:separate; border-spacing:1px; margin:0 auto 12px;">
-            <tr><td style="background:#C8C8DD;" align="center" colspan="14"><b>${year}</b></td></tr>
+            <tr><td style="background:#C8C8DD;" align="center" colspan="14"><b>${escapeHtml(year)}</b></td></tr>
             <tr align="center" valign="bottom" style="font-family:Arial Narrow, Arial, sans-serif; font-size:10px; color:black; text-align:center;">
               <td style="height:92px">&nbsp;</td>
               ${months
@@ -527,18 +534,22 @@ function dtTable(cells: Array<{ difficulty: number; terrain: number; count: numb
   if (!cells.length) {
     return "";
   }
-  const counts = new Map(cells.map((cell) => [`${cell.difficulty}/${cell.terrain}`, cell.count]));
-  const max = Math.max(1, ...cells.map((cell) => cell.count));
-  const foundCombos = cells.filter((cell) => cell.count > 0).length;
-  const highRated = cells
-    .filter((cell) => cell.difficulty >= 3 || cell.terrain >= 3)
-    .reduce((sum, cell) => sum + cell.count, 0);
-  const total = cells.reduce((sum, cell) => sum + cell.count, 0);
+  const counts = new Map<string, number>();
+  let max = 1;
+  let foundCombos = 0;
+  let highRated = 0;
+  let total = 0;
   const rowTotals = new Map<string, number>();
   const colTotals = new Map<string, number>();
   for (const cell of cells) {
-    rowTotals.set(String(cell.difficulty), (rowTotals.get(String(cell.difficulty)) ?? 0) + cell.count);
-    colTotals.set(String(cell.terrain), (colTotals.get(String(cell.terrain)) ?? 0) + cell.count);
+    const count = statCount(cell.count);
+    counts.set(`${cell.difficulty}/${cell.terrain}`, count);
+    max = Math.max(max, count);
+    if (count > 0) foundCombos += 1;
+    if (cell.difficulty >= 3 || cell.terrain >= 3) highRated += count;
+    total += count;
+    rowTotals.set(String(cell.difficulty), (rowTotals.get(String(cell.difficulty)) ?? 0) + count);
+    colTotals.set(String(cell.terrain), (colTotals.get(String(cell.terrain)) ?? 0) + count);
   }
   return `${sectionHead("Difficulty / Terrain Chart")}
     <table width="740" style="text-align:left; font-size:12px; border-collapse:separate; border-spacing:1px;">

@@ -1,7 +1,7 @@
 "use client";
 
-import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import { latestMysterySolution, MAX_MYSTERY_SNAPSHOT_BYTES, mysterySnapshotByteLength, normalizeMysteryListing, parseCoordinate, type MysteryListing as MysteryListingData } from "@geostats/shared";
+import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { isSafeMysteryAttempt, isSafeMysterySnapshot, latestMysterySolution, MAX_MYSTERY_SNAPSHOT_BYTES, mysterySnapshotByteLength, normalizeMysteryListing, parseCoordinate, type MysteryListing as MysteryListingData } from "@geostats/shared";
 import { MysteryListing } from "./mystery-listing";
 import {
   AlertTriangle,
@@ -28,7 +28,7 @@ import {
 import { AppShell } from "../../components/app-shell";
 import { MysteryHelperUpdateBanner } from "../../components/mystery-helper-update-banner";
 import { MysteryToolkit } from "../../components/mystery-toolkit";
-import { API_URL, apiFetch } from "../../lib/api";
+import { API_URL, ApiError, apiFetch, getApiSessionEpoch, subscribeStatsSummaryCache } from "../../lib/api";
 import {
   fieldMergeDecision,
   formatMysteryCoordinate as formatCoordinate,
@@ -40,9 +40,15 @@ import {
 import { normalizeMysteryArea } from "../../lib/mystery-area";
 import { MYSTERY_USERSCRIPT_VERSION } from "../../lib/mystery-userscript";
 import { bulkAttemptKey, parseBulkFailedAttempts, parseFailedCoordinateCsv } from "../../lib/mystery-bulk-attempts";
-import { automaticSyncRetryDelay, helperSupportsNoteBatches } from "../../lib/mystery-sync-policy";
+import { automaticSyncRetryDelay, helperSupportsSyncReceipts } from "../../lib/mystery-sync-policy";
+import {
+  claimMysterySyncReceipt,
+  createMysterySyncReceiptToken,
+  recordMysterySyncRequests,
+  type PendingMysterySync
+} from "../../lib/mystery-sync-receipts";
 import { normalizeMysteryImageUrl } from "../../lib/mystery-image";
-import { mysteryStorageKeys, safeRecipientMysteryImage, type MysteryStorageKeys } from "../../lib/mystery-storage";
+import { createMysterySessionBoundary, safeRecipientMysteryImage, type MysterySession } from "../../lib/mystery-storage";
 import {
   chooseGeocachingNoteConflict,
   reconcileGeocachingNoteReceipt,
@@ -107,6 +113,13 @@ function normalizeStatusUpdatedAt(value: unknown) {
   if (typeof value !== "string" || !value) return undefined;
   const time = Date.parse(value);
   return Number.isFinite(time) ? new Date(time).toISOString() : undefined;
+}
+
+const attemptTimestampFormat = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
+
+function formatAttemptTimestamp(value: unknown) {
+  const timestamp = typeof value === "string" ? Date.parse(value) : NaN;
+  return Number.isFinite(timestamp) ? attemptTimestampFormat.format(timestamp) : "Unknown date";
 }
 
 function cacheAddedTime(cache: Pick<MysteryCache, "addedAt">) {
@@ -244,6 +257,7 @@ type GeocachingSyncPayload = {
   solved: true;
   includeNotes?: boolean;
   issuedAt: number;
+  receiptToken: string;
 };
 
 type GeocachingFieldNoteSyncPayload = {
@@ -252,6 +266,7 @@ type GeocachingFieldNoteSyncPayload = {
   noteTarget: "fieldNotes";
   notes: string;
   issuedAt: number;
+  receiptToken: string;
 };
 
 const MAX_REASONABLE_DISTANCE_KM = 3.2;
@@ -392,7 +407,8 @@ function deviceMergeOptions(cache: MysteryCache, serverCache: MysteryCache, meta
 }
 
 function verifiedStoredShares(caches: MysteryCache[], mergeOptions?: MysteryCacheMergeOptions) {
-  const normalized = caches.map((cache) => {
+  const normalized = caches.filter((cache) => cache && typeof cache === "object"
+    && (!cache.sharedBy || (isAppUser(cache.sharedBy) && isSafeMysterySnapshot(cache)))).map((cache) => {
     const {
       geocachingNotesFingerprint: _legacyGeocachingNotesFingerprint,
       geocachingNotesSyncedAt: _legacyGeocachingNotesSyncedAt,
@@ -419,12 +435,14 @@ function verifiedStoredShares(caches: MysteryCache[], mergeOptions?: MysteryCach
         : [],
       ...normalizeMysteryListing(cache),
       attempts: Array.isArray(cache.attempts)
-        ? mergeMysteryAttempts(cache.attempts.map((attempt): CoordinateAttempt => ({
+        ? mergeMysteryAttempts(cache.attempts.filter(isSafeMysteryAttempt).map((attempt): CoordinateAttempt => ({
             ...attempt,
             state: attempt.state === "correct" || attempt.state === "wrong" || attempt.state === "planned" ? attempt.state : "unchecked"
           })))
         : [],
       image: cache.sharedBy ? safeRecipientMysteryImage(cache.image) : cache.image,
+      syncConflicts: cache.sharedBy ? undefined : cache.syncConflicts,
+      geocachingFieldNoteConflict: cache.sharedBy ? undefined : cache.geocachingFieldNoteConflict,
       addedAt: normalizeAddedAt(cache.addedAt),
       sharedWith: Array.isArray(cache.sharedWith) ? cache.sharedWith.filter(isAppUser) : []
     };
@@ -541,6 +559,7 @@ function applyGeocachingSyncReceipt(caches: MysteryCache[], value: GeocachingSyn
   }
   const latitude = typeof value.latitude === "number" ? value.latitude : Number.NaN;
   const longitude = typeof value.longitude === "number" ? value.longitude : Number.NaN;
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return { caches, applied: false, conflicted: false };
   let applied = false;
 
   const next = caches.map((cache) => {
@@ -566,14 +585,116 @@ function applyGeocachingSyncReceipt(caches: MysteryCache[], value: GeocachingSyn
 }
 
 export default function MysteriesPage() {
+  const [session, setSession] = useState<MysterySession | null>(null);
+  const [identityPending, setIdentityPending] = useState(true);
+  const resetIdentity = useRef<(session: MysterySession) => void>(() => {});
+  const onAuthRejected = useCallback((session: MysterySession) => resetIdentity.current(session), []);
+
+  useEffect(() => {
+    const boundary = createMysterySessionBoundary();
+    let active = true;
+    let request: AbortController | null = null;
+    let epoch = getApiSessionEpoch();
+
+    async function resolveIdentity(clear = false) {
+      request?.abort();
+      const nextRequest = new AbortController();
+      request = nextRequest;
+      if (clear) {
+        boundary.clear();
+        setSession(null);
+      }
+      const isCurrent = () => active && !nextRequest.signal.aborted;
+      try {
+        const response = await fetch(`${API_URL}/auth/me`, {
+          credentials: "include",
+          cache: "no-store",
+          signal: nextRequest.signal
+        });
+        if (!isCurrent()) return;
+        if (response.status === 401 || response.status === 403) {
+          boundary.clear();
+          setSession(null);
+          return;
+        }
+        if (!response.ok) return;
+        const { user } = await response.json() as { user?: { id?: unknown } };
+        if (!isCurrent()) return;
+        if (typeof user?.id !== "string" || !user.id.trim()) {
+          boundary.clear();
+          setSession(null);
+          return;
+        }
+        setSession(boundary.activate(API_URL, user.id));
+      } catch {
+        // Keep verified account data available during transient network failures.
+      } finally {
+        if (isCurrent()) setIdentityPending(false);
+      }
+    }
+
+    resetIdentity.current = (session) => {
+      if (session.isCurrent()) void resolveIdentity(true);
+    };
+    const unsubscribe = subscribeStatsSummaryCache((event) => {
+      if (event.sessionEpoch === epoch) return;
+      epoch = event.sessionEpoch;
+      void resolveIdentity(true);
+    });
+    const revalidate = () => {
+      if (document.visibilityState !== "hidden") void resolveIdentity();
+    };
+    void resolveIdentity();
+    window.addEventListener("focus", revalidate);
+    window.addEventListener("online", revalidate);
+    document.addEventListener("visibilitychange", revalidate);
+    return () => {
+      active = false;
+      request?.abort();
+      boundary.clear();
+      unsubscribe();
+      window.removeEventListener("focus", revalidate);
+      window.removeEventListener("online", revalidate);
+      document.removeEventListener("visibilitychange", revalidate);
+    };
+  }, []);
+
+  if (!session) {
+    return <AppShell><section className="panel" aria-busy={identityPending}>{identityPending ? "Loading your Mystery workspace…" : "Sign in and reconnect to load your Mystery workspace."}</section></AppShell>;
+  }
+  return <MysteryWorkspace key={session.generation} session={session} onAuthRejected={onAuthRejected} />;
+}
+
+function MysteryWorkspace({ session, onAuthRejected }: {
+  session: MysterySession;
+  onAuthRejected: (session: MysterySession) => void;
+}) {
+  const storageKeys = session.keys;
+  const request = useCallback(async <T,>(path: string, options: RequestInit = {}) => {
+    const staleSession = () => new DOMException("Mystery session changed", "AbortError");
+    if (!session.isCurrent()) throw staleSession();
+    try {
+      const data = await apiFetch<T>(path, {
+        ...options,
+        cache: "no-store",
+        headers: { "X-Geostats-Account-Id": storageKeys.userId },
+        signal: session.signal
+      });
+      if (!session.isCurrent()) throw staleSession();
+      return data;
+    } catch (error) {
+      if (error instanceof ApiError && (error.status === 401 || error.status === 403)) onAuthRejected(session);
+      throw error;
+    }
+  }, [onAuthRejected, session, storageKeys.userId]);
   const initializedNamespace = useRef("");
   const activeStorageNamespace = useRef("");
   const pendingInitialCaches = useRef<{ namespace: string; caches: MysteryCache[] } | null>(null);
-  const storageKeysRef = useRef<MysteryStorageKeys | null>(null);
   const persistedCaches = useRef<MysteryCache[]>([]);
   const latestCaches = useRef<MysteryCache[]>([]);
   const serverSnapshots = useRef(new Map<string, string>());
   const snapshotRevisions = useRef(new Map<string, number>());
+  const pendingSyncReceipts = useRef(new Map<string, PendingMysterySync>());
   const syncMetadata = useRef(new Map<string, MysterySyncMetadata>());
   const shareMutationRevisions = useRef(new Map<string, number>());
   const deletedCacheIds = useRef(new Set<string>());
@@ -590,7 +711,6 @@ export default function MysteriesPage() {
   const [selectedId, setSelectedId] = useState("");
   const [ready, setReady] = useState(false);
   const [offlineReady, setOfflineReady] = useState(false);
-  const [storageKeys, setStorageKeys] = useState<MysteryStorageKeys | null>(null);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<"all" | MysteryStatus>("all");
   const [listSort, setListSort] = useState<MysteryListSort>(() => {
@@ -609,6 +729,7 @@ export default function MysteriesPage() {
   const [showAdd, setShowAdd] = useState(false);
   const [quickGcCode, setQuickGcCode] = useState("");
   const [showBrowserImport, setShowBrowserImport] = useState(false);
+  const [pendingBrowserImport, setPendingBrowserImport] = useState<MysteryCache | null>(null);
   const [showImagePicker, setShowImagePicker] = useState(false);
   const [imageUrl, setImageUrl] = useState("");
   const [imageUrlError, setImageUrlError] = useState("");
@@ -645,54 +766,9 @@ export default function MysteriesPage() {
     }
   }, [listSort]);
 
-  useEffect(() => {
-    let active = true;
-    let identityRequest = 0;
-    const resolveIdentity = async () => {
-      const request = ++identityRequest;
-      try {
-        const response = await fetch(`${API_URL}/auth/me`, { credentials: "include", cache: "no-store" });
-        if (!active || request !== identityRequest) return;
-        if (response.status === 401 || response.status === 403) {
-          if (active) setStorageKeys(null);
-          return;
-        }
-        if (!response.ok) throw new Error("Could not resolve the current account");
-        const { user } = await response.json() as { user?: { id?: unknown } };
-        if (!active || request !== identityRequest) return;
-        if (typeof user?.id !== "string" || !user.id.trim()) {
-          setStorageKeys(null);
-          return;
-        }
-        const nextStorageKeys = mysteryStorageKeys(API_URL, user.id);
-        setStorageKeys((current) => current?.namespace === nextStorageKeys.namespace ? current : nextStorageKeys);
-      } catch {
-        if (!active || request !== identityRequest) return;
-        // Keep the current account data during a transient revalidation failure.
-      }
-    };
-    const resolveVisibleIdentity = () => {
-      if (document.visibilityState === "visible") void resolveIdentity();
-    };
-    void resolveIdentity();
-    window.addEventListener("focus", resolveVisibleIdentity);
-    window.addEventListener("online", resolveVisibleIdentity);
-    document.addEventListener("visibilitychange", resolveVisibleIdentity);
-    return () => {
-      active = false;
-      window.removeEventListener("focus", resolveVisibleIdentity);
-      window.removeEventListener("online", resolveVisibleIdentity);
-      document.removeEventListener("visibilitychange", resolveVisibleIdentity);
-    };
-  }, []);
-
-  useEffect(() => {
-    storageKeysRef.current = storageKeys;
-  }, [storageKeys]);
-
   function persistSyncMetadata() {
-    const keys = storageKeysRef.current;
-    if (!keys) return;
+    const keys = storageKeys;
+    if (!session.isCurrent()) return;
     try {
       localStorage.setItem(keys.syncMetadata, JSON.stringify(Object.fromEntries(syncMetadata.current)));
     } catch {
@@ -720,24 +796,6 @@ export default function MysteriesPage() {
   }
 
   useEffect(() => {
-    if (!storageKeys) {
-      if (!initializedNamespace.current) return;
-      initializedNamespace.current = "";
-      activeStorageNamespace.current = "";
-      pendingInitialCaches.current = null;
-      serverSnapshots.current.clear();
-      snapshotRevisions.current.clear();
-      syncMetadata.current.clear();
-      shareMutationRevisions.current.clear();
-      deletedCacheIds.current.clear();
-      persistedCaches.current = [];
-      setPersistedForSync(null);
-      setServerSyncReady(false);
-      setReady(false);
-      setCaches([]);
-      setSelectedId("");
-      return;
-    }
     if (initializedNamespace.current === storageKeys.namespace) return;
     initializedNamespace.current = storageKeys.namespace;
     activeStorageNamespace.current = "";
@@ -783,76 +841,24 @@ export default function MysteriesPage() {
       }
     }
     initial = initial.filter((cache) => !deletedCacheIds.current.has(cache.id));
-    const lastStoredCaches = initial;
     const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
     const requestedCacheId = new URLSearchParams(window.location.search).get("cache");
     const encodedImport = hashParams.get("mystery-import");
-    const encodedSyncReceipt = hashParams.get("geocaching-synced");
     if (encodedImport) {
       try {
         const imported = importedMystery(JSON.parse(encodedImport) as BrowserImport);
-        if (imported) {
-          const existing = initial.find((cache) => cache.gcCode.toUpperCase() === imported.gcCode);
-          if (existing?.sharedBy) {
-            setSelectedId(existing.id);
-            setNotice(`${imported.gcCode} is already shared with you`);
-          } else if (existing) {
-            const refreshed = {
-              ...existing,
-              listingText: imported.listingText || existing.listingText,
-              listingTextUpdatedAt: imported.listingText && imported.listingText !== existing.listingText
-                ? imported.listingTextUpdatedAt : existing.listingTextUpdatedAt,
-              listingImageUrls: [...new Set([...(existing.listingImageUrls ?? []), ...(imported.listingImageUrls ?? [])])],
-              clues: [...new Set([...existing.clues, ...imported.clues])],
-              area: imported.area || existing.area,
-              county: imported.county || existing.county,
-              country: imported.country || existing.country,
-              region: imported.region || existing.region,
-              locality: imported.locality || existing.locality,
-              locationHierarchy: imported.locationHierarchy?.length
-                ? imported.locationHierarchy
-                : existing.locationHierarchy
-            };
-            setSelectedId(existing.id);
-            if (canSyncMystery(refreshed)) {
-              initial = initial.map((cache) => cache.id === existing.id ? refreshed : cache);
-              setNotice(`${imported.gcCode} listing refreshed`);
-            } else {
-              setNotice("Listing not refreshed. It would make this mystery too large to sync.");
-            }
-          } else if (!canSyncMystery(imported)) {
-            setNotice("Listing not imported. This mystery is too large to sync.");
-          } else {
-            initial = [imported, ...initial];
-            setSelectedId(imported.id);
-            setNotice(`${imported.gcCode} imported from geocaching.com`);
-          }
-        } else {
-          setNotice("The cache page did not contain valid coordinates");
-        }
+        if (imported && canSyncMystery(imported)) setPendingBrowserImport(imported);
+        else setNotice("The proposed import has invalid coordinates or is too large to save.");
       } catch {
-        setNotice("Could not read the Tampermonkey import");
+        setNotice("Could not read the proposed browser import.");
       }
     }
-    if (encodedSyncReceipt) {
-      try {
-        const result = applyGeocachingSyncReceipt(initial, JSON.parse(encodedSyncReceipt) as GeocachingSyncReceipt);
-        initial = result.caches;
-        const receipt = JSON.parse(encodedSyncReceipt) as GeocachingSyncReceipt;
-        if (typeof receipt.cacheId === "string") setSelectedId(receipt.cacheId);
-        setNotice(result.conflicted
-          ? "Field note changed during sync. Review both versions."
-          : result.applied ? receipt.type === "notes" ? "Field note synced to Geocaching" : "Confirmed as synced to Geocaching" : "Could not match the Geocaching sync receipt");
-      } catch {
-        setNotice("Could not read the Geocaching sync receipt");
-      }
-    }
-    if (encodedImport || encodedSyncReceipt) {
+    if (encodedImport || hashParams.has("geocaching-synced")) {
       window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
     }
     pendingInitialCaches.current = { namespace: storageKeys.namespace, caches: initial };
     setCaches(initial);
-    persistedCaches.current = lastStoredCaches;
+    persistedCaches.current = initial;
     setSelectedId((current) => current || initial.find((cache) => cache.id === requestedCacheId)?.id || initial[0]?.id || "");
     setReady(true);
     if ("serviceWorker" in navigator) {
@@ -867,13 +873,13 @@ export default function MysteriesPage() {
 
   useEffect(() => {
     const pending = pendingInitialCaches.current;
-    if (!storageKeys || !pending || pending.namespace !== storageKeys.namespace || caches !== pending.caches) return;
+    if (!session.isCurrent() || !pending || pending.namespace !== storageKeys.namespace || caches !== pending.caches) return;
     activeStorageNamespace.current = storageKeys.namespace;
     pendingInitialCaches.current = null;
   }, [caches, storageKeys]);
 
   useEffect(() => {
-    if (!ready || !storageKeys || activeStorageNamespace.current !== storageKeys.namespace) return;
+    if (!session.isCurrent() || !ready || activeStorageNamespace.current !== storageKeys.namespace) return;
     const serialized = JSON.stringify(caches);
     try {
       localStorage.setItem(storageKeys.caches, serialized);
@@ -898,7 +904,7 @@ export default function MysteriesPage() {
   }, [caches, ready, storageKeys]);
 
   useEffect(() => {
-    if (!ready || !storageKeys || activeStorageNamespace.current !== storageKeys.namespace || !serverSyncReady || !persistedForSync) return;
+    if (!session.isCurrent() || !ready || activeStorageNamespace.current !== storageKeys.namespace || !serverSyncReady || !persistedForSync) return;
     const currentOwnedByGcCode = new Map(latestCaches.current
       .filter((cache) => !cache.sharedBy)
       .map((cache) => [cache.gcCode.trim().toUpperCase(), cache]));
@@ -930,7 +936,7 @@ export default function MysteriesPage() {
         const baseMetadata = syncMetadata.current.get(cache.id);
         const baseRevision = baseMetadata?.revision ?? 0;
         const requestedRevision = baseRevision + 1;
-        return apiFetch<{ revision: number; mystery: MysteryCache }>(`/mysteries/${encodeURIComponent(cache.id)}`, {
+        return request<{ revision: number; mystery: MysteryCache }>(`/mysteries/${encodeURIComponent(cache.id)}`, {
           method: "PUT",
           body: JSON.stringify({
             mystery: shareableMystery(cache),
@@ -938,6 +944,7 @@ export default function MysteriesPage() {
             baseRevision
           })
         }).then(({ revision, mystery }) => {
+          if (!session.isCurrent()) return;
           const storedSerialized = stableJsonStringify(mystery);
           rememberServerSnapshot(cache.id, revision, storedSerialized);
           if (storedSerialized !== serialized) {
@@ -951,11 +958,11 @@ export default function MysteriesPage() {
           }
         });
       })).then(() => {
-        if (!active) return;
+        if (!active || !session.isCurrent()) return;
         syncRetryCount.current = 0;
         syncRetryBatch.current = "";
       }).catch(() => {
-        if (!active) return;
+        if (!active || !session.isCurrent()) return;
         const retryDelay = automaticSyncRetryDelay(syncRetryCount.current);
         syncRetryCount.current += 1;
         setNotice("Saved offline; account sync will retry with reduced frequency.");
@@ -970,10 +977,10 @@ export default function MysteriesPage() {
       window.clearTimeout(timeout);
       if (retryTimeout) window.clearTimeout(retryTimeout);
     };
-  }, [persistedForSync, ready, serverSyncReady, storageKeys]);
+  }, [persistedForSync, ready, request, serverSyncReady, session, storageKeys]);
 
   useEffect(() => {
-    if (!ready || !storageKeys || activeStorageNamespace.current !== storageKeys.namespace) return;
+    if (!session.isCurrent() || !ready || activeStorageNamespace.current !== storageKeys.namespace) return;
     let active = true;
     let retryTimeout: number | undefined;
     serverLoadInFlight.current = true;
@@ -982,37 +989,28 @@ export default function MysteriesPage() {
       stableJsonStringify(shareableMystery(cache))
     ]));
     const knownSyncMetadata = new Map(syncMetadata.current);
-    void apiFetch<{ mysteries: SharedMysteryGrant[] }>("/mysteries/shared")
+    void request<{ mysteries: SharedMysteryGrant[] }>("/mysteries/shared")
       .then(({ mysteries }) => {
-        if (!active) return;
+        if (!active || !session.isCurrent()) return;
         setCaches((current) => {
           const currentSharedById = new Map(
             current.filter((cache) => cache.sharedWorkspaceId).map((cache) => [cache.id, cache])
           );
           const sharedCaches = mysteries.flatMap((grant) => {
-            if (!grant?.mystery || !isAppUser(grant.owner) || typeof grant.workspaceId !== "string") return [];
+            if (!isSafeMysterySnapshot(grant?.mystery) || !isAppUser(grant.owner) || typeof grant.workspaceId !== "string") return [];
             const sharedId = `shared:${grant.workspaceId}`;
             const addedAt = normalizeAddedAt(grant.addedAt)
               ?? normalizeAddedAt(grant.mystery.addedAt)
               ?? currentSharedById.get(sharedId)?.addedAt
               ?? new Date().toISOString();
-            return [{
+            return verifiedStoredShares([{
               ...grant.mystery,
-              ...normalizeMysteryListing(grant.mystery),
-              area: normalizeMysteryArea(grant.mystery.area),
-              county: normalizeMysteryArea(grant.mystery.county),
-              country: normalizeMysteryArea(grant.mystery.country),
-              region: normalizeMysteryArea(grant.mystery.region),
-              locality: normalizeMysteryArea(grant.mystery.locality),
-              locationHierarchy: Array.isArray(grant.mystery.locationHierarchy)
-                ? grant.mystery.locationHierarchy.map(normalizeMysteryArea).filter(Boolean)
-                : [],
               id: sharedId,
               addedAt,
               sharedWith: Array.isArray(grant.sharedWith) ? grant.sharedWith.filter(isAppUser) : [],
               sharedBy: grant.owner,
               sharedWorkspaceId: grant.workspaceId
-            }];
+            }]);
           });
           return [...current.filter((cache) => !cache.sharedWorkspaceId), ...sharedCaches];
         });
@@ -1020,9 +1018,9 @@ export default function MysteriesPage() {
       .catch(() => {
         // Keep the last locally cached shared snapshot while offline.
       });
-    void apiFetch<{ mysteries: OwnedMysterySnapshot[]; deletedClientIds: string[] }>("/mysteries/owned")
+    void request<{ mysteries: OwnedMysterySnapshot[]; deletedClientIds: string[] }>("/mysteries/owned")
       .then(({ mysteries, deletedClientIds }) => {
-        if (!active) return;
+        if (!active || !session.isCurrent()) return;
         const serverDeletedIds = Array.isArray(deletedClientIds)
           ? deletedClientIds.filter((cacheId): cacheId is string => typeof cacheId === "string" && cacheId.length > 0)
           : [];
@@ -1103,7 +1101,7 @@ export default function MysteriesPage() {
         setServerSyncReady(true);
       })
       .catch(() => {
-        if (!active) return;
+        if (!active || !session.isCurrent()) return;
         serverLoadInFlight.current = false;
         setServerSyncReady(false);
         lastFailedServerLoadSnapshot.current = stableJsonStringify(
@@ -1121,10 +1119,10 @@ export default function MysteriesPage() {
       active = false;
       if (retryTimeout) window.clearTimeout(retryTimeout);
     };
-  }, [ready, serverLoadAttempt, storageKeys]);
+  }, [ready, request, serverLoadAttempt, session, storageKeys]);
 
   useEffect(() => {
-    if (!ready || !storageKeys || activeStorageNamespace.current !== storageKeys.namespace || serverSyncReady || !persistedForSync) return;
+    if (!session.isCurrent() || !ready || activeStorageNamespace.current !== storageKeys.namespace || serverSyncReady || !persistedForSync) return;
     const localSnapshot = stableJsonStringify(
       persistedForSync.filter((cache) => !cache.sharedBy).map(shareableMystery)
     );
@@ -1152,10 +1150,10 @@ export default function MysteriesPage() {
   }, []);
 
   useEffect(() => {
-    if (!ready || !storageKeys) return;
+    if (!ready || !session.isCurrent()) return;
     const requestRefresh = () => {
-      const keys = storageKeysRef.current;
-      if (!keys || activeStorageNamespace.current !== keys.namespace) return;
+      const keys = storageKeys;
+      if (!session.isCurrent() || activeStorageNamespace.current !== keys.namespace) return;
       if (document.visibilityState !== "visible") return;
       if (!navigator.onLine) return;
       if (serverLoadInFlight.current) return;
@@ -1188,7 +1186,7 @@ export default function MysteriesPage() {
       setCaches((current) => current.filter((cache) => cache.id !== cacheId));
       setCacheToDelete((current) => current?.id === cacheId ? null : current);
     };
-    if (!storageKeys) return;
+    if (!session.isCurrent()) return;
     const channel = typeof BroadcastChannel === "undefined" ? null : new BroadcastChannel(storageKeys.deletionChannel);
     deletionChannel.current = channel;
     if (channel) {
@@ -1239,18 +1237,22 @@ export default function MysteriesPage() {
     const receiveSyncReceipt = () => {
       const root = document.documentElement;
       const rawReceipt = root.getAttribute("data-geostats-sync-receipt");
-      if (!rawReceipt) return;
+      if (!rawReceipt || !session.isCurrent()) return;
       root.removeAttribute("data-geostats-sync-receipt");
       try {
         const receipt = JSON.parse(rawReceipt) as GeocachingSyncReceipt;
+        const token = claimMysterySyncReceipt(pendingSyncReceipts.current, receipt);
+        if (!token) return;
+        root.setAttribute("data-geostats-sync-receipt-accepted", token);
         const result = applyGeocachingSyncReceipt(latestCaches.current, receipt);
+        latestCaches.current = result.caches;
         setCaches(result.caches);
         if (typeof receipt.cacheId === "string") setSelectedId(receipt.cacheId);
         setNotice(receipt.type === "notes"
           ? result.conflicted
             ? "Field note changed during sync. Review both versions."
             : result.applied ? "Field note synced to Geocaching" : "Ignored an outdated field note receipt."
-          : "Confirmed as synced to Geocaching");
+          : result.applied ? "Confirmed as synced to Geocaching" : "Ignored an outdated coordinate receipt.");
       } catch {
         setNotice("Could not read the Geocaching sync receipt");
       }
@@ -1258,7 +1260,7 @@ export default function MysteriesPage() {
     document.addEventListener("geostats-sync-receipt", receiveSyncReceipt);
     receiveSyncReceipt();
     return () => document.removeEventListener("geostats-sync-receipt", receiveSyncReceipt);
-  }, []);
+  }, [session]);
 
   useEffect(() => {
     if (!notice) return;
@@ -1297,14 +1299,14 @@ export default function MysteriesPage() {
     let active = true;
     setUserSearchState("loading");
     const timeout = window.setTimeout(() => {
-      void apiFetch<{ users: AppUser[] }>(`/auth/users?query=${encodeURIComponent(normalizedQuery)}`)
+      void request<{ users: AppUser[] }>(`/auth/users?query=${encodeURIComponent(normalizedQuery)}`)
         .then(({ users }) => {
-          if (!active) return;
+          if (!active || !session.isCurrent()) return;
           setUserResults(users);
           setUserSearchState("idle");
         })
         .catch(() => {
-          if (!active) return;
+          if (!active || !session.isCurrent()) return;
           setUserResults([]);
           setUserSearchState("error");
         });
@@ -1314,21 +1316,21 @@ export default function MysteriesPage() {
       active = false;
       window.clearTimeout(timeout);
     };
-  }, [showShare, showSharingSettings, userQuery]);
+  }, [request, session, showShare, showSharingSettings, userQuery]);
 
   useEffect(() => {
     if (!ready) return;
     let active = true;
-    void apiFetch<{ preferences: MysterySharingPreference[] }>("/mysteries/sharing-preferences")
+    void request<{ preferences: MysterySharingPreference[] }>("/mysteries/sharing-preferences")
       .then(({ preferences }) => {
-        if (!active) return;
+        if (!active || !session.isCurrent()) return;
         setSharingPreferences(preferences.filter((preference) =>
           isAppUser(preference.recipient) && Array.isArray(preference.statuses)
         ));
       })
       .catch(() => undefined);
     return () => { active = false; };
-  }, [ready, serverLoadAttempt]);
+  }, [ready, request, serverLoadAttempt, session]);
 
   const selected = caches.find((cache) => cache.id === selectedId) ?? caches[0];
   const selectedCacheId = selected?.id;
@@ -1442,8 +1444,8 @@ export default function MysteriesPage() {
     });
     persistSyncMetadata();
     persistedCaches.current = persistedCaches.current.filter((cache) => !deletedCacheIds.current.has(cache.id));
-    const keys = storageKeysRef.current;
-    if (!keys) return;
+    const keys = storageKeys;
+    if (!session.isCurrent()) return;
     try {
       localStorage.setItem(keys.deletions, JSON.stringify([...deletedCacheIds.current]));
     } catch {
@@ -1553,8 +1555,9 @@ export default function MysteriesPage() {
       return;
     }
 
-    if (noteCaches.length && !helperSupportsNoteBatches(document.documentElement)) {
-      setNotice("Update the Geocaching helper, then reload this page to sync field-note batches.");
+    if (!session.isCurrent()) return;
+    if (!helperSupportsSyncReceipts(document.documentElement)) {
+      setNotice("Update the Geocaching helper, then reload this page to sync.");
       return;
     }
     const issuedAt = Date.now();
@@ -1567,6 +1570,7 @@ export default function MysteriesPage() {
       coordinateText: formatCoordinate(latitude, longitude),
       solved: true,
       includeNotes: noteCaches.length > 0,
+      receiptToken: createMysterySyncReceiptToken(),
       issuedAt
     }));
     const batchId = payloads.length > 1 || noteCaches.length ? newId("sync-batch") : "";
@@ -1585,7 +1589,9 @@ export default function MysteriesPage() {
       if (finished || root.getAttribute("data-geostats-sync-ready") !== acknowledgement) return;
       finished = true;
       cleanup();
-      const firstPayload = payloads[0];
+      if (!session.isCurrent()) return;
+      recordMysterySyncRequests(pendingSyncReceipts.current, [...payloads, ...noteRequests]);
+      const { receiptToken: _receiptToken, ...firstPayload } = payloads[0];
       const payloadRequest = JSON.stringify(firstPayload);
       const target = `https://coord.info/${encodeURIComponent(firstPayload.gcCode)}#geostats-sync=${encodeURIComponent(payloadRequest)}`;
       window.open(target, "_blank", "noopener,noreferrer");
@@ -1614,6 +1620,7 @@ export default function MysteriesPage() {
       gcCode: cache.gcCode,
       noteTarget: "fieldNotes",
       notes: cache.fieldNotes ?? "",
+      receiptToken: createMysterySyncReceiptToken(),
       issuedAt
     };
   }
@@ -1622,8 +1629,9 @@ export default function MysteriesPage() {
     const eligible = (Array.isArray(cacheOrCaches) ? cacheOrCaches : [cacheOrCaches])
       .filter((cache) => !cache.sharedBy && cache.status !== "archived");
     if (!eligible.length) return;
-    if (eligible.length > 1 && !helperSupportsNoteBatches(document.documentElement)) {
-      setNotice("Update the Geocaching helper, then reload this page to sync field-note batches.");
+    if (!session.isCurrent()) return;
+    if (!helperSupportsSyncReceipts(document.documentElement)) {
+      setNotice("Update the Geocaching helper, then reload this page to sync.");
       return;
     }
     const payloads = eligible.map((cache) => fieldNotePayload(cache, Date.now()));
@@ -1642,7 +1650,10 @@ export default function MysteriesPage() {
       if (finished || root.getAttribute("data-geostats-note-sync-ready") !== acknowledgement) return;
       finished = true;
       cleanup();
-      const target = `https://coord.info/${encodeURIComponent(payload.gcCode)}#geostats-note-sync=${encodeURIComponent(JSON.stringify(payload))}`;
+      if (!session.isCurrent()) return;
+      recordMysterySyncRequests(pendingSyncReceipts.current, payloads);
+      const { receiptToken: _receiptToken, ...publicPayload } = payload;
+      const target = `https://coord.info/${encodeURIComponent(payload.gcCode)}#geostats-note-sync=${encodeURIComponent(JSON.stringify(publicPayload))}`;
       window.open(target, "_blank", "noopener,noreferrer");
       setNotice(payloads.length === 1
         ? "Geocaching opened. Choose which field note to keep there."
@@ -1663,6 +1674,48 @@ export default function MysteriesPage() {
     if (syncableCaches.length) syncAttempts(syncableCaches, fieldNotesToSync);
     else if (fieldNotesToSync.length) syncFieldNotes(fieldNotesToSync);
     else setNotice("Everything is already synced with Geocaching");
+  }
+
+  function confirmBrowserImport() {
+    if (!pendingBrowserImport || !session.isCurrent() || !ready) return;
+    const imported = pendingBrowserImport;
+    const current = latestCaches.current;
+    const existing = current.find((cache) => !cache.sharedBy && cache.gcCode === imported.gcCode)
+      ?? current.find((cache) => cache.gcCode === imported.gcCode);
+    setPendingBrowserImport(null);
+    if (existing?.sharedBy) {
+      setSelectedId(existing.id);
+      setNotice(`${imported.gcCode} is already shared with you.`);
+      return;
+    }
+    if (!existing) {
+      setCaches((caches) => [imported, ...caches]);
+      setSelectedId(imported.id);
+      setNotice(`${imported.gcCode} imported.`);
+      return;
+    }
+
+    const refreshed = {
+      ...existing,
+      listingText: imported.listingText || existing.listingText,
+      listingTextUpdatedAt: imported.listingText && imported.listingText !== existing.listingText
+        ? imported.listingTextUpdatedAt : existing.listingTextUpdatedAt,
+      listingImageUrls: [...new Set([...(existing.listingImageUrls ?? []), ...(imported.listingImageUrls ?? [])])],
+      clues: [...new Set([...existing.clues, ...imported.clues])],
+      area: imported.area || existing.area,
+      county: imported.county || existing.county,
+      country: imported.country || existing.country,
+      region: imported.region || existing.region,
+      locality: imported.locality || existing.locality,
+      locationHierarchy: imported.locationHierarchy?.length ? imported.locationHierarchy : existing.locationHierarchy
+    };
+    setSelectedId(existing.id);
+    if (!canSyncMystery(refreshed)) {
+      setNotice("This listing would make the Mystery too large to sync.");
+      return;
+    }
+    setCaches((caches) => caches.map((cache) => cache.id === existing.id ? refreshed : cache));
+    setNotice(`${imported.gcCode} listing refreshed.`);
   }
 
   function importGcCode(value: string) {
@@ -1713,8 +1766,9 @@ export default function MysteriesPage() {
     const deleting = cacheToDelete;
     setDeletingCache(true);
     try {
-      await apiFetch(`/mysteries/${encodeURIComponent(deleting.id)}`, { method: "DELETE" });
+      await request(`/mysteries/${encodeURIComponent(deleting.id)}`, { method: "DELETE" });
     } catch (error) {
+      if (!session.isCurrent()) return;
       setDeletingCache(false);
       const message = error instanceof Error && error.message
         ? error.message
@@ -1723,6 +1777,7 @@ export default function MysteriesPage() {
       return;
     }
 
+    if (!session.isCurrent()) return;
     rememberDeletedCache(deleting.id);
     deletionChannel.current?.postMessage({ type: "cache-deleted", cacheId: deleting.id });
     const deletedIndex = caches.findIndex((cache) => cache.id === deleting.id);
@@ -1871,10 +1926,11 @@ export default function MysteriesPage() {
     if (!statuses.length) return;
     setSavingPreferenceId(user.id);
     try {
-      const { preference } = await apiFetch<{ preference: MysterySharingPreference }>(`/mysteries/sharing-preferences/${encodeURIComponent(user.id)}`, {
+      const { preference } = await request<{ preference: MysterySharingPreference }>(`/mysteries/sharing-preferences/${encodeURIComponent(user.id)}`, {
         method: "PUT",
         body: JSON.stringify({ statuses })
       });
+      if (!session.isCurrent()) return;
       setSharingPreferences((current) => [
         ...current.filter((item) => item.recipient.id !== user.id),
         preference
@@ -1884,23 +1940,26 @@ export default function MysteriesPage() {
       setServerLoadAttempt((attempt) => attempt + 1);
       setNotice(`Automatic Myst sharing updated for ${user.username}`);
     } catch {
+      if (!session.isCurrent()) return;
       setNotice(`Could not update automatic sharing for ${user.username}`);
     } finally {
-      setSavingPreferenceId("");
+      if (session.isCurrent()) setSavingPreferenceId("");
     }
   }
 
   async function removeSharingPreference(preference: MysterySharingPreference) {
     setSavingPreferenceId(preference.recipient.id);
     try {
-      await apiFetch(`/mysteries/sharing-preferences/${encodeURIComponent(preference.recipient.id)}`, { method: "DELETE" });
+      await request(`/mysteries/sharing-preferences/${encodeURIComponent(preference.recipient.id)}`, { method: "DELETE" });
+      if (!session.isCurrent()) return;
       setSharingPreferences((current) => current.filter((item) => item.recipient.id !== preference.recipient.id));
       setServerLoadAttempt((attempt) => attempt + 1);
       setNotice(`Stopped automatic Myst sharing with ${preference.recipient.username}`);
     } catch {
+      if (!session.isCurrent()) return;
       setNotice(`Could not update automatic sharing for ${preference.recipient.username}`);
     } finally {
-      setSavingPreferenceId("");
+      if (session.isCurrent()) setSavingPreferenceId("");
     }
   }
 
@@ -1914,7 +1973,7 @@ export default function MysteriesPage() {
     if (!selected || selected.sharedWith.some((person) => person.id === user.id)) return;
     setSharingUserId(user.id);
     try {
-      const { recipient, revision } = await apiFetch<{ recipient: AppUser; revision: number }>(`/mysteries/${encodeURIComponent(selected.id)}/shares`, {
+      const { recipient, revision } = await request<{ recipient: AppUser; revision: number }>(`/mysteries/${encodeURIComponent(selected.id)}/shares`, {
         method: "POST",
         body: JSON.stringify({
           recipientId: user.id,
@@ -1922,6 +1981,7 @@ export default function MysteriesPage() {
           revision: nextSnapshotRevision(selected.id)
         })
       });
+      if (!session.isCurrent()) return;
       rememberSnapshotRevision(selected.id, revision);
       rememberShareMutation(selected.id);
       setCaches((current) => current.map((cache) =>
@@ -1932,16 +1992,18 @@ export default function MysteriesPage() {
       setShowShare(false);
       setNotice(`Shared with ${recipient.username}`);
     } catch {
+      if (!session.isCurrent()) return;
       setNotice(`Could not share with ${user.username}`);
     } finally {
-      setSharingUserId("");
+      if (session.isCurrent()) setSharingUserId("");
     }
   }
 
   async function removeSharedUser(user: AppUser) {
     if (!selected || selected.sharedBy) return;
     try {
-      await apiFetch(`/mysteries/${encodeURIComponent(selected.id)}/shares/${encodeURIComponent(user.id)}`, { method: "DELETE" });
+      await request(`/mysteries/${encodeURIComponent(selected.id)}/shares/${encodeURIComponent(user.id)}`, { method: "DELETE" });
+      if (!session.isCurrent()) return;
       rememberShareMutation(selected.id);
       setCaches((current) => current.map((cache) =>
         cache.id === selected.id
@@ -1950,6 +2012,7 @@ export default function MysteriesPage() {
       ));
       setNotice(`Stopped sharing with ${user.username}`);
     } catch {
+      if (!session.isCurrent()) return;
       setNotice(`Could not update sharing for ${user.username}`);
     }
   }
@@ -2288,11 +2351,11 @@ export default function MysteriesPage() {
                     return (
                       <div className="attempt-row" key={attempt.id}>
                         <span className={`attempt-state ${attempt.state}`}>{attempt.state === "correct" ? <Check size={16} /> : attempt.state === "wrong" ? <X size={16} /> : <CircleDot size={16} />}</span>
-                        <span><strong>{attemptInputLabel(attempt)}</strong>{attempt.note && <em>{attempt.note}</em>}{revealedCoordinate(attempt) && <em>Final: {formatCoordinate(attempt.finalLatitude!, attempt.finalLongitude!)}</em>}<small>{attemptKindLabel(attempt)}{attempt.source ? ` · ${attempt.source}` : ""} · {new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(attempt.createdAt))}</small></span>
+                        <span><strong>{attemptInputLabel(attempt)}</strong>{attempt.note && <em>{attempt.note}</em>}{revealedCoordinate(attempt) && <em>Final: {formatCoordinate(attempt.finalLatitude!, attempt.finalLongitude!)}</em>}<small>{attemptKindLabel(attempt)}{attempt.source ? ` · ${attempt.source}` : ""} · {formatAttemptTimestamp(attempt.createdAt)}</small></span>
                         {distance !== null && <span className={`distance-badge ${distance > MAX_REASONABLE_DISTANCE_KM ? "warning" : ""}`}>{distance > MAX_REASONABLE_DISTANCE_KM && <AlertTriangle size={13} />}{distance < 1 ? `${Math.round(distance * 1000)} m` : `${distance.toFixed(1)} km`} away</span>}
                         {selected.status === "solved" && final && finalCoordinate(selected)?.attempt.id === attempt.id ? (
                           attempt.geocachingSyncedAt ? (
-                            <span className="coordinate-sync-status" title={`Synced ${new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(attempt.geocachingSyncedAt))}`}><Check size={13} /> Synced</span>
+                            <span className="coordinate-sync-status" title={`Synced ${formatAttemptTimestamp(attempt.geocachingSyncedAt)}`}><Check size={13} /> Synced</span>
                           ) : (
                             <button className="coordinate-sync-button" type="button" onClick={() => syncAttempt(selected, attempt)}><ExternalLink size={13} /> Sync</button>
                           )
@@ -2442,6 +2505,22 @@ export default function MysteriesPage() {
             </div>
             <p id="delete-cache-description">This removes <strong>{cacheToDelete.name}</strong>, including its solution, field notes, clues, images and coordinate attempts. This cannot be undone.</p>
             <div className="modal-actions"><button className="secondary-button" type="button" disabled={deletingCache} onClick={() => setCacheToDelete(null)}>Cancel</button><button className="primary-button danger-button" type="button" disabled={deletingCache} onClick={() => void deleteCache()}><Trash2 size={16} /> {deletingCache ? "Deleting…" : "Delete cache"}</button></div>
+          </div>
+        </div>
+      )}
+
+      {pendingBrowserImport && (
+        <div className="mystery-modal-backdrop" role="presentation" onMouseDown={() => setPendingBrowserImport(null)}>
+          <div className="mystery-modal browser-import-modal" role="dialog" aria-modal="true" aria-labelledby="confirm-browser-import-title" onMouseDown={(event) => event.stopPropagation()}>
+            <h2 id="confirm-browser-import-title">Review proposed Mystery import</h2>
+            <p><strong>{pendingBrowserImport.gcCode}</strong> {pendingBrowserImport.name}</p>
+            <p className="muted">{formatCoordinate(pendingBrowserImport.publishedLatitude, pendingBrowserImport.publishedLongitude)}</p>
+            <p>Only continue if you recognize this cache and requested the import. If you already saved it, this will refresh the listing and add clues.</p>
+            {pendingBrowserImport.listingText && <p>{pendingBrowserImport.listingText.slice(0, 400)}</p>}
+            <div className="modal-actions">
+              <button className="secondary-button" type="button" onClick={() => setPendingBrowserImport(null)}>Cancel</button>
+              <button className="primary-button" type="button" onClick={confirmBrowserImport} disabled={!ready}>Import Mystery</button>
+            </div>
           </div>
         </div>
       )}

@@ -1,9 +1,10 @@
 import { BadRequestException, Body, ConflictException, Controller, Delete, Get, Header, NotFoundException, Param, Post, Put, UseGuards } from "@nestjs/common";
 import { personalCacheMetadata, Prisma } from "@geostats/db";
-import { AuthUser, MAX_MYSTERY_SNAPSHOT_BYTES, MAX_MYSTERY_WORKSPACES_PER_OWNER, stableJsonStringify } from "@geostats/shared";
+import { AuthUser, isSafeMysterySnapshot, MAX_MYSTERY_SNAPSHOT_BYTES, MAX_MYSTERY_WORKSPACES_PER_OWNER, stableJsonStringify } from "@geostats/shared";
 import { AuthGuard } from "../auth/auth.guard";
 import { CurrentUser } from "../auth/current-user.decorator";
 import { PrismaService } from "../common/prisma.service";
+import { MysteryAccountGuard } from "./mystery-account.guard";
 
 type ShareMysteryBody = {
   recipientId?: unknown;
@@ -67,6 +68,9 @@ function mysteryData(value: unknown, clientId: string): { data: Prisma.InputJson
   if (name.length > MAX_MYSTERY_NAME_LENGTH) {
     throw new BadRequestException(`Mystery names cannot exceed ${MAX_MYSTERY_NAME_LENGTH} characters`);
   }
+  if (!isSafeMysterySnapshot(mystery)) {
+    throw new BadRequestException("Mystery data contains invalid fields or attempts");
+  }
   const normalized = { ...mystery, gcCode, name } as Prisma.InputJsonObject;
   if (Buffer.byteLength(JSON.stringify(normalized), "utf8") > MAX_MYSTERY_SNAPSHOT_BYTES) {
     throw new BadRequestException("Mystery data is too large to share");
@@ -103,13 +107,24 @@ function mysteryStatus(value: Prisma.JsonValue): MysteryStatus | null {
   return MYSTERY_STATUSES.includes(status as MysteryStatus) ? status as MysteryStatus : null;
 }
 
-function recipientMysteryData(value: Prisma.JsonValue): Prisma.JsonValue {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
-  const mystery = value as Prisma.JsonObject;
-  if (typeof mystery.image !== "string") return value;
-  if (/^data:image\/(?:png|jpe?g|gif|webp);base64,[a-z0-9+/=\s]+$/i.test(mystery.image)) return value;
-  const { image: _externalImage, ...safeMystery } = mystery;
-  return safeMystery;
+function recipientMysteryData(value: Prisma.JsonValue): Prisma.JsonObject | null {
+  if (!isSafeMysterySnapshot(value)) return null;
+  const {
+    image,
+    sharedBy: _sharedBy,
+    sharedWith: _sharedWith,
+    sharedWorkspaceId: _sharedWorkspaceId,
+    syncConflicts: _syncConflicts,
+    geocachingNoteConflict: _geocachingNoteConflict,
+    geocachingFieldNoteConflict: _geocachingFieldNoteConflict,
+    ...mystery
+  } = value as Prisma.JsonObject;
+  return {
+    ...mystery,
+    sharedWith: [],
+    attempts: mystery.attempts ?? [],
+    ...(typeof image === "string" && /^data:image\/(?:png|jpe?g|gif|webp);base64,[a-z0-9+/=\s]+$/i.test(image) ? { image } : {})
+  };
 }
 
 function effectiveRecipients(
@@ -176,6 +191,8 @@ export class MysteriesController {
   }
 
   @Get("owned")
+  @UseGuards(MysteryAccountGuard)
+  @Header("Cache-Control", "private, no-store")
   async owned(@CurrentUser() user: AuthUser) {
     const [mysteries, deletions, preferences] = await Promise.all([
       this.prisma.mysteryWorkspace.findMany({
@@ -224,6 +241,8 @@ export class MysteriesController {
   }
 
   @Get("owned-shares")
+  @UseGuards(MysteryAccountGuard)
+  @Header("Cache-Control", "private, no-store")
   async ownedShares(@CurrentUser() user: AuthUser) {
     const [mysteries, deletions, preferences] = await Promise.all([
       this.prisma.mysteryWorkspace.findMany({
@@ -267,6 +286,8 @@ export class MysteriesController {
   }
 
   @Get("shared")
+  @UseGuards(MysteryAccountGuard)
+  @Header("Cache-Control", "private, no-store")
   async shared(@CurrentUser() user: AuthUser) {
     const [grants, receivedPreferences] = await Promise.all([this.prisma.mysteryShare.findMany({
       where: { recipientId: user.id },
@@ -329,22 +350,28 @@ export class MysteriesController {
     });
 
     return {
-      mysteries: [...workspaces.values()].map((mystery) => ({
-        workspaceId: mystery.id,
-        mystery: recipientMysteryData(mystery.data),
-        owner: mystery.owner,
-        addedAt: sharedAtByWorkspace.get(mystery.id) ?? (mystery.createdAt instanceof Date ? mystery.createdAt.toISOString() : undefined),
-        sharedWith: effectiveRecipients(
-          mystery.data,
-          mystery.shares.map(({ recipient }) => recipient),
-          allPreferences.filter((preference) => preference.ownerId === mystery.owner.id),
-          mystery.sharingExclusions.map(({ recipientId }) => recipientId)
-        )
-      }))
+      mysteries: [...workspaces.values()].flatMap((mystery) => {
+        const snapshot = recipientMysteryData(mystery.data);
+        if (!snapshot) return [];
+        return [{
+          workspaceId: mystery.id,
+          mystery: snapshot,
+          owner: mystery.owner,
+          addedAt: sharedAtByWorkspace.get(mystery.id) ?? (mystery.createdAt instanceof Date ? mystery.createdAt.toISOString() : undefined),
+          sharedWith: effectiveRecipients(
+            mystery.data,
+            mystery.shares.map(({ recipient }) => recipient),
+            allPreferences.filter((preference) => preference.ownerId === mystery.owner.id),
+            mystery.sharingExclusions.map(({ recipientId }) => recipientId)
+          )
+        }];
+      })
     };
   }
 
   @Get("sharing-preferences")
+  @UseGuards(MysteryAccountGuard)
+  @Header("Cache-Control", "private, no-store")
   async sharingPreferences(@CurrentUser() user: AuthUser) {
     const preferences = await this.prisma.mysterySharingPreference.findMany({
       where: { ownerId: user.id },
@@ -358,6 +385,7 @@ export class MysteriesController {
   }
 
   @Put("sharing-preferences/:recipientId")
+  @UseGuards(MysteryAccountGuard)
   async setSharingPreference(
     @CurrentUser() user: AuthUser,
     @Param("recipientId") recipientId: string,
@@ -393,6 +421,7 @@ export class MysteriesController {
   }
 
   @Delete("sharing-preferences/:recipientId")
+  @UseGuards(MysteryAccountGuard)
   async deleteSharingPreference(@CurrentUser() user: AuthUser, @Param("recipientId") recipientId: string) {
     await this.prisma.$transaction(async (tx) => {
       await lockMystery(tx, user.id, `sharing-preference:${recipientId}`);
@@ -402,6 +431,7 @@ export class MysteriesController {
   }
 
   @Post(":clientId/shares")
+  @UseGuards(MysteryAccountGuard)
   async share(
     @CurrentUser() user: AuthUser,
     @Param("clientId") clientId: string,
@@ -479,6 +509,7 @@ export class MysteriesController {
   }
 
   @Put(":clientId")
+  @UseGuards(MysteryAccountGuard)
   async update(
     @CurrentUser() user: AuthUser,
     @Param("clientId") clientId: string,
@@ -571,6 +602,7 @@ export class MysteriesController {
   }
 
   @Delete(":clientId")
+  @UseGuards(MysteryAccountGuard)
   async delete(@CurrentUser() user: AuthUser, @Param("clientId") clientId: string) {
     await this.prisma.$transaction(async (tx) => {
       await lockMystery(tx, user.id, clientId);
@@ -587,6 +619,7 @@ export class MysteriesController {
   }
 
   @Delete(":clientId/shares/:recipientId")
+  @UseGuards(MysteryAccountGuard)
   async unshare(
     @CurrentUser() user: AuthUser,
     @Param("clientId") clientId: string,

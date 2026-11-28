@@ -41,6 +41,23 @@ test("escapes profile text in the generated SVG", () => {
   assert.match(svg, /&lt;unsafe&gt; Scratch Map/);
 });
 
+test("renders country counts only from nonnegative integers", () => {
+  const svg = renderPublicScratchMapSvg(
+    { gcUsername: "Nebularc_" },
+    {
+      countries: [
+        { key: "Sweden", count: "Pending & unknown" },
+        { key: "United States", count: 6 },
+      ],
+    },
+    worldMapTemplate,
+  );
+
+  assert.match(svg, /<title>Sweden: 0<\/title>/);
+  assert.match(svg, /<title>United States of America: 6<\/title>/);
+  assert.doesNotMatch(svg, /Pending/);
+});
+
 test("extracts map content after an XML declaration and comment", () => {
   const templateWithPreamble = `<?xml version="1.0" encoding="UTF-8"?>
 <!-- generated map -->
@@ -76,6 +93,25 @@ test("allows authenticated pages to provide their own map image path", () => {
   );
 
   assert.match(html, /src="\/stats\/scratch-map-image"/);
+});
+
+test("formats archived month and difficulty counts as numbers and escapes year labels", () => {
+  const html = renderPublicProfileHtml({ gcUsername: "Nebularc_" }, {
+    findsByMonth: [
+      { key: "2026-01", count: 9 },
+      { key: "2026-02", count: "Pending" },
+      { key: "R&D!-01", count: 1 },
+    ],
+    difficultyTerrain: [
+      { difficulty: 2, terrain: 2, count: 7 },
+      { difficulty: 3, terrain: 2, count: "Pending" },
+    ],
+  });
+
+  assert.match(html, /<span title="9"/);
+  assert.match(html, /id="R&amp;D!"/);
+  assert.match(html, /<b>7<\/b>/);
+  assert.doesNotMatch(html, /Pending/);
 });
 
 test("renders reusable extreme badges for the public profile image", () => {

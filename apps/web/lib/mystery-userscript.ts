@@ -5,7 +5,7 @@ import { locationFromCachePageMetadata } from "./mystery-area.ts";
 import { locationFromPageSources } from "./mystery-page-location.ts";
 import { personalCacheNoteEditorFromPage, personalCacheNoteFromPage } from "./mystery-personal-note.ts";
 
-export const MYSTERY_USERSCRIPT_VERSION = "2.11.0";
+export const MYSTERY_USERSCRIPT_VERSION = "2.12.0";
 
 export function userscript(appOrigin: string) {
   return `// ==UserScript==
@@ -75,7 +75,8 @@ export function userscript(appOrigin: string) {
     pending[0] = next;
     GM_setValue(PENDING_NOTE_SYNC_KEY, JSON.stringify(pending));
     window.setTimeout(() => {
-      window.location.assign("https://coord.info/" + encodeURIComponent(next.gcCode) + "#geostats-note-sync=" + encodeURIComponent(JSON.stringify(next)));
+      const { receiptToken, ...publicPayload } = next;
+      window.location.assign("https://coord.info/" + encodeURIComponent(next.gcCode) + "#geostats-note-sync=" + encodeURIComponent(JSON.stringify(publicPayload)));
     }, 500);
     return true;
   }
@@ -83,6 +84,7 @@ export function userscript(appOrigin: string) {
   if (location.origin === GEOSTATS_ORIGIN) {
     document.documentElement.setAttribute("data-geostats-helper-version", ${JSON.stringify(MYSTERY_USERSCRIPT_VERSION)});
     document.documentElement.setAttribute("data-geostats-note-batch-support", "1");
+    document.documentElement.setAttribute("data-geostats-sync-receipt-support", "1");
     document.addEventListener("geostats-sync-request", () => {
       try {
         const request = document.documentElement.getAttribute("data-geostats-sync-request");
@@ -135,9 +137,24 @@ export function userscript(appOrigin: string) {
       keys.forEach((key) => {
         const receipt = GM_getValue(key, "");
         if (!receipt) return;
-        document.documentElement.setAttribute("data-geostats-sync-receipt", receipt);
-        GM_deleteValue(key);
+        const root = document.documentElement;
+        let proof;
+        try { proof = JSON.parse(receipt); } catch {}
+        const token = proof?.receiptToken;
+        const completed = typeof proof?.syncedAt === "string" ? Date.parse(proof.syncedAt) : NaN;
+        if (token && (!Number.isFinite(completed) || Date.now() - completed > 30 * 60 * 1000)) {
+          GM_deleteValue(key);
+          return;
+        }
+        root.setAttribute("data-geostats-sync-receipt", receipt);
         document.dispatchEvent(new Event("geostats-sync-receipt"));
+        // A different tab may see the receipt first. Only its initiating
+        // Mystery workspace can accept it.
+        if (!token || root.getAttribute("data-geostats-sync-receipt-accepted") === token) {
+          GM_deleteValue(key);
+        }
+        root.removeAttribute("data-geostats-sync-receipt");
+        root.removeAttribute("data-geostats-sync-receipt-accepted");
       });
     };
     deliverSyncReceipt();
@@ -190,7 +207,7 @@ export function userscript(appOrigin: string) {
         pending.includeNotes !== value.includeNotes ||
         pending.issuedAt !== value.issuedAt
       ) return null;
-      return value;
+      return { ...value, receiptToken: pending.receiptToken };
     } catch {
       return null;
     }
@@ -220,7 +237,7 @@ export function userscript(appOrigin: string) {
         pending.notes !== value.notes ||
         pending.issuedAt !== value.issuedAt
       ) return null;
-      return value;
+      return { ...value, receiptToken: pending.receiptToken };
     } catch {
       return null;
     }
@@ -541,6 +558,7 @@ export function userscript(appOrigin: string) {
       notes,
       geostatsNotes: noteSyncPayload.notes,
       direction,
+      receiptToken: noteSyncPayload.receiptToken,
       syncedAt: new Date().toISOString()
     };
     GM_setValue(NOTE_SYNC_RECEIPT_PREFIX + noteSyncPayload.cacheId, JSON.stringify(receipt));
@@ -809,6 +827,7 @@ export function userscript(appOrigin: string) {
       gcCode: syncPayload.gcCode,
       latitude: syncPayload.latitude,
       longitude: syncPayload.longitude,
+      receiptToken: syncPayload.receiptToken,
       syncedAt: new Date().toISOString()
     };
     GM_setValue(SYNC_RECEIPT_PREFIX + syncPayload.attemptId, JSON.stringify(receipt));
@@ -817,7 +836,8 @@ export function userscript(appOrigin: string) {
     if (nextPayload) {
       setSyncPanelState("Sync complete. Moving to the next solved cache…", "success");
       window.setTimeout(() => {
-        const target = "https://coord.info/" + encodeURIComponent(nextPayload.gcCode) + "#geostats-sync=" + encodeURIComponent(JSON.stringify(nextPayload));
+        const { receiptToken, ...publicPayload } = nextPayload;
+        const target = "https://coord.info/" + encodeURIComponent(nextPayload.gcCode) + "#geostats-sync=" + encodeURIComponent(JSON.stringify(publicPayload));
         window.location.assign(target);
       }, 500);
       return;

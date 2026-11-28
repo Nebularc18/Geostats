@@ -45,6 +45,11 @@ class PublicStatsDto {
   publicStatsEnabled!: boolean;
 }
 
+class FriendStatsDto {
+  @IsBoolean()
+  friendStatsEnabled!: boolean;
+}
+
 type FinderCountryRow = {
   country?: unknown;
   count?: unknown;
@@ -165,6 +170,18 @@ export class ProfileController {
       data: { publicStatsEnabled: body.publicStatsEnabled }
     });
     return { profile };
+  }
+
+  @Put("friend-stats")
+  async updateFriendStats(@CurrentUser() user: AuthUser, @Body() body: FriendStatsDto) {
+    const { count } = await this.prisma.geocachingProfile.updateMany({
+      where: { userId: user.id },
+      data: { friendStatsEnabled: body.friendStatsEnabled }
+    });
+    if (!count) {
+      throw new BadRequestException("Create a Geocaching profile before sharing friend stats");
+    }
+    return { friendStatsEnabled: body.friendStatsEnabled };
   }
 
   @Post("owner-finder-countries")

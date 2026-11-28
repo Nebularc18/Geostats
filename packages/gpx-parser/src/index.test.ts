@@ -379,6 +379,25 @@ test("parseTrackableImportFile uses the supplied code when a KML omits trackable
   assert.equal(parsed.logs[0]?.loggedAt.toISOString(), "2025-04-03T00:00:00.000Z");
 });
 
+test("KML movement logs preserve dated points and notes with compact provenance", async () => {
+  const parsed = await parseTrackableImportFile(
+    "route.kml",
+    Buffer.from(`<kml xmlns="http://www.opengis.net/kml/2.2" xmlns:gx="http://www.google.com/kml/ext/2.2">
+      <Document><name>TB1234 - Red coin</name><Placemark><name>Coastal route</name><description>Visited on holiday</description>
+        <gx:Track><when>2025-04-03</when><when>2025-04-04</when><gx:coord>15.5 56.1 0</gx:coord><gx:coord>16.2 57.1 0</gx:coord></gx:Track>
+      </Placemark></Document>
+    </kml>`)
+  );
+
+  assert.deepEqual(parsed.logs.map((log) => [log.latitude, log.longitude, log.loggedAt.toISOString()]), [
+    [56.1, 15.5, "2025-04-03T00:00:00.000Z"],
+    [57.1, 16.2, "2025-04-04T00:00:00.000Z"]
+  ]);
+  assert.deepEqual(parsed.logs.map((log) => log.notes), ["Visited on holiday", "Visited on holiday"]);
+  assert.deepEqual(parsed.logs.map((log) => log.raw), [{}, {}]);
+  assert.deepEqual(parsed.trackables.map((trackable) => trackable.raw), [{}, {}]);
+});
+
 test("parseTrackableImportFile preserves date-less KML stop order and skips its duplicate route line", async () => {
   const parsed = await parseTrackableImportFile(
     "trackable-journey.kml",

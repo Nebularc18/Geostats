@@ -57,11 +57,11 @@ export default function ProfileHtmlPage() {
     return () => controller.abort();
   }, []);
 
-  const publicUsername = profile?.publicStatsEnabled && profile.gcUsername ? encodeURIComponent(profile.gcUsername) : "";
-  const dynamicHtmlUrl = publicUsername ? `${API_URL}/public/profile-stats/${publicUsername}` : "";
-  const dynamicImageUrl = publicUsername ? `${API_URL}/public/profile-stats-image/${publicUsername}` : "";
-  const dynamicExtremesImageUrl = publicUsername ? `${API_URL}/public/profile-extremes-image/${publicUsername}` : "";
-  const dynamicScratchMapImageUrl = publicUsername ? `${API_URL}/public/profile-scratch-map-image/${publicUsername}` : "";
+  const publicProfileId = profile?.publicStatsEnabled && profile.id ? encodeURIComponent(profile.id) : "";
+  const dynamicHtmlUrl = publicProfileId ? `${API_URL}/public/profile-stats/by-id/${publicProfileId}` : "";
+  const dynamicImageUrl = publicProfileId ? `${API_URL}/public/profile-stats-image/by-id/${publicProfileId}` : "";
+  const dynamicExtremesImageUrl = publicProfileId ? `${API_URL}/public/profile-extremes-image/by-id/${publicProfileId}` : "";
+  const dynamicScratchMapImageUrl = publicProfileId ? `${API_URL}/public/profile-scratch-map-image/by-id/${publicProfileId}` : "";
   const embedHtml = dynamicHtmlUrl && dynamicImageUrl && dynamicExtremesImageUrl && dynamicScratchMapImageUrl
     ? `<a href="${dynamicHtmlUrl}" target="_top"><img src="${dynamicImageUrl}" width="750"><br><img src="${dynamicExtremesImageUrl}" width="750"><br><img src="${dynamicScratchMapImageUrl}" width="750"></a>`
     : "";
@@ -191,7 +191,7 @@ export default function ProfileHtmlPage() {
             <h2>Preview</h2>
             <small className="muted">GSAK-style HTML</small>
           </div>
-          <iframe title="Generated geocaching profile preview" srcDoc={html} />
+          <iframe title="Generated geocaching profile preview" sandbox="" srcDoc={html} />
         </div>
       </section>
     </AppShell>

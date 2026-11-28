@@ -132,12 +132,11 @@ function CacheDetailContent({ gcCode }: { gcCode: string }) {
                   {detail.friendsWhoFound.map((friend) => (
                     <div key={friend.username} className="table-row">
                       <strong>{friend.username}</strong>
-                      <small className="muted">Found {friend.foundAt.slice(0, 10)}</small>
                     </div>
                   ))}
                 </div>
               ) : (
-                <p className="muted">None of your saved friends have logged this cache in Geostats.</p>
+                <p className="muted">No saved friends have shared a find here.</p>
               )}
             </section>
 

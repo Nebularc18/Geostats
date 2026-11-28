@@ -6,6 +6,7 @@ import {
   NotFoundException,
   Param,
   Post,
+  ServiceUnavailableException,
   UploadedFile,
   UseGuards,
   UseInterceptors
@@ -18,14 +19,7 @@ import { CurrentUser } from "../auth/current-user.decorator";
 import { PrismaService } from "../common/prisma.service";
 import { ImportQueueRejectedError, ImportQueueService } from "../queue/import-queue.service";
 import { StorageService } from "../storage/storage.service";
-import { storedCacheImport } from "./import-recovery.service";
-
-const DEFAULT_UPLOAD_MAX_BYTES = 52_428_800;
-
-function uploadMaxBytes() {
-  const parsed = Number(process.env.UPLOAD_MAX_BYTES);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_UPLOAD_MAX_BYTES;
-}
+import { activeStoredCacheImport, claimFailedImportRetry, failedImportRetryCutoff, reserveImportStorage, storedCacheImport, uploadMaxBytes } from "./import-storage";
 
 export function importSourceFor(fileName: string, fileType: ImportFileType, purpose?: string) {
   if (purpose === "finds") return ImportSource.MY_FINDS_GPX;
@@ -60,7 +54,7 @@ export class ImportsController {
     @UploadedFile() file?: Express.Multer.File,
     @Body("purpose") purpose?: string
   ) {
-    if (!file) {
+    if (!file?.buffer.length) {
       throw new BadRequestException("Upload a GPX or ZIP file using the file field");
     }
 
@@ -72,41 +66,53 @@ export class ImportsController {
     const mode = purpose || (source === ImportSource.MY_HIDES_GPX ? "hides" : "finds");
     const objectKey = `${user.id}/${randomUUID()}${fileType === ImportFileType.ZIP ? ".zip" : ".gpx"}`;
 
-    await this.storage.putObject(objectKey, file.buffer, file.mimetype || "application/octet-stream");
-    let created;
-    try {
-      created = await this.prisma.import.create({
+    const created = await this.prisma.$transaction(async (tx) => {
+      await reserveImportStorage(tx, user.id, file.buffer.length);
+      return tx.import.create({
         data: {
           userId: user.id,
           fileName: file.originalname,
           fileType,
           source,
           purpose: mode,
-          status: ImportStatus.QUEUED,
-          objectKey
+          status: ImportStatus.UPLOADED,
+          objectKey,
+          objectSizeBytes: file.buffer.length
         }
       });
-    } catch (error) {
+    });
+
+    const uploaded = await this.prisma.$transaction(async (tx) => {
+      // The reservation is committed before the PUT. Hold its row until the
+      // bounded request finishes so cleanup cannot delete an in-flight upload.
+      const locked = await tx.import.updateMany({
+        where: { id: created.id, ...activeStoredCacheImport, status: ImportStatus.UPLOADED },
+        data: { updatedAt: new Date() }
+      });
+      if (!locked.count) throw new NotFoundException("Import reservation is no longer available");
       try {
-        await this.storage.deleteObject(objectKey);
-      } catch (cleanupError) {
-        console.error("Failed to clean up an unregistered import upload", cleanupError);
+        await this.storage.putObject(objectKey, file.buffer, file.mimetype || "application/octet-stream");
+      } catch {
+        // A failed PUT can have written a file. Keep charging the reserved
+        // bytes until scheduled cleanup confirms the object is gone.
+        await tx.import.update({ where: { id: created.id }, data: {
+          status: ImportStatus.FAILED,
+          objectCleanupAttemptedAt: new Date(),
+          errorMessage: "The file could not be stored. Upload it again to retry."
+        } });
+        return false;
       }
-      throw error;
-    }
+      await tx.import.update({ where: { id: created.id }, data: { status: ImportStatus.QUEUED } });
+      return true;
+    }, { timeout: 30_000 });
+    if (!uploaded) throw new ServiceUnavailableException("The file could not be stored. Upload it again to retry.");
 
     return { import: { id: created.id, status: await this.submit(created) } };
   }
 
   @Post(":id/retry")
   async retry(@CurrentUser() user: AuthUser, @Param("id") id: string) {
-    const row = await this.prisma.import.findFirst({ where: { id, userId: user.id, ...storedCacheImport } });
-    if (!row) throw new NotFoundException("Import not found");
-    const claimed = await this.prisma.import.updateMany({
-      where: { id, userId: user.id, status: ImportStatus.FAILED },
-      data: { status: ImportStatus.QUEUED, errorMessage: null, recoveryAttempts: 0 }
-    });
-    if (!claimed.count) throw new BadRequestException("Only failed imports can be retried");
+    const row = await this.prisma.$transaction((tx) => claimFailedImportRetry(tx, user.id, id));
     return { import: { id, status: await this.submit(row) } };
   }
 
@@ -141,11 +147,12 @@ export class ImportsController {
         select: { updatedAt: true }
       })
     ]);
+    const cutoff = failedImportRetryCutoff();
     return {
       lastCompletedAt: latestCompleted?.updatedAt ?? null,
-      imports: imports.map(({ leaseToken: _token, leaseExpiresAt: _expiry, objectKey, recoveryAttempts: _attempts, ...row }) => ({
+      imports: imports.map(({ leaseToken: _token, leaseExpiresAt: _expiry, objectKey, objectSizeBytes: _size, objectCleanupAttemptedAt, recoveryAttempts: _attempts, ...row }) => ({
         ...row,
-        retryable: row.status === ImportStatus.FAILED && Boolean(objectKey)
+        retryable: row.status === ImportStatus.FAILED && Boolean(objectKey) && !objectCleanupAttemptedAt && row.updatedAt > cutoff
           && storedCacheImport.fileType.in.some((type) => type === row.fileType)
           && storedCacheImport.source.in.some((source) => source === row.source)
       }))
@@ -161,7 +168,7 @@ export class ImportsController {
     if (!found) {
       throw new NotFoundException("Import not found");
     }
-    const { leaseToken: _token, leaseExpiresAt: _expiry, recoveryAttempts: _attempts, ...visible } = found;
+    const { leaseToken: _token, leaseExpiresAt: _expiry, objectSizeBytes: _size, objectCleanupAttemptedAt: _cleanup, recoveryAttempts: _attempts, ...visible } = found;
     return { import: visible };
   }
 

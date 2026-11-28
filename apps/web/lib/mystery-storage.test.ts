@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mysteryStorageKeys, safeRecipientMysteryImage } from "./mystery-storage.ts";
+import { createMysterySessionBoundary, mysteryStorageKeys, safeRecipientMysteryImage } from "./mystery-storage.ts";
 
 test("mystery storage is isolated by normalized API origin and exact user identity", () => {
   const first = mysteryStorageKeys("https://Example.com/api/", "user/a");
@@ -19,6 +19,24 @@ test("mystery storage is isolated by normalized API origin and exact user identi
 
 test("mystery storage refuses an empty identity", () => {
   assert.throws(() => mysteryStorageKeys("https://example.com", "  "), /user ID/);
+});
+
+test("changing and restoring an account invalidates prior Mystery requests", () => {
+  const boundary = createMysterySessionBoundary();
+  const origin = "https://geostats.example";
+  const alice = boundary.activate(origin, "alice");
+  assert.equal(boundary.activate(origin, "alice"), alice);
+  const bob = boundary.activate(origin, "bob");
+  assert.equal(alice.isCurrent(), false);
+  assert.equal(alice.signal.aborted, true);
+  assert.equal(bob.keys.userId, "bob");
+  boundary.clear();
+  const nextAlice = boundary.activate(origin, "alice");
+  assert.notEqual(nextAlice.generation, alice.generation);
+  assert.equal(nextAlice.keys.caches, alice.keys.caches);
+  assert.equal(alice.isCurrent(), false);
+  assert.equal(bob.isCurrent(), false);
+  assert.equal(nextAlice.isCurrent(), true);
 });
 
 test("recipient images allow embedded raster data but not network requests", () => {

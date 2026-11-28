@@ -3,7 +3,7 @@ import test from "node:test";
 import { runInNewContext } from "node:vm";
 import { MYSTERY_USERSCRIPT_VERSION, userscript } from "./mystery-userscript.ts";
 
-function runGeostatsScript(initialStorage: Record<string, string> = {}) {
+function runGeostatsScript(initialStorage: Record<string, string> = {}, acceptedReceiptToken?: string) {
   const attributes = new Map<string, string>();
   const storage = new Map(Object.entries(initialStorage));
   const listeners = new Map<string, () => void>();
@@ -16,13 +16,16 @@ function runGeostatsScript(initialStorage: Record<string, string> = {}) {
         getAttribute: (key: string) => attributes.get(key),
         setAttribute: (key: string, value: string) =>
           attributes.set(key, value),
+        removeAttribute: (key: string) => attributes.delete(key),
       },
       addEventListener: (name: string, callback: () => void) =>
         listeners.set(name, callback),
       dispatchEvent: (event: Event) => {
         events.push(event.type);
-        if (event.type === "geostats-sync-receipt")
+        if (event.type === "geostats-sync-receipt") {
           receipts.push(attributes.get("data-geostats-sync-receipt")!);
+          if (acceptedReceiptToken) attributes.set("data-geostats-sync-receipt-accepted", acceptedReceiptToken);
+        }
       },
     },
     window: { setInterval: () => 0 },
@@ -134,6 +137,17 @@ test("queued receipts are delivered and removed without deleting unrelated users
   assert.deepEqual([...script.storage], [["unrelated", "keep"]]);
 });
 
+test("a pending receipt stays queued until the initiating workspace acknowledges it", () => {
+  const receiptToken = "pending-receipt";
+  const key = "geostats-coordinate-sync-receipt:attempt-1";
+  const receipt = JSON.stringify({ receiptToken, syncedAt: new Date().toISOString() });
+  const otherTab = runGeostatsScript({ [key]: receipt });
+  const initiatingTab = runGeostatsScript(Object.fromEntries(otherTab.storage), receiptToken);
+  assert.equal(otherTab.storage.get(key), receipt);
+  assert.equal(initiatingTab.storage.has(key), false);
+  assert.deepEqual(initiatingTab.receipts, [receipt]);
+});
+
 const noteRequest = {
   cacheId: "cache-1",
   gcCode: "GC123",
@@ -181,7 +195,7 @@ function generatedFunction(name: string) {
 
 test("completing a note preserves the remaining queue and visits the next cache before closing", () => {
   for (const legacySingle of [false, true]) {
-    const next = { ...noteRequest, cacheId: "cache-2", gcCode: "GC456" };
+    const next = { ...noteRequest, cacheId: "cache-2", gcCode: "GC456", receiptToken: "private-proof" };
     const storage = new Map([["notes", JSON.stringify(legacySingle ? noteRequest : [noteRequest, next])]]);
     const destinations: string[] = [];
     let closed = false;
@@ -216,7 +230,9 @@ test("completing a note preserves the remaining queue and visits the next cache 
       assert.equal(destinations.length, 1);
       const target = new URL(destinations[0]);
       assert.equal(target.pathname, "/GC456");
-      assert.deepEqual(JSON.parse(new URLSearchParams(target.hash.slice(1)).get("geostats-note-sync")!), refreshed);
+      const { receiptToken, ...publicPayload } = refreshed;
+      assert.equal(receiptToken, "private-proof");
+      assert.deepEqual(JSON.parse(new URLSearchParams(target.hash.slice(1)).get("geostats-note-sync")!), publicPayload);
     }
   }
 });

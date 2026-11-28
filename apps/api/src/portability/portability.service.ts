@@ -20,6 +20,7 @@ import { readFile } from "node:fs/promises";
 import { PrismaService } from "../common/prisma.service";
 import { parseRules } from "../challenge-checkers/challenge-checkers.service";
 import { StorageService } from "../storage/storage.service";
+import { lockImportAccount } from "../imports/import-storage";
 import { MAX_ELEVATION_METERS, MAX_ELEVATION_TEXT_LENGTH, MIN_ELEVATION_METERS } from "../common/elevation";
 
 const FORMAT = "geostats-portable-data";
@@ -366,7 +367,7 @@ export class PortabilityService implements OnModuleInit, OnModuleDestroy {
         orderBy: { country: "asc" },
       }),
       this.prisma.statSnapshot.findMany({
-        where: { userId: user.id },
+        where: { userId: user.id, serverGenerated: true },
         orderBy: { generatedAt: "asc" },
       }),
       this.prisma.mysteryWorkspace.findMany({
@@ -511,8 +512,9 @@ export class PortabilityService implements OnModuleInit, OnModuleDestroy {
 
   async deleteAccount(user: AuthUser) {
     await this.prisma.$transaction(async (tx) => {
+      await lockImportAccount(tx, user.id);
       const imports = await tx.import.findMany({
-        where: { userId: user.id },
+        where: { userId: user.id, objectKey: { not: "" } },
         select: { objectKey: true },
       });
       await tx.pendingObjectDeletion.createMany({
@@ -872,21 +874,9 @@ export class PortabilityService implements OnModuleInit, OnModuleDestroy {
           for (const batch of batches(countryStats)) {
             await tx.ownerFinderCountryStat.createMany({ data: batch });
           }
+          // Archives can contain derived statistics for compatibility. Rebuild
+          // them from restored records instead of trusting the archived values.
           await tx.statSnapshot.deleteMany({ where: { userId: user.id } });
-          const snapshots = data.statSnapshots.map((row, index) => ({
-            userId: user.id,
-            statsJson: object(
-              row.statsJson,
-              `statSnapshots[${index}].statsJson`,
-            ) as Prisma.InputJsonValue,
-            generatedAt: date(
-              row.generatedAt,
-              `statSnapshots[${index}].generatedAt`,
-            ),
-          }));
-          for (const batch of batches(snapshots)) {
-            await tx.statSnapshot.createMany({ data: batch });
-          }
 
           const mysteryClientIds: string[] = [];
           for (const [index, row] of data.mysteryWorkspaces.entries()) {

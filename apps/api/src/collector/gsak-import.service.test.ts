@@ -162,7 +162,7 @@ test("admin GSAK cache batches create shared metadata without personal records",
     },
   };
   const prisma = {
-    trackableLog: { findMany: async () => [{ gcCode: "GC123" }] },
+    trackableLog: { findMany: async () => [{ gcCode: "GC123" }, { gcCode: "GCPRIV1" }, { gcCode: "GCUNKNOWN" }, { gcCode: "GCCORRECTED" }] },
     mysteryWorkspace: { findMany: async () => [] },
     challengeChecker: { findMany: async () => [] },
     cache: {
@@ -173,12 +173,15 @@ test("admin GSAK cache batches create shared metadata without personal records",
   const service = new GsakImportService(prisma as any, {} as any);
   const csv = [
     "gcCode,name,cacheType,difficulty,terrain,size,latitude,longitude,country,region,county,hiddenDate,ownerName,foundDate,isFtf,isOwner,favoritePoints,elevationMeters,status,isPremium,correctedLatitude,correctedLongitude,hasCorrected,userNote,attributes",
-    "GC123,Shared cache,Traditional Cache,2,2.5,Small,56.1,15.6,Sweden,Blekinge,Ronneby,2024-01-02,Owner,2024-01-03,1,1,7,42,Available,1,56.2,15.7,1,Private note,1:1",
+    "GC123,Shared cache,Traditional Cache,2,2.5,Small,56.1,15.6,Sweden,Blekinge,Ronneby,2024-01-02,Owner,2024-01-03,1,1,7,42,Available,0,,,0,Private note,1:1",
+    "GCPRIV1,Restricted cache,,,,,56.1,15.6,,,,,,,,,,Available,1,,,0",
+    "GCUNKNOWN,Unknown access cache,,,,,56.1,15.6,,,,,,,,,,Available,,,,0",
+    "GCCORRECTED,Corrected cache,,,,,56.1,15.6,,,,,,,,,,Available,0,,,1",
   ].join("\r\n");
 
   const result = await service.importAdminCacheBatch(csv);
 
-  assert.deepEqual(result, { caches: 1, ignored: 0, linkedTrackableLogs: 2 });
+  assert.deepEqual(result, { caches: 1, ignored: 3, linkedTrackableLogs: 2 });
   assert.deepEqual(
     actions.map(([name]) => name),
     ["cache", "trackableLog"],
@@ -186,6 +189,7 @@ test("admin GSAK cache batches create shared metadata without personal records",
   assert.equal(actions[0][1].create.gcCode, "GC123");
   assert.equal(actions[0][1].create.name, "Shared cache");
   assert.equal(actions[0][1].create.metadataTrusted, true);
+  assert.equal(actions[0][1].create.publicListingConfirmed, true);
   assert.equal(actions[0][1].update.name, "Shared cache");
   assert.equal(actions[0][1].update.metadataTrusted, true);
   assert.equal(actions[1][1].where.gcCode.mode, "insensitive");

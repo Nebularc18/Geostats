@@ -129,6 +129,24 @@ test("journey imports retain missing cache details on the private movement log",
   assert.equal(harness.createdLogs[0].data[0].cacheName, "Journey cache");
 });
 
+test("KML journey writes preserve coordinates, notes, and compact date provenance", async () => {
+  const harness = serviceHarness();
+  const content = Buffer.from(`<kml><Document><name>TB123 - A traveller</name><Placemark>
+    <name>Coastal route</name><description>Visited on holiday</description>
+    <LineString><coordinates>15.5,56.1,0 15.6,56.2,0</coordinates></LineString>
+  </Placemark></Document></kml>`);
+
+  const result = await harness.service.import("user-1", "route.kml", content);
+
+  assert.equal(result.importedLogs, 2);
+  assert.equal(result.estimatedLogs, 2);
+  assert.deepEqual(harness.createdLogs[0].data.map((row: any) => [row.latitude, row.longitude]), [[56.1, 15.5], [56.2, 15.6]]);
+  for (const row of harness.createdLogs[0].data) {
+    assert.equal(row.notes, "Visited on holiday");
+    assert.deepEqual(row.raw, { __geostatsKmlDateEstimated: true });
+  }
+});
+
 test("large journey logs are written in bounded batches", async () => {
   const harness = serviceHarness();
   const service = harness.service as any;

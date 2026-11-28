@@ -87,6 +87,15 @@ test("missingCaches merges unresolved references and excludes indexed caches", a
   });
 });
 
+test("adding shared cache metadata requires public listing confirmation", async () => {
+  await assert.rejects(() => serviceWith({}).addCache({
+    gcCode: "GCTEST1",
+    name: "Test cache",
+    latitude: 56.1,
+    longitude: 15.6
+  }), /Confirm that the listing and coordinates are publicly available/);
+});
+
 test("addCache validates metadata, creates the cache, and links orphaned trackable logs", async () => {
   let createInput: any;
   let updateInput: any;
@@ -130,11 +139,13 @@ test("addCache validates metadata, creates the cache, and links orphaned trackab
       size: "Regular",
       country: "Sweden",
       hiddenDate: "2026-08-01",
+      publicListingConfirmed: true,
     },
     { id: "admin-1" } as any,
   );
 
   assert.equal(createInput.gcCode, "GCNEW1");
+  assert.equal(createInput.publicListingConfirmed, true);
   assert.equal(createInput.latitude, 56.1612);
   assert.equal(
     createInput.hiddenDate.toISOString(),
@@ -283,25 +294,46 @@ test("activity returns newest admin actions with pagination", async () => {
   assert.equal(result.activities[0].admin.username, "admin");
 });
 
+function retryImportPrisma(updateMany: (input: any) => Promise<{ count: number }>) {
+  const failed = {
+    id: "import-1",
+    userId: "user-1",
+    objectKey: "imports/import-1.gpx",
+    source: "MY_FINDS_GPX",
+    status: "FAILED",
+    fileName: "export.gpx",
+    updatedAt: new Date(),
+    objectCleanupAttemptedAt: null,
+  };
+  const tx = {
+    $queryRaw: async () => [{ id: failed.userId }],
+    import: { findFirst: async () => failed, count: async () => 0, updateMany },
+  };
+  return {
+    import: { findUnique: async () => failed, updateMany },
+    $transaction: async (run: (transaction: typeof tx) => unknown) => run(tx),
+  };
+}
+
+function assertRetryClaim(input: any) {
+  assert.equal(input.where.id, "import-1");
+  assert.equal(input.where.userId, "user-1");
+  assert.equal(input.where.status, "FAILED");
+  assert.deepEqual(input.where.objectKey, { not: "" });
+  assert.equal(input.where.objectCleanupAttemptedAt, null);
+  assert.ok(input.where.updatedAt.gt instanceof Date);
+  assert.deepEqual(input.data, { status: "QUEUED", errorMessage: null, recoveryAttempts: 0 });
+}
+
 test("retryImport records the operator after requeueing a failed import", async () => {
   let enqueued: any;
   const updateManyInputs: any[] = [];
   let activityInput: any;
   const prisma = {
-    import: {
-      findUnique: async () => ({
-        id: "import-1",
-        userId: "user-1",
-        objectKey: "imports/import-1.gpx",
-        source: "GSAK",
-        status: "FAILED",
-        fileName: "export.gpx",
-      }),
-      updateMany: async (input: any) => {
-        updateManyInputs.push(input);
-        return { count: 1 };
-      },
-    },
+    ...retryImportPrisma(async (input) => {
+      updateManyInputs.push(input);
+      return { count: 1 };
+    }),
     adminActivityLog: {
       create: async (input: any) => {
         activityInput = input;
@@ -324,45 +356,29 @@ test("retryImport records the operator after requeueing a failed import", async 
 
   await service.retryImport("import-1", { id: "admin-1" } as any);
 
-  assert.deepEqual(updateManyInputs, [
-    {
-      where: { id: "import-1", status: "FAILED" },
-      data: { status: "QUEUED", errorMessage: null },
-    },
-  ]);
+  assert.equal(updateManyInputs.length, 1);
+  assertRetryClaim(updateManyInputs[0]);
   assert.deepEqual(enqueued, {
     importId: "import-1",
     userId: "user-1",
     objectKey: "imports/import-1.gpx",
-    source: "GSAK",
+    source: "MY_FINDS_GPX",
   });
   assert.deepEqual(activityInput.data, {
     adminId: "admin-1",
     action: "IMPORT_RETRIED",
     targetType: "import",
     targetId: "import-1",
-    details: { fileName: "export.gpx", source: "GSAK" },
+    details: { fileName: "export.gpx", source: "MY_FINDS_GPX" },
   });
 });
 
 test("retryImport keeps a claimed import queued when queueing fails", async () => {
   const updateManyInputs: any[] = [];
-  const prisma = {
-    import: {
-      findUnique: async () => ({
-        id: "import-1",
-        userId: "user-1",
-        objectKey: "imports/import-1.gpx",
-        source: "GSAK",
-        status: "FAILED",
-        fileName: "export.gpx",
-      }),
-      updateMany: async (input: any) => {
-        updateManyInputs.push(input);
-        return { count: 1 };
-      },
-    },
-  };
+  const prisma = retryImportPrisma(async (input) => {
+    updateManyInputs.push(input);
+    return { count: 1 };
+  });
   const queue = {
     enqueue: async () => {
       throw new Error("Redis offline");
@@ -377,32 +393,16 @@ test("retryImport keeps a claimed import queued when queueing fails", async () =
     {} as any,
   );
   await assert.rejects(() => service.retryImport("import-1"), /Redis offline/);
-  assert.deepEqual(updateManyInputs, [
-    {
-      where: { id: "import-1", status: "FAILED" },
-      data: { status: "QUEUED", errorMessage: null },
-    },
-  ]);
+  assert.equal(updateManyInputs.length, 1);
+  assertRetryClaim(updateManyInputs[0]);
 });
 
 test("retryImport returns an import to failed when Redis confirms no job was saved", async () => {
   const updateManyInputs: any[] = [];
-  const prisma = {
-    import: {
-      findUnique: async () => ({
-        id: "import-1",
-        userId: "user-1",
-        objectKey: "imports/import-1.gpx",
-        source: "GSAK",
-        status: "FAILED",
-        fileName: "export.gpx",
-      }),
-      updateMany: async (input: any) => {
-        updateManyInputs.push(input);
-        return { count: 1 };
-      },
-    },
-  };
+  const prisma = retryImportPrisma(async (input) => {
+    updateManyInputs.push(input);
+    return { count: 1 };
+  });
   const queue = {
     enqueue: async () => {
       throw new ImportQueueRejectedError(new Error("Redis offline"));
@@ -417,34 +417,18 @@ test("retryImport returns an import to failed when Redis confirms no job was sav
   );
 
   await assert.rejects(() => service.retryImport("import-1"), ImportQueueRejectedError);
-  assert.deepEqual(updateManyInputs, [
-    {
-      where: { id: "import-1", status: "FAILED" },
-      data: { status: "QUEUED", errorMessage: null },
-    },
-    {
-      where: { id: "import-1", status: "QUEUED" },
-      data: { status: "FAILED", errorMessage: "Redis rejected the import job" },
-    },
-  ]);
+  assert.equal(updateManyInputs.length, 2);
+  assertRetryClaim(updateManyInputs[0]);
+  assert.deepEqual(updateManyInputs[1], {
+    where: { id: "import-1", status: "QUEUED" },
+    data: { status: "FAILED", errorMessage: "Redis rejected the import job" },
+  });
 });
 
 test("retryImport lets only one concurrent request claim a failed import", async () => {
   let claimAttempts = 0;
   let enqueueCalls = 0;
-  const prisma = {
-    import: {
-      findUnique: async () => ({
-        id: "import-1",
-        userId: "user-1",
-        objectKey: "imports/import-1.gpx",
-        source: "GSAK",
-        status: "FAILED",
-        fileName: "export.gpx",
-      }),
-      updateMany: async () => ({ count: ++claimAttempts === 1 ? 1 : 0 }),
-    },
-  };
+  const prisma = retryImportPrisma(async () => ({ count: ++claimAttempts === 1 ? 1 : 0 }));
   const queue = {
     enqueue: async () => {
       enqueueCalls += 1;

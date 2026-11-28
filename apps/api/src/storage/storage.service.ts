@@ -2,6 +2,8 @@ import { Injectable } from "@nestjs/common";
 import { DeleteObjectCommand, HeadBucketCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { envOrDefault, requiredEnv } from "../common/env";
 
+const OBJECT_WRITE_TIMEOUT_MS = 20_000;
+
 @Injectable()
 export class StorageService {
   private readonly bucket = envOrDefault("S3_BUCKET", "geostats-imports");
@@ -22,7 +24,8 @@ export class StorageService {
         Key: key,
         Body: body,
         ContentType: contentType
-      })
+      }),
+      { abortSignal: AbortSignal.timeout(OBJECT_WRITE_TIMEOUT_MS) }
     );
   }
 
@@ -31,7 +34,8 @@ export class StorageService {
       new DeleteObjectCommand({
         Bucket: this.bucket,
         Key: key
-      })
+      }),
+      { abortSignal: AbortSignal.timeout(OBJECT_WRITE_TIMEOUT_MS) }
     );
   }
 

@@ -96,6 +96,10 @@ function flag(value: unknown): boolean {
   );
 }
 
+function explicitlyFalse(value?: string): boolean {
+  return /^(0|false|no|n)$/i.test(value?.trim() ?? "");
+}
+
 function number(
   value: unknown,
   label: string,
@@ -448,9 +452,14 @@ export class GsakImportService {
    * GSAK data (finds, hides, notes, and logs) is deliberately not written.
    */
   async importAdminCacheBatch(csv: unknown) {
-    const requestedRows = gsakCsvRecords(csv).map(cacheRow);
+    const requestedRows = gsakCsvRecords(csv);
     const missingCodes = new Set(await this.missingCacheCodeList());
-    const rows = requestedRows.filter((row) => missingCodes.has(row.gcCode));
+    const rows = requestedRows
+      // Require explicit access and coordinate provenance. Missing flags in an
+      // older export cannot establish that the fields are safe to share.
+      .filter((row) => explicitlyFalse(row.ispremium) && explicitlyFalse(row.hascorrected))
+      .map(cacheRow)
+      .filter((row) => missingCodes.has(row.gcCode));
     if (!rows.length) {
       return {
         caches: 0,
@@ -479,6 +488,7 @@ export class GsakImportService {
             hiddenDate: row.hiddenDate,
             ownerName: row.ownerName,
             metadataTrusted: true,
+            publicListingConfirmed: true,
           },
           update: {
             name: row.name,
@@ -494,6 +504,7 @@ export class GsakImportService {
             hiddenDate: row.hiddenDate,
             ownerName: row.ownerName,
             metadataTrusted: true,
+            publicListingConfirmed: true,
           },
         });
         const linked = await tx.trackableLog.updateMany({

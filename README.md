@@ -15,8 +15,8 @@ Pocket Query, and owner-log imports.
   Geocaching API JSON. Movement logs are deduplicated, missing cache records
   with coordinates are added to the cache database, and every journey can be
   viewed as a map with chronological route lines.
-- Compare summary stats, country coverage, and cache-type finds with friends who
-  also use Geostats.
+- Compare summary stats, country coverage, and cache-type finds with people who
+  enable sharing on the Friends page. Visit times stay private.
 - Build reusable challenge checkers and publish a result page for a cache.
 - Browse finds and hides on a map, or track country, region, and county coverage
   with the scratch map. Filter map points by cache metadata, ratings, location,
@@ -96,6 +96,8 @@ Use `.env.agent.example` only for local development. Its secrets are intentional
 
 Choose **My Finds**, **My Hides**, or **Cache list** when uploading. My Finds uses your configured Geocaching username or a personal found date recorded in the file. Cache list imports add waypoints for Travel. Import history shows the processed counts and warnings and lets you retry a failed upload.
 
+Each account can hold up to 10 pending imports and 50 source files totaling 256 MiB. Geostats removes completed source files after one day and failed source files after seven days. Import history and processed data remain available after the files expire. To retry an expired import, upload the file again.
+
 ## Authentication
 
 Geostats uses Clerk for hosted web and native sign-in. After Clerk verifies a
@@ -148,8 +150,13 @@ from its public `/auth/config` endpoint so a mobile client can use the Clerk
 application configured by the selected Geostats server.
 
 Password registration and sign-in remain available when `AUTH_MODE=password` is
-selected explicitly. They are useful during a staged migration, but Clerk is
-the default production mode.
+selected explicitly. Clerk is the default production mode. To migrate an existing
+password account, sign in with Clerk using the same verified primary email and
+enter the previous Geostats password when prompted. This keeps the account data
+and retires its password and collector tokens. Generate new collector tokens
+after linking. The security update also retires credentials on accounts linked
+by the earlier migration flow and requires existing sessions to sign in again.
+Sign-out revokes the current Geostats session when the API can be reached.
 
 ### Development authentication
 
@@ -167,7 +174,9 @@ With those values, opening a protected web page redirects through `/auth/dev`, c
 
 ### Admin console
 
-The web app includes a small admin console at `/admin`. It is protected by the API. Configure administrators with the comma-separated `ADMIN_USER_IDS` environment variable, using existing immutable database user IDs. `ADMIN_EMAILS` no longer grants privileges in any authentication mode, including when the deployment switches providers. Migrate existing administrators by looking up their trusted account IDs in the `users` database table and setting `ADMIN_USER_IDS`. In development mode, the configured `DEV_AUTH_EMAIL` is also allowed so the local account can inspect the console. Admins can review platform totals, service health, recent imports, user activity, retry failed imports, rebuild an individual user's stats snapshot, and review cache references that still need shared metadata. The missing-cache panel can download a separate admin-only GSAK connector; running it loads only those unresolved codes from Geocaching.com through GSAK and imports their shared cache metadata without importing personal finds or logs.
+The web app includes a small admin console at `/admin`. It is protected by the API. Configure administrators with the comma-separated `ADMIN_USER_IDS` environment variable, using existing immutable database user IDs. `ADMIN_EMAILS` no longer grants privileges in any authentication mode, including when the deployment switches providers. Migrate existing administrators by looking up their trusted account IDs in the `users` database table and setting `ADMIN_USER_IDS`. In development mode, the configured `DEV_AUTH_EMAIL` is also allowed so the local account can inspect the console. Admins can review platform totals, service health, recent imports, user activity, retry failed imports, rebuild an individual user's stats snapshot, and review cache references that still need shared metadata.
+
+The missing-cache panel provides an admin-only GSAK connector for unresolved caches. Shared enrichment requires a confirmed public listing and original listing coordinates. Premium listings and caches with corrected coordinates remain available through personal imports. The catalog migration removes previously shared details whose access restrictions were unknown. Cache codes and private imports are preserved, and administrators can enrich public listings again. Download the admin connector again after upgrading because the migration retires its previous credentials.
 
 ## AI mystery solver journal
 
@@ -197,7 +206,7 @@ Kinds are `approach`, `keyword`, and `coordinate`. States are `planned` (not tri
 
 Every signed-in user can download a server-independent JSON backup from **Settings → Profile → Back up or move account data** and import it into an account on another Geostats server.
 
-The version 2 `geostats-portable-data` format includes the geocaching profile, finds and log text, hides and received logs, trackable history, associated cache metadata, corrected coordinates, finder-country statistics, stat snapshots, owned mystery workspaces, saved account trips, and challenge checker definitions. Version 1 backups can still be restored. Restore updates matching records for the original categories. Matching trips and checkers on the destination account take precedence. Restored checkers start private and receive a new link when published.
+The version 2 `geostats-portable-data` format includes the geocaching profile, finds and log text, hides and received logs, trackable history, associated cache metadata, corrected coordinates, finder-country statistics, stat snapshots, owned mystery workspaces, saved account trips, and challenge checker definitions. Version 1 backups can still be restored. Restore updates matching records for the original categories. Geostats rebuilds statistics from the restored records when they are next requested. Matching trips and checkers on the destination account take precedence. Restored checkers start private and receive a new link when published.
 
 Use **Travel → Review browser trips** to move trips kept in the current browser into your account before backing up. On Android, opening Travel while connected caches the account trips for offline access. Keep original uploads and standalone cache lists separately.
 
@@ -472,7 +481,7 @@ The quickest way to add a mystery on your phone is **Geocaching → Share → Ge
 
 Geostats does not require or use Geocaching API partner access. For a new GC code, the phone app opens the cache in an on-device browser. Sign in on Geocaching there if needed. The listing imports automatically when its name, coordinates, and description are available, or you can tap **Import this page**. Puzzle text, hints as shown, and image links are included for AI sharing. Sign-in and membership restrictions remain in effect; the app never invents missing coordinates.
 
-The Geocaching session stays on the phone. The capture reads cache-page content, not cookies, passwords, tokens, or browser storage. Only the selected cache data is saved through your existing private mystery sync. On the web, enter a GC code to open its Geocaching page and use **Import to Geostats** from the browser helper. Existing mysteries open without replacing solutions or previous attempts.
+The Geocaching session stays on the phone. The capture reads cache-page content, not cookies, passwords, tokens, or browser storage. Only the selected cache data is saved through your existing private mystery sync. On the web, enter a GC code to open its Geocaching page and use **Import to Geostats** from the browser helper. Review and confirm the proposed listing changes in Geostats. Refreshing a listing preserves existing solutions, notes, clues, and attempts.
 
 For bulk imports, expand **Import a GPX file** and tap **Choose GPX file**. Use a downloaded Geocaching GPX or an extracted Pocket Query GPX. Mystery/Unknown caches, published coordinates, puzzle text, and hints are imported. Existing GC codes are skipped. Files must be under 10 MB; listings that exceed the account sync limit are skipped. Bulk import waits for account sync to load and uses only the remaining space within the 500 owned-mystery limit. Excess entries are reported and are not queued for endless sync retries.
 
@@ -489,7 +498,7 @@ Geostats will not have approved Geocaching API partner access. This permanent co
 
 `GET /mysteries/lookup/:gcCode` requires Geostats sign-in and reads trusted catalog metadata plus only the requesting user's imported data. It does not fetch restricted listings remotely. An unknown code returns `MYSTERY_BROWSER_IMPORT_REQUIRED`, which opens the on-device capture flow. A known code without puzzle text also opens browser capture on the phone. The server receives the captured cache through existing mystery sync.
 
-The native phone build includes `react-native-webview` for on-device capture. This needs a new native app build, rather than an OTA update to an older binary. The web browser helper is version 2.10.0 or later and now includes puzzle text and image links. Premium-only listings remain available only when the user's Geocaching session has access. If Geocaching blocks an embedded browser or requires an unsupported sign-in method, use a GPX or the browser helper.
+The native phone build includes `react-native-webview` for on-device capture. This needs a new native app build, rather than an OTA update to an older binary. The web browser helper includes puzzle text and image links. Coordinate and field-note sync require helper version 2.12.0 or later. Keep the initiating Mysteries tab open until sync finishes. Premium-only listings remain available only when the user's Geocaching session has access. If Geocaching blocks an embedded browser or requires an unsupported sign-in method, use a GPX or the browser helper.
 
 ### Android production builds
 

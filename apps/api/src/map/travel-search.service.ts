@@ -234,17 +234,6 @@ export class TravelSearchService {
     const url = new URL("https://photon.komoot.io/api");
     url.searchParams.set("q", query.trim());
     url.searchParams.set("limit", "6");
-    const profile = await this.prisma.geocachingProfile.findUnique({
-      where: { userId },
-      select: { homeLatitude: true, homeLongitude: true }
-    });
-    if (profile?.homeLatitude !== null && profile?.homeLatitude !== undefined
-      && profile.homeLongitude !== null && profile.homeLongitude !== undefined) {
-      url.searchParams.set("lat", String(Number(profile.homeLatitude)));
-      url.searchParams.set("lon", String(Number(profile.homeLongitude)));
-      url.searchParams.set("zoom", "5");
-      url.searchParams.set("location_bias_scale", "0.15");
-    }
 
     let response: Response;
     try {

@@ -144,3 +144,4 @@ export * from "./travel-plans";
 export * from "./mystery-toolkit";
 
 export * from "./mystery-coordinates";
+export { isSafeMysteryAttempt, isSafeMysterySnapshot } from "./mystery-snapshot";

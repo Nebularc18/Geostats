@@ -1,4 +1,4 @@
-const CACHE_NAME = "geostats-mysteries-v1";
+const CACHE_NAME = "geostats-mysteries-v2";
 const OFFLINE_FILES = ["/mysteries", "/geostats-icon.svg", "/manifest.webmanifest"];
 
 self.addEventListener("install", (event) => {

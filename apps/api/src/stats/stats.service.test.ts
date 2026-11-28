@@ -1,4 +1,4 @@
-import { BadRequestException, NotFoundException } from "@nestjs/common";
+import { NotFoundException } from "@nestjs/common";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { STATS_VERSION } from "@geostats/stats";
@@ -44,8 +44,8 @@ test("rejects ambiguous case-insensitive geocaching usernames", async () => {
       assert.equal(query.values.at(-1), "alice");
       assert.ok(query.values.some((value: unknown) => typeof value === "string" && value.includes("\u00a0")));
       return [
-        { userId: "user-1", gcUsername: " Alice " },
-        { userId: "user-2", gcUsername: "alice\u00a0" },
+        { userId: "user-1", gcUsername: " Alice ", friendStatsEnabled: true },
+        { userId: "user-2", gcUsername: "alice\u00a0", friendStatsEnabled: false },
       ];
     },
     import: {
@@ -58,57 +58,96 @@ test("rejects ambiguous case-insensitive geocaching usernames", async () => {
   const service = new StatsService(prisma as any);
 
   await assert.rejects(
-    () => (service as any).snapshotForUsername(" ALICE "),
-    (error: unknown) =>
-      error instanceof BadRequestException &&
-      error.message === "Geocaching username matches multiple profiles",
+    () => service.friendComparisonForUser("viewer", " ALICE "),
+    NotFoundException,
   );
   assert.equal(latestImportLookups, 0);
 });
 
-test("resolves a uniquely padded Geocaching username", async () => {
-  let usernameQuery: any;
-  const prisma = {
+test("requires the target to opt in for comparisons and new bookmarks", async () => {
+  const service = new StatsService({
     $queryRaw: async (query: any) => {
-      usernameQuery = query;
-      return [{ userId: "user-1", gcUsername: " Alice " }];
+      assert.match(query.sql, /friend_stats_enabled/);
+      assert.equal(query.values.at(-1), "alice");
+      return [{ userId: "user-1", gcUsername: " Alice ", friendStatsEnabled: false }];
     },
-    geocachingProfile: {
-      findUnique: async () => ({ userId: "user-1", gcUsername: " Alice ", homeLatitude: null, homeLongitude: null })
-    },
-    statSnapshot: {
-      findFirst: async () => ({ statsJson: { statsVersion: STATS_VERSION } })
-    },
-    import: {
-      findFirst: async () => null
-    }
-  };
-  const service = new StatsService(prisma as any);
-
-  const snapshot = await (service as any).snapshotForUsername(" ALICE ");
-
-  assert.equal(snapshot.profile.userId, "user-1");
-  assert.equal(snapshot.profile.gcUsername, " Alice ");
-  assert.doesNotMatch(usernameQuery.sql, /public_stats_enabled/);
+    savedFriend: { upsert: async () => assert.fail("A private target cannot be bookmarked") }
+  } as never);
+  await assert.rejects(() => service.friendComparisonForUser("viewer", " ALICE "), NotFoundException);
+  await assert.rejects(() => service.saveFriendForUser("viewer", " ALICE "), NotFoundException);
 });
 
-test("public snapshots only resolve profiles with explicit publication consent", async () => {
-  let usernameQuery: any;
-  const prisma = {
-    $queryRaw: async (query: any) => {
-      usernameQuery = query;
-      return [];
-    },
-    import: {
-      findFirst: async () => {
-        throw new Error("private profiles must be rejected before loading imports");
+test("an opted-in comparison includes overlap without the target's activity times", async () => {
+  const date = new Date("2026-01-01T10:00:00Z");
+  const service = new StatsService({
+    $queryRaw: async () => [{ userId: "friend", gcUsername: "Alice", friendStatsEnabled: true }],
+    geocachingProfile: { findUnique: async () => ({ gcUsername: "Viewer" }) },
+    import: { findFirst: async ({ where }: any) => {
+      assert.equal(where.userId, "viewer");
+      return { createdAt: date };
+    } },
+    find: { findMany: async ({ where, select }: any) => {
+      if (where.userId === "viewer") {
+        return [{ cacheId: "cache-id", foundAt: date, cache: { gcCode: "GC123", name: "Cache", difficulty: null, terrain: null } }];
       }
-    }
-  };
-  const service = new StatsService(prisma as any);
+      assert.deepEqual(where.user.profile, { is: { friendStatsEnabled: true } });
+      assert.deepEqual(select, { cacheId: true });
+      return [{ cacheId: "cache-id" }];
+    } }
+  } as never);
+  service.snapshotForUser = async () => ({});
 
-  await assert.rejects(() => service.publicSnapshotForUsername("Alice"), NotFoundException);
-  assert.match(usernameQuery.sql, /public_stats_enabled/);
+  const result = await service.friendComparisonForUser("viewer", " Alice ");
+  assert.equal(result.friend.username, "Alice");
+  assert.equal(result.friend.latestImportAt, null);
+  assert.equal(result.sharedFindsCount, 1);
+  assert.equal(result.recentSharedFinds[0]?.yourFoundAt, date.toISOString());
+  assert.equal("friendFoundAt" in result.recentSharedFinds[0]!, false);
+});
+
+test("the saved leaderboard loads only opted-in profiles", async () => {
+  const service = new StatsService({
+    geocachingProfile: { findUnique: async () => ({ gcUsername: "Viewer", friendStatsEnabled: false }) },
+    savedFriend: { findMany: async ({ where }: any) => {
+      assert.deepEqual(where, { userId: "viewer", friendUser: { profile: { is: { friendStatsEnabled: true } } } });
+      return [];
+    } }
+  } as never);
+  service.snapshotForUser = async (userId) => {
+    assert.equal(userId, "viewer");
+    return {};
+  };
+  const result = await service.savedFriendsForUser("viewer");
+  assert.deepEqual(result.friends, []);
+  assert.equal(result.friendStatsEnabled, false);
+});
+
+test("public snapshots check consent and look up only stable IDs or pinned legacy aliases", async () => {
+  const selectors: unknown[] = [];
+  const service = new StatsService({
+    geocachingProfile: { findUnique: async ({ where }: any) => {
+      selectors.push(where);
+      if (where.id === "published-profile") {
+        return { id: "published-profile", userId: "user-1", gcUsername: "Renamed" };
+      }
+      return null;
+    } },
+    import: { findFirst: async () => null }
+  } as never);
+  service.snapshotForUser = async (userId) => {
+    assert.equal(userId, "user-1");
+    return {};
+  };
+  Object.assign(service, { extremeCachesForUser: async () => ({ extremes: {} }) });
+
+  assert.equal((await service.publicSnapshotForLink(undefined, "published-profile")).profile.gcUsername, "Renamed");
+  await assert.rejects(() => service.publicSnapshotForLink(" Alice "), NotFoundException);
+  await assert.rejects(() => service.publicSnapshotForLink(undefined, "unpublished-profile"), NotFoundException);
+  assert.deepEqual(selectors, [
+    { id: "published-profile", publicStatsEnabled: true },
+    { legacyPublicStatsUsername: "alice", publicStatsEnabled: true },
+    { id: "unpublished-profile", publicStatsEnabled: true }
+  ]);
 });
 
 
@@ -160,7 +199,12 @@ test("stats rebuild older snapshots and refresh maintenance after a UTC day", as
   let recalculations = 0;
   const service = new StatsService({
     geocachingProfile: { findUnique: async () => null },
-    statSnapshot: { findFirst: async () => latest }
+    statSnapshot: {
+      findFirst: async ({ where }: { where: { userId: string; serverGenerated: boolean } }) => {
+        assert.deepEqual(where, { userId: "owner", serverGenerated: true });
+        return latest;
+      }
+    }
   } as never);
   Object.assign(service, { recalculateSnapshotForUser: async () => { recalculations += 1; } });
 
@@ -184,7 +228,6 @@ test("cache detail uses the newest correct workspace coordinates and leaves miss
   const service = new StatsService({
     cache: { findUnique: async () => null },
     mysteryWorkspace: { findFirst: async () => workspace },
-    savedFriend: { findMany: async () => [] },
     trackableLog: { findMany: async () => [] }
   } as never);
 
@@ -194,7 +237,7 @@ test("cache detail uses the newest correct workspace coordinates and leaves miss
 
 test("cache detail normalizes nested Groundspeak hide logs", async () => {
   const cache = {
-    gcCode: "GCHIDE", name: "Hide", latitude: 56, longitude: 15, finds: [], corrections: [],
+    id: "cache", gcCode: "GCHIDE", name: "Hide", latitude: 56, longitude: 15, finds: [], corrections: [],
     hides: [{ id: "hide", receivedLogCount: 1, receivedLogsRaw: {
       "groundspeak:cache": { "groundspeak:logs": { "groundspeak:log": {
         "groundspeak:type": "Found it",
@@ -206,11 +249,18 @@ test("cache detail normalizes nested Groundspeak hide logs", async () => {
   const service = new StatsService({
     cache: { findUnique: async () => cache },
     mysteryWorkspace: { findFirst: async () => null },
-    savedFriend: { findMany: async () => [] },
+    find: { findMany: async ({ where, select }: any) => {
+      assert.deepEqual(where, {
+        cacheId: "cache", user: { savedByFriends: { some: { userId: "owner" } }, profile: { is: { friendStatsEnabled: true } } }
+      });
+      assert.equal(select.foundAt, undefined);
+      return [{ user: { profile: { gcUsername: "Alice" } } }];
+    } },
     trackableLog: { findMany: async () => [] }
   } as never);
 
   const result = await service.cacheDetailForUser("owner", "GCHIDE");
+  assert.deepEqual(result.friendsWhoFound, [{ username: "Alice" }]);
   assert.deepEqual(result.hide?.receivedLogs.map(({ date, finder, type }) => ({ date, finder, type })), [
     { date: "2026-02-13", finder: "Alice", type: "Found it" }
   ]);
