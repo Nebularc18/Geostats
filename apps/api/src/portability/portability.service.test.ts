@@ -217,6 +217,27 @@ function importTransaction(
   };
 }
 
+test("restoring a supported archive invalidates cached statistics without storing its snapshot", async () => {
+  const transaction = importTransaction([]);
+  let invalidations = 0;
+  transaction.statSnapshot.deleteMany = async (input?: unknown) => {
+    assert.deepEqual(input, { where: { userId: user.id } });
+    invalidations += 1;
+    return undefined;
+  };
+  transaction.statSnapshot.createMany = async () => assert.fail("Archive snapshots must be rebuilt from source records");
+  const service = new PortabilityService({
+    $transaction: async (callback: (tx: typeof transaction) => unknown) => callback(transaction),
+  } as any, {} as any);
+  const input = JSON.parse(archive().toString("utf8"));
+  input.data.statSnapshots = [{ statsJson: { totalFinds: 12 }, generatedAt: "2026-08-12T00:00:00.000Z" }];
+
+  assert.equal((await service.importData(user, JSON.stringify(input))).imported.finds, 0);
+  const newerArchive = { ...input, version: 2, data: { ...input.data, travelPlans: [], challengeCheckers: [] } };
+  assert.equal((await service.importData(user, JSON.stringify(newerArchive))).imported.finds, 0);
+  assert.equal(invalidations, 2);
+});
+
 test("import creates global cache metadata and keeps raw data inside the authenticated user's scope", async () => {
   const cacheWrites: any[] = [];
   const userCacheWrites: any[] = [];
@@ -622,14 +643,10 @@ test("export includes every portable user data category and excludes server secr
       ],
     },
     statSnapshot: {
-      findMany: async () => [
-        {
-          id: "snapshot-1",
-          userId: user.id,
-          statsJson: { finds: 42 },
-          generatedAt,
-        },
-      ],
+      findMany: async ({ where }: any) => {
+        assert.deepEqual(where, { userId: user.id, serverGenerated: true });
+        return [{ id: "snapshot-1", userId: user.id, statsJson: { finds: 42 }, generatedAt }];
+      },
     },
     mysteryWorkspace: {
       findMany: async () => [
@@ -769,7 +786,11 @@ test("account deletion commits a durable object-cleanup outbox before touching s
     { objectKey: "user-1/second.zip", createdAt: new Date() },
   ];
   const tx = {
-    import: { findMany: async () => pending },
+    $queryRaw: async () => [{ id: user.id }],
+    import: { findMany: async ({ where }: any) => {
+      assert.deepEqual(where, { userId: user.id, objectKey: { not: "" } });
+      return pending;
+    } },
     pendingObjectDeletion: {
       createMany: async (input: any) =>
         operations.push({ operation: "outbox", input }),
@@ -821,6 +842,7 @@ test("account deletion commits a durable object-cleanup outbox before touching s
 test("a failed account transaction never deletes import objects", async () => {
   const deletedObjects: string[] = [];
   const tx = {
+    $queryRaw: async () => [{ id: user.id }],
     import: {
       findMany: async () => [{ objectKey: "user-1/upload.gpx" }],
     },
@@ -846,6 +868,7 @@ test("failed object cleanup remains queued for a later retry after account delet
   const updates: any[] = [];
   const pending = [{ objectKey: "user-1/upload.gpx", createdAt: new Date() }];
   const tx = {
+    $queryRaw: async () => [{ id: user.id }],
     import: { findMany: async () => pending },
     pendingObjectDeletion: { createMany: async () => undefined },
     user: { delete: async () => undefined },

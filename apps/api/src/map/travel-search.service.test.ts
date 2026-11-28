@@ -2,6 +2,22 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { sampleRouteCoordinates, TravelSearchService, travelSearchBounds } from "./travel-search.service";
 
+test("place autocomplete sends the query without loading or sending home coordinates", async (t) => {
+  const fetchMock = t.mock.method(globalThis, "fetch", async (input: Parameters<typeof fetch>[0]) => {
+    const url = new URL(String(input));
+    assert.equal(url.origin, "https://photon.komoot.io");
+    assert.deepEqual([...url.searchParams], [["q", "Karlskrona"], ["limit", "6"]]);
+    return new Response(JSON.stringify({ features: [] }));
+  });
+  const service = new TravelSearchService({
+    geocachingProfile: { findUnique: async () => assert.fail("Autocomplete must not read home coordinates") }
+  } as never, {} as never);
+
+  assert.deepEqual(await service.suggestPlaces("privacy-test-user", "  Karlskrona  "), { suggestions: [] });
+  assert.deepEqual(await service.suggestPlaces("privacy-test-user", "Karlskrona"), { suggestions: [] });
+  assert.equal(fetchMock.mock.callCount(), 1);
+});
+
 test("travel pool summary includes every imported cache type and found state", async () => {
   const prisma = {
     userCacheData: {

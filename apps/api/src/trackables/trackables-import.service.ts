@@ -1,11 +1,10 @@
 import { Injectable } from "@nestjs/common";
 import { Prisma, personalCacheMetadata } from "@geostats/db";
-import { parseTrackableImportFile, type ParsedTrackable, type ParsedTrackableImport, type ParsedTrackableLog, type ParsedTrackableLogType } from "@geostats/gpx-parser";
+import { MAX_TRACKABLE_MOVEMENT_LOGS, parseTrackableImportFile, type ParsedTrackable, type ParsedTrackableImport, type ParsedTrackableLog, type ParsedTrackableLogType } from "@geostats/gpx-parser";
 import { createHash, randomUUID } from "node:crypto";
 import { PrismaService } from "../common/prisma.service";
 
 const TRACKABLE_IMPORT_MAX_BYTES = 25 * 1024 * 1024;
-const TRACKABLE_IMPORT_MAX_LOGS = 100_000;
 const TRACKABLE_IMPORT_MAX_TRACKABLES = 10_000;
 const TRACKABLE_IMPORT_QUERY_BATCH_SIZE = 5_000;
 const TRACKABLE_IMPORT_WRITE_BATCH_SIZE = 500;
@@ -123,8 +122,8 @@ export class TrackablesImportService {
       throw new Error(`Trackable import exceeds ${TRACKABLE_IMPORT_MAX_BYTES} bytes`);
     }
     const parsed = await parseTrackableImportFile(fileName, content, suppliedTrackingCode);
-    if (parsed.logs.length > TRACKABLE_IMPORT_MAX_LOGS) {
-      throw new Error(`Trackable import contains more than ${TRACKABLE_IMPORT_MAX_LOGS} movement logs`);
+    if (parsed.logs.length > MAX_TRACKABLE_MOVEMENT_LOGS) {
+      throw new Error(`Trackable import contains more than ${MAX_TRACKABLE_MOVEMENT_LOGS} movement logs`);
     }
     return parsed;
   }

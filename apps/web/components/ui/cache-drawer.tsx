@@ -31,7 +31,7 @@ export type UnifiedCacheDetail = {
   find: { id: string; foundAt: string; foundDate: string; isFtf: boolean; logText: string | null } | null;
   hide: { id: string; placedAt: string | null; receivedLogCount: number; receivedLogs: Array<{ date?: string; finder?: string; type?: string; text?: string }> } | null;
   mystery: { clientId: string; status: string; notes: string; fieldNotes: string; clues: string[]; attemptsCount: number; updatedAt: string } | null;
-  friendsWhoFound: Array<{ username: string; foundAt: string }>;
+  friendsWhoFound: Array<{ username: string }>;
   trackables: Array<{ id: string; trackingCode: string; name: string; state: string; logType: string; loggedAt: string }>;
 };
 
@@ -140,7 +140,7 @@ function CacheDrawerContent({ gcCode, onClose }: { gcCode: string; onClose: () =
                 <div className="cache-detail-pills">
                   {detail.friendsWhoFound.map((friend) => (
                     <span key={friend.username} className="cache-detail-pill">
-                      {friend.username} ({friend.foundAt.slice(0, 10)})
+                      {friend.username}
                     </span>
                   ))}
                 </div>

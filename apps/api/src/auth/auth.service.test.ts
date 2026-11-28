@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { generateKeyPairSync, sign } from "node:crypto";
 import { UnauthorizedException } from "@nestjs/common";
-import { Prisma } from "@geostats/db";
 import bcrypt from "bcryptjs";
 import { AuthService } from "./auth.service";
 
@@ -47,7 +46,13 @@ function authServiceWithUsers() {
     providerAccountId: string;
     providerUsername: string | null;
   }> = [];
+  const collectorTokenOwners = new Set<string>();
+  const migrationBudget = { reservations: 0, available: true };
   const prisma = {
+    $executeRaw: async () => {
+      migrationBudget.reservations += 1;
+      return migrationBudget.available ? 1 : 0;
+    },
     user: {
       findFirst: async ({ where }: any) =>
         users.find((user) =>
@@ -69,6 +74,11 @@ function authServiceWithUsers() {
           .sort((left, right) => left.username.localeCompare(right.username))
           .slice(0, take)
           .map(({ id, username }) => ({ id, username })),
+      updateMany: async ({ where, data }: any) => {
+        const user = users.find((candidate) => candidate.id === where.id && candidate.passwordHash === where.passwordHash);
+        if (user) user.passwordHash = data.passwordHash;
+        return { count: user ? 1 : 0 };
+      },
       create: async ({ data }: any) => {
         const user = {
           id: `user-${users.length + 1}`,
@@ -120,9 +130,14 @@ function authServiceWithUsers() {
         }
         return account;
       }
-    }
+    },
+    collectorToken: {
+      deleteMany: async ({ where }: any) => { collectorTokenOwners.delete(where.userId); }
+    },
+    authSession: { deleteMany: async () => ({ count: 0 }) },
+    $transaction: async (run: (tx: any) => Promise<unknown>) => run(prisma)
   };
-  return { service: new AuthService(prisma as any, {} as any), users, oauthAccounts };
+  return { service: new AuthService(prisma as any, {} as any), users, oauthAccounts, collectorTokenOwners, migrationBudget };
 }
 
 test("password auth is the default mode", () => {
@@ -373,25 +388,58 @@ test("Clerk token exchange refuses to link an unverified primary email", async (
   });
 });
 
-test("Clerk token exchange links a verified primary email to a migrated password account", async () => {
+for (const password of ["", "legacy", "legacy-passphrase-".repeat(8)]) {
+  test(`Clerk migration verifies a ${password.length}-character legacy password and retires credentials`, async () => {
+    await withEnv({ AUTH_MODE: "clerk", CLERK_SECRET_KEY: "sk_test_secret" }, async () => {
+      const { service, users, oauthAccounts, collectorTokenOwners } = authServiceWithUsers();
+      const hash = await bcrypt.hash(password, 4);
+      users.push({ id: "user-1", email: "user@example.com", username: "user", passwordHash: hash });
+      collectorTokenOwners.add("user-1");
+      collectorTokenOwners.add("unrelated");
+      (service as any).verifyClerkSessionToken = async () => ({ sub: "clerk-user-1" });
+      (service as any).getClerkUser = async () => ({
+        id: "clerk-user-1",
+        username: "clerk-user",
+        firstName: null,
+        primaryEmailAddress: { emailAddress: "User@Example.com", verification: { status: "verified" } }
+      });
+
+      await assert.rejects(() => service.loginWithClerkToken("clerk-session"), { status: 409 });
+      await assert.rejects(() => service.loginWithClerkToken("clerk-session", "web", "wrong-test-password"), { status: 401 });
+      assert.equal(oauthAccounts.length, 0);
+      assert.equal(users[0]?.passwordHash, hash);
+      assert.deepEqual(await service.loginWithClerkToken("clerk-session", "web", password), {
+        id: "user-1",
+        email: "user@example.com",
+        username: "user"
+      });
+      assert.equal(oauthAccounts[0]?.userId, "user-1");
+      assert.equal(oauthAccounts[0]?.providerAccountId, "clerk-user-1");
+      assert.equal(users[0]?.passwordHash, null);
+      assert.deepEqual([...collectorTokenOwners], ["unrelated"]);
+      assert.equal((await service.loginWithClerkToken("clerk-session")).id, "user-1");
+    });
+  });
+}
+
+test("Clerk migration checks the shared account budget before verifying a password", async () => {
   await withEnv({ AUTH_MODE: "clerk", CLERK_SECRET_KEY: "sk_test_secret" }, async () => {
-    const { service, users, oauthAccounts } = authServiceWithUsers();
-    users.push({ id: "user-1", email: "user@example.com", username: "user", passwordHash: "legacy-password-hash" });
+    const { service, users, migrationBudget } = authServiceWithUsers();
+    users.push({ id: "user-1", email: "user@example.com", username: "user", passwordHash: "stored-hash" });
     (service as any).verifyClerkSessionToken = async () => ({ sub: "clerk-user-1" });
     (service as any).getClerkUser = async () => ({
       id: "clerk-user-1",
-      username: "clerk-user",
-      firstName: null,
-      primaryEmailAddress: { emailAddress: "User@Example.com", verification: { status: "verified" } }
+      primaryEmailAddress: { emailAddress: "user@example.com", verification: { status: "verified" } }
     });
+    (service as any).verifyPassword = async () => { assert.fail("A locked account must not verify a password"); };
+    migrationBudget.available = false;
 
-    assert.deepEqual(await service.loginWithClerkToken("clerk-session"), {
-      id: "user-1",
-      email: "user@example.com",
-      username: "user"
-    });
-    assert.equal(oauthAccounts[0]?.userId, "user-1");
-    assert.equal(oauthAccounts[0]?.providerAccountId, "clerk-user-1");
+    await assert.rejects(() => service.loginWithClerkToken("clerk-session"), { status: 409 });
+    assert.equal(migrationBudget.reservations, 0);
+    for (const source of ["web", "native"] as const) {
+      await assert.rejects(() => service.loginWithClerkToken("clerk-session", source, "fixture-password"), { status: 429 });
+    }
+    assert.equal(migrationBudget.reservations, 2);
   });
 });
 
@@ -416,13 +464,9 @@ test("Clerk token exchange preserves an existing provider-id link without a veri
   });
 });
 
-test("upsertOAuthUser recovers when concurrent account linking wins the race", async () => {
+test("upsertOAuthUser preserves a provider link created during a concurrent request", async () => {
   const user = { id: "user-1", email: "user@example.com", username: "user", passwordHash: null };
   let accountLookupCount = 0;
-  const uniqueConstraintError = new Prisma.PrismaClientKnownRequestError("Unique constraint failed", {
-    code: "P2002",
-    clientVersion: "test"
-  });
   const prisma = {
     user: {
       findUnique: async ({ where }: any) => (where.email === user.email ? user : null)
@@ -431,9 +475,6 @@ test("upsertOAuthUser recovers when concurrent account linking wins the race", a
       findUnique: async () => {
         accountLookupCount += 1;
         return accountLookupCount === 1 ? null : { id: "oauth-1", user };
-      },
-      create: async () => {
-        throw uniqueConstraintError;
       }
     }
   };
@@ -496,24 +537,48 @@ test("password mode does not inherit the development administrator email", () =>
 });
 
 
-test("password JWTs cannot gain email-admin access after switching to Clerk", async () => {
+test("older and password-mode JWTs are rejected after switching to Clerk", async () => {
   await withEnv({ AUTH_MODE: "password", NODE_ENV: "production", ADMIN_EMAILS: "owner@example.com", ADMIN_USER_IDS: undefined }, async () => {
     const user = { id: "attacker", email: "owner@example.com", username: "attacker" };
     let payload: any;
-    const service = new AuthService({ user: { findUnique: async () => user } } as any, {
+    const service = new AuthService({ authSession: {
+      deleteMany: async () => ({ count: 0 }),
+      create: async () => undefined,
+      findFirst: async () => ({ user })
+    } } as any, {
       sign: (value: unknown) => { payload = value; return "signed"; },
       verifyAsync: async () => payload,
     } as any);
-    service.sign(user);
+    await service.sign(user);
+    assert.deepEqual(await service.verify("signed"), user);
     process.env.AUTH_MODE = "clerk";
-    assert.equal(service.isAdmin(await service.verify("signed")), false);
-    process.env.ADMIN_USER_IDS = user.id;
-    assert.equal(service.isAdmin(await service.verify("signed")), true);
-    user.email = "new@example.com";
-    delete process.env.ADMIN_USER_IDS;
-    process.env.ADMIN_EMAILS = user.email;
-    assert.equal(service.isAdmin(await service.verify("signed")), false);
+    await assert.rejects(() => service.verify("signed"), UnauthorizedException);
+    delete payload.authMode;
+    await assert.rejects(() => service.verify("signed"), UnauthorizedException);
+    await service.sign(user);
+    assert.deepEqual(await service.verify("signed"), user);
   });
+});
+
+test("revoking a session leaves the account's other session active", async () => {
+  const user = { id: "user-1", username: "example", email: "example@example.test" };
+  const sessions = new Map<string, Date>();
+  const claims = new Map<string, { jti: string; sub: string; authMode: string }>();
+  const service = new AuthService({ authSession: {
+    create: async ({ data }: any) => { sessions.set(data.id, data.expiresAt); },
+    deleteMany: async ({ where }: any) => { if (where.id) sessions.delete(where.id); },
+    findFirst: async ({ where }: any) => where.userId === user.id && sessions.has(where.id) ? { user } : null
+  } } as any, {
+    sign: (value: { jti: string; sub: string; authMode: string }) => { claims.set(value.jti, value); return value.jti; },
+    verifyAsync: async (key: string) => claims.get(key)
+  } as any);
+  const first = await service.sign(user);
+  const second = await service.sign(user);
+  assert.deepEqual(await service.verify(first), user);
+  await service.revoke(first);
+  await service.revoke(first);
+  await assert.rejects(() => service.verify(first), UnauthorizedException);
+  assert.deepEqual(await service.verify(second), user);
 });
 
 
@@ -556,4 +621,18 @@ test("mobile Clerk exchange still rejects expired and incorrectly signed tokens"
   await assert.rejects(() => verifyTestClerkToken(signedClerkToken({ exp: Math.floor(Date.now() / 1000) - 120 }), "native"), UnauthorizedException);
   const otherKey = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey;
   await assert.rejects(() => verifyTestClerkToken(signedClerkToken({}, otherKey), "native"), UnauthorizedException);
+});
+
+test("scheduled session cleanup covers expired sessions across all accounts", async () => {
+  const queries: Array<{ where: { expiresAt: { lte: Date } } }> = [];
+  const service = new AuthService({ authSession: {
+    deleteMany: async (query: typeof queries[number]) => { queries.push(query); }
+  } } as any, {} as any);
+  try {
+    service.onModuleInit();
+    assert.deepEqual(queries, [{ where: { expiresAt: { lte: queries[0]?.where.expiresAt.lte } } }]);
+    assert.ok(queries[0].where.expiresAt.lte instanceof Date);
+  } finally {
+    service.onModuleDestroy();
+  }
 });

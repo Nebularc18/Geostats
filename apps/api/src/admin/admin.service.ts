@@ -8,6 +8,7 @@ import { AuthUser, ImportSource, ImportStatus, canonicalCacheTypeName } from "@g
 import { Prisma } from "@geostats/db";
 import { AuthService } from "../auth/auth.service";
 import { PrismaService } from "../common/prisma.service";
+import { claimFailedImportRetry } from "../imports/import-storage";
 import {
   ImportQueueRejectedError,
   ImportQueueService,
@@ -433,6 +434,9 @@ export class AdminService {
 
   async addCache(input: unknown, admin?: AuthUser) {
     const body = record(input);
+    if (body.publicListingConfirmed !== true) {
+      throw new BadRequestException("Confirm that the listing and coordinates are publicly available before publishing");
+    }
     const gcCode = requiredText(body.gcCode, "gcCode", 40).toUpperCase();
     if (!/^GC[A-Z0-9]+$/.test(gcCode)) {
       throw new BadRequestException("gcCode must be a valid GC code");
@@ -463,7 +467,7 @@ export class AdminService {
 
     try {
       const result = await this.prisma.$transaction(async (tx) => {
-        const trustedData = { ...data, metadataTrusted: true };
+        const trustedData = { ...data, metadataTrusted: true, publicListingConfirmed: true };
         const cache = await tx.cache.upsert({
           where: { gcCode },
           create: trustedData,
@@ -736,32 +740,23 @@ export class AdminService {
     if (![ImportStatus.FAILED, ImportStatus.QUEUED].includes(importRecord.status as ImportStatus)) {
       throw new BadRequestException("Only failed imports can be retried");
     }
-
-    let queuedImport = importRecord;
-    if (importRecord.status === ImportStatus.FAILED) {
-      const claim = await this.prisma.import.updateMany({
-        where: { id, status: ImportStatus.FAILED },
-        data: { status: ImportStatus.QUEUED, errorMessage: null },
-      });
-      if (claim.count !== 1) {
-        throw new BadRequestException("Only failed imports can be retried");
-      }
-      queuedImport = {
-        ...importRecord,
-        status: ImportStatus.QUEUED,
-        errorMessage: null,
-      };
+    if (!importRecord.objectKey || importRecord.objectCleanupAttemptedAt) {
+      throw new NotFoundException("Import source file is no longer available");
     }
+
+    const claimedImport = importRecord.status === ImportStatus.FAILED
+      ? await this.prisma.$transaction((tx) => claimFailedImportRetry(tx, importRecord.userId, id))
+      : importRecord;
 
     // Keep QUEUED if Redis gives an ambiguous response. A persisted job can
     // still be claimed by the worker, and retrying this endpoint is safe
     // because enqueue uses the import-derived job id.
     try {
       await this.queue.enqueue({
-        importId: importRecord.id,
-        userId: importRecord.userId,
-        objectKey: importRecord.objectKey,
-        source: importRecord.source as ImportSource,
+        importId: claimedImport.id,
+        userId: claimedImport.userId,
+        objectKey: claimedImport.objectKey,
+        source: claimedImport.source as ImportSource,
       });
     } catch (error) {
       if (error instanceof ImportQueueRejectedError) {
@@ -780,12 +775,13 @@ export class AdminService {
       throw error;
     }
 
-    await this.recordActivity(admin, "IMPORT_RETRIED", "import", queuedImport.id, {
-      fileName: importRecord.fileName,
-      source: importRecord.source,
+    await this.recordActivity(admin, "IMPORT_RETRIED", "import", claimedImport.id, {
+      fileName: claimedImport.fileName,
+      source: claimedImport.source,
     });
 
-    return { import: queuedImport };
+    const { objectSizeBytes: _size, objectCleanupAttemptedAt: _cleanup, ...visible } = claimedImport;
+    return { import: { ...visible, status: ImportStatus.QUEUED, errorMessage: null } };
   }
 
   async recalculateUser(userId: string, admin?: AuthUser) {

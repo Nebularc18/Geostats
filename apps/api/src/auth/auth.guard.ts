@@ -10,16 +10,20 @@ export interface AuthenticatedRequest extends Request {
   };
 }
 
+export function geostatsSessionToken(request: Request): string | undefined {
+  const bearer = request.headers.authorization?.startsWith("Bearer ")
+    ? request.headers.authorization.slice("Bearer ".length)
+    : undefined;
+  return request.cookies?.geostats_session ?? bearer;
+}
+
 @Injectable()
 export class AuthGuard implements CanActivate {
   constructor(private readonly auth: AuthService) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<AuthenticatedRequest>();
-    const bearer = request.headers.authorization?.startsWith("Bearer ")
-      ? request.headers.authorization.slice("Bearer ".length)
-      : null;
-    const token = request.cookies?.geostats_session ?? bearer;
+    const token = geostatsSessionToken(request);
     if (!token) {
       if (this.auth.authMode() === "dev") {
         request.user = await this.auth.devUser();

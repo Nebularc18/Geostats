@@ -427,8 +427,9 @@ MsgOk Msg="GSAK data was sent to Geostats successfully."
 export function gsakMissingCacheMacro(serverUrl: string, token: string) {
   const server = gsakString(serverUrl);
   const credential = gsakString(token);
+  const stagingDatabase = gsakString(`Geostats-Shared-${randomBytes(8).toString("hex")}`);
   return `# MacDescription = Import missing cache metadata from GSAK to Geostats
-# MacVersion = 1.8
+# MacVersion = 1.9
 # NoVersionCheck
 
 $server = ${server}
@@ -453,7 +454,7 @@ chkLarge.Checked=True
 chkMicro.Checked=True
 chkNotChosen.Checked=True
 chkOther.Checked=True
-chkPremium.Checked=True
+chkPremium.Checked=False
 chkRegular.Checked=True
 chkSmall.Checked=True
 chkVirtual.Checked=True
@@ -500,6 +501,20 @@ edtCodes.Text=
 <enddata>
 MacroSet Dialog=GcGeocaches VarName=$geostatsCodeSettings Name=<macro>
 
+# Load into a new database so an old local row cannot stand in for a cache
+# Geocaching did not return. Never open or overwrite an existing staging name.
+$previousDatabase = $_CurrentDatabase
+$stagingDatabase = ${stagingDatabase}
+If DatabaseExists($stagingDatabase)
+  Pause Msg="This staging database already exists. Download the Geostats admin connector again for a fresh staging database."
+  Cancel
+EndIf
+Database Name=$stagingDatabase Action=create StopStartupMacro=Y
+If $_CurrentDatabase <> $stagingDatabase
+  Pause Msg="Could not create a fresh database for public cache metadata."
+  Cancel
+EndIf
+
 # Ask Geostats for the current unresolved codes. The endpoint is scoped to the
 # admin token and returns only codes referenced by mysteries, checkers, or
 # unlinked trackable journey logs.
@@ -510,6 +525,8 @@ While $missingSkip < $missingTotal
   $post = "'token'," + SqlQuote($token) + ",'kind','admin-missing-codes','skip'," + NumToStr($missingSkip) + ",'take'," + NumToStr($missingTake)
   $result = PostUrl($endpoint,$post,"Finding missing cache records",120)
   If Left($result,7) = "*Error*"
+    Database Name=$previousDatabase StopStartupMacro=Y
+    Database Name=$stagingDatabase Action=delete
     Pause Msg=$result
     Cancel
   EndIf
@@ -519,42 +536,57 @@ While $missingSkip < $missingTotal
     $missingValues = "('" + Replace($missingCodes,",","'),('") + "')"
     $result = Sqlite("sql","insert or ignore into GeostatsMissingCodes values " + $missingValues)
     GcGetCaches Settings=<macro> GcCodes=$missingCodes Load=Y ShowSummary=No
+    If $_CurrentDatabase <> $stagingDatabase
+      Database Name=$previousDatabase StopStartupMacro=Y
+      Database Name=$stagingDatabase Action=delete
+      Pause Msg="GSAK changed the destination database. No cache metadata was shared."
+      Cancel
+    EndIf
   EndIf
   $missingSkip = $missingSkip + $missingTake
 EndWhile
 
 If $missingTotal = 0
+  Database Name=$previousDatabase StopStartupMacro=Y
+  Database Name=$stagingDatabase Action=delete
   ShowStatus msg=""
   MsgOk Msg="No missing cache records need importing."
   Cancel
 EndIf
 
-# Export only the codes Geostats requested. This connector never sends finds,
-# hides, notes, or logs; the admin endpoint stores shared cache metadata only.
+# Export only requested, non-Premium caches with uncorrected coordinates.
 ShowStatus msg="Sending missing cache metadata to Geostats..."
-$cacheFilter = "Code in (select GeocacheCode from GeostatsMissingCodes)"
+$cacheFilter = "Code in (select GeocacheCode from GeostatsMissingCodes) and lower(trim(cast(IsPremium as text))) in ('0','false','no','n') and lower(trim(cast(HasCorrected as text))) in ('0','false','no','n')"
 $total = Val(Sqlite("sql","select count(*) from Caches where " + $cacheFilter))
 If $total = 0
-  Pause Msg="GSAK could not load any of the missing cache codes. Check the active Geocaching.com connection and run the connector again."
+  Database Name=$previousDatabase StopStartupMacro=Y
+  Database Name=$stagingDatabase Action=delete
+  Pause Msg="GSAK found no eligible public cache metadata to share."
   Cancel
 EndIf
 $offset = 0
 While $offset < $total
-  $sql = "select Code as gcCode, Name as name, g_CacheType(CacheType) as cacheType, Difficulty as difficulty, Terrain as terrain, Container as size, case when HasCorrected = 1 and LatOriginal not in ('','0.0') then LatOriginal else Latitude end as latitude, case when HasCorrected = 1 and LonOriginal not in ('','0.0') then LonOriginal else Longitude end as longitude, Country as country, State as region, County as county, PlacedDate as hiddenDate, OwnerName as ownerName, FoundByMeDate as foundDate, FTF as isFtf, IsOwner as isOwner, FavPoints as favoritePoints, Elevation as elevationMeters, Status as status, IsPremium as isPremium, Latitude as correctedLatitude, Longitude as correctedLongitude, HasCorrected as hasCorrected, ifnull((select UserNote from CacheMemo where CacheMemo.Code = Caches.Code),'') as userNote, ifnull((select group_concat(aId || ':' || aInc,'|') from Attributes where Attributes.aCode = Caches.Code),'') as attributes from Caches where " + $cacheFilter + " order by Code limit " + NumToStr($cacheBatchSize) + " offset " + NumToStr($offset)
+  $sql = "select Code as gcCode, Name as name, g_CacheType(CacheType) as cacheType, Difficulty as difficulty, Terrain as terrain, Container as size, Latitude as latitude, Longitude as longitude, Country as country, State as region, County as county, PlacedDate as hiddenDate, OwnerName as ownerName, IsPremium as isPremium, HasCorrected as hasCorrected from Caches where " + $cacheFilter + " order by Code limit " + NumToStr($cacheBatchSize) + " offset " + NumToStr($offset)
   $csv = Sqlite("sql",$sql,"Delim=*csv* Headings=Yes")
   $post = "'token'," + SqlQuote($token) + ",'kind','admin-caches','csv'," + SqlQuote($csv)
   $result = PostUrl($endpoint,$post,"Sending missing cache data",120)
   If Left($result,7) = "*Error*"
+    Database Name=$previousDatabase StopStartupMacro=Y
+    Database Name=$stagingDatabase Action=delete
     Pause Msg=$result
     Cancel
   EndIf
   If not(At($_Quote + "caches" + $_Quote + ":",$result) > 0)
+    Database Name=$previousDatabase StopStartupMacro=Y
+    Database Name=$stagingDatabase Action=delete
     Pause Msg="Geostats rejected the missing cache batch:" + $_NewLine + $result
     Cancel
   EndIf
   $offset = $offset + $cacheBatchSize
 EndWhile
 
+Database Name=$previousDatabase StopStartupMacro=Y
+Database Name=$stagingDatabase Action=delete
 ShowStatus msg=""
 MsgOk Msg="Missing cache data was imported from GSAK. Refresh the Geostats admin page to see what remains."
 `;

@@ -1,8 +1,12 @@
 import {
   BadRequestException,
   ConflictException,
+  HttpException,
+  HttpStatus,
   Injectable,
   Logger,
+  OnModuleDestroy,
+  OnModuleInit,
   ServiceUnavailableException,
   UnauthorizedException
 } from "@nestjs/common";
@@ -13,13 +17,13 @@ import bcrypt from "bcryptjs";
 import { PrismaService } from "../common/prisma.service";
 import { AuthUser } from "@geostats/shared";
 import { envOrDefault } from "../common/env";
-import { randomBytes, scrypt, timingSafeEqual } from "node:crypto";
+import { randomBytes, randomUUID, scrypt, timingSafeEqual } from "node:crypto";
 import { promisify } from "node:util";
 
 export interface AuthTokenPayload {
   sub: string;
-  email: string;
-  username: string;
+  jti: string;
+  authMode: AuthMode;
 }
 
 export type AuthMode = "dev" | "clerk" | "password";
@@ -34,15 +38,38 @@ const PASSWORD_HASH_PREFIX = "scrypt";
 const PASSWORD_HASH_KEYLEN = 64;
 const PASSWORD_HASH_OPTIONS = { N: 16_384, r: 8, p: 1, maxmem: 32 * 1024 * 1024 };
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const CLERK_MIGRATION_REQUIRED = "CLERK_MIGRATION_REQUIRED";
+const CLERK_MIGRATION_ATTEMPT_LIMIT = 10;
+export const AUTH_SESSION_SECONDS = 30 * 24 * 60 * 60;
+const SESSION_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
 
 @Injectable()
-export class AuthService {
+export class AuthService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(AuthService.name);
+  private cleanupTimer?: NodeJS.Timeout;
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwt: JwtService
   ) {}
+
+  onModuleInit() {
+    void this.removeExpiredSessions();
+    this.cleanupTimer = setInterval(() => void this.removeExpiredSessions(), SESSION_CLEANUP_INTERVAL_MS);
+    this.cleanupTimer.unref();
+  }
+
+  onModuleDestroy() {
+    clearInterval(this.cleanupTimer);
+  }
+
+  private async removeExpiredSessions(now = new Date()) {
+    try {
+      await this.prisma.authSession.deleteMany({ where: { expiresAt: { lte: now } } });
+    } catch (error) {
+      this.logger.warn(error instanceof Error ? error.message : "Could not remove expired sessions");
+    }
+  }
 
   authMode(): AuthMode {
     if (process.env.NODE_ENV === "production") {
@@ -119,7 +146,7 @@ export class AuthService {
     });
   }
 
-  async loginWithClerkToken(token: string, source: "web" | "native" = "web"): Promise<AuthUser> {
+  async loginWithClerkToken(token: string, source: "web" | "native" = "web", migrationPassword?: unknown): Promise<AuthUser> {
     if (this.authMode() !== "clerk") {
       throw new ServiceUnavailableException("Clerk auth is disabled");
     }
@@ -151,7 +178,8 @@ export class AuthService {
       providerUsername: clerkUser.username ?? clerkUser.firstName ?? null,
       email,
       emailVerified: primaryEmail?.verification?.status === "verified",
-      username: clerkUser.username || clerkUser.firstName || email?.split("@")[0] || `clerk-${clerkUser.id}`
+      username: clerkUser.username || clerkUser.firstName || email?.split("@")[0] || `clerk-${clerkUser.id}`,
+      migrationPassword
     });
     return this.toAuthUser(user);
   }
@@ -174,21 +202,36 @@ export class AuthService {
     return this.toAuthUser(user);
   }
 
-  sign(user: AuthUser): string {
-    return this.jwt.sign({
-      sub: user.id,
-      email: user.email,
-      username: user.username
-    } satisfies AuthTokenPayload);
+  async sign(user: AuthUser): Promise<string> {
+    const now = new Date();
+    const jti = randomUUID();
+    const token = this.jwt.sign({ sub: user.id, jti, authMode: this.authMode() } satisfies AuthTokenPayload);
+    await this.prisma.authSession.create({
+      data: { id: jti, userId: user.id, expiresAt: new Date(now.getTime() + AUTH_SESSION_SECONDS * 1000) }
+    });
+    return token;
   }
 
   async verify(token: string): Promise<AuthUser> {
     const payload = await this.jwt.verifyAsync<AuthTokenPayload>(token);
-    const user = await this.prisma.user.findUnique({ where: { id: payload.sub } });
-    if (!user) {
-      throw new UnauthorizedException("User no longer exists");
+    if (!payload.jti || payload.authMode !== this.authMode()) {
+      throw new UnauthorizedException("Sign in again with the current authentication method");
     }
-    return this.toAuthUser(user);
+    const session = await this.prisma.authSession.findFirst({
+      where: { id: payload.jti, userId: payload.sub, expiresAt: { gt: new Date() } },
+      select: { user: { select: { id: true, email: true, username: true } } }
+    });
+    if (!session) {
+      throw new UnauthorizedException("Session is no longer active");
+    }
+    return this.toAuthUser(session.user);
+  }
+
+  async revoke(token: string): Promise<void> {
+    const payload = await this.jwt.verifyAsync<AuthTokenPayload>(token).catch(() => null);
+    if (payload?.jti && payload.sub) {
+      await this.prisma.authSession.deleteMany({ where: { id: payload.jti, userId: payload.sub } });
+    }
   }
 
   private toAuthUser(user: { id: string; email: string; username: string }): AuthUser {
@@ -257,6 +300,7 @@ export class AuthService {
     email: string | null;
     emailVerified?: boolean;
     username: string;
+    migrationPassword?: unknown;
   }) {
     const existingAccount = await this.findOAuthAccount(input.provider, input.providerAccountId);
     if (existingAccount) {
@@ -278,15 +322,67 @@ export class AuthService {
 
     const existingUser = await this.prisma.user.findUnique({ where: { email: input.email } });
     if (existingUser) {
+      const accountData = {
+        userId: existingUser.id,
+        provider: input.provider,
+        providerAccountId: input.providerAccountId,
+        providerUsername: input.providerUsername
+      };
+      if (input.provider === "clerk") {
+        const priorHash = existingUser.passwordHash;
+        if (!priorHash) {
+          const linkedAccount = await this.findOAuthAccount(input.provider, input.providerAccountId);
+          if (linkedAccount) return linkedAccount.user;
+          throw new ConflictException("This email belongs to a different Geostats account");
+        }
+        if (input.migrationPassword === undefined) {
+          throw new ConflictException({
+            code: CLERK_MIGRATION_REQUIRED,
+            message: "Enter your previous Geostats password to link this account to Clerk"
+          });
+        }
+        if (typeof input.migrationPassword !== "string") {
+          throw new UnauthorizedException({
+            code: CLERK_MIGRATION_REQUIRED,
+            message: "The previous Geostats password is incorrect"
+          });
+        }
+        if (!(await this.reserveClerkMigrationAttempt(existingUser.id, priorHash))) {
+          const linkedAccount = await this.findOAuthAccount(input.provider, input.providerAccountId);
+          if (linkedAccount) return linkedAccount.user;
+          throw new HttpException({
+            code: CLERK_MIGRATION_REQUIRED,
+            message: "Too many account-linking attempts. Wait up to 15 minutes and try again."
+          }, HttpStatus.TOO_MANY_REQUESTS);
+        }
+        if (!(await this.verifyPassword(input.migrationPassword, priorHash))) {
+          throw new UnauthorizedException({
+            code: CLERK_MIGRATION_REQUIRED,
+            message: "The previous Geostats password is incorrect"
+          });
+        }
+        try {
+          const linked = await this.prisma.$transaction(async (tx) => {
+            const claimed = await tx.user.updateMany({
+              where: { id: existingUser.id, passwordHash: priorHash },
+              data: { passwordHash: null, clerkMigrationAttempts: 0, clerkMigrationWindowEndsAt: null }
+            });
+            if (!claimed.count) return false;
+            await tx.authSession.deleteMany({ where: { userId: existingUser.id } });
+            await tx.collectorToken.deleteMany({ where: { userId: existingUser.id } });
+            await tx.oAuthAccount.create({ data: accountData });
+            return true;
+          });
+          if (linked) return existingUser;
+        } catch (error) {
+          if (!this.isUniqueConstraintError(error)) throw error;
+        }
+        const linkedAccount = await this.findOAuthAccount(input.provider, input.providerAccountId);
+        if (linkedAccount) return linkedAccount.user;
+        throw new ConflictException("This Geostats account is already linked to a different sign-in");
+      }
       try {
-        await this.prisma.oAuthAccount.create({
-          data: {
-            userId: existingUser.id,
-            provider: input.provider,
-            providerAccountId: input.providerAccountId,
-            providerUsername: input.providerUsername
-          }
-        });
+        await this.prisma.oAuthAccount.create({ data: accountData });
       } catch (error) {
         if (this.isUniqueConstraintError(error)) {
           const linkedAccount = await this.findOAuthAccount(input.provider, input.providerAccountId);
@@ -324,6 +420,26 @@ export class AuthService {
       }
       throw error;
     }
+  }
+
+  private async reserveClerkMigrationAttempt(userId: string, passwordHash: string): Promise<boolean> {
+    // Reserve before verifying so simultaneous requests share the same budget.
+    const count = await this.prisma.$executeRaw`
+      UPDATE "users"
+      SET "clerk_migration_attempts" = CASE
+            WHEN "clerk_migration_window_ends_at" > CURRENT_TIMESTAMP THEN "clerk_migration_attempts" + 1
+            ELSE 1
+          END,
+          "clerk_migration_window_ends_at" = CASE
+            WHEN "clerk_migration_window_ends_at" > CURRENT_TIMESTAMP THEN "clerk_migration_window_ends_at"
+            ELSE CURRENT_TIMESTAMP + INTERVAL '15 minutes'
+          END
+      WHERE "id" = ${userId} AND "password_hash" = ${passwordHash}
+        AND ("clerk_migration_window_ends_at" IS NULL
+          OR "clerk_migration_window_ends_at" <= CURRENT_TIMESTAMP
+          OR "clerk_migration_attempts" < ${CLERK_MIGRATION_ATTEMPT_LIMIT})
+    `;
+    return count === 1;
   }
 
   private async findOAuthAccount(provider: string, providerAccountId: string) {

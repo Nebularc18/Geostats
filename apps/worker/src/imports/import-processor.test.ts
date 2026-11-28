@@ -242,7 +242,10 @@ test("stats recalculation holds a database user lock before loading inputs", asy
     find: { findMany: async () => [] },
     statSnapshot: {
       deleteMany: async () => events.push("delete"),
-      create: async () => events.push("create")
+      create: async ({ data }: { data: Prisma.StatSnapshotUncheckedCreateInput }) => {
+        assert.equal(data.serverGenerated, true);
+        return events.push("create");
+      }
     }
   };
   const prisma = {

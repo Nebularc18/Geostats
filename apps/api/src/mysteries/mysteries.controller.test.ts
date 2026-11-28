@@ -2,10 +2,26 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { BadRequestException } from "@nestjs/common";
 import { MysteriesController } from "./mysteries.controller";
+import { MysteryAccountGuard } from "./mystery-account.guard";
 
 const owner = { id: "owner-1", email: "owner@example.com", username: "owner" };
 const recipient = { id: "recipient-1", username: "recipient" };
 const mystery = { id: "local-1", gcCode: "GC12345", name: "A mystery", sharedWith: [], attempts: [] };
+
+test("Mystery cookie requests require the workspace account, while bearer requests carry their own account", () => {
+  const guard = new MysteryAccountGuard();
+  const request = (expectedAccount?: string, cookie?: string) => ({
+    switchToHttp: () => ({ getRequest: () => ({
+      user: owner,
+      cookies: { geostats_session: cookie },
+      headers: { "x-geostats-account-id": expectedAccount }
+    }) })
+  }) as any;
+  assert.equal(guard.canActivate(request(owner.id, "browser-session")), true);
+  assert.throws(() => guard.canActivate(request(recipient.id, "browser-session")), /workspace account changed/);
+  assert.throws(() => guard.canActivate(request(undefined, "browser-session")), /workspace account changed/);
+  assert.equal(guard.canActivate(request()), true);
+});
 
 test("share persists both the owner snapshot and recipient grant", async () => {
   const calls: Array<{ operation: string; input: unknown }> = [];
@@ -153,6 +169,23 @@ test("shared preserves bounded embedded raster images for recipients", async () 
   const result = await new MysteriesController(prisma as any).shared({ ...recipient, email: "recipient@example.com" });
 
   assert.equal((result.mysteries[0]?.mystery as any).image, embeddedMystery.image);
+});
+
+test("shared skips an invalid stored grant and keeps other workspaces available", async () => {
+  const createGrant = (id: string, data: unknown) => ({
+    mystery: { id, data, owner, shares: [{ recipient }], sharingExclusions: [] }
+  });
+  const controller = new MysteriesController({
+    mysteryShare: { findMany: async () => [
+      createGrant("broken-workspace", { ...mystery, attempts: [{ id: "attempt", note: { text: "Invalid note shape" } }] }),
+      createGrant("valid-workspace", { ...mystery, attempts: undefined, notes: "A saved note" })
+    ] },
+    mysterySharingPreference: { findMany: async () => [] }
+  } as any);
+
+  const result = await controller.shared({ ...recipient, email: "recipient@example.com" });
+  assert.deepEqual(result.mysteries.map(({ workspaceId }) => workspaceId), ["valid-workspace"]);
+  assert.deepEqual(result.mysteries[0]?.mystery, { ...mystery, notes: "A saved note" });
 });
 
 test("ownedShares returns the server-authoritative recipient list", async () => {
@@ -378,6 +411,16 @@ test("share rejects runaway mystery names before touching the database", async (
     }),
     /cannot exceed 300 characters/
   );
+});
+
+test("mystery writes reject invalid attempts before touching the database", async () => {
+  const controller = new MysteriesController({} as any);
+  const body = { mystery: { ...mystery, attempts: [null] }, revision: 1 };
+  await assert.rejects(
+    controller.share(owner, mystery.id, { recipientId: recipient.id, ...body }),
+    /invalid fields or attempts/
+  );
+  await assert.rejects(controller.update(owner, mystery.id, body), /invalid fields or attempts/);
 });
 
 test("share rejects a duplicate GC code with a different client id", async () => {

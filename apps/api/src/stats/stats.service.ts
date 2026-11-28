@@ -180,7 +180,7 @@ export class StatsService {
       where: { userId }
     });
     const latest = await this.prisma.statSnapshot.findFirst({
-      where: { userId },
+      where: { userId, serverGenerated: true },
       orderBy: { generatedAt: "desc" }
     });
     if (latest) {
@@ -213,69 +213,69 @@ export class StatsService {
     };
   }
 
-  private async snapshotForUsername(username: string, publicOnly = false) {
+  private async friendProfileForUsername(username: string) {
     const normalizedUsername = normalizedGcUsername(username);
     if (!normalizedUsername) {
-      throw new NotFoundException("Profile not found");
+      throw new NotFoundException("No matching profile has enabled friend sharing");
     }
 
-    const visibilityFilter = publicOnly ? Prisma.sql`AND "public_stats_enabled" = TRUE` : Prisma.empty;
-    const profiles = await this.prisma.$queryRaw<Array<{ userId: string; gcUsername: string }>>(Prisma.sql`
-      SELECT "user_id" AS "userId", "gc_username" AS "gcUsername"
+    const profiles = await this.prisma.$queryRaw<Array<{ userId: string; gcUsername: string; friendStatsEnabled: boolean }>>(Prisma.sql`
+      SELECT "user_id" AS "userId", "gc_username" AS "gcUsername", "friend_stats_enabled" AS "friendStatsEnabled"
       FROM "geocaching_profiles"
       WHERE LOWER(REGEXP_REPLACE("gc_username", ${USERNAME_TRIM_PATTERN}, '', 'g')) = ${normalizedUsername}
-      ${visibilityFilter}
-      ORDER BY "updated_at" DESC
       LIMIT 2
     `);
 
-    if (!profiles.length) {
-      throw new NotFoundException("Profile not found");
+    if (profiles.length !== 1 || !profiles[0]?.friendStatsEnabled) {
+      throw new NotFoundException("No matching profile has enabled friend sharing");
     }
-    if (profiles.length > 1) {
-      throw new BadRequestException("Geocaching username matches multiple profiles");
-    }
+    return profiles[0];
+  }
 
-    const profile = profiles[0]!;
-    const latestImport = await this.prisma.import.findFirst({
-      where: { userId: profile.userId, status: "COMPLETED" },
-      orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
-      select: {
-        createdAt: true,
-        updatedAt: true
-      }
+  async publicSnapshotForLink(username?: string, profileId?: string) {
+    const legacyAlias = normalizedGcUsername(username);
+    const identity = profileId ? { id: profileId } : legacyAlias ? { legacyPublicStatsUsername: legacyAlias } : null;
+    if (!identity) throw new NotFoundException("Profile not found");
+    const profile = await this.prisma.geocachingProfile.findUnique({
+      where: {
+        ...identity,
+        publicStatsEnabled: true
+      },
+      select: { id: true, userId: true, gcUsername: true }
     });
-    const stats = await this.snapshotForUser(profile.userId);
+    if (!profile) throw new NotFoundException("Profile not found");
+    const [stats, latestImport, extremeCaches] = await Promise.all([
+      this.snapshotForUser(profile.userId),
+      this.prisma.import.findFirst({
+        where: { userId: profile.userId, status: "COMPLETED" },
+        orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
+        select: { createdAt: true, updatedAt: true }
+      }),
+      this.extremeCachesForUser(profile.userId, null)
+    ]);
 
     return {
       profile,
       stats: {
         ...stats,
-        latestImportAt: latestImport?.updatedAt?.toISOString() ?? latestImport?.createdAt?.toISOString() ?? null
-      }
-    };
-  }
-
-  async publicSnapshotForUsername(username: string) {
-    const snapshot = await this.snapshotForUsername(username, true);
-    const extremeCaches = await this.extremeCachesForUser(snapshot.profile.userId, null);
-    return {
-      ...snapshot,
-      stats: {
-        ...snapshot.stats,
+        latestImportAt: latestImport?.updatedAt?.toISOString() ?? latestImport?.createdAt?.toISOString() ?? null,
         extremeCaches: extremeCaches.extremes
       }
     };
   }
 
   async friendComparisonForUser(userId: string, username: string) {
-    const [ownProfile, ownStats, friendSnapshot, ownLatestImport] = await Promise.all([
+    const friendProfile = await this.friendProfileForUsername(username);
+    if (friendProfile.userId === userId) {
+      throw new BadRequestException("Enter another geocaching username");
+    }
+    const [ownProfile, ownStats, friendStats, ownLatestImport] = await Promise.all([
       this.prisma.geocachingProfile.findUnique({
         where: { userId },
         select: { gcUsername: true }
       }),
       this.snapshotForUser(userId),
-      this.snapshotForUsername(username),
+      this.snapshotForUser(friendProfile.userId),
       this.prisma.import.findFirst({
         where: { userId, status: "COMPLETED" },
         orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
@@ -286,10 +286,6 @@ export class StatsService {
     if (!ownProfile) {
       throw new NotFoundException("Profile not found");
     }
-    if (friendSnapshot.profile.userId === userId) {
-      throw new BadRequestException("Enter another geocaching username");
-    }
-
     const [ownFindIds, friendFindIds] = await Promise.all([
       this.prisma.find.findMany({
         where: { userId },
@@ -310,14 +306,15 @@ export class StatsService {
         orderBy: { foundAt: "desc" }
       }),
       this.prisma.find.findMany({
-        where: { userId: friendSnapshot.profile.userId },
-        select: { cacheId: true, foundAt: true }
+        where: { userId: friendProfile.userId, user: { profile: { is: { friendStatsEnabled: true } } } },
+        distinct: ["cacheId"],
+        select: { cacheId: true }
       })
     ]);
 
-    const friendFindByCacheId = new Map(friendFindIds.map((item) => [item.cacheId, item.foundAt]));
+    const friendCacheIds = new Set(friendFindIds.map((item) => item.cacheId));
     const sharedFinds = ownFindIds
-      .filter((item) => friendFindByCacheId.has(item.cacheId))
+      .filter((item) => friendCacheIds.has(item.cacheId))
       .map((item) => ({
         gcCode: item.cache.gcCode,
         name: item.cache.name,
@@ -325,8 +322,7 @@ export class StatsService {
         difficulty: item.cache.difficulty === null ? null : Number(item.cache.difficulty),
         terrain: item.cache.terrain === null ? null : Number(item.cache.terrain),
         country: item.cache.country,
-        yourFoundAt: item.foundAt.toISOString(),
-        friendFoundAt: friendFindByCacheId.get(item.cacheId)!.toISOString()
+        yourFoundAt: item.foundAt.toISOString()
       }));
 
     const dtKeys = (stats: any) =>
@@ -347,11 +343,11 @@ export class StatsService {
       );
 
     const ownDt = dtKeys(ownStats);
-    const friendDt = dtKeys(friendSnapshot.stats);
+    const friendDt = dtKeys(friendStats);
     const dtBoth = [...ownDt].filter((key) => friendDt.has(key)).length;
 
     const ownJasmer = jasmerKeys(ownStats);
-    const friendJasmer = jasmerKeys(friendSnapshot.stats);
+    const friendJasmer = jasmerKeys(friendStats);
     const jasmerBoth = [...ownJasmer].filter((key) => friendJasmer.has(key)).length;
 
     return {
@@ -361,9 +357,9 @@ export class StatsService {
         stats: friendComparisonStats(ownStats)
       },
       friend: {
-        username: friendSnapshot.profile.gcUsername,
-        latestImportAt: friendSnapshot.stats.latestImportAt,
-        stats: friendComparisonStats(friendSnapshot.stats)
+        username: friendProfile.gcUsername,
+        latestImportAt: null,
+        stats: friendComparisonStats(friendStats)
       },
       sharedFindsCount: sharedFinds.length,
       recentSharedFinds: sharedFinds.slice(0, 25),
@@ -384,11 +380,11 @@ export class StatsService {
     const [ownProfile, ownStats, savedRows] = await Promise.all([
       this.prisma.geocachingProfile.findUnique({
         where: { userId },
-        select: { gcUsername: true }
+        select: { gcUsername: true, friendStatsEnabled: true }
       }),
       this.snapshotForUser(userId),
       this.prisma.savedFriend.findMany({
-        where: { userId },
+        where: { userId, friendUser: { profile: { is: { friendStatsEnabled: true } } } },
         orderBy: { createdAt: "desc" },
         select: {
           friendUserId: true,
@@ -422,19 +418,21 @@ export class StatsService {
     ];
 
     return {
+      accountId: userId,
+      friendStatsEnabled: ownProfile?.friendStatsEnabled ?? false,
       friends: friendEntries.map((entry) => entry.username),
       leaderboard
     };
   }
 
   async saveFriendForUser(userId: string, username: string) {
-    const target = await this.snapshotForUsername(username);
-    if (target.profile.userId === userId) {
+    const target = await this.friendProfileForUsername(username);
+    if (target.userId === userId) {
       throw new BadRequestException("Enter another geocaching username");
     }
     await this.prisma.savedFriend.upsert({
-      where: { userId_friendUserId: { userId, friendUserId: target.profile.userId } },
-      create: { userId, friendUserId: target.profile.userId },
+      where: { userId_friendUserId: { userId, friendUserId: target.userId } },
+      create: { userId, friendUserId: target.userId },
       update: {}
     });
     return this.savedFriendsForUser(userId);
@@ -456,7 +454,7 @@ export class StatsService {
       .filter((row) => normalizedGcUsername(row.friendUser.profile?.gcUsername) === normalized)
       .map((row) => row.id);
     if (toDelete.length > 0) {
-      await this.prisma.savedFriend.deleteMany({ where: { id: { in: toDelete } } });
+      await this.prisma.savedFriend.deleteMany({ where: { userId, id: { in: toDelete } } });
     }
     return this.savedFriendsForUser(userId);
   }
@@ -467,7 +465,7 @@ export class StatsService {
       throw new BadRequestException("Invalid GC code");
     }
 
-    const [cache, mysteryWorkspace, savedFriends, trackableLogs] = await Promise.all([
+    const [cache, mysteryWorkspace, trackableLogs] = await Promise.all([
       this.prisma.cache.findUnique({
         where: {
           gcCode,
@@ -487,13 +485,6 @@ export class StatsService {
       this.prisma.mysteryWorkspace.findFirst({
         where: { ownerId: userId, gcCode },
         select: { id: true, clientId: true, data: true, updatedAt: true }
-      }),
-      this.prisma.savedFriend.findMany({
-        where: { userId },
-        select: {
-          friendUserId: true,
-          friendUser: { select: { profile: { select: { gcUsername: true } } } }
-        }
       }),
       this.prisma.trackableLog.findMany({
         where: { userId, gcCode },
@@ -524,20 +515,17 @@ export class StatsService {
       : validCoordinatePair(personal?.latitude, personal?.longitude)) ?? workspacePublished;
     const final = (correction ? validCoordinatePair(Number(correction.latitude), Number(correction.longitude)) : null) ?? workspaceFinal;
 
-    let friendsWhoFound: Array<{ username: string; foundAt: string }> = [];
-    if (cache && savedFriends.length > 0) {
-      const friendIds = savedFriends.map((f) => f.friendUserId);
+    let friendsWhoFound: Array<{ username: string }> = [];
+    if (cache) {
       const friendFinds = await this.prisma.find.findMany({
-        where: { cacheId: cache.id, userId: { in: friendIds } },
-        select: { userId: true, foundAt: true }
+        where: {
+          cacheId: cache.id,
+          user: { savedByFriends: { some: { userId } }, profile: { is: { friendStatsEnabled: true } } }
+        },
+        distinct: ["userId"],
+        select: { userId: true, user: { select: { profile: { select: { gcUsername: true } } } } }
       });
-      const usernameById = new Map(
-        savedFriends.map((f) => [f.friendUserId, f.friendUser.profile?.gcUsername ?? "Friend"])
-      );
-      friendsWhoFound = friendFinds.map((find) => ({
-        username: usernameById.get(find.userId) ?? "Friend",
-        foundAt: find.foundAt.toISOString()
-      }));
+      friendsWhoFound = friendFinds.flatMap(({ user }) => user.profile ? [{ username: user.profile.gcUsername }] : []);
     }
 
     const latestFind = cache?.finds[0] ?? null;
@@ -830,7 +818,8 @@ export class StatsService {
     await prisma.statSnapshot.create({
       data: {
         userId,
-        statsJson: stats as Prisma.InputJsonValue
+        statsJson: stats as Prisma.InputJsonValue,
+        serverGenerated: true
       }
     });
   }

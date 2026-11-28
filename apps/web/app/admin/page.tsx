@@ -357,13 +357,7 @@ function emptyCacheForm(): CacheFormValues {
 function cacheFormFor(candidate: MissingCache): CacheFormValues {
   return {
     ...emptyCacheForm(),
-    gcCode: candidate.gcCode,
-    name: candidate.name ?? "",
-    latitude: candidate.latitude == null ? "" : String(candidate.latitude),
-    longitude: candidate.longitude == null ? "" : String(candidate.longitude),
-    country: candidate.country ?? "",
-    region: candidate.region ?? "",
-    county: candidate.county ?? "",
+    gcCode: candidate.gcCode
   };
 }
 
@@ -760,6 +754,8 @@ export default function AdminPage() {
   async function addMissingCache(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!selectedMissingCode) return;
+    const publicListingConfirmed = new FormData(event.currentTarget).get("publicListingConfirmed") === "on";
+    if (!publicListingConfirmed) return;
     setBusyCache(selectedMissingCode);
     setError(null);
     setNotice(null);
@@ -779,7 +775,7 @@ export default function AdminPage() {
         linkedTrackableLogs: number;
       }>("/admin/caches", {
         method: "POST",
-        body: JSON.stringify(cacheForm),
+        body: JSON.stringify({ ...cacheForm, publicListingConfirmed }),
       });
       setSelectedMissingCode(null);
       setNotice(
@@ -1232,14 +1228,13 @@ export default function AdminPage() {
               )}
 
               {selectedMissingCache ? (
-                <form className="admin-cache-form" onSubmit={addMissingCache}>
+                <form key={selectedMissingCache.gcCode} className="admin-cache-form" onSubmit={addMissingCache}>
                   <div className="admin-cache-form-heading">
                     <div>
                       <p className="eyebrow">Add shared metadata</p>
                       <h3>{selectedMissingCache.gcCode}</h3>
                       <p className="muted">
-                        Review the prefilled details, then save this cache to
-                        the global database.
+                        Enter details from the publicly available listing to share with all Geostats accounts.
                       </p>
                     </div>
                     <button
@@ -1403,9 +1398,13 @@ export default function AdminPage() {
                       />
                     </label>
                   </div>
+                  <label>
+                    <input name="publicListingConfirmed" type="checkbox" required />
+                    The listing and entered coordinates are publicly available.
+                  </label>
                   <div className="admin-cache-form-actions">
                     <span className="muted">
-                      Name and coordinates are required; the rest is optional.
+                      Enter the cache name and listing coordinates. The other fields are optional.
                     </span>
                     <button
                       className="primary-button"

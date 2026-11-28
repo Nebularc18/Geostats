@@ -20,6 +20,7 @@ import { readFile } from "node:fs/promises";
 import { PrismaService } from "../common/prisma.service";
 import { parseRules } from "../challenge-checkers/challenge-checkers.service";
 import { StorageService } from "../storage/storage.service";
+import { ABANDONED_UPLOAD_RETENTION_MS, lockImportAccount } from "../imports/import-storage";
 import { MAX_ELEVATION_METERS, MAX_ELEVATION_TEXT_LENGTH, MIN_ELEVATION_METERS } from "../common/elevation";
 
 const FORMAT = "geostats-portable-data";
@@ -366,7 +367,7 @@ export class PortabilityService implements OnModuleInit, OnModuleDestroy {
         orderBy: { country: "asc" },
       }),
       this.prisma.statSnapshot.findMany({
-        where: { userId: user.id },
+        where: { userId: user.id, serverGenerated: true },
         orderBy: { generatedAt: "asc" },
       }),
       this.prisma.mysteryWorkspace.findMany({
@@ -511,12 +512,18 @@ export class PortabilityService implements OnModuleInit, OnModuleDestroy {
 
   async deleteAccount(user: AuthUser) {
     await this.prisma.$transaction(async (tx) => {
+      await lockImportAccount(tx, user.id);
       const imports = await tx.import.findMany({
-        where: { userId: user.id },
-        select: { objectKey: true },
+        where: { userId: user.id, objectKey: { not: "" } },
+        select: { objectKey: true, status: true, objectCleanupAttemptedAt: true },
       });
+      // An upload can still be writing to storage after its import row is deleted.
+      const afterUploadsFinish = new Date(Date.now() + ABANDONED_UPLOAD_RETENTION_MS);
       await tx.pendingObjectDeletion.createMany({
-        data: imports.map(({ objectKey }) => ({ objectKey })),
+        data: imports.map(({ objectKey, status, objectCleanupAttemptedAt }) => ({
+          objectKey,
+          ...(status === "UPLOADED" || objectCleanupAttemptedAt ? { availableAt: afterUploadsFinish } : {}),
+        })),
         skipDuplicates: true,
       });
       await tx.user.delete({ where: { id: user.id } });
@@ -872,21 +879,9 @@ export class PortabilityService implements OnModuleInit, OnModuleDestroy {
           for (const batch of batches(countryStats)) {
             await tx.ownerFinderCountryStat.createMany({ data: batch });
           }
+          // Archives can contain derived statistics for compatibility. Rebuild
+          // them from restored records instead of trusting the archived values.
           await tx.statSnapshot.deleteMany({ where: { userId: user.id } });
-          const snapshots = data.statSnapshots.map((row, index) => ({
-            userId: user.id,
-            statsJson: object(
-              row.statsJson,
-              `statSnapshots[${index}].statsJson`,
-            ) as Prisma.InputJsonValue,
-            generatedAt: date(
-              row.generatedAt,
-              `statSnapshots[${index}].generatedAt`,
-            ),
-          }));
-          for (const batch of batches(snapshots)) {
-            await tx.statSnapshot.createMany({ data: batch });
-          }
 
           const mysteryClientIds: string[] = [];
           for (const [index, row] of data.mysteryWorkspaces.entries()) {
@@ -994,7 +989,8 @@ export class PortabilityService implements OnModuleInit, OnModuleDestroy {
     this.cleanupInProgress = true;
     try {
       const pending = await this.prisma.pendingObjectDeletion.findMany({
-        orderBy: { createdAt: "asc" },
+        where: { availableAt: { lte: new Date() } },
+        orderBy: { availableAt: "asc" },
         take: OBJECT_CLEANUP_BATCH_SIZE,
       });
       for (const item of pending) {

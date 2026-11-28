@@ -225,7 +225,14 @@ test("admin GSAK macro loads and uploads only unresolved cache metadata", () => 
   assert.match(macro, /'kind','admin-missing-codes'/);
   assert.match(macro, /GeostatsMissingCodes/);
   assert.match(macro, /GcGetCaches Settings=<macro> GcCodes=\$missingCodes/);
+  assert.match(macro, /\$stagingDatabase = "Geostats-Shared-[a-f0-9]{16}"/);
+  const createStaging = macro.indexOf("Action=create StopStartupMacro=Y");
+  const loadCaches = macro.indexOf("GcGetCaches Settings=<macro>");
+  assert.ok(createStaging >= 0 && createStaging < loadCaches);
+  assert.match(macro, /Database Name=\$previousDatabase StopStartupMacro=Y\s+Database Name=\$stagingDatabase Action=delete/);
   assert.match(macro, /'kind','admin-caches'/);
+  assert.match(macro, /chkPremium\.Checked=False/);
+  assert.doesNotMatch(macro, /UserNote|as correctedLatitude/i);
   assert.match(
     macro,
     /Code in \(select GeocacheCode from GeostatsMissingCodes\)/,

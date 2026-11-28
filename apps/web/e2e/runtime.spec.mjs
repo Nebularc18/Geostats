@@ -112,9 +112,10 @@ test("mystery listing excerpts can be saved as clues without copying the whole d
       "access-control-allow-origin": origin,
       "access-control-allow-credentials": "true",
       "access-control-allow-methods": "GET, PUT, OPTIONS",
-      "access-control-allow-headers": "content-type",
+      "access-control-allow-headers": "content-type, x-geostats-account-id",
     };
     if (request.method() === "OPTIONS") return route.fulfill({ status: 204, headers });
+    if (path.startsWith("/mysteries/")) expect(request.headers()["x-geostats-account-id"]).toBe("user-1");
     if (request.method() === "PUT" && path.startsWith("/mysteries/")) {
       const { mystery, revision } = request.postDataJSON();
       owned.set(mystery.id, { clientId: mystery.id, mystery, revision, sharedWith: [] });
@@ -133,6 +134,14 @@ test("mystery listing excerpts can be saved as clues without copying the whole d
   const payload = { gcCode: "GC123", name: "Circus puzzle", latitude: 59, longitude: 18,
     clues: [`Puzzle listing:\n${listing}`, "Listing hint:\nLook up", "Remember the rabbits"] };
   await page.goto(`${origin}/mysteries#mystery-import=${encodeURIComponent(JSON.stringify(payload))}`);
+  const importDialog = page.getByRole("dialog", { name: "Review proposed Mystery import" });
+  await expect(importDialog).toBeVisible();
+  expect(owned.size).toBe(0);
+  await importDialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(importDialog).toHaveCount(0);
+  expect(owned.size).toBe(0);
+  await page.goto(`${origin}/mysteries?preview=1#mystery-import=${encodeURIComponent(JSON.stringify(payload))}`);
+  await importDialog.getByRole("button", { name: "Import Mystery" }).click();
   const clues = page.locator(".clue-strip");
   await expect(clues).toContainText("Look up");
   await expect(clues).toContainText("Remember the rabbits");
@@ -159,6 +168,7 @@ test("mystery listing excerpts can be saved as clues without copying the whole d
   const saved = [...owned.values()][0];
   owned.set(saved.clientId, { ...saved, revision: saved.revision + 1, mystery: { ...saved.mystery, notes: "Notes edited on another device." } });
   await page.goto(`${origin}/mysteries?refresh=1#mystery-import=${encodeURIComponent(JSON.stringify(refreshed))}`);
+  await importDialog.getByRole("button", { name: "Import Mystery" }).click();
   await expect(clues).toContainText("Count the hats.");
   await expect(clues).toContainText("Remember the rabbits");
   await page.getByText("Listing", { exact: true }).click();
@@ -169,6 +179,7 @@ test("mystery listing excerpts can be saved as clues without copying the whole d
 
   const large = { ...refreshed, listingText: "å".repeat(70 * 1024) };
   await page.goto(`${origin}/mysteries?refresh=2#mystery-import=${encodeURIComponent(JSON.stringify(large))}`);
+  await importDialog.getByRole("button", { name: "Import Mystery" }).click();
   await page.getByText("Listing", { exact: true }).click();
   await expect(listingText).toHaveValue(large.listingText);
   await listingText.press("Control+a");
@@ -178,7 +189,7 @@ test("mystery listing excerpts can be saved as clues without copying the whole d
 
   const oversized = { ...large, listingText: "å".repeat(128 * 1024 - 50) };
   await page.goto(`${origin}/mysteries?refresh=3#mystery-import=${encodeURIComponent(JSON.stringify(oversized))}`);
-  await expect(page.getByRole("status").filter({ hasText: "Listing not refreshed" })).toBeVisible();
+  await expect(page.getByRole("status").filter({ hasText: "too large to save" })).toBeVisible();
   await page.getByText("Listing", { exact: true }).click();
   await expect(listingText).toHaveValue(large.listingText);
 });

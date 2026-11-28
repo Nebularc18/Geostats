@@ -12,8 +12,8 @@ import {
 import { Request, Response } from "express";
 import { AuthUser } from "@geostats/shared";
 import { Throttle } from "@nestjs/throttler";
-import { AuthService } from "./auth.service";
-import { AuthGuard } from "./auth.guard";
+import { AUTH_SESSION_SECONDS, AuthService } from "./auth.service";
+import { AuthGuard, geostatsSessionToken } from "./auth.guard";
 import { CurrentUser } from "./current-user.decorator";
 import { envOrDefault } from "../common/env";
 
@@ -28,7 +28,7 @@ export class AuthController {
     @Res({ passthrough: true }) response: Response
   ) {
     const user = await this.auth.register(body.email ?? "", body.username ?? "", body.password ?? "");
-    this.setCookie(response, user);
+    await this.setCookie(response, user);
     return { user };
   }
 
@@ -39,7 +39,7 @@ export class AuthController {
     @Res({ passthrough: true }) response: Response
   ) {
     const user = await this.auth.login(body.email ?? "", body.password ?? "");
-    this.setCookie(response, user);
+    await this.setCookie(response, user);
     return { user };
   }
 
@@ -58,47 +58,57 @@ export class AuthController {
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Post("clerk/exchange")
   async clerkExchange(@Req() request: Request, @Res({ passthrough: true }) response: Response) {
-    const user = await this.auth.loginWithClerkToken(this.bearerToken(request));
-    this.setCookie(response, user);
+    const token = this.bearerToken(request);
+    const password = request.body?.migrationPassword;
+    const user = password === undefined
+      ? await this.auth.loginWithClerkToken(token)
+      : await this.auth.loginWithClerkToken(token, "web", password);
+    await this.setCookie(response, user);
     return { user };
   }
 
   @Get("mobile/dev")
   async mobileDev() {
     const user = await this.auth.devUser();
-    return { user, token: this.auth.sign(user) };
+    return { user, token: await this.auth.sign(user) };
   }
 
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @Post("mobile/register")
   async mobileRegister(@Body() body: { email?: string; username?: string; password?: string }) {
     const user = await this.auth.register(body.email ?? "", body.username ?? "", body.password ?? "");
-    return { user, token: this.auth.sign(user) };
+    return { user, token: await this.auth.sign(user) };
   }
 
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @Post("mobile/login")
   async mobileLogin(@Body() body: { email?: string; password?: string }) {
     const user = await this.auth.login(body.email ?? "", body.password ?? "");
-    return { user, token: this.auth.sign(user) };
+    return { user, token: await this.auth.sign(user) };
   }
 
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Post("mobile/clerk")
   async mobileClerk(@Req() request: Request) {
-    const user = await this.auth.loginWithClerkToken(this.bearerToken(request), "native");
-    return { user, token: this.auth.sign(user) };
+    const token = this.bearerToken(request);
+    const password = request.body?.migrationPassword;
+    const user = password === undefined
+      ? await this.auth.loginWithClerkToken(token, "native")
+      : await this.auth.loginWithClerkToken(token, "native", password);
+    return { user, token: await this.auth.sign(user) };
   }
 
   @Get("dev")
   async dev(@Query("returnTo") returnTo: string | undefined, @Res({ passthrough: true }) response: Response) {
     const user = await this.auth.devUser();
-    this.setCookie(response, user);
+    await this.setCookie(response, user);
     response.redirect(this.webRedirectUrl(returnTo));
   }
 
   @Post("logout")
-  logout(@Res({ passthrough: true }) response: Response) {
+  async logout(@Req() request: Request, @Res({ passthrough: true }) response: Response) {
+    const token = geostatsSessionToken(request);
+    if (token) await this.auth.revoke(token);
     response.clearCookie("geostats_session");
     return { ok: true };
   }
@@ -115,15 +125,14 @@ export class AuthController {
     return { users: await this.auth.searchUsers(query, user.id) };
   }
 
-  private setCookie(response: Response, user: AuthUser) {
-    const token = this.auth.sign(user);
+  private async setCookie(response: Response, user: AuthUser) {
+    const token = await this.auth.sign(user);
     response.cookie("geostats_session", token, {
       httpOnly: true,
       sameSite: "lax",
       secure: process.env.NODE_ENV === "production",
-      maxAge: 30 * 24 * 60 * 60 * 1000
+      maxAge: AUTH_SESSION_SECONDS * 1000
     });
-    return token;
   }
 
   private webRedirectUrl(returnTo?: string): string {

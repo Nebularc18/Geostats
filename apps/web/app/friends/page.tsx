@@ -17,7 +17,6 @@ type SharedFind = {
   terrain: number | null;
   country: string | null;
   yourFoundAt: string;
-  friendFoundAt: string;
 };
 
 type RichFriendComparison = FriendComparison & {
@@ -31,6 +30,13 @@ type LeaderboardRow = {
   username: string;
   isYou: boolean;
   stats: FriendComparison["you"]["stats"];
+};
+
+type SavedFriends = {
+  accountId: string;
+  friendStatsEnabled: boolean;
+  friends: string[];
+  leaderboard: LeaderboardRow[];
 };
 
 const metrics: Array<{
@@ -83,9 +89,14 @@ export default function FriendsPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [inviteCopied, setInviteCopied] = useState(false);
+  const [accountId, setAccountId] = useState<string | null>(null);
+  const [friendStatsEnabled, setFriendStatsEnabled] = useState(false);
+  const [sharingBusy, setSharingBusy] = useState(false);
+  const [hasLegacyBookmarks, setHasLegacyBookmarks] = useState(false);
+  const [legacyBusy, setLegacyBusy] = useState(false);
+  const [legacyStatus, setLegacyStatus] = useState<string | null>(null);
   const latestRequestRef = useRef(0);
   const pendingUsernameRef = useRef<string | null>(null);
-  const inviteHandledRef = useRef(false);
 
   const myUsername = useMemo(
     () => leaderboard.find((row) => row.isYou)?.username ?? comparison?.you.username ?? null,
@@ -96,61 +107,23 @@ export default function FriendsPage() {
     let active = true;
     async function loadSaved() {
       try {
-        const res = await apiFetch<{ friends: string[]; leaderboard: LeaderboardRow[] }>("/stats/friends");
+        const res = await apiFetch<SavedFriends>("/stats/friends");
         if (!active) return;
+        setAccountId(res.accountId);
+        setFriendStatsEnabled(res.friendStatsEnabled);
         setSavedFriends(res.friends);
         setLeaderboard(res.leaderboard);
-
-        const localLegacy = readSavedFriends(localStorage.getItem(SAVED_FRIENDS_KEY));
-        if (localLegacy.length > 0) {
-          const missing = localLegacy.filter(
-            (candidate) => !res.friends.some((existing) => existing.toLowerCase() === candidate.toLowerCase())
-          );
-          if (missing.length === 0) {
-            localStorage.removeItem(SAVED_FRIENDS_KEY);
-          } else {
-            const failed: string[] = [];
-            for (const candidate of missing) {
-              try {
-                await apiFetch("/stats/friends", {
-                  method: "POST",
-                  body: JSON.stringify({ username: candidate })
-                });
-              } catch {
-                failed.push(candidate);
-              }
-            }
-            if (failed.length === 0) {
-              localStorage.removeItem(SAVED_FRIENDS_KEY);
-            } else {
-              localStorage.setItem(SAVED_FRIENDS_KEY, JSON.stringify(failed));
-            }
-            try {
-              const refreshed = await apiFetch<{ friends: string[]; leaderboard: LeaderboardRow[] }>("/stats/friends");
-              if (active) {
-                setSavedFriends(refreshed.friends);
-                setLeaderboard(refreshed.leaderboard);
-              }
-            } catch {
-              // Keep the server list already loaded above rather than wiping it with failed local entries.
-            }
-          }
-        }
       } catch {
-        if (active) {
-          setSavedFriends(readSavedFriends(localStorage.getItem(SAVED_FRIENDS_KEY)));
-        }
+        if (active) setError("Could not load saved friends.");
       }
     }
     void loadSaved();
-    if (!inviteHandledRef.current) {
-      const params = new URLSearchParams(window.location.search);
-      const invited = params.get("add")?.trim();
-      if (invited) {
-        inviteHandledRef.current = true;
-        setUsername(invited);
-        void compareWith(invited);
-      }
+    const invited = new URLSearchParams(window.location.search).get("add")?.trim();
+    if (invited) setUsername(invited);
+    try {
+      setHasLegacyBookmarks(Boolean(localStorage.getItem(SAVED_FRIENDS_KEY)));
+    } catch {
+      // The server list is available even when the browser blocks storage.
     }
     return () => {
       active = false;
@@ -165,6 +138,7 @@ export default function FriendsPage() {
   );
 
   async function compareWith(candidate: string) {
+    if (!accountId) return;
     const cleanUsername = candidate.trim();
     if (!cleanUsername) {
       setError("Enter a geocaching username.");
@@ -177,15 +151,17 @@ export default function FriendsPage() {
     setLoading(true);
     setError(null);
     try {
-      const result = await apiFetch<RichFriendComparison>(`/stats/compare/${encodeURIComponent(cleanUsername)}`);
+      const headers = { "x-geostats-account-id": accountId };
+      const result = await apiFetch<RichFriendComparison>(`/stats/compare/${encodeURIComponent(cleanUsername)}`, { headers });
       if (requestId !== latestRequestRef.current) {
         return;
       }
       setComparison(result);
       setUsername(result.friend.username);
 
-      const saved = await apiFetch<{ friends: string[]; leaderboard: LeaderboardRow[] }>("/stats/friends", {
+      const saved = await apiFetch<SavedFriends>("/stats/friends", {
         method: "POST",
+        headers,
         body: JSON.stringify({ username: result.friend.username })
       });
       if (requestId === latestRequestRef.current) {
@@ -212,6 +188,7 @@ export default function FriendsPage() {
   }
 
   async function removeFriend(friend: string) {
+    if (!accountId) return;
     const normalizedFriend = friend.trim().toLowerCase();
     if (pendingUsernameRef.current?.trim().toLowerCase() === normalizedFriend) {
       latestRequestRef.current += 1;
@@ -221,7 +198,7 @@ export default function FriendsPage() {
     try {
       const updated = await apiFetch<{ friends: string[]; leaderboard: LeaderboardRow[] }>(
         `/stats/friends/${encodeURIComponent(friend)}`,
-        { method: "DELETE" }
+        { method: "DELETE", headers: { "x-geostats-account-id": accountId } }
       );
       setSavedFriends(updated.friends);
       setLeaderboard(updated.leaderboard);
@@ -230,6 +207,60 @@ export default function FriendsPage() {
       }
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : `Could not remove ${friend}.`);
+    }
+  }
+
+  async function updateSharing(enabled: boolean) {
+    if (!accountId) return;
+    setSharingBusy(true);
+    setError(null);
+    try {
+      const updated = await apiFetch<{ friendStatsEnabled: boolean }>("/profile/friend-stats", {
+        method: "PUT",
+        headers: { "x-geostats-account-id": accountId },
+        body: JSON.stringify({ friendStatsEnabled: enabled })
+      });
+      setFriendStatsEnabled(updated.friendStatsEnabled);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Could not update friend sharing.");
+    } finally {
+      setSharingBusy(false);
+    }
+  }
+
+  async function importLegacyBookmarks() {
+    if (!accountId) return;
+    setLegacyBusy(true);
+    setLegacyStatus(null);
+    try {
+      const stored = localStorage.getItem(SAVED_FRIENDS_KEY);
+      const alreadySaved = new Set(savedFriends.map((friend) => friend.toLowerCase()));
+      const bookmarks = readSavedFriends(stored).filter((friend) => !alreadySaved.has(friend.toLowerCase()));
+      const remaining: string[] = [];
+      const headers = { "x-geostats-account-id": accountId };
+      for (const friend of bookmarks) {
+        try {
+          const result = await apiFetch<SavedFriends>("/stats/friends", {
+            method: "POST", headers, body: JSON.stringify({ username: friend })
+          });
+          setSavedFriends(result.friends);
+          setLeaderboard(result.leaderboard);
+        } catch {
+          remaining.push(friend);
+        }
+      }
+      if (localStorage.getItem(SAVED_FRIENDS_KEY) === stored) {
+        if (remaining.length) localStorage.setItem(SAVED_FRIENDS_KEY, JSON.stringify(remaining));
+        else localStorage.removeItem(SAVED_FRIENDS_KEY);
+      }
+      setHasLegacyBookmarks(Boolean(localStorage.getItem(SAVED_FRIENDS_KEY)));
+      setLegacyStatus(remaining.length
+        ? "Some bookmarks could not be imported and are still on this browser. Their owners may need to enable friend sharing."
+        : "Browser bookmarks imported.");
+    } catch {
+      setLegacyStatus("Could not read the browser bookmarks.");
+    } finally {
+      setLegacyBusy(false);
     }
   }
 
@@ -252,7 +283,7 @@ export default function FriendsPage() {
           <p className="eyebrow">Account-synced friends & group stats</p>
           <h1>Friends</h1>
         </div>
-        {myUsername ? (
+        {myUsername && friendStatsEnabled ? (
           <button type="button" className="secondary-button" onClick={() => void copyInviteLink()}>
             {inviteCopied ? <Check size={16} /> : <Share2 size={16} />}
             {inviteCopied ? "Invite link copied!" : "Copy invite link"}
@@ -260,22 +291,45 @@ export default function FriendsPage() {
         ) : null}
       </header>
 
+      <section className="panel">
+        <label>
+          <input type="checkbox" checked={friendStatsEnabled} disabled={!myUsername || !accountId || sharingBusy}
+            onChange={(event) => void updateSharing(event.target.checked)} />
+          Share my stats with signed-in Geostats users who know my Geocaching username
+        </label>
+        <p className="muted">People can compare your summary and see overlapping finds. Anyone who saves you can see whether you found a cache. Your visit times stay private.</p>
+      </section>
+
       <section className="panel friend-search-panel">
         <div>
           <h2>Find & save a friend</h2>
-          <p className="muted">Saved friends sync across your devices and appear in the group leaderboard.</p>
+          <p className="muted">Friends appear here after they enable sharing. Your saved list syncs across devices.</p>
         </div>
         <form onSubmit={submit}>
           <label className="sr-only" htmlFor="friend-username">
             Geocaching username
           </label>
           <input id="friend-username" maxLength={100} onChange={(event) => setUsername(event.target.value)} placeholder="Geocaching username" value={username} />
-          <button className="primary-button" disabled={loading} type="submit">
+          <button className="primary-button" disabled={loading || !accountId} type="submit">
             {loading ? "Comparing..." : "Compare"}
           </button>
         </form>
         {error ? <p className="notice error">{error}</p> : null}
       </section>
+
+      {hasLegacyBookmarks || legacyStatus ? (
+        <section className="panel">
+          {hasLegacyBookmarks ? (
+            <>
+              <p className="muted">This browser has old friend bookmarks. Import them only if they belong to you.</p>
+              <button type="button" className="secondary-button" disabled={!accountId || legacyBusy} onClick={() => void importLegacyBookmarks()}>
+                {legacyBusy ? "Importing…" : "Import my browser bookmarks"}
+              </button>
+            </>
+          ) : null}
+          {legacyStatus ? <p role="status">{legacyStatus}</p> : null}
+        </section>
+      ) : null}
 
       {sortedLeaderboard.length > 1 ? (
         <section className="panel">
@@ -354,7 +408,6 @@ export default function FriendsPage() {
               <span>compared with</span>
               <div>
                 <strong>{comparison.friend.username}</strong>
-                <small>{formatImportDate(comparison.friend.latestImportAt)}</small>
               </div>
             </div>
             <div className="friend-metric-table">
@@ -415,7 +468,7 @@ export default function FriendsPage() {
                       <strong>{find.gcCode}</strong> {find.name}
                     </a>
                     <small className="muted">
-                      You: {find.yourFoundAt.slice(0, 10)} · {comparison.friend.username}: {find.friendFoundAt.slice(0, 10)}
+                      You found it on {find.yourFoundAt.slice(0, 10)}
                     </small>
                   </div>
                 ))}

@@ -14,6 +14,10 @@ export function helperSupportsNoteBatches(root: { getAttribute(name: string): st
   return root.getAttribute("data-geostats-note-batch-support") === "1";
 }
 
+export function helperSupportsSyncReceipts(root: { getAttribute(name: string): string | null }) {
+  return root.getAttribute("data-geostats-sync-receipt-support") === "1";
+}
+
 
 export function helperUpdateAvailable(installedVersion: string | null, latestVersion: string) {
   if (installedVersion === null) return false;

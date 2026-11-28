@@ -59,6 +59,9 @@ model User {
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
+  clerkMigrationAttempts     Int       @default(0) @map("clerk_migration_attempts")
+  clerkMigrationWindowEndsAt DateTime? @map("clerk_migration_window_ends_at")
+
   mapRevision             MapRevision?
   profile                 GeocachingProfile?
   imports                 Import[]
@@ -68,6 +71,7 @@ model User {
   corrections             CorrectedCoordinate[]
   snapshots               StatSnapshot[]
   collectorTokens         CollectorToken[]
+  authSessions            AuthSession[]
   oauthAccounts           OAuthAccount[]
   ownerFinderCountryStats OwnerFinderCountryStat[]
   mysteryWorkspaces       MysteryWorkspace[]       @relation("MysteryOwner")
@@ -250,6 +254,18 @@ model CollectorToken {
   @@map("collector_tokens")
 }
 
+model AuthSession {
+  id        String   @id @db.Uuid
+  userId    String   @map("user_id")
+  expiresAt DateTime @map("expires_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+  @@index([expiresAt])
+  @@map("auth_sessions")
+}
+
 model GeocachingProfile {
   id                String   @id @default(cuid())
   userId            String   @unique @map("user_id")
@@ -259,6 +275,8 @@ model GeocachingProfile {
   timeZone          String   @default("Europe/Stockholm") @map("time_zone")
   ftfDetectionTerms String[] @default(["FTF", "first to find"]) @map("ftf_detection_terms")
   publicStatsEnabled Boolean @default(false) @map("public_stats_enabled")
+  legacyPublicStatsUsername String? @unique @map("legacy_public_stats_username")
+  friendStatsEnabled Boolean @default(false) @map("friend_stats_enabled")
   createdAt         DateTime @default(now()) @map("created_at")
   updatedAt         DateTime @updatedAt @map("updated_at")
 
@@ -275,6 +293,8 @@ model Import {
   source       ImportSource
   status       ImportStatus   @default(UPLOADED)
   objectKey    String         @map("object_key")
+  objectSizeBytes Int?         @map("object_size_bytes")
+  objectCleanupAttemptedAt DateTime? @map("object_cleanup_attempted_at")
   errorMessage String?        @map("error_message")
   purpose      String?
   receipt      Json?
@@ -290,6 +310,7 @@ model Import {
 
   @@index([userId, createdAt])
   @@index([status, updatedAt])
+  @@index([objectCleanupAttemptedAt, updatedAt])
   @@map("imports")
 }
 
@@ -325,6 +346,7 @@ model Cache {
   hiddenDate DateTime? @map("hidden_date") @db.Date
   ownerName  String?   @map("owner_name")
   metadataTrusted Boolean @default(false) @map("metadata_trusted")
+  publicListingConfirmed Boolean @default(false) @map("public_listing_confirmed")
   createdAt  DateTime  @default(now()) @map("created_at")
   updatedAt  DateTime  @updatedAt @map("updated_at")
 
@@ -418,10 +440,11 @@ model CorrectedCoordinate {
 }
 
 model StatSnapshot {
-  id          String   @id @default(cuid())
-  userId      String   @map("user_id")
-  statsJson   Json     @map("stats_json")
-  generatedAt DateTime @default(now()) @map("generated_at")
+  id              String   @id @default(cuid())
+  userId          String   @map("user_id")
+  statsJson       Json     @map("stats_json")
+  generatedAt     DateTime @default(now()) @map("generated_at")
+  serverGenerated Boolean  @default(false) @map("server_generated")
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -486,10 +509,12 @@ model PendingObjectDeletion {
   objectKey    String   @unique @map("object_key")
   attempts     Int      @default(0)
   lastError    String?  @map("last_error")
+  availableAt  DateTime @default(now()) @map("available_at")
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
   @@index([createdAt])
+  @@index([availableAt])
   @@map("pending_object_deletions")
 }
 

@@ -209,6 +209,7 @@ export class ImportProcessor {
     if (!importRecord) {
       throw new Error(`Import ${payload.importId} was not found`);
     }
+    if (importRecord.objectCleanupAttemptedAt) return;
 
     const now = new Date();
     const recovered = importRecord.status === ImportStatus.PROCESSING;
@@ -610,7 +611,8 @@ export class ImportProcessor {
       await tx.statSnapshot.create({
         data: {
           userId,
-          statsJson: stats as unknown as Prisma.InputJsonValue
+          statsJson: stats as unknown as Prisma.InputJsonValue,
+          serverGenerated: true
         }
       });
     }, { maxWait: 10_000, timeout: 120_000 });

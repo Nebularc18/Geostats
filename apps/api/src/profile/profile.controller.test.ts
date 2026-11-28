@@ -87,6 +87,24 @@ test("updates public statistics consent without rewriting profile settings", asy
   assert.equal((result.profile as any).publicStatsEnabled, true);
 });
 
+test("friend sharing consent can be set or revoked only on the signed-in profile", async () => {
+  const updates: unknown[] = [];
+  const controller = new ProfileController({
+    geocachingProfile: {
+      updateMany: async (args: unknown) => {
+        updates.push(args);
+        return { count: 1 };
+      }
+    }
+  } as never);
+
+  assert.deepEqual(await controller.updateFriendStats(user, { friendStatsEnabled: true }), { friendStatsEnabled: true });
+  assert.deepEqual(await controller.updateFriendStats(user, { friendStatsEnabled: false }), { friendStatsEnabled: false });
+  assert.deepEqual(updates, [true, false].map((friendStatsEnabled) => ({
+    where: { userId: user.id }, data: { friendStatsEnabled }
+  })));
+});
+
 test("rejects a whitespace-only Geocaching username", async () => {
   const controller = new ProfileController({} as any);
 

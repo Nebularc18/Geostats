@@ -97,6 +97,8 @@ const DEFAULT_MAX_ZIP_ENTRIES = 25;
 const DEFAULT_MAX_ZIP_ENTRY_BYTES = 5 * 1024 * 1024;
 const DEFAULT_MAX_ZIP_TOTAL_BYTES = 25 * 1024 * 1024;
 const DEFAULT_MAX_WAYPOINTS = 25_000;
+export const MAX_TRACKABLE_MOVEMENT_LOGS = 100_000;
+const MAX_KML_OUTPUT_TEXT_BYTES = 32 * 1024 * 1024;
 export const DEFAULT_FTF_DETECTION_TERMS = ["FTF", "first to find"];
 
 function positiveLimit(envName: string, fallback: number): number {
@@ -740,22 +742,19 @@ function parseJsonTrackableImport(content: string | Buffer, suppliedTrackingCode
   return { trackables, logs };
 }
 
-function collectNamedValues(value: unknown, wantedName: string, result: unknown[] = []): unknown[] {
-  if (!value || typeof value !== "object") return result;
+function* collectNamedValues(value: unknown, wantedName: string): Generator<unknown> {
+  if (!value || typeof value !== "object") return;
   if (Array.isArray(value)) {
-    for (const item of value) collectNamedValues(item, wantedName, result);
-    return result;
+    for (const item of value) yield* collectNamedValues(item, wantedName);
+    return;
   }
-  const object = value as Record<string, any>;
-  const normalizedWanted = normalizedHeader(wantedName);
-  for (const [key, child] of Object.entries(object)) {
+  for (const [key, child] of Object.entries(value)) {
     const normalizedKey = normalizedHeader(key);
-    if (normalizedKey === normalizedWanted || normalizedKey.endsWith(normalizedWanted)) {
-      result.push(...asArray(child as any));
+    if (normalizedKey.endsWith(wantedName)) {
+      yield* asArray(child);
     }
-    collectNamedValues(child, wantedName, result);
+    yield* collectNamedValues(child, wantedName);
   }
-  return result;
 }
 
 function collectNamedObjects(value: unknown, wantedName: string, result: Record<string, any>[] = []): Record<string, any>[] {
@@ -781,8 +780,13 @@ function collectNamedObjects(value: unknown, wantedName: string, result: Record<
 function uniqueTrackableCodes(value: string): string[] {
   // Trackable reference codes are uppercase in Geocaching exports. Requiring
   // that casing avoids treating KML style ids such as `tbTravelStyle` as a
-  // real tracking code.
-  return [...new Set([...value.matchAll(/\bTB[A-Z0-9]{2,80}\b/g)].map((match) => match[0]))];
+  // real tracking code. KML inference only needs to know if a code is unique.
+  const codes = new Set<string>();
+  for (const [code] of value.matchAll(/\bTB[A-Z0-9]{2,80}\b/g)) {
+    codes.add(code);
+    if (codes.size === 2) break;
+  }
+  return [...codes];
 }
 
 const KML_ESTIMATED_DATE_MARKER = "__geostatsKmlDateEstimated";
@@ -807,38 +811,49 @@ function kmlAnonymousCode(documentName: string | null, content: string): string 
   return `KML-${label}-${(hash >>> 0).toString(36).toUpperCase()}`;
 }
 
-function kmlRaw(value: Record<string, any>, dateEstimated: boolean, codeInferred: boolean): Record<string, unknown> {
-  if (!dateEstimated && !codeInferred) return value;
+function kmlRaw(dateEstimated: boolean, codeInferred: boolean): Record<string, unknown> {
   return {
-    ...value,
     ...(dateEstimated ? { [KML_ESTIMATED_DATE_MARKER]: true } : {}),
     ...(codeInferred ? { [KML_INFERRED_CODE_MARKER]: true } : {})
   };
 }
 
-function kmlCoordinatePoints(value: unknown): Array<{ latitude: number; longitude: number }> {
-  const values = collectNamedValues(value, "coordinates").concat(collectNamedValues(value, "coord"));
-  const points: Array<{ latitude: number; longitude: number }> = [];
-  for (const raw of values) {
+function* kmlCoordinatePoints(value: unknown, name: "coordinates" | "coord") {
+  for (const raw of collectNamedValues(value, name)) {
     const text = firstText(raw)?.trim();
     if (!text) continue;
     if (text.includes(",")) {
-      for (const token of text.split(/\s+/).filter(Boolean)) {
-        const parts = token.split(",");
+      for (const [token] of text.matchAll(/\S+/g)) {
+        const parts = token.split(",", 2);
         if (parts.length < 2) continue;
         const longitude = Number(parts[0]);
         const latitude = Number(parts[1]);
         if (Number.isFinite(latitude) && Number.isFinite(longitude) && Math.abs(latitude) <= 90 && Math.abs(longitude) <= 180) {
-          points.push({ latitude, longitude });
+          yield { latitude, longitude };
         }
       }
       continue;
     }
-    const numbers = text.split(/\s+/).map(Number).filter(Number.isFinite);
-    for (let index = 0; index + 1 < numbers.length; index += 3) {
-      const longitude = numbers[index];
-      const latitude = numbers[index + 1];
-      if (Math.abs(latitude!) <= 90 && Math.abs(longitude!) <= 180) points.push({ latitude: latitude!, longitude: longitude! });
+    let longitude = 0;
+    let index = 0;
+    for (const [token] of text.matchAll(/\S+/g)) {
+      const number = Number(token);
+      if (!Number.isFinite(number)) continue;
+      if (index % 3 === 0) longitude = number;
+      if (index % 3 === 1 && Math.abs(number) <= 90 && Math.abs(longitude) <= 180) {
+        yield { latitude: number, longitude };
+      }
+      index += 1;
+    }
+  }
+}
+
+function readKmlPoints(value: unknown, limit: number) {
+  const points: Array<{ latitude: number; longitude: number }> = [];
+  for (const name of ["coordinates", "coord"] as const) {
+    for (const point of kmlCoordinatePoints(value, name)) {
+      points.push(point);
+      if (points.length === limit) return points;
     }
   }
   return points;
@@ -851,21 +866,29 @@ function dateFromText(value: unknown): Date | null {
   return toDate(match?.[0] ?? null);
 }
 
-function kmlDates(value: unknown): Date[] {
-  return collectNamedValues(value, "when")
-    .concat(collectNamedValues(value, "begin"), collectNamedValues(value, "date"))
-    .map((item) => toDate(item))
-    .filter((item): item is Date => item !== null);
+function kmlDates(value: unknown, limit: number): Date[] {
+  const dates: Date[] = [];
+  for (const name of ["when", "begin", "date"]) {
+    for (const item of collectNamedValues(value, name)) {
+      const date = toDate(item);
+      if (!date) continue;
+      dates.push(date);
+      if (dates.length === limit) return dates;
+    }
+  }
+  return dates;
 }
 
 function trackableNameFromDocument(value: string | null, code: string | null): string | null {
   if (!value) return null;
   const withoutCode = code ? value.replace(new RegExp(`\\b${code}\\b`, "ig"), "") : value;
-  const cleaned = withoutCode.replace(/\s*[|–—-]\s*/g, " ").replace(/\s+/g, " ").trim();
+  const cleaned = withoutCode.replace(/[|–—-]/g, " ").replace(/\s+/g, " ").trim();
   return cleaned || null;
 }
 
-function parseKmlTrackableImport(content: string | Buffer, suppliedTrackingCode?: string | null): ParsedTrackableImport {
+type KmlImportBudget = { rows: number; textBytes: number };
+
+function parseKmlTrackableImport(content: Buffer, suppliedTrackingCode: string | null | undefined, budget: KmlImportBudget): ParsedTrackableImport {
   const xml = content.toString("utf8");
   const document = parser.parse(xml);
   const documentNode = collectNamedObjects(document, "Document")[0];
@@ -877,11 +900,11 @@ function parseKmlTrackableImport(content: string | Buffer, suppliedTrackingCode?
   const fileInferredCode = fallbackCode ?? (fileCodes.length === 1 ? fileCodes[0] : null);
   const placemarks = collectNamedObjects(document, "Placemark");
   if (placemarks.length === 0) throw new Error("No placemarks found in KML");
-  const cachePlacemarkCount = placemarks.filter((placemark) => {
+  const hasCachePlacemarks = placemarks.some((placemark) => {
     const name = firstText(placemark.name, placemark.title) ?? "";
-    return Boolean(gcCodeFromValue(name)) && kmlCoordinatePoints(placemark).length > 0;
-  }).length;
-  const codeInferred = !fileInferredCode && documentCodes.length !== 1 && cachePlacemarkCount > 0;
+    return Boolean(gcCodeFromValue(name)) && readKmlPoints(placemark, 1).length > 0;
+  });
+  const codeInferred = !fileInferredCode && documentCodes.length !== 1 && hasCachePlacemarks;
   const inferredCode = fileInferredCode ?? (codeInferred ? kmlAnonymousCode(documentName, xml) : null);
   const documentTrackableName = trackableNameFromDocument(documentName, inferredCode);
   const trackables: ParsedTrackable[] = [];
@@ -890,25 +913,41 @@ function parseKmlTrackableImport(content: string | Buffer, suppliedTrackingCode?
   for (const placemark of placemarks) {
     const name = firstText(placemark.name, placemark.title) ?? "";
     const description = firstText(placemark.description, placemark.desc) ?? "";
-    const code = trackableCodeFromValue(`${name} ${description}`) ?? (documentCodes.length === 1 ? documentCodes[0] : inferredCode);
+    const label = `${name} ${description}`;
+    const code = trackableCodeFromValue(label) ?? (documentCodes.length === 1 ? documentCodes[0] : inferredCode);
     if (!code) continue;
-    const points = kmlCoordinatePoints(placemark);
-    const dates = kmlDates(placemark);
-    const descriptionDate = dateFromText(description);
-    const gcCode = gcCodeFromValue(`${name} ${description}`);
-    if (!gcCode && points.length > 1 && cachePlacemarkCount > 0) continue;
-    const cacheName = name.replace(/\bTB[A-Z0-9]{2,80}\b/i, "").replace(/\bGC[A-Z0-9]{2,20}\b/i, "").replace(/\s*[|–—-]\s*$/, "").trim() || null;
+    const gcCode = gcCodeFromValue(label);
+    const routePoints = !gcCode && hasCachePlacemarks ? readKmlPoints(placemark, 2) : null;
+    if (routePoints && routePoints.length > 1) continue;
+    const cacheName = name.replace(/\bTB[A-Z0-9]{2,80}\b/i, "").replace(/\bGC[A-Z0-9]{2,20}\b/i, "").replace(/[|–—-]\s*$/, "").trim() || null;
     const trackableName = documentTrackableName ?? code;
+    const locationName = cacheName ?? gcCode;
+    // Charge the repeated values before allocating rows. Only the date and
+    // inferred-code flags travel in raw because the geometry is stored separately.
+    const textBytesPerRow = Buffer.byteLength(JSON.stringify([trackableName, cacheName, locationName, description]));
+    const maxRowsByText = Math.floor(budget.textBytes / textBytesPerRow);
+    const points = routePoints ?? readKmlPoints(placemark, Math.min(budget.rows, maxRowsByText) + 1);
+    const rowCount = Math.max(1, points.length);
+    if (rowCount > budget.rows) throw new Error(`Trackable KML contains more than ${MAX_TRACKABLE_MOVEMENT_LOGS} records`);
+    if (rowCount > maxRowsByText) throw new Error("Trackable KML contains too much movement text");
+    budget.rows -= rowCount;
+    budget.textBytes -= rowCount * textBytesPerRow;
+
+    const dates = kmlDates(placemark, rowCount);
+    const descriptionDate = dateFromText(description);
+    const state = trackableState(description) ?? "VISITED";
+    const logType = trackableLogType(description);
+    const raw = kmlRaw(false, codeInferred);
+    const rawEstimated = kmlRaw(true, codeInferred);
     const coordinateRows = points.length > 0 ? points : [{ latitude: null, longitude: null }];
     for (let index = 0; index < coordinateRows.length; index += 1) {
       const point = coordinateRows[index];
       const actualDate = dates[index] ?? descriptionDate ?? dates[0] ?? null;
       const date = actualDate ?? (point.latitude != null && point.longitude != null ? syntheticKmlDate(movementSequence) : null);
-      const dateEstimated = date !== null && actualDate === null;
-      const raw = kmlRaw(placemark, dateEstimated, codeInferred);
-      trackables.push({ trackingCode: code, name: trackableName, state: trackableState(description) ?? "VISITED", lastSeenAt: actualDate, lastSeenLocation: cacheName ?? gcCode, gcCode, cacheName, latitude: point.latitude, longitude: point.longitude, raw });
+      const rowRaw = date !== null && actualDate === null ? rawEstimated : raw;
+      trackables.push({ trackingCode: code, name: trackableName, state, lastSeenAt: actualDate, lastSeenLocation: locationName, gcCode, cacheName, latitude: point.latitude, longitude: point.longitude, raw: rowRaw });
       if (date && point.latitude != null && point.longitude != null) {
-        logs.push({ trackingCode: code, trackableName, logType: trackableLogType(description), loggedAt: date, gcCode, cacheName, latitude: point.latitude, longitude: point.longitude, locationName: cacheName, notes: description || null, raw });
+        logs.push({ trackingCode: code, trackableName, logType, loggedAt: date, gcCode, cacheName, latitude: point.latitude, longitude: point.longitude, locationName: cacheName, notes: description || null, raw: rowRaw });
         movementSequence += 1;
       }
     }
@@ -1022,6 +1061,10 @@ function mergeTrackableImports(items: ParsedTrackableImport[]): ParsedTrackableI
 }
 
 export async function parseTrackableImportFile(fileName: string, content: Buffer, suppliedTrackingCode?: string | null): Promise<ParsedTrackableImport> {
+  return parseTrackableFile(fileName, content, suppliedTrackingCode, { rows: MAX_TRACKABLE_MOVEMENT_LOGS, textBytes: MAX_KML_OUTPUT_TEXT_BYTES });
+}
+
+async function parseTrackableFile(fileName: string, content: Buffer, suppliedTrackingCode: string | null | undefined, budget: KmlImportBudget): Promise<ParsedTrackableImport> {
   const lower = fileName.toLowerCase();
   if (lower.endsWith(".zip") || lower.endsWith(".kmz")) {
     const zip = await JSZip.loadAsync(content);
@@ -1040,13 +1083,13 @@ export async function parseTrackableImportFile(fileName: string, content: Buffer
       const entry = await readZipEntryLimited(file, maxEntryBytes);
       totalBytes += entry.length;
       if (totalBytes > maxTotalBytes) throw new Error(`ZIP content exceeds ${maxTotalBytes} bytes`);
-      parsed.push(await parseTrackableImportFile(file.name, entry, suppliedTrackingCode));
+      parsed.push(await parseTrackableFile(file.name, entry, suppliedTrackingCode, budget));
     }
     return mergeTrackableImports(parsed);
   }
   if (lower.endsWith(".gpx")) return parseGpxTrackableImport(content);
   if (lower.endsWith(".csv") || lower.endsWith(".txt")) return parseTrackableCsv(content);
-  if (lower.endsWith(".kml")) return parseKmlTrackableImport(content, suppliedTrackingCode);
+  if (lower.endsWith(".kml")) return parseKmlTrackableImport(content, suppliedTrackingCode, budget);
   if (lower.endsWith(".json")) return parseJsonTrackableImport(content, suppliedTrackingCode);
   throw new Error("Only GPX, ZIP, KMZ, CSV, KML, and JSON trackable files are supported");
 }

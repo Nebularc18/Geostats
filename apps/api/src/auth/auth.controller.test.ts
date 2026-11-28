@@ -40,18 +40,16 @@ test("auth config exposes the Clerk publishable key without the secret", () => {
   }
 });
 
-test("logout clears the local browser session cookie", () => {
-  let clearedCookie: string | null = null;
-  const controller = testController({});
-
-  const result = controller.logout({
-    clearCookie: (name: string) => {
-      clearedCookie = name;
-    }
-  } as any);
-
-  assert.deepEqual(result, { ok: true });
-  assert.equal(clearedCookie, "geostats_session");
+test("logout revokes the current browser or mobile session and clears the cookie", async () => {
+  const revoked: string[] = [];
+  const cookies: string[] = [];
+  const controller = testController({ revoke: async (token: string) => { revoked.push(token); } });
+  const response = { clearCookie: (name: string) => cookies.push(name) } as any;
+  assert.deepEqual(await controller.logout({ cookies: { geostats_session: "browser-session" }, headers: {} } as any, response), { ok: true });
+  assert.deepEqual(await controller.logout({ headers: { authorization: "Bearer mobile-session" } } as any, response), { ok: true });
+  assert.deepEqual(await controller.logout({ headers: {} } as any, response), { ok: true });
+  assert.deepEqual(revoked, ["browser-session", "mobile-session"]);
+  assert.deepEqual(cookies, ["geostats_session", "geostats_session", "geostats_session"]);
 });
 
 test("browser login and register do not expose bearer tokens in response bodies", async () => {

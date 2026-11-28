@@ -1,6 +1,6 @@
 import { StatusBar } from "expo-status-bar";
 import { fetch as expoFetch } from "expo/fetch";
-import { useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Alert, AppState, FlatList, Image, Platform, Pressable, ScrollView, SectionList, Share, StyleSheet, Text, TextInput, View } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import * as DocumentPicker from "expo-document-picker";
@@ -18,14 +18,14 @@ import { LogbookScreen } from "./screens/logbook-screen";
 import { FieldHubScreen } from "./screens/field-hub-screen";
 import MapView, { Callout, Marker, Polygon, Polyline, PROVIDER_GOOGLE, type MapStyleElement, type Region } from "react-native-maps";
 import * as Linking from "expo-linking";
-import { ClerkProvider, useAuth } from "@clerk/expo";
+import { ClerkProvider, useAuth, useClerk } from "@clerk/expo";
 import { useHostedAuth } from "@clerk/expo/hosted-auth";
 import { tokenCache } from "@clerk/expo/token-cache";
 import {
   MAX_TRAVEL_DIRECTIONS_STOPS, mysteryFinalCoordinate, moveTravelStop, normalizeAccountTravelPlan, normalizeTravelPlan,
   travelPlanDirectionsUrl, travelPlanGpx, type AccountTravelPlan, type TravelPlan
 } from "@geostats/shared";
-import { CACHE_IMPORT_MODES, formatImportReceipt, type CacheImportMode, type ImportReceipt, MAX_MYSTERY_WORKSPACES_PER_OWNER, normalizeMysteryListing, parseCoordinate, type MysteryListing, type MergeableMysteryCache, stableJsonStringify } from "@geostats/shared";
+import { CACHE_IMPORT_MODES, formatImportReceipt, isSafeMysteryAttempt, isSafeMysterySnapshot, type CacheImportMode, type ImportReceipt, MAX_MYSTERY_WORKSPACES_PER_OWNER, normalizeMysteryListing, parseCoordinate, type MysteryListing, type MergeableMysteryCache, stableJsonStringify } from "@geostats/shared";
 import { pickAndUploadDocument, type UploadKind } from "./upload";
 import { MAX_MYSTERY_GPX_BYTES, mysteryAiPrompt, mysteryCodeFromText, parseMysteryGpx, selectMysteryImports } from "./mystery-tools";
 import { groupTrackableJourneyPoints, hasNativeMapSupport, scratchMapGeometryBudget, SCRATCH_WORLD_REGION, selectNativeMapPoints } from "./mobile-map";
@@ -409,11 +409,11 @@ async function apiFetch<T>(baseUrl: string, path: string, token: string | null, 
   return response.json() as Promise<T>;
 }
 
-async function apiFetchWithTimeout<T>(baseUrl: string, path: string, token: string) {
+async function apiFetchWithTimeout<T>(baseUrl: string, path: string, token: string, options: RequestInit = {}) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 8000);
   try {
-    return await apiFetch<T>(baseUrl, path, token, { signal: controller.signal });
+    return await apiFetch<T>(baseUrl, path, token, { ...options, signal: controller.signal });
   } finally {
     clearTimeout(timeout);
   }
@@ -529,18 +529,21 @@ async function readMysteries(apiBaseUrl: string, userId: string) {
       isStoredMystery,
       (message, error) => console.warn(`${message} for ${userId}:`, error),
     );
-    return value.map((cache: MysteryCache) => ({
+    return value.filter((cache) => !cache.sharedBy || (typeof cache.sharedBy.id === "string"
+      && typeof cache.sharedBy.username === "string" && isSafeMysterySnapshot(cache))).map((cache: MysteryCache) => ({
       ...cache,
+      ...normalizeMysteryListing(cache),
       area: cache.area ?? "",
       country: cache.country ?? "",
       status: cache.status === "solving" || cache.status === "solved" || cache.status === "planned" || cache.status === "archived" ? cache.status : "solving",
       statusUpdatedAt: typeof cache.statusUpdatedAt === "string" && Number.isFinite(Date.parse(cache.statusUpdatedAt)) ? cache.statusUpdatedAt : undefined,
       notes: typeof cache.notes === "string" ? cache.notes : "",
       fieldNotes: typeof (cache as Partial<MysteryCache>).fieldNotes === "string" ? (cache as Partial<MysteryCache>).fieldNotes as string : "",
-      clues: Array.isArray(cache.clues) ? cache.clues : [],
-      attempts: Array.isArray(cache.attempts) ? cache.attempts : [],
+      attempts: Array.isArray(cache.attempts) ? cache.attempts.filter(isSafeMysteryAttempt) : [],
       image: cache.sharedBy ? safeRecipientMysteryImage(cache.image) : cache.image,
-      sharedWith: Array.isArray(cache.sharedWith) ? cache.sharedWith : []
+      sharedWith: Array.isArray(cache.sharedWith)
+        ? cache.sharedWith.filter((user) => typeof user?.id === "string" && typeof user.username === "string")
+        : []
     })) as MysteryCache[];
   } catch (error) {
     console.warn(`Could not read mysteries for ${userId}:`, error);
@@ -1131,46 +1134,133 @@ function useImports(baseUrl: string, token: string) {
 
 function ClerkAuthButton({
   mode,
+  serverUrl,
   saveServerUrl,
   onSession,
   onMessage
 }: {
   mode: "login" | "register";
+  serverUrl: string | null;
   saveServerUrl: () => Promise<string | null>;
   onSession: (session: Session, baseUrl: string) => void;
   onMessage: (message: string | null) => void;
 }) {
-  const { getToken } = useAuth();
+  const { sessionId } = useAuth();
+  const clerk = useClerk();
   const { startHostedAuth } = useHostedAuth();
+  const [pendingMigration, setPendingMigration] = useState<string | null>(null);
+  const [migrationPassword, setMigrationPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
+  const mounted = useRef(false);
 
-  async function continueWithClerk() {
-    onMessage("Opening Clerk...");
+  useLayoutEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    setMigrationPassword("");
+  }, [sessionId]);
+
+  async function exchange(baseUrl: string, expectedSessionId: string, password?: string) {
+    const session = clerk.session;
+    const isCurrent = () => mounted.current && baseUrl === serverUrl && clerk.session?.id === expectedSessionId;
     try {
-      const nextUrl = await saveServerUrl();
-      if (!nextUrl) return;
-
-      const result = await startHostedAuth({ mode: mode === "login" ? "sign-in" : "sign-up" });
-      if (!result.createdSessionId) {
-        onMessage("Clerk sign-in was cancelled.");
-        return;
-      }
-
-      const token = await getToken();
+      if (!session || !isCurrent()) return;
+      const token = await session.getToken();
+      if (!isCurrent()) return;
       if (!token) {
         onMessage("Clerk did not return a session token.");
         return;
       }
-      const data = await apiFetch<Session>(nextUrl, "/auth/mobile/clerk", token, { method: "POST" });
+
+      const data = await apiFetch<Session>(baseUrl, "/auth/mobile/clerk", token, {
+        method: "POST",
+        ...(password === undefined ? {} : {
+          body: JSON.stringify({ migrationPassword: password }),
+          redirect: "error"
+        })
+      });
+      if (!isCurrent()) return;
       await SecureStore.setItemAsync(TOKEN_KEY, data.token);
-      onSession(data, nextUrl);
+      if (isCurrent()) onSession(data, baseUrl);
     } catch (error) {
-      onMessage(error instanceof Error ? error.message : "Could not sign in with Clerk");
+      if (!isCurrent()) return;
+      if (error instanceof ApiError && error.code === "CLERK_MIGRATION_REQUIRED") {
+        setPendingMigration(expectedSessionId);
+        onMessage(password === undefined ? null : error.message);
+      } else {
+        onMessage(password === undefined ? "Could not sign in with Clerk." : "Could not link your account. Try again.");
+      }
     }
+  }
+
+  function runAuthAction(action: () => Promise<void>) {
+    if (busyRef.current) return;
+    busyRef.current = true;
+    setBusy(true);
+    void action().catch(() => {
+      if (mounted.current) onMessage("Could not sign in with Clerk. Try again.");
+    }).finally(() => {
+      busyRef.current = false;
+      if (mounted.current) setBusy(false);
+    });
+  }
+
+  async function continueWithClerk() {
+    onMessage("Opening Clerk...");
+    const nextUrl = await saveServerUrl();
+    if (!mounted.current || !nextUrl || nextUrl !== serverUrl) return;
+
+    const result = await startHostedAuth({ mode: mode === "login" ? "sign-in" : "sign-up" });
+    if (!mounted.current) return;
+    if (!result.createdSessionId) {
+      onMessage("Clerk sign-in was cancelled.");
+      return;
+    }
+    if (clerk.session?.id !== result.createdSessionId) {
+      onMessage("Clerk did not activate the new session. Try signing in again.");
+      return;
+    }
+    await exchange(nextUrl, result.createdSessionId);
+  }
+
+  if (pendingMigration && pendingMigration === sessionId && serverUrl) {
+    const expectedSessionId = pendingMigration;
+    const expectedServerUrl = serverUrl;
+    return (
+      <>
+        <Text style={styles.muted}>Enter the password you used for Geostats before moving to Clerk.</Text>
+        <Field
+          label="Previous Geostats password"
+          accessibilityLabel="Previous Geostats password"
+          value={migrationPassword}
+          onChangeText={setMigrationPassword}
+          editable={!busy}
+          secureTextEntry
+          autoComplete="off"
+        />
+        <PrimaryButton label={busy ? "Linking..." : "Link account"} disabled={busy} onPress={() => runAuthAction(async () => {
+          const password = migrationPassword;
+          setMigrationPassword("");
+          onMessage(null);
+          await exchange(expectedServerUrl, expectedSessionId, password);
+        })} />
+        <SecondaryButton label="Cancel" disabled={busy} onPress={() => {
+          setMigrationPassword("");
+          setPendingMigration(null);
+          onMessage(null);
+        }} />
+      </>
+    );
   }
 
   return (
     <>
-      <PrimaryButton label={`${mode === "login" ? "Sign in" : "Register"} with Clerk`} onPress={() => void continueWithClerk()} />
+      <PrimaryButton label={`${mode === "login" ? "Sign in" : "Register"} with Clerk`} disabled={busy} onPress={() => runAuthAction(continueWithClerk)} />
       <Text style={styles.authAlternative}>Your account is managed by Clerk.</Text>
     </>
   );
@@ -1336,7 +1426,7 @@ function AuthScreen({ apiBaseUrl, onApiBaseUrlChange, onSession }: { apiBaseUrl:
         {config.mode === "clerk" ? (
           clerkPublishableKey ? (
             <ClerkProvider key={clerkPublishableKey} publishableKey={clerkPublishableKey} tokenCache={tokenCache}>
-              <ClerkAuthButton mode={mode} saveServerUrl={saveServerUrl} onSession={onSession} onMessage={setMessage} />
+              <ClerkAuthButton key={normalizedServerUrl} mode={mode} serverUrl={normalizedServerUrl} saveServerUrl={saveServerUrl} onSession={onSession} onMessage={setMessage} />
             </ClerkProvider>
           ) : (
             <Text style={styles.note}>Clerk is selected on this server, but it did not provide a publishable key.</Text>
@@ -1366,6 +1456,7 @@ export default function App() {
   const [apiBaseUrl, setApiBaseUrl] = useState(DEFAULT_API_URL);
   const [session, setSession] = useState<Session | null>(null);
   const [booting, setBooting] = useState(true);
+  const [signingOut, setSigningOut] = useState(false);
   const [needsOnboarding, setNeedsOnboarding] = useState(false);
   const [profileChecked, setProfileChecked] = useState(false);
   const [profileLoadError, setProfileLoadError] = useState<string | null>(null);
@@ -1480,12 +1571,14 @@ export default function App() {
     return () => { active = false; };
   }, []);
   async function logout() {
+    const token = session?.token;
     // Clearing the cache must not notify mounted summary hooks: their
     // invalidate listener would otherwise start another request with the token
     // that is being logged out.
     invalidateStatsSummary(undefined, undefined, { notify: false });
     clearImportStatusTracking();
-    sessionGenerationRef.current += 1;
+    const generation = ++sessionGenerationRef.current;
+    setSigningOut(true);
     setSession(null);
     setProfileChecked(false);
     setProfileLoadError(null);
@@ -1493,10 +1586,21 @@ export default function App() {
     // Unmount authenticated screens before waiting on storage so their
     // schedulers cannot start another request with the old token.
     setScreen("dashboard");
-    await Promise.all([SecureStore.deleteItemAsync(TOKEN_KEY), SecureStore.deleteItemAsync(OFFLINE_SESSION_KEY)]);
+    const serverLogout = token && apiFetchWithTimeout(apiBaseUrl, "/auth/logout", token, {
+      method: "POST", credentials: "omit", redirect: "error"
+    }).then(() => true, () => false);
+    const localResults = await Promise.allSettled([SecureStore.deleteItemAsync(TOKEN_KEY), SecureStore.deleteItemAsync(OFFLINE_SESSION_KEY)]);
+    setSigningOut(false);
+    const serverConfirmed = await serverLogout;
+    if (sessionGenerationRef.current !== generation) return;
+    if (localResults.some((result) => result.status === "rejected")) {
+      Alert.alert("Could not clear saved sign-in", "The device could not remove its saved sign-in. Try signing in and out again.");
+    } else if (serverConfirmed === false) {
+      Alert.alert("Signed out on this device", "Geostats could not confirm sign-out on the server. The previous session will expire automatically.");
+    }
   }
   let content;
-  if (booting || (session && !profileChecked)) {
+  if (booting || signingOut || (session && !profileChecked)) {
     content = <SafeAreaView style={styles.safeCenter}>{profileLoadError && session ? <><Text style={styles.note}>{profileLoadError}</Text><PrimaryButton label="Retry profile check" onPress={() => { void acceptSession(session); }} /><SecondaryButton label="Sign out" onPress={logout} /></> : <ActivityIndicator color="#f3b34d" />}</SafeAreaView>;
   } else if (!session) {
     content = <AuthScreen apiBaseUrl={apiBaseUrl} onApiBaseUrlChange={changeApiBaseUrl} onSession={acceptSession} />;
@@ -2728,13 +2832,21 @@ function MysteriesScreen({ incomingShare, onIncomingShareHandled, apiBaseUrl, to
           }, first)
         );
         const sharedCaches = shared
-          ? shared.mysteries.map((grant) => ({
-              ...grant.mystery,
-              image: safeRecipientMysteryImage(grant.mystery.image),
-              sharedBy: grant.owner,
-              sharedWith: grant.sharedWith,
-              sharedWorkspaceId: grant.workspaceId
-            }))
+          ? shared.mysteries.flatMap((grant) => {
+              if (!isSafeMysterySnapshot(grant?.mystery) || typeof grant.workspaceId !== "string"
+                || typeof grant.owner?.id !== "string" || typeof grant.owner.username !== "string") return [];
+              return [{
+                ...grant.mystery,
+                ...normalizeMysteryListing(grant.mystery),
+                attempts: grant.mystery.attempts ?? [],
+                image: safeRecipientMysteryImage(grant.mystery.image),
+                sharedBy: grant.owner,
+                sharedWith: Array.isArray(grant.sharedWith)
+                  ? grant.sharedWith.filter((user) => typeof user?.id === "string" && typeof user.username === "string")
+                  : [],
+                sharedWorkspaceId: grant.workspaceId
+              }];
+            })
           : available.filter((cache) => cache.sharedBy);
         const next = [...reconciledOwned, ...localOnly, ...sharedCaches];
         latestMysteries.current = { caches: next, ready: true, accountLoaded: true };

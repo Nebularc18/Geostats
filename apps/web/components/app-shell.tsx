@@ -245,7 +245,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       setProfileChecked(true);
       return;
     }
-    if (hasCompletedProfileCheck) return;
+    if (hasCompletedProfileCheck) {
+      // Another shell can complete the check between this shell's first render and effect.
+      setProfileChecked(true);
+      return;
+    }
 
     let active = true;
     void apiFetch<{ profile: any }>("/profile")

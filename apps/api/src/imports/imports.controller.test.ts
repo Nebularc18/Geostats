@@ -24,15 +24,29 @@ test("an uncertain enqueue keeps the uploaded source available for reconciliatio
   const { ImportQueueStateUnknownError } = await import("../queue/import-queue.service");
   let created: { id: string; objectKey: string } | undefined;
   const objects = new Map<string, Buffer>();
-  const controller = new ImportsController({
+  const tx = {
+    $queryRaw: async () => [{ id: "user-1" }],
     import: {
+      count: async () => 0,
+      aggregate: async () => ({ _count: { _all: 0, objectSizeBytes: 0 }, _sum: { objectSizeBytes: null } }),
       create: async ({ data }: any) => {
+        assert.equal(data.status, "UPLOADED");
         created = { id: "import-1", ...data };
         return created;
       }
     }
+  };
+  const controller = new ImportsController({
+    $transaction: async (run: (transaction: typeof tx) => unknown) => run(tx),
+    import: { updateMany: async ({ data }: any) => {
+      if (data.status !== undefined) assert.equal(data.status, "QUEUED");
+      return { count: 1 };
+    } }
   } as never, {
-    putObject: async (key: string, value: Buffer) => { objects.set(key, value); },
+    putObject: async (key: string, value: Buffer) => {
+      assert.equal(created?.objectKey, key);
+      objects.set(key, value);
+    },
     deleteObject: async (key: string) => { objects.delete(key); }
   } as never, {
     enqueue: async () => { throw new ImportQueueStateUnknownError(new Error("lost acknowledgement")); }
